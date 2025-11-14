@@ -192,11 +192,48 @@ def run_user_prompt_submit():
         sys.exit(0)
 
 
+def run_stop_hook():
+    """Handle stop hook - inject momentum preservation prompt (Story #3)."""
+    try:
+        # Build momentum preservation message as specified in Story #3
+        reason_message = """PACE MAKER ACTIVE: You are operating under credit pacing constraints.
+
+CRITICAL REQUIREMENT: You must complete ALL acceptance criteria before stopping.
+
+If you need to pause for pacing:
+- Continue working toward acceptance criteria
+- Complete current task before stopping
+- Ensure no partial implementations
+- Verify all tests pass
+
+DO NOT stop mid-task. Complete what you started."""
+
+        # Output JSON format for Stop hook with decision: block
+        response = {
+            "decision": "block",
+            "reason": reason_message
+        }
+        print(json.dumps(response), file=sys.stdout, flush=True)
+
+        # Exit with code 2 to block stoppage and inject reason
+        sys.exit(2)
+
+    except Exception as e:
+        # Graceful degradation - log error and allow stop
+        print(f"[PACE-MAKER ERROR] {e}", file=sys.stderr)
+        sys.exit(0)
+
+
 def main():
     """Entry point for hook script."""
     # Check if this is user-prompt-submit hook
     if len(sys.argv) > 1 and sys.argv[1] == 'user_prompt_submit':
         run_user_prompt_submit()
+        return
+
+    # Check if this is stop hook
+    if len(sys.argv) > 1 and sys.argv[1] == 'stop':
+        run_stop_hook()
         return
 
     # Otherwise, run post-tool-use hook
