@@ -195,27 +195,15 @@ def run_user_prompt_submit():
 def run_stop_hook():
     """Handle stop hook - inject momentum preservation prompt (Story #3)."""
     try:
-        # Build momentum preservation message as specified in Story #3
-        reason_message = """PACE MAKER ACTIVE: You are operating under credit pacing constraints.
+        # Short, subtle reminder to verify completion
+        context_message = "Before finishing: Did you complete all requested tasks and verify they work?"
 
-CRITICAL REQUIREMENT: You must complete ALL acceptance criteria before stopping.
-
-If you need to pause for pacing:
-- Continue working toward acceptance criteria
-- Complete current task before stopping
-- Ensure no partial implementations
-- Verify all tests pass
-
-DO NOT stop mid-task. Complete what you started."""
-
-        # Output JSON format for Stop hook with decision: block
+        # Output JSON to block and remind
         response = {
             "decision": "block",
-            "reason": reason_message
+            "reason": context_message
         }
         print(json.dumps(response), file=sys.stdout, flush=True)
-
-        # Exit with code 2 to block stoppage and inject reason
         sys.exit(2)
 
     except Exception as e:
