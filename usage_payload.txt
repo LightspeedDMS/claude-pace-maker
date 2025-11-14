@@ -1,0 +1,84 @@
+Claude Code Usage API Probe
+Timestamp: 2025-11-13T19:47:59.640690
+
+📋 Loading credentials...
+✅ Credentials loaded
+
+======================================================================
+  PROFILE DATA
+======================================================================
+{
+  "account": {
+    "uuid": "f5e71ede-83d7-4687-a8b0-6573f49d9eb9",
+    "full_name": "Jose Sebastian Battig",
+    "display_name": "Seba",
+    "email": "jsbattig@gmail.com",
+    "has_claude_max": true,
+    "has_claude_pro": false
+  },
+  "organization": {
+    "uuid": "b81f567a-9d79-4a6b-a1fa-9c4a60f4007e",
+    "name": "jsbattig@gmail.com's Organization",
+    "organization_type": "claude_max",
+    "billing_type": "stripe_subscription",
+    "rate_limit_tier": "default_claude_max_20x"
+  }
+}
+
+📊 Account Type: Personal Pro Max
+   - Email: jsbattig@gmail.com
+   - Display Name: Seba
+   - Organization: jsbattig@gmail.com's Organization
+   - Org Type: claude_max
+   - Rate Limit Tier: default_claude_max_20x
+   - Has Pro: False
+   - Has Max: True
+
+======================================================================
+  USAGE DATA
+======================================================================
+{
+  "five_hour": {
+    "utilization": 0.0,
+    "resets_at": null
+  },
+  "seven_day": {
+    "utilization": 100.0,
+    "resets_at": "2025-11-14T16:00:00.177287+00:00"
+  },
+  "seven_day_oauth_apps": null,
+  "seven_day_opus": {
+    "utilization": 40.0,
+    "resets_at": "2025-11-15T16:00:00.177303+00:00"
+  },
+  "iguana_necktie": {
+    "utilization": 0.0,
+    "resets_at": null
+  }
+}
+
+📊 Usage Structure Analysis:
+
+✅ 5-Hour Limit:
+   - Utilization: 0.0%
+   - Resets At: None
+
+✅ 7-Day Limit:
+   - Utilization: 100.0%
+   - Resets At: 2025-11-14T16:00:00.177287+00:00
+
+❌ 7-Day OAuth Apps: NOT PRESENT (null)
+
+✅ 7-Day Opus Limit:
+   - Utilization: 40.0%
+
+======================================================================
+  SUMMARY FOR PACE MAKER
+======================================================================
+Account Type: Personal Pro Max
+Pacing Strategy: DUAL-WINDOW
+  - 5-hour window: Logarithmic curve
+  - 7-day window: Linear curve
+  - Pace to most constrained window
+
+✅ Probe complete!
