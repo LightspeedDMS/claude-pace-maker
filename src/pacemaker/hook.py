@@ -196,15 +196,11 @@ def run_stop_hook():
     """Handle stop hook - inject momentum preservation prompt (Story #3)."""
     try:
         # Short, subtle reminder to verify completion
+        # Just inject context, don't block - let Claude decide if work is complete
         context_message = "Before finishing: Did you complete all requested tasks and verify they work?"
 
-        # Output JSON to block and remind
-        response = {
-            "decision": "block",
-            "reason": context_message
-        }
-        print(json.dumps(response), file=sys.stdout, flush=True)
-        sys.exit(2)
+        print(context_message, file=sys.stdout, flush=True)
+        sys.exit(0)
 
     except Exception as e:
         # Graceful degradation - log error and allow stop
