@@ -1,0 +1,7 @@
+
+.claude/tdd-guard/data/test.json
+.coverage
+/src/pacemaker/__pycache__
+/tests/__pycache__
+/.tmp
+/reports
