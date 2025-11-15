@@ -14,9 +14,6 @@ import unittest
 import tempfile
 import os
 import json
-import sys
-import subprocess
-from pathlib import Path
 from datetime import datetime, timedelta
 
 
@@ -26,8 +23,8 @@ class TestUserCommandsE2E(unittest.TestCase):
     def setUp(self):
         """Set up temporary environment."""
         self.temp_dir = tempfile.mkdtemp()
-        self.config_path = os.path.join(self.temp_dir, 'config.json')
-        self.db_path = os.path.join(self.temp_dir, 'test.db')
+        self.config_path = os.path.join(self.temp_dir, "config.json")
+        self.db_path = os.path.join(self.temp_dir, "test.db")
 
         # Create initial config
         initial_config = {
@@ -35,14 +32,15 @@ class TestUserCommandsE2E(unittest.TestCase):
             "base_delay": 5,
             "max_delay": 120,
             "threshold_percent": 0,
-            "poll_interval": 60
+            "poll_interval": 60,
         }
         os.makedirs(self.temp_dir, exist_ok=True)
-        with open(self.config_path, 'w') as f:
+        with open(self.config_path, "w") as f:
             json.dump(initial_config, f)
 
         # Initialize database with real data
         from pacemaker import database
+
         database.initialize_database(self.db_path)
 
         # Insert real usage data
@@ -54,12 +52,13 @@ class TestUserCommandsE2E(unittest.TestCase):
             five_hour_resets_at=current_time + timedelta(hours=2, minutes=15),
             seven_day_util=0.187,
             seven_day_resets_at=current_time + timedelta(days=4, hours=6),
-            session_id='e2e-test-session'
+            session_id="e2e-test-session",
         )
 
     def tearDown(self):
         """Clean up temporary files."""
         import shutil
+
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
@@ -82,20 +81,20 @@ class TestUserCommandsE2E(unittest.TestCase):
         result = handle_user_prompt("pace-maker on", self.config_path, self.db_path)
 
         # 2. Verify command was intercepted
-        self.assertTrue(result['intercepted'])
-        self.assertIn('ENABLED', result['output'])
+        self.assertTrue(result["intercepted"])
+        self.assertIn("ENABLED", result["output"])
 
         # 3. Verify configuration updated
         config = load_config(self.config_path)
-        self.assertTrue(config['enabled'])
+        self.assertTrue(config["enabled"])
 
         # 4. Verify no temporary files left
-        tmp_files = [f for f in os.listdir(self.temp_dir) if f.endswith('.tmp')]
+        tmp_files = [f for f in os.listdir(self.temp_dir) if f.endswith(".tmp")]
         self.assertEqual(len(tmp_files), 0)
 
         # 5. Verify config persists across reads
         config2 = load_config(self.config_path)
-        self.assertTrue(config2['enabled'])
+        self.assertTrue(config2["enabled"])
 
     def test_complete_disable_workflow_end_to_end(self):
         """
@@ -114,18 +113,18 @@ class TestUserCommandsE2E(unittest.TestCase):
         # 1. Enable first
         handle_user_prompt("pace-maker on", self.config_path, self.db_path)
         config = load_config(self.config_path)
-        self.assertTrue(config['enabled'])
+        self.assertTrue(config["enabled"])
 
         # 2. Disable
         result = handle_user_prompt("pace-maker off", self.config_path, self.db_path)
 
         # 3. Verify command was intercepted
-        self.assertTrue(result['intercepted'])
-        self.assertIn('DISABLED', result['output'])
+        self.assertTrue(result["intercepted"])
+        self.assertIn("DISABLED", result["output"])
 
         # 4. Verify configuration updated
         config = load_config(self.config_path)
-        self.assertFalse(config['enabled'])
+        self.assertFalse(config["enabled"])
 
     def test_complete_status_workflow_end_to_end(self):
         """
@@ -143,19 +142,19 @@ class TestUserCommandsE2E(unittest.TestCase):
         result = handle_user_prompt("pace-maker status", self.config_path, self.db_path)
 
         # Verify command was intercepted
-        self.assertTrue(result['intercepted'])
+        self.assertTrue(result["intercepted"])
 
         # Verify output contains status information
-        output = result['output']
-        self.assertIn('Pace Maker:', output)
-        self.assertIn('INACTIVE', output)  # Initially disabled
+        output = result["output"]
+        self.assertIn("Pace Maker:", output)
+        self.assertIn("INACTIVE", output)  # Initially disabled
 
         # Verify usage data displayed
-        self.assertIn('Current Usage:', output)
-        self.assertIn('5-hour window:', output)
-        self.assertIn('7-day window:', output)
-        self.assertIn('42.3%', output)  # 0.423 * 100
-        self.assertIn('18.7%', output)  # 0.187 * 100
+        self.assertIn("Current Usage:", output)
+        self.assertIn("5-hour window:", output)
+        self.assertIn("7-day window:", output)
+        self.assertIn("42.3%", output)  # 0.423 * 100
+        self.assertIn("18.7%", output)  # 0.187 * 100
 
     def test_enable_then_status_shows_active_state(self):
         """
@@ -175,9 +174,9 @@ class TestUserCommandsE2E(unittest.TestCase):
         result = handle_user_prompt("pace-maker status", self.config_path, self.db_path)
 
         # Verify shows ACTIVE
-        self.assertTrue(result['intercepted'])
-        self.assertIn('ACTIVE', result['output'])
-        self.assertIn('Current Usage:', result['output'])
+        self.assertTrue(result["intercepted"])
+        self.assertIn("ACTIVE", result["output"])
+        self.assertIn("Current Usage:", result["output"])
 
     def test_non_pace_maker_prompts_pass_through_unchanged(self):
         """
@@ -200,8 +199,8 @@ class TestUserCommandsE2E(unittest.TestCase):
         result = handle_user_prompt(regular_prompt, self.config_path, self.db_path)
 
         # Verify NOT intercepted
-        self.assertFalse(result['intercepted'])
-        self.assertEqual(result['passthrough'], regular_prompt)
+        self.assertFalse(result["intercepted"])
+        self.assertEqual(result["passthrough"], regular_prompt)
 
         # Verify config unchanged
         with open(self.config_path) as f:
@@ -222,18 +221,20 @@ class TestUserCommandsE2E(unittest.TestCase):
 
         # Test uppercase
         result1 = handle_user_prompt("PACE-MAKER ON", self.config_path, self.db_path)
-        self.assertTrue(result1['intercepted'])
-        self.assertIn('ENABLED', result1['output'])
+        self.assertTrue(result1["intercepted"])
+        self.assertIn("ENABLED", result1["output"])
 
         # Test mixed case
-        result2 = handle_user_prompt("Pace-Maker Status", self.config_path, self.db_path)
-        self.assertTrue(result2['intercepted'])
-        self.assertIn('ACTIVE', result2['output'])
+        result2 = handle_user_prompt(
+            "Pace-Maker Status", self.config_path, self.db_path
+        )
+        self.assertTrue(result2["intercepted"])
+        self.assertIn("ACTIVE", result2["output"])
 
         # Test lowercase
         result3 = handle_user_prompt("pace-maker off", self.config_path, self.db_path)
-        self.assertTrue(result3['intercepted'])
-        self.assertIn('DISABLED', result3['output'])
+        self.assertTrue(result3["intercepted"])
+        self.assertIn("DISABLED", result3["output"])
 
     def test_rapid_command_execution_maintains_consistency(self):
         """
@@ -260,18 +261,18 @@ class TestUserCommandsE2E(unittest.TestCase):
         for cmd in commands:
             result = handle_user_prompt(cmd, self.config_path, self.db_path)
             results.append(result)
-            self.assertTrue(result['intercepted'])
+            self.assertTrue(result["intercepted"])
 
         # Verify final state
         with open(self.config_path) as f:
             final_config = json.load(f)
 
         # Last command was 'on', so should be enabled
-        self.assertTrue(final_config['enabled'])
+        self.assertTrue(final_config["enabled"])
 
         # Verify config is valid JSON (not corrupted)
         self.assertIsInstance(final_config, dict)
-        self.assertIn('enabled', final_config)
+        self.assertIn("enabled", final_config)
 
     def test_status_with_missing_database_shows_config_only(self):
         """
@@ -293,9 +294,9 @@ class TestUserCommandsE2E(unittest.TestCase):
         result = handle_user_prompt("pace-maker status", self.config_path, self.db_path)
 
         # Should still work
-        self.assertTrue(result['intercepted'])
-        self.assertIn('Pace Maker:', result['output'])
-        self.assertIn('No usage data available', result['output'])
+        self.assertTrue(result["intercepted"])
+        self.assertIn("Pace Maker:", result["output"])
+        self.assertIn("No usage data available", result["output"])
 
     def test_configuration_survives_application_restart(self):
         """
@@ -311,16 +312,18 @@ class TestUserCommandsE2E(unittest.TestCase):
 
         # Enable
         result1 = handle_user_prompt("pace-maker on", self.config_path, self.db_path)
-        self.assertTrue(result1['intercepted'])
+        self.assertTrue(result1["intercepted"])
 
         # Simulate restart by using fresh import
         # In real system, this would be a new Python process
         # Here we just call handle_user_prompt again (fresh execution)
 
         # Check status after "restart"
-        result2 = handle_user_prompt("pace-maker status", self.config_path, self.db_path)
-        self.assertTrue(result2['intercepted'])
-        self.assertIn('ACTIVE', result2['output'])
+        result2 = handle_user_prompt(
+            "pace-maker status", self.config_path, self.db_path
+        )
+        self.assertTrue(result2["intercepted"])
+        self.assertIn("ACTIVE", result2["output"])
 
 
 class TestHookScriptIntegration(unittest.TestCase):
@@ -329,8 +332,8 @@ class TestHookScriptIntegration(unittest.TestCase):
     def setUp(self):
         """Set up temporary environment."""
         self.temp_dir = tempfile.mkdtemp()
-        self.config_path = os.path.join(self.temp_dir, 'config.json')
-        self.db_path = os.path.join(self.temp_dir, 'test.db')
+        self.config_path = os.path.join(self.temp_dir, "config.json")
+        self.db_path = os.path.join(self.temp_dir, "test.db")
 
         # Create initial config
         initial_config = {
@@ -338,15 +341,16 @@ class TestHookScriptIntegration(unittest.TestCase):
             "base_delay": 5,
             "max_delay": 120,
             "threshold_percent": 0,
-            "poll_interval": 60
+            "poll_interval": 60,
         }
         os.makedirs(self.temp_dir, exist_ok=True)
-        with open(self.config_path, 'w') as f:
+        with open(self.config_path, "w") as f:
             json.dump(initial_config, f)
 
     def tearDown(self):
         """Clean up temporary files."""
         import shutil
+
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
@@ -358,7 +362,7 @@ class TestHookScriptIntegration(unittest.TestCase):
         self.assertIsNotNone(hook)
 
         # Should have main function
-        self.assertTrue(hasattr(hook, 'main'))
+        self.assertTrue(hasattr(hook, "main"))
 
     def test_user_commands_can_be_called_from_hook(self):
         """Verify user commands can be invoked from hook context."""
@@ -367,9 +371,9 @@ class TestHookScriptIntegration(unittest.TestCase):
         # This is the function the hook would call
         result = handle_user_prompt("pace-maker on", self.config_path, self.db_path)
 
-        self.assertTrue(result['intercepted'])
-        self.assertIn('output', result)
+        self.assertTrue(result["intercepted"])
+        self.assertIn("output", result)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

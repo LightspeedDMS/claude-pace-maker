@@ -11,7 +11,7 @@ Implements:
 
 import math
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 
 def calculate_logarithmic_target(time_percent: float) -> float:
@@ -63,8 +63,7 @@ def calculate_linear_target(time_percent: float) -> float:
 
 
 def calculate_time_percent(
-    resets_at: Optional[datetime],
-    window_hours: float = 5.0
+    resets_at: Optional[datetime], window_hours: float = 5.0
 ) -> float:
     """
     Calculate percentage of time elapsed in the current window.
@@ -105,8 +104,8 @@ def determine_most_constrained_window(
     five_hour_util: Optional[float],
     five_hour_target: float,
     seven_day_util: Optional[float],
-    seven_day_target: float
-) -> Dict[str, any]:
+    seven_day_target: float,
+) -> Dict[str, Any]:
     """
     Determine which window is most constrained (highest deviation over target).
 
@@ -131,26 +130,26 @@ def determine_most_constrained_window(
     # Determine most constrained
     if five_hour_deviation is None and seven_day_deviation is None:
         # Both windows inactive
-        return {'window': None, 'deviation': 0.0}
+        return {"window": None, "deviation": 0.0}
     elif five_hour_deviation is None:
         # Only 7-day active
-        return {'window': '7-day', 'deviation': seven_day_deviation}
+        return {"window": "7-day", "deviation": seven_day_deviation}
     elif seven_day_deviation is None:
         # Only 5-hour active
-        return {'window': '5-hour', 'deviation': five_hour_deviation}
+        return {"window": "5-hour", "deviation": five_hour_deviation}
     else:
         # Both active - choose highest deviation
         if five_hour_deviation >= seven_day_deviation:
-            return {'window': '5-hour', 'deviation': five_hour_deviation}
+            return {"window": "5-hour", "deviation": five_hour_deviation}
         else:
-            return {'window': '7-day', 'deviation': seven_day_deviation}
+            return {"window": "7-day", "deviation": seven_day_deviation}
 
 
 def calculate_delay(
     deviation_percent: float,
     base_delay: int = 5,
     threshold: int = 0,
-    max_delay: int = 120
+    max_delay: int = 120,
 ) -> int:
     """
     Calculate adaptive delay based on deviation from target.

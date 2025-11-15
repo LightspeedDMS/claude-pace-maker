@@ -14,10 +14,7 @@ from typing import Optional, Dict
 from . import calculator, database, api_client, adaptive_throttle
 
 
-def should_poll_api(
-    last_poll_time: Optional[datetime],
-    interval: int = 60
-) -> bool:
+def should_poll_api(last_poll_time: Optional[datetime], interval: int = 60) -> bool:
     """
     Determine if enough time has passed to poll the API again.
 
@@ -45,7 +42,7 @@ def calculate_pacing_decision(
     max_delay: int = 350,
     use_adaptive: bool = True,
     safety_buffer_pct: float = 95.0,
-    preload_hours: float = 0.0
+    preload_hours: float = 0.0,
 ) -> Dict:
     """
     Calculate pacing decision based on current usage.
@@ -66,8 +63,12 @@ def calculate_pacing_decision(
         Dict with pacing decision details
     """
     # Calculate time percentages for each window
-    five_hour_time_pct = calculator.calculate_time_percent(five_hour_resets_at, window_hours=5)
-    seven_day_time_pct = calculator.calculate_time_percent(seven_day_resets_at, window_hours=168)  # 7 days
+    five_hour_time_pct = calculator.calculate_time_percent(
+        five_hour_resets_at, window_hours=5
+    )
+    seven_day_time_pct = calculator.calculate_time_percent(
+        seven_day_resets_at, window_hours=168
+    )  # 7 days
 
     # Calculate target utilization for each window
     five_hour_target = calculator.calculate_logarithmic_target(five_hour_time_pct)
@@ -82,7 +83,7 @@ def calculate_pacing_decision(
             window_start=window_start,
             current_time=now,
             window_hours=window_hours,
-            preload_hours=preload_hours
+            preload_hours=preload_hours,
         )
     else:
         # Legacy linear target
@@ -93,15 +94,15 @@ def calculate_pacing_decision(
         five_hour_util=five_hour_util if five_hour_resets_at else None,
         five_hour_target=five_hour_target,
         seven_day_util=seven_day_util if seven_day_resets_at else None,
-        seven_day_target=seven_day_target
+        seven_day_target=seven_day_target,
     )
 
     # Choose algorithm: adaptive (new) or legacy (old)
-    if use_adaptive and constrained['window'] is not None:
+    if use_adaptive and constrained["window"] is not None:
         # Use new adaptive throttling algorithm with forward-looking projection
         now = datetime.utcnow()
 
-        if constrained['window'] == '5-hour':
+        if constrained["window"] == "5-hour":
             window_hours = 5.0
             time_elapsed_pct = five_hour_time_pct
             current_util = five_hour_util
@@ -120,10 +121,9 @@ def calculate_pacing_decision(
                 time_elapsed_pct=time_elapsed_pct,
                 time_remaining_hours=time_remaining,
                 window_hours=window_hours,
-                estimated_tools_per_hour=10.0,
                 min_delay=base_delay,
                 max_delay=max_delay,
-                safety_buffer_pct=safety_buffer_pct
+                safety_buffer_pct=safety_buffer_pct,
             )
         else:  # 7-day window
             window_hours = 168.0
@@ -145,48 +145,44 @@ def calculate_pacing_decision(
                 current_time=now,
                 time_remaining_hours=time_remaining,
                 window_hours=window_hours,
-                estimated_tools_per_hour=10.0,
                 min_delay=base_delay,
                 max_delay=max_delay,
                 safety_buffer_pct=safety_buffer_pct,
-                preload_hours=preload_hours
+                preload_hours=preload_hours,
             )
 
-        delay_seconds = adaptive_result['delay_seconds']
+        delay_seconds = adaptive_result["delay_seconds"]
         strategy_info = {
-            'algorithm': 'adaptive',
-            'strategy': adaptive_result['strategy'],
-            'projection': adaptive_result['projection']
+            "algorithm": "adaptive",
+            "strategy": adaptive_result["strategy"],
+            "projection": adaptive_result["projection"],
         }
     else:
         # Use legacy algorithm (simple deviation-based)
         delay_seconds = calculator.calculate_delay(
-            deviation_percent=constrained['deviation'],
+            deviation_percent=constrained["deviation"],
             base_delay=base_delay,
             threshold=threshold_percent,
-            max_delay=max_delay
+            max_delay=max_delay,
         )
-        strategy_info = {
-            'algorithm': 'legacy',
-            'strategy': 'legacy'
-        }
+        strategy_info = {"algorithm": "legacy", "strategy": "legacy"}
 
     return {
-        'should_throttle': delay_seconds > 0,
-        'delay_seconds': delay_seconds,
-        'constrained_window': constrained['window'],
-        'deviation_percent': constrained['deviation'],
-        'five_hour': {
-            'utilization': five_hour_util,
-            'target': five_hour_target,
-            'time_elapsed_pct': five_hour_time_pct
+        "should_throttle": delay_seconds > 0,
+        "delay_seconds": delay_seconds,
+        "constrained_window": constrained["window"],
+        "deviation_percent": constrained["deviation"],
+        "five_hour": {
+            "utilization": five_hour_util,
+            "target": five_hour_target,
+            "time_elapsed_pct": five_hour_time_pct,
         },
-        'seven_day': {
-            'utilization': seven_day_util,
-            'target': seven_day_target,
-            'time_elapsed_pct': seven_day_time_pct
+        "seven_day": {
+            "utilization": seven_day_util,
+            "target": seven_day_target,
+            "time_elapsed_pct": seven_day_time_pct,
         },
-        **strategy_info
+        **strategy_info,
     }
 
 
@@ -202,18 +198,10 @@ def determine_delay_strategy(delay_seconds: int) -> Dict:
     """
     # Always use direct execution - sleep in hook
     # Hook timeout is configured to 360 seconds (6 minutes) to allow delays
-    return {
-        'method': 'direct',
-        'delay_seconds': delay_seconds,
-        'prompt': None
-    }
+    return {"method": "direct", "delay_seconds": delay_seconds, "prompt": None}
 
 
-def process_usage_update(
-    usage_data: Dict,
-    db_path: str,
-    session_id: str
-) -> bool:
+def process_usage_update(usage_data: Dict, db_path: str, session_id: str) -> bool:
     """
     Process and store usage update in database.
 
@@ -228,11 +216,11 @@ def process_usage_update(
     return database.insert_usage_snapshot(
         db_path=db_path,
         timestamp=datetime.utcnow(),
-        five_hour_util=usage_data['five_hour_util'],
-        five_hour_resets_at=usage_data['five_hour_resets_at'],
-        seven_day_util=usage_data['seven_day_util'],
-        seven_day_resets_at=usage_data['seven_day_resets_at'],
-        session_id=session_id
+        five_hour_util=usage_data["five_hour_util"],
+        five_hour_resets_at=usage_data["five_hour_resets_at"],
+        seven_day_util=usage_data["seven_day_util"],
+        seven_day_resets_at=usage_data["seven_day_resets_at"],
+        session_id=session_id,
     )
 
 
@@ -243,7 +231,10 @@ def run_pacing_check(
     poll_interval: int = 60,
     last_cleanup_time: Optional[datetime] = None,
     safety_buffer_pct: float = 95.0,
-    preload_hours: float = 0.0
+    preload_hours: float = 0.0,
+    api_timeout_seconds: int = 10,
+    cleanup_interval_hours: int = 24,
+    retention_days: int = 60,
 ) -> Dict:
     """
     Run complete pacing check cycle.
@@ -264,20 +255,29 @@ def run_pacing_check(
         last_cleanup_time: When we last cleaned up old records (or None)
         safety_buffer_pct: Safety buffer percentage (default 95.0)
         preload_hours: First N weekday hours with preloaded allowance (default 0 = no preload)
+        api_timeout_seconds: API request timeout in seconds (default 10)
+        cleanup_interval_hours: Hours between cleanup runs (default 24)
+        retention_days: Days to keep old snapshots (default 60)
 
     Returns:
         Dict with pacing check results
     """
-    # Periodic cleanup: once per day
+    # Periodic cleanup: use configurable interval
+    cleanup_interval_seconds = cleanup_interval_hours * 3600
     should_cleanup = (
-        last_cleanup_time is None or
-        (datetime.utcnow() - last_cleanup_time).total_seconds() >= 86400  # 24 hours
+        last_cleanup_time is None
+        or (datetime.utcnow() - last_cleanup_time).total_seconds()
+        >= cleanup_interval_seconds
     )
 
     if should_cleanup:
-        deleted_count = database.cleanup_old_snapshots(db_path, retention_days=60)
+        deleted_count = database.cleanup_old_snapshots(
+            db_path, retention_days=retention_days
+        )
         if deleted_count > 0:
-            print(f"[PACING] Cleaned up {deleted_count} old database records (>60 days)")
+            print(
+                f"[PACING] Cleaned up {deleted_count} old database records (>{retention_days} days)"
+            )
 
     # Check if should poll
     should_poll = should_poll_api(last_poll_time, interval=poll_interval)
@@ -285,11 +285,8 @@ def run_pacing_check(
     if not should_poll:
         # Too soon - return no throttle decision
         return {
-            'polled': False,
-            'decision': {
-                'should_throttle': False,
-                'delay_seconds': 0
-            }
+            "polled": False,
+            "decision": {"should_throttle": False, "delay_seconds": 0},
         }
 
     # Poll API
@@ -297,24 +294,18 @@ def run_pacing_check(
     if not access_token:
         # No token - graceful degradation (no throttling)
         return {
-            'polled': False,
-            'decision': {
-                'should_throttle': False,
-                'delay_seconds': 0
-            },
-            'error': 'No access token available'
+            "polled": False,
+            "decision": {"should_throttle": False, "delay_seconds": 0},
+            "error": "No access token available",
         }
 
-    usage_data = api_client.fetch_usage(access_token)
+    usage_data = api_client.fetch_usage(access_token, timeout=api_timeout_seconds)
     if not usage_data:
         # API failed - graceful degradation (no throttling)
         return {
-            'polled': False,
-            'decision': {
-                'should_throttle': False,
-                'delay_seconds': 0
-            },
-            'error': 'API fetch failed'
+            "polled": False,
+            "decision": {"should_throttle": False, "delay_seconds": 0},
+            "error": "API fetch failed",
         }
 
     # Store in database
@@ -322,27 +313,23 @@ def run_pacing_check(
 
     # Calculate pacing decision
     decision = calculate_pacing_decision(
-        five_hour_util=usage_data['five_hour_util'],
-        five_hour_resets_at=usage_data['five_hour_resets_at'],
-        seven_day_util=usage_data['seven_day_util'],
-        seven_day_resets_at=usage_data['seven_day_resets_at'],
+        five_hour_util=usage_data["five_hour_util"],
+        five_hour_resets_at=usage_data["five_hour_resets_at"],
+        seven_day_util=usage_data["seven_day_util"],
+        seven_day_resets_at=usage_data["seven_day_resets_at"],
         safety_buffer_pct=safety_buffer_pct,
-        preload_hours=preload_hours
+        preload_hours=preload_hours,
     )
 
     # Determine strategy
-    if decision['should_throttle']:
-        strategy = determine_delay_strategy(decision['delay_seconds'])
-        decision['strategy'] = strategy
+    if decision["should_throttle"]:
+        strategy = determine_delay_strategy(decision["delay_seconds"])
+        decision["strategy"] = strategy
 
-    result = {
-        'polled': True,
-        'decision': decision,
-        'poll_time': datetime.utcnow()
-    }
+    result = {"polled": True, "decision": decision, "poll_time": datetime.utcnow()}
 
     # Include cleanup timestamp if cleanup was performed
     if should_cleanup:
-        result['cleanup_time'] = datetime.utcnow()
+        result["cleanup_time"] = datetime.utcnow()
 
     return result

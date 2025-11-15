@@ -52,7 +52,9 @@ def count_weekday_seconds(start_dt: datetime, end_dt: datetime) -> int:
 
     while current < end_dt:
         # Find the end of current day or end_dt, whichever comes first
-        next_day = datetime(current.year, current.month, current.day, 23, 59, 59) + timedelta(seconds=1)
+        next_day = datetime(
+            current.year, current.month, current.day, 23, 59, 59
+        ) + timedelta(seconds=1)
         segment_end = min(next_day, end_dt)
 
         # Only count if it's a weekday
@@ -69,7 +71,7 @@ def calculate_allowance_pct(
     window_start: datetime,
     current_time: datetime,
     window_hours: float = 168.0,
-    preload_hours: float = 0.0
+    preload_hours: float = 0.0,
 ) -> float:
     """
     Calculate allowance percentage at current time.
@@ -136,13 +138,12 @@ def calculate_adaptive_delay(
     time_elapsed_pct: Optional[float] = None,
     time_remaining_hours: float = 0.0,
     window_hours: float = 168.0,
-    estimated_tools_per_hour: float = 10.0,
     min_delay: int = 5,
     max_delay: int = 350,
     window_start: Optional[datetime] = None,
     current_time: Optional[datetime] = None,
     safety_buffer_pct: float = 95.0,
-    preload_hours: float = 0.0
+    preload_hours: float = 0.0,
 ) -> dict:
     """
     Calculate adaptive delay to smoothly return to target curve.
@@ -163,7 +164,6 @@ def calculate_adaptive_delay(
         time_elapsed_pct: % of window elapsed (legacy mode, e.g., 31%)
         time_remaining_hours: Hours left in window (e.g., 3.45)
         window_hours: Total window duration (5 or 168)
-        estimated_tools_per_hour: Tool usage rate estimate (default 10)
         min_delay: Minimum delay in seconds (default 5)
         max_delay: Maximum delay in seconds (default 350)
         window_start: When window started (weekend-aware mode)
@@ -178,7 +178,6 @@ def calculate_adaptive_delay(
             'projection': {
                 'util_if_no_throttle': float,    # Where we'd end up
                 'util_if_throttled': float,      # Where throttling gets us
-                'tools_remaining_estimate': int,  # Estimated tool uses left
                 'credits_remaining_pct': float,   # Budget left
                 'allowance': float,               # Raw allowance percentage
                 'safe_allowance': float,          # Allowance with safety buffer applied
@@ -189,7 +188,9 @@ def calculate_adaptive_delay(
     # Determine which mode we're in and calculate allowance/target
     if window_start is not None and current_time is not None:
         # Weekend-aware mode: calculate allowance from weekday seconds
-        allowance_pct = calculate_allowance_pct(window_start, current_time, window_hours, preload_hours)
+        allowance_pct = calculate_allowance_pct(
+            window_start, current_time, window_hours, preload_hours
+        )
         target_util = allowance_pct
 
         # Apply safety buffer: throttle if over X% of allowance
@@ -203,18 +204,17 @@ def calculate_adaptive_delay(
             # Over safe budget on weekend → max throttle (allowance frozen)
             budget_remaining_pct = 100.0 - current_util
             return {
-                'delay_seconds': max_delay,
-                'strategy': 'emergency',
-                'reason': 'over safe budget on weekend - allowance frozen',
-                'projection': {
-                    'util_if_no_throttle': current_util,
-                    'util_if_throttled': current_util,
-                    'tools_remaining_estimate': int(time_remaining_hours * estimated_tools_per_hour),
-                    'credits_remaining_pct': budget_remaining_pct,
-                    'allowance': allowance_pct,
-                    'safe_allowance': safe_allowance,
-                    'buffer_remaining': safe_allowance - current_util
-                }
+                "delay_seconds": max_delay,
+                "strategy": "emergency",
+                "reason": "over safe budget on weekend - allowance frozen",
+                "projection": {
+                    "util_if_no_throttle": current_util,
+                    "util_if_throttled": current_util,
+                    "credits_remaining_pct": budget_remaining_pct,
+                    "allowance": allowance_pct,
+                    "safe_allowance": safe_allowance,
+                    "buffer_remaining": safe_allowance - current_util,
+                },
             }
 
         # Calculate time_elapsed_pct from weekday seconds for burn rate calculation
@@ -229,7 +229,9 @@ def calculate_adaptive_delay(
     else:
         # Legacy mode: use provided target_util and time_elapsed_pct
         if target_util is None or time_elapsed_pct is None:
-            raise ValueError("Must provide either (window_start, current_time) or (target_util, time_elapsed_pct)")
+            raise ValueError(
+                "Must provide either (window_start, current_time) or (target_util, time_elapsed_pct)"
+            )
 
         # Apply safety buffer in legacy mode too
         allowance_pct = target_util
@@ -237,7 +239,9 @@ def calculate_adaptive_delay(
 
     # Phase 1: Calculate situation
     budget_remaining_pct = 100.0 - current_util
-    overage_pct = current_util - safe_allowance  # Use safe_allowance instead of target_util
+    overage_pct = (
+        current_util - safe_allowance
+    )  # Use safe_allowance instead of target_util
 
     # Calculate time elapsed (in hours)
     time_elapsed_hours = (time_elapsed_pct / 100.0) * window_hours
@@ -246,22 +250,17 @@ def calculate_adaptive_delay(
     if time_remaining_hours <= 0.0:
         # No time left - apply maximum delay
         return {
-            'delay_seconds': max_delay,
-            'strategy': 'emergency',
-            'projection': {
-                'util_if_no_throttle': current_util,
-                'util_if_throttled': current_util,
-                'tools_remaining_estimate': 0,
-                'credits_remaining_pct': budget_remaining_pct,
-                'allowance': allowance_pct,
-                'safe_allowance': safe_allowance,
-                'buffer_remaining': safe_allowance - current_util
-            }
+            "delay_seconds": max_delay,
+            "strategy": "emergency",
+            "projection": {
+                "util_if_no_throttle": current_util,
+                "util_if_throttled": current_util,
+                "credits_remaining_pct": budget_remaining_pct,
+                "allowance": allowance_pct,
+                "safe_allowance": safe_allowance,
+                "buffer_remaining": safe_allowance - current_util,
+            },
         }
-
-    # Calculate estimates
-    tools_used_estimate = time_elapsed_hours * estimated_tools_per_hour
-    tools_remaining_estimate = time_remaining_hours * estimated_tools_per_hour
 
     # Phase 2: Project future without throttling
     # Current burn rate (% per hour)
@@ -277,17 +276,16 @@ def calculate_adaptive_delay(
     # If we're under safe allowance, no throttling needed
     if overage_pct <= 0:
         return {
-            'delay_seconds': 0,
-            'strategy': 'none',
-            'projection': {
-                'util_if_no_throttle': projected_util_no_throttle,
-                'util_if_throttled': projected_util_no_throttle,
-                'tools_remaining_estimate': int(tools_remaining_estimate),
-                'credits_remaining_pct': budget_remaining_pct,
-                'allowance': allowance_pct,
-                'safe_allowance': safe_allowance,
-                'buffer_remaining': safe_allowance - current_util
-            }
+            "delay_seconds": 0,
+            "strategy": "none",
+            "projection": {
+                "util_if_no_throttle": projected_util_no_throttle,
+                "util_if_throttled": projected_util_no_throttle,
+                "credits_remaining_pct": budget_remaining_pct,
+                "allowance": allowance_pct,
+                "safe_allowance": safe_allowance,
+                "buffer_remaining": safe_allowance - current_util,
+            },
         }
 
     # We're over safe allowance. We want to slow down to use exactly 95% by window end.
@@ -297,7 +295,9 @@ def calculate_adaptive_delay(
 
     # If we're already at or above conservative target, just slow way down
     if target_remaining_budget <= 0:
-        target_burn_rate = budget_remaining_pct / time_remaining_hours * 0.5  # Half pace
+        target_burn_rate = (
+            budget_remaining_pct / time_remaining_hours * 0.5
+        )  # Half pace
     else:
         target_burn_rate = target_remaining_budget / time_remaining_hours
 
@@ -346,28 +346,27 @@ def calculate_adaptive_delay(
     # Phase 5: Determine strategy based on overage and delay
     if delay_seconds <= min_delay:
         # No delay needed
-        strategy = 'none'
+        strategy = "none"
         delay_seconds = 0
     elif delay_seconds >= max_delay:
         # Emergency - hitting max delay
-        strategy = 'emergency'
+        strategy = "emergency"
     elif overage_pct < 5:
-        strategy = 'minimal'
+        strategy = "minimal"
     elif overage_pct < 20:
-        strategy = 'gradual'
+        strategy = "gradual"
     else:
-        strategy = 'aggressive'
+        strategy = "aggressive"
 
     return {
-        'delay_seconds': int(delay_seconds),
-        'strategy': strategy,
-        'projection': {
-            'util_if_no_throttle': projected_util_no_throttle,
-            'util_if_throttled': projected_util_throttled,
-            'tools_remaining_estimate': int(tools_remaining_estimate),
-            'credits_remaining_pct': budget_remaining_pct,
-            'allowance': allowance_pct,
-            'safe_allowance': safe_allowance,
-            'buffer_remaining': safe_allowance - current_util
-        }
+        "delay_seconds": int(delay_seconds),
+        "strategy": strategy,
+        "projection": {
+            "util_if_no_throttle": projected_util_no_throttle,
+            "util_if_throttled": projected_util_throttled,
+            "credits_remaining_pct": budget_remaining_pct,
+            "allowance": allowance_pct,
+            "safe_allowance": safe_allowance,
+            "buffer_remaining": safe_allowance - current_util,
+        },
     }

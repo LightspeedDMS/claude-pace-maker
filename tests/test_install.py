@@ -16,10 +16,8 @@ Tests cover all 10 acceptance criteria:
 
 import json
 import os
-import shutil
 import sqlite3
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -139,7 +137,9 @@ class TestInstallScript:
         assert "enabled" in config, "config must have 'enabled' field"
         assert "base_delay" in config, "config must have 'base_delay' field"
         assert "max_delay" in config, "config must have 'max_delay' field"
-        assert "threshold_percent" in config, "config must have 'threshold_percent' field"
+        assert (
+            "threshold_percent" in config
+        ), "config must have 'threshold_percent' field"
         assert "poll_interval" in config, "config must have 'poll_interval' field"
 
         assert config["enabled"] is True, "enabled should default to True"
@@ -187,7 +187,9 @@ class TestInstallScript:
 
         for col_name, col_type in expected_columns.items():
             assert col_name in columns, f"Column {col_name} must exist"
-            assert columns[col_name] == col_type, f"Column {col_name} must be {col_type}"
+            assert (
+                columns[col_name] == col_type
+            ), f"Column {col_name} must be {col_type}"
 
         conn.close()
 
@@ -226,19 +228,37 @@ class TestInstallScript:
         assert "Start" in settings["hooks"], "hooks must have Start"
         assert "PostToolUse" in settings["hooks"], "hooks must have PostToolUse"
         assert "Stop" in settings["hooks"], "hooks must have Stop"
-        assert "UserPromptSubmit" in settings["hooks"], "hooks must have UserPromptSubmit"
+        assert (
+            "UserPromptSubmit" in settings["hooks"]
+        ), "hooks must have UserPromptSubmit"
 
         # Verify array-based format
         assert isinstance(settings["hooks"]["Start"], list), "Start hook must be array"
-        assert isinstance(settings["hooks"]["PostToolUse"], list), "PostToolUse hook must be array"
+        assert isinstance(
+            settings["hooks"]["PostToolUse"], list
+        ), "PostToolUse hook must be array"
         assert isinstance(settings["hooks"]["Stop"], list), "Stop hook must be array"
-        assert isinstance(settings["hooks"]["UserPromptSubmit"], list), "UserPromptSubmit hook must be array"
+        assert isinstance(
+            settings["hooks"]["UserPromptSubmit"], list
+        ), "UserPromptSubmit hook must be array"
 
         # Verify hook commands
-        assert settings["hooks"]["Start"][0]["hooks"][0]["command"] == "~/.claude/hooks/start.sh"
-        assert settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "~/.claude/hooks/post-tool-use.sh"
-        assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "~/.claude/hooks/stop.sh"
-        assert settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == "~/.claude/hooks/user-prompt-submit.sh"
+        assert (
+            settings["hooks"]["Start"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/start.sh"
+        )
+        assert (
+            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/post-tool-use.sh"
+        )
+        assert (
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/stop.sh"
+        )
+        assert (
+            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/user-prompt-submit.sh"
+        )
 
     def test_install_is_idempotent(self, install_env, temp_home):
         """AC8: Installation can be run multiple times safely."""
@@ -270,7 +290,10 @@ class TestInstallScript:
         assert result.returncode == 0, f"Install failed: {result.stderr}"
 
         # Verification is part of the script output
-        assert "Verifying installation" in result.stdout or "Verifying installation" in result.stderr
+        assert (
+            "Verifying installation" in result.stdout
+            or "Verifying installation" in result.stderr
+        )
 
     def test_install_provides_clear_feedback(self, install_env, temp_home):
         """AC10: Installation provides clear user feedback."""
@@ -282,7 +305,9 @@ class TestInstallScript:
         # Check for key feedback messages
         assert "Claude Pace Maker" in output, "Must show application name"
         assert "Installation" in output, "Must indicate installation process"
-        assert "success" in output.lower() or "complete" in output.lower(), "Must indicate success"
+        assert (
+            "success" in output.lower() or "complete" in output.lower()
+        ), "Must indicate success"
 
     def test_install_fails_with_missing_dependencies(self, temp_home, monkeypatch):
         """Installation should check for required dependencies."""
@@ -294,7 +319,10 @@ class TestInstallScript:
 
         # Should fail with clear error message about missing dependencies
         assert result.returncode != 0, "Should fail when dependencies missing"
-        assert "dependencies" in result.stderr.lower() or "dependencies" in result.stdout.lower()
+        assert (
+            "dependencies" in result.stderr.lower()
+            or "dependencies" in result.stdout.lower()
+        )
 
     def test_install_preserves_existing_hooks(self, install_env, temp_home):
         """Installation must preserve existing hooks from other tools (e.g., tdd-guard)."""
@@ -305,9 +333,37 @@ class TestInstallScript:
 
         existing_settings = {
             "hooks": {
-                "Start": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/tdd-guard-start.sh"}]}],
-                "PostToolUse": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/tdd-guard-post.sh", "timeout": 300}]}],
-                "Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/tdd-guard-stop.sh"}]}],
+                "Start": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "~/.claude/hooks/tdd-guard-start.sh",
+                            }
+                        ]
+                    }
+                ],
+                "PostToolUse": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "~/.claude/hooks/tdd-guard-post.sh",
+                                "timeout": 300,
+                            }
+                        ]
+                    }
+                ],
+                "Stop": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "~/.claude/hooks/tdd-guard-stop.sh",
+                            }
+                        ]
+                    }
+                ],
             }
         }
 
@@ -323,24 +379,48 @@ class TestInstallScript:
             settings = json.load(f)
 
         # Verify existing hooks preserved
-        assert len(settings["hooks"]["Start"]) == 2, "Should have both tdd-guard and pace-maker Start hooks"
-        assert len(settings["hooks"]["PostToolUse"]) == 2, "Should have both tdd-guard and pace-maker PostToolUse hooks"
-        assert len(settings["hooks"]["Stop"]) == 2, "Should have both tdd-guard and pace-maker Stop hooks"
+        assert (
+            len(settings["hooks"]["Start"]) == 2
+        ), "Should have both tdd-guard and pace-maker Start hooks"
+        assert (
+            len(settings["hooks"]["PostToolUse"]) == 2
+        ), "Should have both tdd-guard and pace-maker PostToolUse hooks"
+        assert (
+            len(settings["hooks"]["Stop"]) == 2
+        ), "Should have both tdd-guard and pace-maker Stop hooks"
 
         # Verify tdd-guard hooks still present
-        start_commands = [hook["hooks"][0]["command"] for hook in settings["hooks"]["Start"]]
-        assert "~/.claude/hooks/tdd-guard-start.sh" in start_commands, "tdd-guard Start hook must be preserved"
+        start_commands = [
+            hook["hooks"][0]["command"] for hook in settings["hooks"]["Start"]
+        ]
+        assert (
+            "~/.claude/hooks/tdd-guard-start.sh" in start_commands
+        ), "tdd-guard Start hook must be preserved"
 
-        post_commands = [hook["hooks"][0]["command"] for hook in settings["hooks"]["PostToolUse"]]
-        assert "~/.claude/hooks/tdd-guard-post.sh" in post_commands, "tdd-guard PostToolUse hook must be preserved"
+        post_commands = [
+            hook["hooks"][0]["command"] for hook in settings["hooks"]["PostToolUse"]
+        ]
+        assert (
+            "~/.claude/hooks/tdd-guard-post.sh" in post_commands
+        ), "tdd-guard PostToolUse hook must be preserved"
 
-        stop_commands = [hook["hooks"][0]["command"] for hook in settings["hooks"]["Stop"]]
-        assert "~/.claude/hooks/tdd-guard-stop.sh" in stop_commands, "tdd-guard Stop hook must be preserved"
+        stop_commands = [
+            hook["hooks"][0]["command"] for hook in settings["hooks"]["Stop"]
+        ]
+        assert (
+            "~/.claude/hooks/tdd-guard-stop.sh" in stop_commands
+        ), "tdd-guard Stop hook must be preserved"
 
         # Verify pace-maker hooks added
-        assert "~/.claude/hooks/start.sh" in start_commands, "pace-maker Start hook must be added"
-        assert "~/.claude/hooks/post-tool-use.sh" in post_commands, "pace-maker PostToolUse hook must be added"
-        assert "~/.claude/hooks/stop.sh" in stop_commands, "pace-maker Stop hook must be added"
+        assert (
+            "~/.claude/hooks/start.sh" in start_commands
+        ), "pace-maker Start hook must be added"
+        assert (
+            "~/.claude/hooks/post-tool-use.sh" in post_commands
+        ), "pace-maker PostToolUse hook must be added"
+        assert (
+            "~/.claude/hooks/stop.sh" in stop_commands
+        ), "pace-maker Stop hook must be added"
 
     def test_install_is_idempotent_no_duplicate_hooks(self, install_env, temp_home):
         """Running installation twice must not create duplicate hooks."""
@@ -358,16 +438,36 @@ class TestInstallScript:
             settings = json.load(f)
 
         # Each hook type should have exactly one pace-maker hook entry
-        assert len(settings["hooks"]["Start"]) == 1, "Should have exactly one Start hook after reinstall"
-        assert len(settings["hooks"]["PostToolUse"]) == 1, "Should have exactly one PostToolUse hook after reinstall"
-        assert len(settings["hooks"]["Stop"]) == 1, "Should have exactly one Stop hook after reinstall"
-        assert len(settings["hooks"]["UserPromptSubmit"]) == 1, "Should have exactly one UserPromptSubmit hook after reinstall"
+        assert (
+            len(settings["hooks"]["Start"]) == 1
+        ), "Should have exactly one Start hook after reinstall"
+        assert (
+            len(settings["hooks"]["PostToolUse"]) == 1
+        ), "Should have exactly one PostToolUse hook after reinstall"
+        assert (
+            len(settings["hooks"]["Stop"]) == 1
+        ), "Should have exactly one Stop hook after reinstall"
+        assert (
+            len(settings["hooks"]["UserPromptSubmit"]) == 1
+        ), "Should have exactly one UserPromptSubmit hook after reinstall"
 
         # Verify it's the pace-maker hook
-        assert settings["hooks"]["Start"][0]["hooks"][0]["command"] == "~/.claude/hooks/start.sh"
-        assert settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "~/.claude/hooks/post-tool-use.sh"
-        assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "~/.claude/hooks/stop.sh"
-        assert settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == "~/.claude/hooks/user-prompt-submit.sh"
+        assert (
+            settings["hooks"]["Start"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/start.sh"
+        )
+        assert (
+            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/post-tool-use.sh"
+        )
+        assert (
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/stop.sh"
+        )
+        assert (
+            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/user-prompt-submit.sh"
+        )
 
     def test_install_handles_empty_hook_arrays(self, install_env, temp_home):
         """Installation must handle existing but empty hook arrays."""
@@ -397,12 +497,23 @@ class TestInstallScript:
 
         # Verify pace-maker hooks added to empty arrays
         assert len(settings["hooks"]["Start"]) == 1, "Should have one Start hook"
-        assert len(settings["hooks"]["PostToolUse"]) == 1, "Should have one PostToolUse hook"
+        assert (
+            len(settings["hooks"]["PostToolUse"]) == 1
+        ), "Should have one PostToolUse hook"
         assert len(settings["hooks"]["Stop"]) == 1, "Should have one Stop hook"
 
-        assert settings["hooks"]["Start"][0]["hooks"][0]["command"] == "~/.claude/hooks/start.sh"
-        assert settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "~/.claude/hooks/post-tool-use.sh"
-        assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "~/.claude/hooks/stop.sh"
+        assert (
+            settings["hooks"]["Start"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/start.sh"
+        )
+        assert (
+            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/post-tool-use.sh"
+        )
+        assert (
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/stop.sh"
+        )
 
     def test_install_handles_missing_hook_types(self, install_env, temp_home):
         """Installation must handle when some hook types don't exist yet."""
@@ -413,7 +524,9 @@ class TestInstallScript:
 
         existing_settings = {
             "hooks": {
-                "Start": [{"hooks": [{"type": "command", "command": "~/other-start.sh"}]}],
+                "Start": [
+                    {"hooks": [{"type": "command", "command": "~/other-start.sh"}]}
+                ],
                 # PostToolUse, Stop, UserPromptSubmit are missing
             }
         }
@@ -430,15 +543,23 @@ class TestInstallScript:
             settings = json.load(f)
 
         # Verify Start hook preserved and pace-maker added
-        assert len(settings["hooks"]["Start"]) == 2, "Should have both existing and pace-maker Start hooks"
-        start_commands = [hook["hooks"][0]["command"] for hook in settings["hooks"]["Start"]]
+        assert (
+            len(settings["hooks"]["Start"]) == 2
+        ), "Should have both existing and pace-maker Start hooks"
+        start_commands = [
+            hook["hooks"][0]["command"] for hook in settings["hooks"]["Start"]
+        ]
         assert "~/other-start.sh" in start_commands
         assert "~/.claude/hooks/start.sh" in start_commands
 
         # Verify missing hook types were created
-        assert "PostToolUse" in settings["hooks"], "PostToolUse hook type must be created"
+        assert (
+            "PostToolUse" in settings["hooks"]
+        ), "PostToolUse hook type must be created"
         assert "Stop" in settings["hooks"], "Stop hook type must be created"
-        assert "UserPromptSubmit" in settings["hooks"], "UserPromptSubmit hook type must be created"
+        assert (
+            "UserPromptSubmit" in settings["hooks"]
+        ), "UserPromptSubmit hook type must be created"
 
         assert len(settings["hooks"]["PostToolUse"]) == 1
         assert len(settings["hooks"]["Stop"]) == 1
@@ -463,7 +584,9 @@ class TestHookScriptsExist:
 
     def test_post_tool_use_hook_exists(self):
         """Hook script sources must exist for installation to copy."""
-        hook_path = Path("/home/jsbattig/Dev/claude-pace-maker/src/hooks/post-tool-use.sh")
+        hook_path = Path(
+            "/home/jsbattig/Dev/claude-pace-maker/src/hooks/post-tool-use.sh"
+        )
         assert hook_path.exists(), "post-tool-use.sh must exist in src/hooks/"
 
     def test_stop_hook_exists(self):
@@ -473,5 +596,7 @@ class TestHookScriptsExist:
 
     def test_user_prompt_submit_hook_exists(self):
         """Hook script sources must exist for installation to copy."""
-        hook_path = Path("/home/jsbattig/Dev/claude-pace-maker/src/hooks/user-prompt-submit.sh")
+        hook_path = Path(
+            "/home/jsbattig/Dev/claude-pace-maker/src/hooks/user-prompt-submit.sh"
+        )
         assert hook_path.exists(), "user-prompt-submit.sh must exist in src/hooks/"

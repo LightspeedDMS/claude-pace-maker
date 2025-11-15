@@ -7,9 +7,8 @@ import unittest
 import tempfile
 import os
 import json
-from pathlib import Path
 from datetime import datetime, timedelta
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import sys
 import io
 
@@ -20,13 +19,14 @@ class TestHook(unittest.TestCase):
     def setUp(self):
         """Set up temp environment."""
         self.temp_dir = tempfile.mkdtemp()
-        self.config_path = os.path.join(self.temp_dir, 'config.json')
-        self.state_path = os.path.join(self.temp_dir, 'state.json')
-        self.db_path = os.path.join(self.temp_dir, 'test.db')
+        self.config_path = os.path.join(self.temp_dir, "config.json")
+        self.state_path = os.path.join(self.temp_dir, "state.json")
+        self.db_path = os.path.join(self.temp_dir, "test.db")
 
     def tearDown(self):
         """Clean up."""
         import shutil
+
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
@@ -51,13 +51,13 @@ class TestHook(unittest.TestCase):
 
         # Create disabled config
         config = {"enabled": False}
-        with open(self.config_path, 'w') as f:
+        with open(self.config_path, "w") as f:
             json.dump(config, f)
 
         # Mock to use our config/state paths
-        with patch('pacemaker.hook.DEFAULT_CONFIG_PATH', self.config_path):
-            with patch('pacemaker.hook.DEFAULT_STATE_PATH', self.state_path):
-                with patch('pacemaker.hook.DEFAULT_DB_PATH', self.db_path):
+        with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
+            with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
+                with patch("pacemaker.hook.DEFAULT_DB_PATH", self.db_path):
                     # Should return without errors
                     run_hook()
 
@@ -74,23 +74,28 @@ class TestHook(unittest.TestCase):
 
         # Create enabled config
         config = {"enabled": True, "poll_interval": 0}  # Force immediate poll
-        with open(self.config_path, 'w') as f:
+        with open(self.config_path, "w") as f:
             json.dump(config, f)
 
         # Mock API response
         mock_usage = {
-            'five_hour_util': 30.0,
-            'five_hour_resets_at': datetime.utcnow() + timedelta(hours=3),
-            'seven_day_util': 40.0,
-            'seven_day_resets_at': datetime.utcnow() + timedelta(days=4)
+            "five_hour_util": 30.0,
+            "five_hour_resets_at": datetime.utcnow() + timedelta(hours=3),
+            "seven_day_util": 40.0,
+            "seven_day_resets_at": datetime.utcnow() + timedelta(days=4),
         }
 
         # Patch at module level where they're used
-        with patch('pacemaker.hook.DEFAULT_CONFIG_PATH', self.config_path):
-            with patch('pacemaker.hook.DEFAULT_STATE_PATH', self.state_path):
-                with patch('pacemaker.hook.DEFAULT_DB_PATH', self.db_path):
-                    with patch('pacemaker.api_client.fetch_usage', return_value=mock_usage):
-                        with patch('pacemaker.api_client.load_access_token', return_value='fake-token'):
+        with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
+            with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
+                with patch("pacemaker.hook.DEFAULT_DB_PATH", self.db_path):
+                    with patch(
+                        "pacemaker.api_client.fetch_usage", return_value=mock_usage
+                    ):
+                        with patch(
+                            "pacemaker.api_client.load_access_token",
+                            return_value="fake-token",
+                        ):
                             run_hook()
 
         # State file should be created (hook ran successfully)
@@ -102,7 +107,7 @@ class TestHook(unittest.TestCase):
         from pacemaker.hook import main
 
         # Mock run_hook to raise exception
-        with patch('pacemaker.hook.run_hook', side_effect=Exception("Test error")):
+        with patch("pacemaker.hook.run_hook", side_effect=Exception("Test error")):
             # Capture stderr
             captured = io.StringIO()
             sys.stderr = captured
@@ -139,5 +144,5 @@ class TestHook(unittest.TestCase):
         self.assertLess(elapsed, 0.1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

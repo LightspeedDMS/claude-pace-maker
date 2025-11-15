@@ -67,7 +67,7 @@ def insert_usage_snapshot(
     five_hour_resets_at: Optional[datetime],
     seven_day_util: float,
     seven_day_resets_at: Optional[datetime],
-    session_id: str
+    session_id: str,
 ) -> bool:
     """
     Insert a usage snapshot into the database.
@@ -88,7 +88,8 @@ def insert_usage_snapshot(
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO usage_snapshots (
                 timestamp,
                 five_hour_util,
@@ -97,14 +98,16 @@ def insert_usage_snapshot(
                 seven_day_resets_at,
                 session_id
             ) VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            int(timestamp.timestamp()),
-            five_hour_util,
-            five_hour_resets_at.isoformat() if five_hour_resets_at else None,
-            seven_day_util,
-            seven_day_resets_at.isoformat() if seven_day_resets_at else None,
-            session_id
-        ))
+        """,
+            (
+                int(timestamp.timestamp()),
+                five_hour_util,
+                five_hour_resets_at.isoformat() if five_hour_resets_at else None,
+                seven_day_util,
+                seven_day_resets_at.isoformat() if seven_day_resets_at else None,
+                session_id,
+            ),
+        )
 
         conn.commit()
         conn.close()
@@ -116,10 +119,7 @@ def insert_usage_snapshot(
         return False
 
 
-def query_recent_snapshots(
-    db_path: str,
-    minutes: int = 60
-) -> List[Dict]:
+def query_recent_snapshots(db_path: str, minutes: int = 60) -> List[Dict]:
     """
     Query usage snapshots from the last N minutes.
 
@@ -137,7 +137,8 @@ def query_recent_snapshots(
         conn.row_factory = sqlite3.Row  # Enable dict-like access
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT
                 id,
                 timestamp,
@@ -150,7 +151,9 @@ def query_recent_snapshots(
             FROM usage_snapshots
             WHERE timestamp >= ?
             ORDER BY timestamp DESC
-        """, (cutoff_time.isoformat(),))
+        """,
+            (cutoff_time.isoformat(),),
+        )
 
         rows = cursor.fetchall()
         conn.close()
@@ -165,10 +168,7 @@ def query_recent_snapshots(
         return []
 
 
-def cleanup_old_snapshots(
-    db_path: str,
-    retention_days: int = 60
-) -> int:
+def cleanup_old_snapshots(db_path: str, retention_days: int = 60) -> int:
     """
     Delete usage snapshots older than retention_days.
 
@@ -186,10 +186,13 @@ def cleanup_old_snapshots(
         cursor = conn.cursor()
 
         # Delete old records
-        cursor.execute("""
+        cursor.execute(
+            """
             DELETE FROM usage_snapshots
             WHERE timestamp < ?
-        """, (cutoff_time.isoformat(),))
+        """,
+            (cutoff_time.isoformat(),),
+        )
 
         deleted_count = cursor.rowcount
 

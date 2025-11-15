@@ -9,7 +9,6 @@ import json
 import os
 import sqlite3
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -49,7 +48,9 @@ class TestInstallationE2E:
         )
 
         # Verify installation succeeded
-        assert result.returncode == 0, f"Installation failed: {result.stderr}\n{result.stdout}"
+        assert (
+            result.returncode == 0
+        ), f"Installation failed: {result.stderr}\n{result.stdout}"
 
         # Verify directory structure
         claude_dir = isolated_home / ".claude"
@@ -124,10 +125,22 @@ class TestInstallationE2E:
 
         assert "hooks" in settings
         # Verify new array-based format with PascalCase names
-        assert settings["hooks"]["Start"][0]["hooks"][0]["command"] == "~/.claude/hooks/start.sh"
-        assert settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "~/.claude/hooks/post-tool-use.sh"
-        assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "~/.claude/hooks/stop.sh"
-        assert settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == "~/.claude/hooks/user-prompt-submit.sh"
+        assert (
+            settings["hooks"]["Start"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/start.sh"
+        )
+        assert (
+            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/post-tool-use.sh"
+        )
+        assert (
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/stop.sh"
+        )
+        assert (
+            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/user-prompt-submit.sh"
+        )
 
     def test_idempotent_reinstallation(self, isolated_home):
         """
@@ -167,7 +180,14 @@ class TestInstallationE2E:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO usage_snapshots VALUES (?, ?, ?, ?, ?, ?)",
-            (1234567890, 0.5, "2025-11-13T10:00:00Z", 0.3, "2025-11-20T10:00:00Z", "test-session"),
+            (
+                1234567890,
+                0.5,
+                "2025-11-13T10:00:00Z",
+                0.3,
+                "2025-11-20T10:00:00Z",
+                "test-session",
+            ),
         )
         conn.commit()
         conn.close()
@@ -186,12 +206,16 @@ class TestInstallationE2E:
             config_after = json.load(f)
 
         assert config_after["enabled"] is False, "Config should be preserved"
-        assert config_after["custom_field"] == "test_value", "Custom config should be preserved"
+        assert (
+            config_after["custom_field"] == "test_value"
+        ), "Custom config should be preserved"
 
         # Verify database data preserved
         conn = sqlite3.connect(db_file)
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM usage_snapshots WHERE timestamp = 1234567890")
+        cursor.execute(
+            "SELECT COUNT(*) FROM usage_snapshots WHERE timestamp = 1234567890"
+        )
         count = cursor.fetchone()[0]
         assert count == 1, "Database data should be preserved"
         conn.close()
@@ -215,9 +239,7 @@ class TestInstallationE2E:
         existing_settings = {
             "user": "test_user",
             "theme": "dark",
-            "hooks": {
-                "preExecution": "~/my-hook.sh"
-            }
+            "hooks": {"preExecution": "~/my-hook.sh"},
         }
 
         with open(settings_file, "w") as f:
@@ -238,12 +260,26 @@ class TestInstallationE2E:
 
         assert settings["user"] == "test_user", "Existing settings should be preserved"
         assert settings["theme"] == "dark", "Existing settings should be preserved"
-        assert settings["hooks"]["preExecution"] == "~/my-hook.sh", "Existing hooks should be preserved"
+        assert (
+            settings["hooks"]["preExecution"] == "~/my-hook.sh"
+        ), "Existing hooks should be preserved"
         # Verify new array-based format with PascalCase names
-        assert settings["hooks"]["Start"][0]["hooks"][0]["command"] == "~/.claude/hooks/start.sh"
-        assert settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "~/.claude/hooks/post-tool-use.sh"
-        assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "~/.claude/hooks/stop.sh"
-        assert settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == "~/.claude/hooks/user-prompt-submit.sh"
+        assert (
+            settings["hooks"]["Start"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/start.sh"
+        )
+        assert (
+            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/post-tool-use.sh"
+        )
+        assert (
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/stop.sh"
+        )
+        assert (
+            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/user-prompt-submit.sh"
+        )
 
     def test_hook_scripts_functionality(self, isolated_home):
         """
@@ -277,13 +313,19 @@ class TestInstallationE2E:
             # Verify has bash shebang
             with open(hook_path) as f:
                 first_line = f.readline()
-                assert first_line.startswith("#!/bin/bash"), f"{hook} must have bash shebang"
+                assert first_line.startswith(
+                    "#!/bin/bash"
+                ), f"{hook} must have bash shebang"
 
             # Verify contains pacemaker hook invocation
             with open(hook_path) as f:
                 content = f.read()
-                assert "pacemaker.hook" in content, f"{hook} must invoke pacemaker hook module"
-                assert "PACEMAKER_DIR" in content, f"{hook} must reference PACEMAKER_DIR"
+                assert (
+                    "pacemaker.hook" in content
+                ), f"{hook} must invoke pacemaker hook module"
+                assert (
+                    "PACEMAKER_DIR" in content
+                ), f"{hook} must reference PACEMAKER_DIR"
                 assert "CONFIG_FILE" in content, f"{hook} must check config file"
 
     def test_database_is_writable_after_install(self, isolated_home):
@@ -312,9 +354,30 @@ class TestInstallationE2E:
         cursor = conn.cursor()
 
         test_data = [
-            (1234567890, 0.5, "2025-11-13T10:00:00Z", 0.3, "2025-11-20T10:00:00Z", "session-1"),
-            (1234567900, 0.6, "2025-11-13T10:00:00Z", 0.4, "2025-11-20T10:00:00Z", "session-1"),
-            (1234567910, 0.7, "2025-11-13T10:00:00Z", 0.5, "2025-11-20T10:00:00Z", "session-2"),
+            (
+                1234567890,
+                0.5,
+                "2025-11-13T10:00:00Z",
+                0.3,
+                "2025-11-20T10:00:00Z",
+                "session-1",
+            ),
+            (
+                1234567900,
+                0.6,
+                "2025-11-13T10:00:00Z",
+                0.4,
+                "2025-11-20T10:00:00Z",
+                "session-1",
+            ),
+            (
+                1234567910,
+                0.7,
+                "2025-11-13T10:00:00Z",
+                0.5,
+                "2025-11-20T10:00:00Z",
+                "session-2",
+            ),
         ]
 
         for row in test_data:
@@ -326,7 +389,9 @@ class TestInstallationE2E:
         conn.commit()
 
         # Query back using index
-        cursor.execute("SELECT COUNT(*) FROM usage_snapshots WHERE session_id = 'session-1'")
+        cursor.execute(
+            "SELECT COUNT(*) FROM usage_snapshots WHERE session_id = 'session-1'"
+        )
         count = cursor.fetchone()[0]
         assert count == 2
 
@@ -336,7 +401,9 @@ class TestInstallationE2E:
 
         conn.close()
 
-    def test_installation_preserves_existing_hooks_from_other_tools(self, isolated_home):
+    def test_installation_preserves_existing_hooks_from_other_tools(
+        self, isolated_home
+    ):
         """
         E2E Test: Installation preserves hooks from other tools (e.g., tdd-guard).
 
@@ -355,12 +422,38 @@ class TestInstallationE2E:
         existing_settings = {
             "user": "test_user",
             "hooks": {
-                "Start": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/tdd-guard-start.sh"}]}],
-                "PostToolUse": [
-                    {"hooks": [{"type": "command", "command": "~/.claude/hooks/tdd-guard-post.sh", "timeout": 300}]}
+                "Start": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "~/.claude/hooks/tdd-guard-start.sh",
+                            }
+                        ]
+                    }
                 ],
-                "Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/tdd-guard-stop.sh"}]}],
-            }
+                "PostToolUse": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "~/.claude/hooks/tdd-guard-post.sh",
+                                "timeout": 300,
+                            }
+                        ]
+                    }
+                ],
+                "Stop": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "~/.claude/hooks/tdd-guard-stop.sh",
+                            }
+                        ]
+                    }
+                ],
+            },
         }
 
         with open(settings_file, "w") as f:
@@ -373,7 +466,9 @@ class TestInstallationE2E:
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0, f"Installation failed: {result.stderr}\n{result.stdout}"
+        assert (
+            result.returncode == 0
+        ), f"Installation failed: {result.stderr}\n{result.stdout}"
 
         # Verify hooks from both tools are present
         with open(settings_file) as f:
@@ -384,13 +479,21 @@ class TestInstallationE2E:
 
         # Verify both tdd-guard and pace-maker hooks exist
         assert len(settings["hooks"]["Start"]) == 2, "Should have hooks from both tools"
-        assert len(settings["hooks"]["PostToolUse"]) == 2, "Should have hooks from both tools"
+        assert (
+            len(settings["hooks"]["PostToolUse"]) == 2
+        ), "Should have hooks from both tools"
         assert len(settings["hooks"]["Stop"]) == 2, "Should have hooks from both tools"
 
         # Extract all commands for verification
-        start_commands = [hook["hooks"][0]["command"] for hook in settings["hooks"]["Start"]]
-        post_commands = [hook["hooks"][0]["command"] for hook in settings["hooks"]["PostToolUse"]]
-        stop_commands = [hook["hooks"][0]["command"] for hook in settings["hooks"]["Stop"]]
+        start_commands = [
+            hook["hooks"][0]["command"] for hook in settings["hooks"]["Start"]
+        ]
+        post_commands = [
+            hook["hooks"][0]["command"] for hook in settings["hooks"]["PostToolUse"]
+        ]
+        stop_commands = [
+            hook["hooks"][0]["command"] for hook in settings["hooks"]["Stop"]
+        ]
 
         # Verify tdd-guard hooks preserved
         assert "~/.claude/hooks/tdd-guard-start.sh" in start_commands
@@ -446,13 +549,31 @@ class TestInstallationE2E:
             settings = json.load(f)
 
         # Should have exactly one hook per type (no duplicates)
-        assert len(settings["hooks"]["Start"]) == 1, "Should have exactly one Start hook"
-        assert len(settings["hooks"]["PostToolUse"]) == 1, "Should have exactly one PostToolUse hook"
+        assert (
+            len(settings["hooks"]["Start"]) == 1
+        ), "Should have exactly one Start hook"
+        assert (
+            len(settings["hooks"]["PostToolUse"]) == 1
+        ), "Should have exactly one PostToolUse hook"
         assert len(settings["hooks"]["Stop"]) == 1, "Should have exactly one Stop hook"
-        assert len(settings["hooks"]["UserPromptSubmit"]) == 1, "Should have exactly one UserPromptSubmit hook"
+        assert (
+            len(settings["hooks"]["UserPromptSubmit"]) == 1
+        ), "Should have exactly one UserPromptSubmit hook"
 
         # Verify they're the correct pace-maker hooks
-        assert settings["hooks"]["Start"][0]["hooks"][0]["command"] == "~/.claude/hooks/start.sh"
-        assert settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "~/.claude/hooks/post-tool-use.sh"
-        assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "~/.claude/hooks/stop.sh"
-        assert settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == "~/.claude/hooks/user-prompt-submit.sh"
+        assert (
+            settings["hooks"]["Start"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/start.sh"
+        )
+        assert (
+            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/post-tool-use.sh"
+        )
+        assert (
+            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/stop.sh"
+        )
+        assert (
+            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+            == "~/.claude/hooks/user-prompt-submit.sh"
+        )

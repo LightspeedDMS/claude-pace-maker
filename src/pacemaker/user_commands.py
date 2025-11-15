@@ -10,7 +10,6 @@ import os
 import json
 import re
 import tempfile
-from pathlib import Path
 from typing import Dict, Optional, Any
 
 
@@ -28,25 +27,21 @@ def parse_command(user_input: str) -> Dict[str, Any]:
     """
     # Normalize input: lowercase and strip extra whitespace
     normalized = user_input.strip().lower()
-    normalized = re.sub(r'\s+', ' ', normalized)  # Collapse multiple spaces
+    normalized = re.sub(r"\s+", " ", normalized)  # Collapse multiple spaces
 
     # Pattern: pace-maker (on|off|status)
-    pattern = r'^pace-maker\s+(on|off|status)$'
+    pattern = r"^pace-maker\s+(on|off|status)$"
     match = re.match(pattern, normalized)
 
     if match:
-        return {
-            'is_pace_maker_command': True,
-            'command': match.group(1)
-        }
+        return {"is_pace_maker_command": True, "command": match.group(1)}
     else:
-        return {
-            'is_pace_maker_command': False,
-            'command': None
-        }
+        return {"is_pace_maker_command": False, "command": None}
 
 
-def execute_command(command: str, config_path: str, db_path: Optional[str] = None) -> Dict[str, Any]:
+def execute_command(
+    command: str, config_path: str, db_path: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Execute a pace-maker command.
 
@@ -62,17 +57,14 @@ def execute_command(command: str, config_path: str, db_path: Optional[str] = Non
         - enabled: bool (for status command)
         - usage_data: dict (for status command, if available)
     """
-    if command == 'on':
+    if command == "on":
         return _execute_on(config_path)
-    elif command == 'off':
+    elif command == "off":
         return _execute_off(config_path)
-    elif command == 'status':
+    elif command == "status":
         return _execute_status(config_path, db_path)
     else:
-        return {
-            'success': False,
-            'message': f"Unknown command: {command}"
-        }
+        return {"success": False, "message": f"Unknown command: {command}"}
 
 
 def _execute_on(config_path: str) -> Dict[str, Any]:
@@ -82,20 +74,17 @@ def _execute_on(config_path: str) -> Dict[str, Any]:
         config = _load_config(config_path)
 
         # Update enabled flag
-        config['enabled'] = True
+        config["enabled"] = True
 
         # Write atomically
         _write_config_atomic(config, config_path)
 
         return {
-            'success': True,
-            'message': '✓ Pace Maker ENABLED\nCredit consumption will be throttled to extend usage windows.'
+            "success": True,
+            "message": "✓ Pace Maker ENABLED\nCredit consumption will be throttled to extend usage windows.",
         }
     except Exception as e:
-        return {
-            'success': False,
-            'message': f"Error enabling pace maker: {str(e)}"
-        }
+        return {"success": False, "message": f"Error enabling pace maker: {str(e)}"}
 
 
 def _execute_off(config_path: str) -> Dict[str, Any]:
@@ -105,20 +94,17 @@ def _execute_off(config_path: str) -> Dict[str, Any]:
         config = _load_config(config_path)
 
         # Update enabled flag
-        config['enabled'] = False
+        config["enabled"] = False
 
         # Write atomically
         _write_config_atomic(config, config_path)
 
         return {
-            'success': True,
-            'message': '✓ Pace Maker DISABLED\nClaude will run at full speed without throttling.'
+            "success": True,
+            "message": "✓ Pace Maker DISABLED\nClaude will run at full speed without throttling.",
         }
     except Exception as e:
-        return {
-            'success': False,
-            'message': f"Error disabling pace maker: {str(e)}"
-        }
+        return {"success": False, "message": f"Error disabling pace maker: {str(e)}"}
 
 
 def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str, Any]:
@@ -129,7 +115,7 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
 
         # Load config
         config = _load_config(config_path)
-        enabled = config.get('enabled', False)
+        enabled = config.get("enabled", False)
 
         # Build status message
         status_text = "Pace Maker: ACTIVE" if enabled else "Pace Maker: INACTIVE"
@@ -141,83 +127,97 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
 
         if usage_data:
             status_text += "\n\nCurrent Usage:"
-            if usage_data.get('five_hour_util') is not None:
+            if usage_data.get("five_hour_util") is not None:
                 # API already returns as percentage (10.0 = 10%)
-                status_text += f"\n  5-hour window: {usage_data['five_hour_util']:.1f}% used"
-                if usage_data.get('five_hour_resets_at'):
+                status_text += (
+                    f"\n  5-hour window: {usage_data['five_hour_util']:.1f}% used"
+                )
+                if usage_data.get("five_hour_resets_at"):
                     status_text += f"\n  Resets at: {usage_data['five_hour_resets_at']}"
 
             # Only show 7-day window for Pro Max accounts (enterprise has no 7-day limit)
-            if usage_data.get('seven_day_util') is not None and usage_data.get('seven_day_util') > 0:
+            if (
+                usage_data.get("seven_day_util") is not None
+                and usage_data.get("seven_day_util") > 0
+            ):
                 # API already returns as percentage
-                status_text += f"\n  7-day window: {usage_data['seven_day_util']:.1f}% used"
-                if usage_data.get('seven_day_resets_at'):
+                status_text += (
+                    f"\n  7-day window: {usage_data['seven_day_util']:.1f}% used"
+                )
+                if usage_data.get("seven_day_resets_at"):
                     status_text += f"\n  Resets at: {usage_data['seven_day_resets_at']}"
 
             # Calculate pacing decision to show deviation and next throttling
             if enabled:
                 decision = pacing_engine.calculate_pacing_decision(
-                    five_hour_util=usage_data.get('five_hour_util', 0.0),
-                    five_hour_resets_at=usage_data.get('five_hour_resets_at'),
-                    seven_day_util=usage_data.get('seven_day_util', 0.0),
-                    seven_day_resets_at=usage_data.get('seven_day_resets_at'),
-                    threshold_percent=config.get('threshold_percent', 0),
-                    base_delay=config.get('base_delay', 5),
-                    max_delay=config.get('max_delay', 120),
-                    safety_buffer_pct=config.get('safety_buffer_pct', 95.0),
-                    preload_hours=config.get('preload_hours', 12.0)
+                    five_hour_util=usage_data.get("five_hour_util", 0.0),
+                    five_hour_resets_at=usage_data.get("five_hour_resets_at"),
+                    seven_day_util=usage_data.get("seven_day_util", 0.0),
+                    seven_day_resets_at=usage_data.get("seven_day_resets_at"),
+                    threshold_percent=config.get("threshold_percent", 0),
+                    base_delay=config.get("base_delay", 5),
+                    max_delay=config.get("max_delay", 120),
+                    safety_buffer_pct=config.get("safety_buffer_pct", 95.0),
+                    preload_hours=config.get("preload_hours", 12.0),
                 )
 
                 status_text += "\n\nPacing Status:"
-                constrained = decision['constrained_window']
-                deviation = decision['deviation_percent']
+                constrained = decision["constrained_window"]
+                deviation = decision["deviation_percent"]
 
-                if constrained == '5-hour':
-                    target = decision['five_hour']['target']
-                    status_text += f"\n  Target pace: {target:.1f}% (should be at this point)"
+                if constrained == "5-hour":
+                    target = decision["five_hour"]["target"]
+                    status_text += (
+                        f"\n  Target pace: {target:.1f}% (should be at this point)"
+                    )
                     status_text += f"\n  Deviation: {deviation:+.1f}% ({'ahead' if deviation < 0 else 'behind'} pace)"
-                elif constrained == '7-day':
-                    target = decision['seven_day']['target']
-                    status_text += f"\n  Most constrained: 7-day window"
+                elif constrained == "7-day":
+                    target = decision["seven_day"]["target"]
+                    status_text += "\n  Most constrained: 7-day window"
                     status_text += f"\n  Target pace: {target:.1f}%"
                     status_text += f"\n  Deviation: {deviation:+.1f}% ({'ahead' if deviation < 0 else 'behind'} pace)"
 
-                if decision['should_throttle']:
-                    delay = decision['delay_seconds']
-                    projection = decision.get('projection', {})
-                    safe_allowance = projection.get('safe_allowance')
-                    buffer_remaining = projection.get('buffer_remaining')
+                if decision["should_throttle"]:
+                    delay = decision["delay_seconds"]
+                    projection = decision.get("projection", {})
+                    safe_allowance = projection.get("safe_allowance")
+                    buffer_remaining = projection.get("buffer_remaining")
 
                     status_text += f"\n\n⚠️  Next tool use will be delayed by {delay}s to maintain pace"
 
                     if safe_allowance is not None and buffer_remaining is not None:
-                        status_text += f"\n  Safe threshold (95%): {safe_allowance:.1f}%"
-                        status_text += f"\n  Safety buffer remaining: {buffer_remaining:+.1f}%"
+                        status_text += (
+                            f"\n  Safe threshold (95%): {safe_allowance:.1f}%"
+                        )
+                        status_text += (
+                            f"\n  Safety buffer remaining: {buffer_remaining:+.1f}%"
+                        )
                 else:
-                    projection = decision.get('projection', {})
-                    buffer_remaining = projection.get('buffer_remaining')
+                    projection = decision.get("projection", {})
+                    buffer_remaining = projection.get("buffer_remaining")
 
-                    status_text += f"\n\n✓ On pace - no throttling needed"
+                    status_text += "\n\n✓ On pace - no throttling needed"
 
                     if buffer_remaining is not None:
-                        status_text += f"\n  Safety buffer remaining: {buffer_remaining:+.1f}%"
+                        status_text += (
+                            f"\n  Safety buffer remaining: {buffer_remaining:+.1f}%"
+                        )
         else:
             status_text += "\n\nNo usage data available yet."
 
         return {
-            'success': True,
-            'message': status_text,
-            'enabled': enabled,
-            'usage_data': usage_data
+            "success": True,
+            "message": status_text,
+            "enabled": enabled,
+            "usage_data": usage_data,
         }
     except Exception as e:
-        return {
-            'success': False,
-            'message': f"Error getting status: {str(e)}"
-        }
+        return {"success": False, "message": f"Error getting status: {str(e)}"}
 
 
-def handle_user_prompt(user_input: str, config_path: str, db_path: Optional[str] = None) -> Dict[str, Any]:
+def handle_user_prompt(
+    user_input: str, config_path: str, db_path: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Handle user prompt from UserPromptSubmit hook.
 
@@ -236,20 +236,14 @@ def handle_user_prompt(user_input: str, config_path: str, db_path: Optional[str]
     """
     parsed = parse_command(user_input)
 
-    if parsed['is_pace_maker_command']:
+    if parsed["is_pace_maker_command"]:
         # Execute command
-        result = execute_command(parsed['command'], config_path, db_path)
+        result = execute_command(parsed["command"], config_path, db_path)
 
-        return {
-            'intercepted': True,
-            'output': result['message']
-        }
+        return {"intercepted": True, "output": result["message"]}
     else:
         # Pass through non-pace-maker commands
-        return {
-            'intercepted': False,
-            'passthrough': user_input
-        }
+        return {"intercepted": False, "passthrough": user_input}
 
 
 def _load_config(config_path: str) -> Dict[str, Any]:
@@ -267,13 +261,16 @@ def _load_config(config_path: str) -> Dict[str, Any]:
         "threshold_percent": 0,
         "poll_interval": 60,
         "safety_buffer_pct": 95.0,
-        "preload_hours": 12.0
+        "preload_hours": 12.0,
+        "api_timeout_seconds": 10,
+        "cleanup_interval_hours": 24,
+        "retention_days": 60,
     }
 
     if not os.path.exists(config_path):
         # Create with defaults
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        with open(config_path, 'w') as f:
+        with open(config_path, "w") as f:
             json.dump(default_config, f, indent=2)
         return default_config
 
@@ -296,7 +293,9 @@ def _write_config_atomic(config: Dict[str, Any], config_path: str):
 
     # Write to temporary file first
     dir_path = os.path.dirname(config_path)
-    with tempfile.NamedTemporaryFile(mode='w', dir=dir_path, delete=False, suffix='.tmp') as tmp_file:
+    with tempfile.NamedTemporaryFile(
+        mode="w", dir=dir_path, delete=False, suffix=".tmp"
+    ) as tmp_file:
         json.dump(config, tmp_file, indent=2)
         tmp_path = tmp_file.name
 
@@ -313,16 +312,19 @@ def _get_latest_usage(db_path: str) -> Optional[Dict[str, Any]]:
     try:
         import sqlite3
         from datetime import datetime
+
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT five_hour_util, seven_day_util,
                    five_hour_resets_at, seven_day_resets_at
             FROM usage_snapshots
             ORDER BY timestamp DESC
             LIMIT 1
-        """)
+        """
+        )
 
         row = cursor.fetchone()
         conn.close()
@@ -344,10 +346,10 @@ def _get_latest_usage(db_path: str) -> Optional[Dict[str, Any]]:
                     pass
 
             return {
-                'five_hour_util': row[0],
-                'seven_day_util': row[1],
-                'five_hour_resets_at': five_hour_resets,
-                'seven_day_resets_at': seven_day_resets
+                "five_hour_util": row[0],
+                "seven_day_util": row[1],
+                "five_hour_resets_at": five_hour_resets,
+                "seven_day_resets_at": seven_day_resets,
             }
         return None
     except Exception:

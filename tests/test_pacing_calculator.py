@@ -10,7 +10,6 @@ Tests the core algorithms for:
 """
 
 import unittest
-import math
 from datetime import datetime, timedelta
 
 
@@ -119,11 +118,11 @@ class TestPacingCalculator(unittest.TestCase):
             five_hour_util=70.0,
             five_hour_target=50.0,
             seven_day_util=60.0,
-            seven_day_target=50.0
+            seven_day_target=50.0,
         )
 
-        self.assertEqual(result['window'], '5-hour')
-        self.assertAlmostEqual(result['deviation'], 20.0)
+        self.assertEqual(result["window"], "5-hour")
+        self.assertAlmostEqual(result["deviation"], 20.0)
 
     def test_determine_most_constrained_window_seven_day(self):
         """Should return 7-day when it's more constrained."""
@@ -135,11 +134,11 @@ class TestPacingCalculator(unittest.TestCase):
             five_hour_util=55.0,
             five_hour_target=50.0,
             seven_day_util=75.0,
-            seven_day_target=50.0
+            seven_day_target=50.0,
         )
 
-        self.assertEqual(result['window'], '7-day')
-        self.assertAlmostEqual(result['deviation'], 25.0)
+        self.assertEqual(result["window"], "7-day")
+        self.assertAlmostEqual(result["deviation"], 25.0)
 
     def test_determine_most_constrained_with_null_windows(self):
         """Should handle NULL windows (return no constraint)."""
@@ -150,11 +149,11 @@ class TestPacingCalculator(unittest.TestCase):
             five_hour_util=None,
             five_hour_target=0.0,
             seven_day_util=None,
-            seven_day_target=0.0
+            seven_day_target=0.0,
         )
 
-        self.assertIsNone(result['window'])
-        self.assertEqual(result['deviation'], 0.0)
+        self.assertIsNone(result["window"])
+        self.assertEqual(result["deviation"], 0.0)
 
     def test_calculate_delay_no_deviation(self):
         """Should return 0 delay when deviation is <= threshold."""
@@ -171,7 +170,9 @@ class TestPacingCalculator(unittest.TestCase):
 
         # Deviation 20% over threshold 0% => 20% over
         # delay = base * (1 + 2 * 20) = 5 * 41 = 205 (capped at 120)
-        delay = calculate_delay(deviation_percent=20.0, base_delay=5, threshold=0, max_delay=120)
+        delay = calculate_delay(
+            deviation_percent=20.0, base_delay=5, threshold=0, max_delay=120
+        )
 
         self.assertEqual(delay, 120)
 
@@ -277,5 +278,5 @@ class TestPacingCalculator(unittest.TestCase):
         self.assertEqual(delay, 120)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

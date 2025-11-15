@@ -20,7 +20,7 @@ API_URL = "https://api.anthropic.com/api/oauth/usage"
 API_HEADERS = {
     "Content-Type": "application/json",
     "anthropic-beta": "oauth-2025-04-20",
-    "User-Agent": "claude-pace-maker/1.0.0"
+    "User-Agent": "claude-pace-maker/1.0.0",
 }
 
 
@@ -70,26 +70,30 @@ def parse_usage_response(response_data: Dict) -> Optional[Dict]:
 
         # Parse 5-hour window
         five_hour = response_data.get("five_hour", {})
-        result['five_hour_util'] = five_hour.get("utilization", 0.0)
+        result["five_hour_util"] = five_hour.get("utilization", 0.0)
 
         resets_at_str = five_hour.get("resets_at")
         if resets_at_str:
-            result['five_hour_resets_at'] = datetime.fromisoformat(resets_at_str.replace('+00:00', ''))
+            result["five_hour_resets_at"] = datetime.fromisoformat(
+                resets_at_str.replace("+00:00", "")
+            )
         else:
-            result['five_hour_resets_at'] = None
+            result["five_hour_resets_at"] = None
 
         # Parse 7-day window (may be null)
         seven_day = response_data.get("seven_day")
         if seven_day is not None:
-            result['seven_day_util'] = seven_day.get("utilization", 0.0)
+            result["seven_day_util"] = seven_day.get("utilization", 0.0)
             resets_at_str = seven_day.get("resets_at")
             if resets_at_str:
-                result['seven_day_resets_at'] = datetime.fromisoformat(resets_at_str.replace('+00:00', ''))
+                result["seven_day_resets_at"] = datetime.fromisoformat(
+                    resets_at_str.replace("+00:00", "")
+                )
             else:
-                result['seven_day_resets_at'] = None
+                result["seven_day_resets_at"] = None
         else:
-            result['seven_day_util'] = 0.0
-            result['seven_day_resets_at'] = None
+            result["seven_day_util"] = 0.0
+            result["seven_day_resets_at"] = None
 
         return result
 
@@ -115,16 +119,9 @@ def fetch_usage(access_token: str, timeout: int = 10) -> Optional[Dict]:
         Parsed usage data dict, or None on any error
     """
     try:
-        headers = {
-            **API_HEADERS,
-            "Authorization": f"Bearer {access_token}"
-        }
+        headers = {**API_HEADERS, "Authorization": f"Bearer {access_token}"}
 
-        response = requests.get(
-            API_URL,
-            headers=headers,
-            timeout=timeout
-        )
+        response = requests.get(API_URL, headers=headers, timeout=timeout)
 
         # Only process successful responses
         if response.status_code != 200:

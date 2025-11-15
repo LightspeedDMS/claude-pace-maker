@@ -14,7 +14,6 @@ import tempfile
 import os
 import time
 import json
-from pathlib import Path
 from datetime import datetime, timedelta
 
 
@@ -24,13 +23,14 @@ class TestE2EIntegration(unittest.TestCase):
     def setUp(self):
         """Set up temporary environment."""
         self.temp_dir = tempfile.mkdtemp()
-        self.db_path = os.path.join(self.temp_dir, 'test.db')
-        self.config_path = os.path.join(self.temp_dir, 'config.json')
-        self.state_path = os.path.join(self.temp_dir, 'state.json')
+        self.db_path = os.path.join(self.temp_dir, "test.db")
+        self.config_path = os.path.join(self.temp_dir, "config.json")
+        self.state_path = os.path.join(self.temp_dir, "state.json")
 
     def tearDown(self):
         """Clean up temporary files."""
         import shutil
+
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
@@ -55,38 +55,38 @@ class TestE2EIntegration(unittest.TestCase):
         # 2. Create simulated usage data (realistic scenario: over target)
         current_time = datetime.utcnow()
         usage_data = {
-            'five_hour_util': 60.0,  # High usage
-            'five_hour_resets_at': current_time + timedelta(hours=2, minutes=30),  # 50% elapsed
-            'seven_day_util': 70.0,  # High usage
-            'seven_day_resets_at': current_time + timedelta(days=3, hours=12)  # 50% elapsed
+            "five_hour_util": 60.0,  # High usage
+            "five_hour_resets_at": current_time
+            + timedelta(hours=2, minutes=30),  # 50% elapsed
+            "seven_day_util": 70.0,  # High usage
+            "seven_day_resets_at": current_time
+            + timedelta(days=3, hours=12),  # 50% elapsed
         }
 
         # 3. Process usage update
-        session_id = 'e2e-test-session'
+        session_id = "e2e-test-session"
         stored = pacing_engine.process_usage_update(
-            usage_data=usage_data,
-            db_path=self.db_path,
-            session_id=session_id
+            usage_data=usage_data, db_path=self.db_path, session_id=session_id
         )
         self.assertTrue(stored)
 
         # 4. Verify database storage
         snapshots = database.query_recent_snapshots(self.db_path, minutes=5)
         self.assertEqual(len(snapshots), 1)
-        self.assertEqual(snapshots[0]['session_id'], session_id)
-        self.assertAlmostEqual(snapshots[0]['five_hour_util'], 60.0, places=1)
+        self.assertEqual(snapshots[0]["session_id"], session_id)
+        self.assertAlmostEqual(snapshots[0]["five_hour_util"], 60.0, places=1)
 
         # 5. Calculate pacing decision
         decision = pacing_engine.calculate_pacing_decision(
-            five_hour_util=usage_data['five_hour_util'],
-            five_hour_resets_at=usage_data['five_hour_resets_at'],
-            seven_day_util=usage_data['seven_day_util'],
-            seven_day_resets_at=usage_data['seven_day_resets_at']
+            five_hour_util=usage_data["five_hour_util"],
+            five_hour_resets_at=usage_data["five_hour_resets_at"],
+            seven_day_util=usage_data["seven_day_util"],
+            seven_day_resets_at=usage_data["seven_day_resets_at"],
         )
 
         # At 50% time with 60% and 70% usage, we should be throttling
-        self.assertTrue(decision['should_throttle'])
-        self.assertGreater(decision['delay_seconds'], 0)
+        self.assertTrue(decision["should_throttle"])
+        self.assertGreater(decision["delay_seconds"], 0)
 
     def test_hook_state_persistence_across_invocations(self):
         """
@@ -102,22 +102,24 @@ class TestE2EIntegration(unittest.TestCase):
 
         # 1. First invocation - no state
         state1 = load_state(self.state_path)
-        self.assertIsNotNone(state1['session_id'])
-        self.assertIsNone(state1['last_poll_time'])
+        self.assertIsNotNone(state1["session_id"])
+        self.assertIsNone(state1["last_poll_time"])
 
         # 2. Save state with poll time
-        state1['last_poll_time'] = datetime.utcnow()
+        state1["last_poll_time"] = datetime.utcnow()
         save_state(state1, self.state_path)
         self.assertTrue(os.path.exists(self.state_path))
 
         # 3. Second invocation - load existing state
         time.sleep(0.1)  # Small delay to ensure different timestamp
         state2 = load_state(self.state_path)
-        self.assertEqual(state2['session_id'], state1['session_id'])
-        self.assertIsNotNone(state2['last_poll_time'])
+        self.assertEqual(state2["session_id"], state1["session_id"])
+        self.assertIsNotNone(state2["last_poll_time"])
 
         # 4. Verify times are close (within 1 second)
-        time_diff = abs((state2['last_poll_time'] - state1['last_poll_time']).total_seconds())
+        time_diff = abs(
+            (state2["last_poll_time"] - state1["last_poll_time"]).total_seconds()
+        )
         self.assertLess(time_diff, 1.0)
 
     def test_60_second_polling_throttle_with_real_timing(self):
@@ -155,12 +157,10 @@ class TestE2EIntegration(unittest.TestCase):
         """
         from pacemaker.pacing_engine import determine_delay_strategy
         from pacemaker.hook import execute_delay
-        import io
-        import sys
 
         # 1. Small delay - direct execution
         strategy = determine_delay_strategy(delay_seconds=2)
-        self.assertEqual(strategy['method'], 'direct')
+        self.assertEqual(strategy["method"], "direct")
 
         # Execute delay and verify it actually waits
         start = time.time()
@@ -171,8 +171,8 @@ class TestE2EIntegration(unittest.TestCase):
 
         # 2. Large delay - prompt injection
         strategy = determine_delay_strategy(delay_seconds=45)
-        self.assertEqual(strategy['method'], 'prompt')
-        self.assertIn('45', strategy['prompt'])
+        self.assertEqual(strategy["method"], "prompt")
+        self.assertIn("45", strategy["prompt"])
 
     def test_configuration_loading_and_defaults(self):
         """
@@ -187,24 +187,20 @@ class TestE2EIntegration(unittest.TestCase):
 
         # 1. No config file - defaults
         config1 = load_config(self.config_path)
-        self.assertEqual(config1['poll_interval'], 60)
-        self.assertEqual(config1['base_delay'], 5)
-        self.assertTrue(config1['enabled'])
+        self.assertEqual(config1["poll_interval"], 60)
+        self.assertEqual(config1["base_delay"], 5)
+        self.assertTrue(config1["enabled"])
 
         # 2. Write custom config
-        custom_config = {
-            "enabled": False,
-            "poll_interval": 120,
-            "base_delay": 10
-        }
-        with open(self.config_path, 'w') as f:
+        custom_config = {"enabled": False, "poll_interval": 120, "base_delay": 10}
+        with open(self.config_path, "w") as f:
             json.dump(custom_config, f)
 
         # 3. Load custom config
         config2 = load_config(self.config_path)
-        self.assertFalse(config2['enabled'])
-        self.assertEqual(config2['poll_interval'], 120)
-        self.assertEqual(config2['base_delay'], 10)
+        self.assertFalse(config2["enabled"])
+        self.assertEqual(config2["poll_interval"], 120)
+        self.assertEqual(config2["base_delay"], 10)
 
     def test_graceful_degradation_with_corrupted_database(self):
         """
@@ -221,11 +217,12 @@ class TestE2EIntegration(unittest.TestCase):
         database.initialize_database(self.db_path)
 
         # 2. Corrupt database
-        with open(self.db_path, 'wb') as f:
-            f.write(b'CORRUPTED DATA')
+        with open(self.db_path, "wb") as f:
+            f.write(b"CORRUPTED DATA")
 
         # 3. Attempt insert - should return False but not crash
         from datetime import datetime
+
         result = database.insert_usage_snapshot(
             db_path=self.db_path,
             timestamp=datetime.utcnow(),
@@ -233,7 +230,7 @@ class TestE2EIntegration(unittest.TestCase):
             five_hour_resets_at=datetime.utcnow(),
             seven_day_util=50.0,
             seven_day_resets_at=datetime.utcnow(),
-            session_id='test'
+            session_id="test",
         )
         self.assertFalse(result)  # Should fail gracefully
 
@@ -252,16 +249,14 @@ class TestE2EIntegration(unittest.TestCase):
         database.initialize_database(self.db_path)
 
         usage_data = {
-            'five_hour_util': 0.0,
-            'five_hour_resets_at': None,  # NULL - inactive
-            'seven_day_util': 50.0,
-            'seven_day_resets_at': datetime.utcnow() + timedelta(days=3)
+            "five_hour_util": 0.0,
+            "five_hour_resets_at": None,  # NULL - inactive
+            "seven_day_util": 50.0,
+            "seven_day_resets_at": datetime.utcnow() + timedelta(days=3),
         }
 
         stored = pacing_engine.process_usage_update(
-            usage_data=usage_data,
-            db_path=self.db_path,
-            session_id='null-test'
+            usage_data=usage_data, db_path=self.db_path, session_id="null-test"
         )
         self.assertTrue(stored)
 
@@ -270,13 +265,13 @@ class TestE2EIntegration(unittest.TestCase):
             five_hour_util=0.0,
             five_hour_resets_at=None,
             seven_day_util=50.0,
-            seven_day_resets_at=usage_data['seven_day_resets_at']
+            seven_day_resets_at=usage_data["seven_day_resets_at"],
         )
 
         # Should work - paces only on 7-day window
         self.assertIsNotNone(decision)
-        self.assertEqual(decision['constrained_window'], '7-day')
+        self.assertEqual(decision["constrained_window"], "7-day")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -16,8 +16,7 @@ import json
 import subprocess
 import sys
 import time
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from io import StringIO
 
 
@@ -27,13 +26,14 @@ class TestPostToolUseArgumentRouting(unittest.TestCase):
     def setUp(self):
         """Set up test environment."""
         self.temp_dir = tempfile.mkdtemp()
-        self.config_path = os.path.join(self.temp_dir, 'config.json')
-        self.db_path = os.path.join(self.temp_dir, 'usage.db')
-        self.state_path = os.path.join(self.temp_dir, 'state.json')
+        self.config_path = os.path.join(self.temp_dir, "config.json")
+        self.db_path = os.path.join(self.temp_dir, "usage.db")
+        self.state_path = os.path.join(self.temp_dir, "state.json")
 
     def tearDown(self):
         """Clean up test environment."""
         import shutil
+
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
@@ -52,7 +52,7 @@ class TestPostToolUseArgumentRouting(unittest.TestCase):
 
         # Create enabled config
         config = {"enabled": True}
-        with open(self.config_path, 'w') as f:
+        with open(self.config_path, "w") as f:
             json.dump(config, f)
 
         # Mock run_hook to detect if it was called
@@ -63,17 +63,20 @@ class TestPostToolUseArgumentRouting(unittest.TestCase):
             run_hook_called = True
 
         # Patch configuration paths and run_hook
-        with patch.object(hook, 'DEFAULT_CONFIG_PATH', self.config_path), \
-             patch.object(hook, 'DEFAULT_DB_PATH', self.db_path), \
-             patch.object(hook, 'DEFAULT_STATE_PATH', self.state_path), \
-             patch.object(hook, 'run_hook', side_effect=mock_run_hook):
+        with patch.object(hook, "DEFAULT_CONFIG_PATH", self.config_path), patch.object(
+            hook, "DEFAULT_DB_PATH", self.db_path
+        ), patch.object(hook, "DEFAULT_STATE_PATH", self.state_path), patch.object(
+            hook, "run_hook", side_effect=mock_run_hook
+        ):
 
             # Set argv to simulate post_tool_use call
-            with patch.object(sys, 'argv', ['hook.py', 'post_tool_use']):
+            with patch.object(sys, "argv", ["hook.py", "post_tool_use"]):
                 hook.main()
 
         # Verify run_hook was called
-        self.assertTrue(run_hook_called, "main() with 'post_tool_use' must call run_hook()")
+        self.assertTrue(
+            run_hook_called, "main() with 'post_tool_use' must call run_hook()"
+        )
 
     def test_main_explicit_post_tool_use_handling(self):
         """
@@ -95,13 +98,13 @@ class TestPostToolUseArgumentRouting(unittest.TestCase):
 
         # Check for explicit post_tool_use handling
         has_explicit_handling = (
-            "sys.argv[1] == 'post_tool_use'" in source or
-            'sys.argv[1] == "post_tool_use"' in source
+            "sys.argv[1] == 'post_tool_use'" in source
+            or 'sys.argv[1] == "post_tool_use"' in source
         )
 
         self.assertTrue(
             has_explicit_handling,
-            "main() must have explicit if-statement for 'post_tool_use' argument"
+            "main() must have explicit if-statement for 'post_tool_use' argument",
         )
 
     def test_main_handles_all_hook_types(self):
@@ -117,10 +120,9 @@ class TestPostToolUseArgumentRouting(unittest.TestCase):
 
         This test documents the expected behavior.
         """
-        from pacemaker import hook
 
         # Test all expected hook types
-        hook_types = ['user_prompt_submit', 'stop', 'post_tool_use']
+        hook_types = ["user_prompt_submit", "stop", "post_tool_use"]
 
         for hook_type in hook_types:
             with self.subTest(hook_type=hook_type):
@@ -135,13 +137,14 @@ class TestThrottlingOutputRouting(unittest.TestCase):
     def setUp(self):
         """Set up test environment."""
         self.temp_dir = tempfile.mkdtemp()
-        self.config_path = os.path.join(self.temp_dir, 'config.json')
-        self.db_path = os.path.join(self.temp_dir, 'usage.db')
-        self.state_path = os.path.join(self.temp_dir, 'state.json')
+        self.config_path = os.path.join(self.temp_dir, "config.json")
+        self.db_path = os.path.join(self.temp_dir, "usage.db")
+        self.state_path = os.path.join(self.temp_dir, "state.json")
 
     def tearDown(self):
         """Clean up test environment."""
         import shutil
+
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
@@ -158,7 +161,7 @@ class TestThrottlingOutputRouting(unittest.TestCase):
 
         # Capture stdout
         captured_stdout = StringIO()
-        with patch('sys.stdout', captured_stdout):
+        with patch("sys.stdout", captured_stdout):
             hook.inject_prompt_delay(test_prompt)
 
         # Verify output went to stdout
@@ -177,8 +180,7 @@ class TestThrottlingOutputRouting(unittest.TestCase):
         captured_stdout = StringIO()
         captured_stderr = StringIO()
 
-        with patch('sys.stdout', captured_stdout), \
-             patch('sys.stderr', captured_stderr):
+        with patch("sys.stdout", captured_stdout), patch("sys.stderr", captured_stderr):
 
             start = time.time()
             hook.execute_delay(1)  # 1 second delay
@@ -209,9 +211,9 @@ class TestThrottlingOutputRouting(unittest.TestCase):
             "base_delay": 5,
             "max_delay": 120,
             "threshold_percent": 90,  # Very low threshold to trigger throttling
-            "poll_interval": 0  # Force polling every time
+            "poll_interval": 0,  # Force polling every time
         }
-        with open(self.config_path, 'w') as f:
+        with open(self.config_path, "w") as f:
             json.dump(config, f)
 
         # Initialize database with low credit balance to trigger throttling
@@ -219,34 +221,34 @@ class TestThrottlingOutputRouting(unittest.TestCase):
 
         # Mock pacing_engine.run_pacing_check to return throttling decision
         mock_result = {
-            'polled': True,
-            'poll_time': None,
-            'decision': {
-                'should_throttle': True,
-                'strategy': {
-                    'method': 'prompt',
-                    'prompt': 'THROTTLING: Please wait 10 seconds...'
-                }
-            }
+            "polled": True,
+            "poll_time": None,
+            "decision": {
+                "should_throttle": True,
+                "strategy": {
+                    "method": "prompt",
+                    "prompt": "THROTTLING: Please wait 10 seconds...",
+                },
+            },
         }
 
         # Capture stdout
         captured_stdout = StringIO()
 
-        with patch.object(hook, 'DEFAULT_CONFIG_PATH', self.config_path), \
-             patch.object(hook, 'DEFAULT_DB_PATH', self.db_path), \
-             patch.object(hook, 'DEFAULT_STATE_PATH', self.state_path), \
-             patch('pacemaker.pacing_engine.run_pacing_check', return_value=mock_result), \
-             patch('sys.stdout', captured_stdout):
+        with patch.object(hook, "DEFAULT_CONFIG_PATH", self.config_path), patch.object(
+            hook, "DEFAULT_DB_PATH", self.db_path
+        ), patch.object(hook, "DEFAULT_STATE_PATH", self.state_path), patch(
+            "pacemaker.pacing_engine.run_pacing_check", return_value=mock_result
+        ), patch(
+            "sys.stdout", captured_stdout
+        ):
 
             hook.run_hook()
 
         # Verify throttling message reached stdout
         output = captured_stdout.getvalue()
-        self.assertIn('THROTTLING', output,
-                     "Throttling message must appear in stdout")
-        self.assertIn('wait', output.lower(),
-                     "Throttling message must mention waiting")
+        self.assertIn("THROTTLING", output, "Throttling message must appear in stdout")
+        self.assertIn("wait", output.lower(), "Throttling message must mention waiting")
 
 
 class TestE2EHookExecution(unittest.TestCase):
@@ -255,16 +257,17 @@ class TestE2EHookExecution(unittest.TestCase):
     def setUp(self):
         """Set up test environment."""
         self.temp_dir = tempfile.mkdtemp()
-        self.pacemaker_dir = os.path.join(self.temp_dir, '.claude-pace-maker')
+        self.pacemaker_dir = os.path.join(self.temp_dir, ".claude-pace-maker")
         os.makedirs(self.pacemaker_dir)
 
-        self.config_path = os.path.join(self.pacemaker_dir, 'config.json')
-        self.db_path = os.path.join(self.pacemaker_dir, 'usage.db')
-        self.state_path = os.path.join(self.pacemaker_dir, 'state.json')
+        self.config_path = os.path.join(self.pacemaker_dir, "config.json")
+        self.db_path = os.path.join(self.pacemaker_dir, "usage.db")
+        self.state_path = os.path.join(self.pacemaker_dir, "state.json")
 
     def tearDown(self):
         """Clean up test environment."""
         import shutil
+
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
@@ -278,31 +281,37 @@ class TestE2EHookExecution(unittest.TestCase):
         Should execute without errors and output nothing when no throttling.
         """
         # Create enabled config
-        config = {"enabled": True, "poll_interval": 999999}  # High interval = no polling
-        with open(self.config_path, 'w') as f:
+        config = {
+            "enabled": True,
+            "poll_interval": 999999,
+        }  # High interval = no polling
+        with open(self.config_path, "w") as f:
             json.dump(config, f)
 
         # Get path to project root
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        src_path = os.path.join(project_root, 'src')
+        src_path = os.path.join(project_root, "src")
 
         # Set environment
         env = os.environ.copy()
-        env['PYTHONPATH'] = f"{src_path}:{env.get('PYTHONPATH', '')}"
+        env["PYTHONPATH"] = f"{src_path}:{env.get('PYTHONPATH', '')}"
 
         # Run hook module
         result = subprocess.run(
-            [sys.executable, '-m', 'pacemaker.hook', 'post_tool_use'],
+            [sys.executable, "-m", "pacemaker.hook", "post_tool_use"],
             cwd=project_root,
             env=env,
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
         )
 
         # Verify success
-        self.assertEqual(result.returncode, 0,
-                        f"Hook must execute successfully. stderr: {result.stderr}")
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"Hook must execute successfully. stderr: {result.stderr}",
+        )
 
     def test_e2e_python_hook_outputs_throttling_to_stdout(self):
         """
@@ -312,27 +321,25 @@ class TestE2EHookExecution(unittest.TestCase):
         be output correctly when run via subprocess.
         """
         # Create config that will trigger throttling
-        config = {
-            "enabled": True,
-            "base_delay": 5,
-            "poll_interval": 0  # Force polling
-        }
-        with open(self.config_path, 'w') as f:
+        config = {"enabled": True, "base_delay": 5, "poll_interval": 0}  # Force polling
+        with open(self.config_path, "w") as f:
             json.dump(config, f)
 
         # Initialize database
         from pacemaker import database
+
         database.initialize_database(self.db_path)
 
         # Get path to project root
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        src_path = os.path.join(project_root, 'src')
+        src_path = os.path.join(project_root, "src")
 
         # Create mock that triggers throttling
         # We'll do this by patching run_pacing_check in a test script
-        test_script = os.path.join(self.temp_dir, 'test_hook_run.py')
-        with open(test_script, 'w') as f:
-            f.write(f"""
+        test_script = os.path.join(self.temp_dir, "test_hook_run.py")
+        with open(test_script, "w") as f:
+            f.write(
+                f"""
 import sys
 sys.path.insert(0, '{src_path}')
 from unittest.mock import patch
@@ -358,19 +365,20 @@ with patch.object(hook, 'DEFAULT_CONFIG_PATH', '{self.config_path}'), \\
 
     sys.argv = ['hook.py', 'post_tool_use']
     hook.main()
-""")
+"""
+            )
 
         # Run test script
         result = subprocess.run(
-            [sys.executable, test_script],
-            capture_output=True,
-            text=True,
-            timeout=5
+            [sys.executable, test_script], capture_output=True, text=True, timeout=5
         )
 
         # Verify throttling message appears in stdout
-        self.assertIn('THROTTLING MESSAGE', result.stdout,
-                     f"Throttling message must appear in stdout. Got stdout: '{result.stdout}', stderr: '{result.stderr}'")
+        self.assertIn(
+            "THROTTLING MESSAGE",
+            result.stdout,
+            f"Throttling message must appear in stdout. Got stdout: '{result.stdout}', stderr: '{result.stderr}'",
+        )
 
     def test_e2e_shell_script_execution(self):
         """
@@ -383,38 +391,41 @@ with patch.object(hook, 'DEFAULT_CONFIG_PATH', '{self.config_path}'), \\
         """
         # Get project root
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        shell_hook_path = os.path.join(project_root, 'src', 'hooks', 'post-tool-use.sh')
+        shell_hook_path = os.path.join(project_root, "src", "hooks", "post-tool-use.sh")
 
         if not os.path.exists(shell_hook_path):
             self.skipTest(f"Shell hook not found at {shell_hook_path}")
 
         # Create enabled config
         config = {"enabled": True, "poll_interval": 999999}
-        with open(self.config_path, 'w') as f:
+        with open(self.config_path, "w") as f:
             json.dump(config, f)
 
         # Create install marker pointing to project
-        install_marker = os.path.join(self.pacemaker_dir, 'install_source')
-        with open(install_marker, 'w') as f:
+        install_marker = os.path.join(self.pacemaker_dir, "install_source")
+        with open(install_marker, "w") as f:
             f.write(project_root)
 
         # Set environment
         env = os.environ.copy()
-        env['HOME'] = self.temp_dir
+        env["HOME"] = self.temp_dir
 
         # Run shell script
         result = subprocess.run(
-            ['/bin/bash', shell_hook_path],
+            ["/bin/bash", shell_hook_path],
             env=env,
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
         )
 
         # Verify execution succeeded
-        self.assertEqual(result.returncode, 0,
-                        f"Shell hook must execute successfully. stderr: {result.stderr}")
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"Shell hook must execute successfully. stderr: {result.stderr}",
+        )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

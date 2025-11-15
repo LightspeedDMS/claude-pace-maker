@@ -14,10 +14,7 @@ Tests cover local installation requirements:
 
 import json
 import os
-import shutil
-import sqlite3
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -81,9 +78,13 @@ class TestLocalInstallMode:
         output = result.stdout + result.stderr
 
         assert "Error" in output or "error" in output
-        assert "does not exist" in output or "not exist" in output or "not found" in output
+        assert (
+            "does not exist" in output or "not exist" in output or "not found" in output
+        )
 
-    def test_local_install_creates_project_claude_directory(self, temp_home, test_project, install_env):
+    def test_local_install_creates_project_claude_directory(
+        self, temp_home, test_project, install_env
+    ):
         """Local install should create .claude directory in project."""
         result = self._run_install(temp_home, [str(test_project)])
 
@@ -93,7 +94,9 @@ class TestLocalInstallMode:
         assert project_claude_dir.exists(), "Project .claude directory must be created"
         assert project_claude_dir.is_dir(), "Project .claude must be a directory"
 
-    def test_local_install_creates_project_settings(self, temp_home, test_project, install_env):
+    def test_local_install_creates_project_settings(
+        self, temp_home, test_project, install_env
+    ):
         """Local install should create settings.json in project .claude/."""
         result = self._run_install(temp_home, [str(test_project)])
 
@@ -107,7 +110,9 @@ class TestLocalInstallMode:
 
         assert "hooks" in settings, "Project settings must have hooks section"
 
-    def test_local_install_registers_hooks_in_project_settings(self, temp_home, test_project, install_env):
+    def test_local_install_registers_hooks_in_project_settings(
+        self, temp_home, test_project, install_env
+    ):
         """Local install should register hooks in project settings.json."""
         result = self._run_install(temp_home, [str(test_project)])
 
@@ -124,12 +129,26 @@ class TestLocalInstallMode:
         assert "UserPromptSubmit" in settings["hooks"]
 
         # Verify hooks point to global location
-        assert "~/.claude/hooks/start.sh" in settings["hooks"]["Start"][0]["hooks"][0]["command"]
-        assert "~/.claude/hooks/post-tool-use.sh" in settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-        assert "~/.claude/hooks/stop.sh" in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-        assert "~/.claude/hooks/user-prompt-submit.sh" in settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        assert (
+            "~/.claude/hooks/start.sh"
+            in settings["hooks"]["Start"][0]["hooks"][0]["command"]
+        )
+        assert (
+            "~/.claude/hooks/post-tool-use.sh"
+            in settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        )
+        assert (
+            "~/.claude/hooks/stop.sh"
+            in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        )
+        assert (
+            "~/.claude/hooks/user-prompt-submit.sh"
+            in settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        )
 
-    def test_local_install_preserves_existing_settings(self, temp_home, test_project, install_env):
+    def test_local_install_preserves_existing_settings(
+        self, temp_home, test_project, install_env
+    ):
         """Local install should preserve existing project settings."""
         # Create existing settings with custom configuration
         project_claude_dir = test_project / ".claude"
@@ -138,7 +157,7 @@ class TestLocalInstallMode:
         existing_settings = {
             "model": "claude-sonnet-4",
             "maxTokens": 8192,
-            "customField": "should be preserved"
+            "customField": "should be preserved",
         }
 
         project_settings_file = project_claude_dir / "settings.json"
@@ -154,14 +173,22 @@ class TestLocalInstallMode:
         with open(project_settings_file) as f:
             settings = json.load(f)
 
-        assert settings["model"] == "claude-sonnet-4", "Existing model setting must be preserved"
-        assert settings["maxTokens"] == 8192, "Existing maxTokens setting must be preserved"
-        assert settings["customField"] == "should be preserved", "Custom field must be preserved"
+        assert (
+            settings["model"] == "claude-sonnet-4"
+        ), "Existing model setting must be preserved"
+        assert (
+            settings["maxTokens"] == 8192
+        ), "Existing maxTokens setting must be preserved"
+        assert (
+            settings["customField"] == "should be preserved"
+        ), "Custom field must be preserved"
 
         # Verify hooks were added
         assert "hooks" in settings, "Hooks must be added"
 
-    def test_local_install_creates_backup_when_merging(self, temp_home, test_project, install_env):
+    def test_local_install_creates_backup_when_merging(
+        self, temp_home, test_project, install_env
+    ):
         """Local install should create backup when merging with existing settings."""
         # Create existing settings
         project_claude_dir = test_project / ".claude"
@@ -186,7 +213,9 @@ class TestLocalInstallMode:
 
         assert backup == existing_settings, "Backup must contain original settings"
 
-    def test_local_install_hook_scripts_still_global(self, temp_home, test_project, install_env):
+    def test_local_install_hook_scripts_still_global(
+        self, temp_home, test_project, install_env
+    ):
         """Local install should still install hook scripts in global ~/.claude/hooks/."""
         result = self._run_install(temp_home, [str(test_project)])
 
@@ -210,9 +239,13 @@ class TestLocalInstallMode:
 
         # Verify NO hook scripts in project directory
         project_hooks_dir = test_project / ".claude" / "hooks"
-        assert not project_hooks_dir.exists(), "Hook scripts should NOT be copied to project"
+        assert (
+            not project_hooks_dir.exists()
+        ), "Hook scripts should NOT be copied to project"
 
-    def test_local_install_creates_global_state_directory(self, temp_home, test_project, install_env):
+    def test_local_install_creates_global_state_directory(
+        self, temp_home, test_project, install_env
+    ):
         """Local install should still create global ~/.claude-pace-maker/ state directory."""
         result = self._run_install(temp_home, [str(test_project)])
 
@@ -220,7 +253,9 @@ class TestLocalInstallMode:
 
         # Verify global state directory
         pacemaker_dir = temp_home / ".claude-pace-maker"
-        assert pacemaker_dir.exists(), "Global pace-maker state directory must be created"
+        assert (
+            pacemaker_dir.exists()
+        ), "Global pace-maker state directory must be created"
 
         # Verify config and database
         config_file = pacemaker_dir / "config.json"
@@ -256,7 +291,9 @@ class TestLocalInstallMode:
 
         assert "hooks" in settings, "Global settings must have hooks"
 
-    def test_local_install_with_relative_path(self, temp_home, test_project, install_env):
+    def test_local_install_with_relative_path(
+        self, temp_home, test_project, install_env
+    ):
         """Local install should handle relative paths by converting to absolute."""
         # Change to parent directory and use relative path
         parent_dir = test_project.parent
@@ -270,11 +307,15 @@ class TestLocalInstallMode:
             cwd=str(parent_dir),
         )
 
-        assert result.returncode == 0, f"Local install with relative path failed: {result.stderr}"
+        assert (
+            result.returncode == 0
+        ), f"Local install with relative path failed: {result.stderr}"
 
         # Verify project settings created
         project_settings = test_project / ".claude" / "settings.json"
-        assert project_settings.exists(), "Project settings must be created with relative path"
+        assert (
+            project_settings.exists()
+        ), "Project settings must be created with relative path"
 
     def test_local_install_idempotent(self, temp_home, test_project, install_env):
         """Local install should be idempotent - safe to run multiple times."""

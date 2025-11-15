@@ -13,7 +13,6 @@ import unittest
 import tempfile
 import os
 from datetime import datetime, timedelta
-from pathlib import Path
 
 
 class TestDatabase(unittest.TestCase):
@@ -21,7 +20,7 @@ class TestDatabase(unittest.TestCase):
 
     def setUp(self):
         """Create temporary database for each test."""
-        self.temp_db = tempfile.NamedTemporaryFile(delete=False, suffix='.db')
+        self.temp_db = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
         self.temp_db.close()
         self.db_path = self.temp_db.name
 
@@ -41,14 +40,17 @@ class TestDatabase(unittest.TestCase):
 
         # Verify table exists (by attempting to query it)
         import sqlite3
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='usage_snapshots';")
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='usage_snapshots';"
+        )
         result = cursor.fetchone()
         conn.close()
 
         self.assertIsNotNone(result)
-        self.assertEqual(result[0], 'usage_snapshots')
+        self.assertEqual(result[0], "usage_snapshots")
 
     def test_insert_usage_snapshot(self):
         """Should insert usage snapshot with all fields."""
@@ -64,16 +66,19 @@ class TestDatabase(unittest.TestCase):
             five_hour_resets_at=timestamp + timedelta(hours=3),
             seven_day_util=62.3,
             seven_day_resets_at=timestamp + timedelta(days=5),
-            session_id='test-session-123'
+            session_id="test-session-123",
         )
 
         self.assertTrue(result)
 
         # Verify data was inserted
         import sqlite3
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM usage_snapshots WHERE session_id='test-session-123';")
+        cursor.execute(
+            "SELECT COUNT(*) FROM usage_snapshots WHERE session_id='test-session-123';"
+        )
         count = cursor.fetchone()[0]
         conn.close()
 
@@ -93,16 +98,19 @@ class TestDatabase(unittest.TestCase):
             five_hour_resets_at=None,  # NULL - inactive window
             seven_day_util=50.0,
             seven_day_resets_at=timestamp + timedelta(days=3),
-            session_id='test-session-456'
+            session_id="test-session-456",
         )
 
         self.assertTrue(result)
 
         # Verify NULL was stored correctly
         import sqlite3
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT five_hour_resets_at FROM usage_snapshots WHERE session_id='test-session-456';")
+        cursor.execute(
+            "SELECT five_hour_resets_at FROM usage_snapshots WHERE session_id='test-session-456';"
+        )
         result = cursor.fetchone()[0]
         conn.close()
 
@@ -110,7 +118,11 @@ class TestDatabase(unittest.TestCase):
 
     def test_query_recent_snapshots(self):
         """Should query snapshots within time window."""
-        from pacemaker.database import initialize_database, insert_usage_snapshot, query_recent_snapshots
+        from pacemaker.database import (
+            initialize_database,
+            insert_usage_snapshot,
+            query_recent_snapshots,
+        )
 
         initialize_database(self.db_path)
 
@@ -126,14 +138,14 @@ class TestDatabase(unittest.TestCase):
                 five_hour_resets_at=timestamp + timedelta(hours=3),
                 seven_day_util=float(i * 5),
                 seven_day_resets_at=timestamp + timedelta(days=3),
-                session_id=f'session-{i}'
+                session_id=f"session-{i}",
             )
 
         # Query last 90 minutes (should get 3 snapshots: 0, 30, 60 mins ago)
         snapshots = query_recent_snapshots(self.db_path, minutes=90)
 
         self.assertEqual(len(snapshots), 3)
-        self.assertEqual(snapshots[0]['session_id'], 'session-0')  # Most recent
+        self.assertEqual(snapshots[0]["session_id"], "session-0")  # Most recent
 
     def test_database_handles_concurrent_inserts(self):
         """Should handle multiple rapid inserts without corruption."""
@@ -152,20 +164,23 @@ class TestDatabase(unittest.TestCase):
                 five_hour_resets_at=timestamp,
                 seven_day_util=float(i),
                 seven_day_resets_at=timestamp,
-                session_id=f'rapid-{i}'
+                session_id=f"rapid-{i}",
             )
             self.assertTrue(result)
 
         # Verify all were inserted
         import sqlite3
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM usage_snapshots WHERE session_id LIKE 'rapid-%';")
+        cursor.execute(
+            "SELECT COUNT(*) FROM usage_snapshots WHERE session_id LIKE 'rapid-%';"
+        )
         count = cursor.fetchone()[0]
         conn.close()
 
         self.assertEqual(count, 10)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

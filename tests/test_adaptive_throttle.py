@@ -6,12 +6,12 @@ Tests forward-looking projection and intelligent delay calculation.
 """
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime
 from src.pacemaker.adaptive_throttle import (
     calculate_adaptive_delay,
     count_weekday_seconds,
     calculate_allowance_pct,
-    is_weekend
+    is_weekend,
 )
 
 
@@ -26,15 +26,14 @@ class TestScenario1SlightOverageEarly:
             time_elapsed_pct=20.0,
             time_remaining_hours=4.0,
             window_hours=5.0,
-            estimated_tools_per_hour=10.0
         )
 
         # At 20% burn rate, would hit 100% in 4 hours
         # But with 95% safety buffer, we need throttling to hit 95% instead
         # Overage is 20% - 9.5% = 10.5%, which triggers 'gradual' strategy
-        assert result['delay_seconds'] >= 0
-        assert result['strategy'] in ['none', 'minimal', 'gradual']
-        assert result['projection']['util_if_throttled'] <= 96.0  # Should target ~95%
+        assert result["delay_seconds"] >= 0
+        assert result["strategy"] in ["none", "minimal", "gradual"]
+        assert result["projection"]["util_if_throttled"] <= 96.0  # Should target ~95%
 
     def test_slight_overage_early_includes_projection(self):
         """Should include projection data."""
@@ -43,14 +42,13 @@ class TestScenario1SlightOverageEarly:
             target_util=10.0,
             time_elapsed_pct=20.0,
             time_remaining_hours=4.0,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
-        assert 'projection' in result
-        assert 'util_if_no_throttle' in result['projection']
-        assert 'util_if_throttled' in result['projection']
-        assert 'tools_remaining_estimate' in result['projection']
-        assert 'credits_remaining_pct' in result['projection']
+        assert "projection" in result
+        assert "util_if_no_throttle" in result["projection"]
+        assert "util_if_throttled" in result["projection"]
+        assert "credits_remaining_pct" in result["projection"]
 
 
 class TestScenario2MajorOverageMidWindow:
@@ -64,14 +62,13 @@ class TestScenario2MajorOverageMidWindow:
             time_elapsed_pct=31.0,
             time_remaining_hours=3.45,
             window_hours=5.0,
-            estimated_tools_per_hour=10.0
         )
 
         # Expect significant delay for major overage (24% over target)
         # Algorithm correctly identifies this needs strong throttling
-        assert result['delay_seconds'] >= 100
-        assert result['delay_seconds'] <= 300
-        assert result['strategy'] in ['aggressive', 'emergency']
+        assert result["delay_seconds"] >= 100
+        assert result["delay_seconds"] <= 300
+        assert result["strategy"] in ["aggressive", "emergency"]
 
     def test_major_overage_mid_window_projects_overage(self):
         """Should project we'll exceed 100% without throttling."""
@@ -80,11 +77,11 @@ class TestScenario2MajorOverageMidWindow:
             target_util=32.0,
             time_elapsed_pct=31.0,
             time_remaining_hours=3.45,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
         # At current burn rate, should project exceeding 100%
-        assert result['projection']['util_if_no_throttle'] > 100.0
+        assert result["projection"]["util_if_no_throttle"] > 100.0
 
 
 class TestScenario3SlightOverageNearEnd:
@@ -98,15 +95,14 @@ class TestScenario3SlightOverageNearEnd:
             time_elapsed_pct=90.0,
             time_remaining_hours=0.5,
             window_hours=5.0,
-            estimated_tools_per_hour=10.0,
-            max_delay=350
+            max_delay=350,
         )
 
         # Expect high delay - little time to correct
         # 10% overage = gradual strategy, but still significant delay due to time pressure
-        assert result['delay_seconds'] >= 120
-        assert result['delay_seconds'] <= 350
-        assert result['strategy'] in ['gradual', 'aggressive', 'emergency']
+        assert result["delay_seconds"] >= 120
+        assert result["delay_seconds"] <= 350
+        assert result["strategy"] in ["gradual", "aggressive", "emergency"]
 
 
 class TestScenario4OnTrack:
@@ -120,13 +116,12 @@ class TestScenario4OnTrack:
             time_elapsed_pct=50.0,
             time_remaining_hours=2.5,
             window_hours=5.0,
-            estimated_tools_per_hour=10.0
         )
 
         # With 95% safety buffer, current_util=50% is over safe_allowance=47.5%
         # So we expect some throttling
-        assert result['delay_seconds'] >= 0
-        assert result['strategy'] in ['none', 'minimal', 'gradual']
+        assert result["delay_seconds"] >= 0
+        assert result["strategy"] in ["none", "minimal", "gradual"]
 
     def test_on_track_projection_stays_under_100(self):
         """Should project staying under 100%."""
@@ -135,11 +130,11 @@ class TestScenario4OnTrack:
             target_util=50.0,
             time_elapsed_pct=50.0,
             time_remaining_hours=2.5,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
         # Should project ending at or under 100%
-        assert result['projection']['util_if_no_throttle'] <= 100.0
+        assert result["projection"]["util_if_no_throttle"] <= 100.0
 
 
 class TestScenario5UnderBudget:
@@ -153,11 +148,10 @@ class TestScenario5UnderBudget:
             time_elapsed_pct=50.0,
             time_remaining_hours=2.5,
             window_hours=5.0,
-            estimated_tools_per_hour=10.0
         )
 
-        assert result['delay_seconds'] == 0
-        assert result['strategy'] == 'none'
+        assert result["delay_seconds"] == 0
+        assert result["strategy"] == "none"
 
     def test_under_budget_has_credits_remaining(self):
         """Should show positive credits remaining."""
@@ -166,10 +160,10 @@ class TestScenario5UnderBudget:
             target_util=50.0,
             time_elapsed_pct=50.0,
             time_remaining_hours=2.5,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
-        assert result['projection']['credits_remaining_pct'] > 0
+        assert result["projection"]["credits_remaining_pct"] > 0
 
 
 class TestScenario6MassiveOverageNearEnd:
@@ -183,13 +177,12 @@ class TestScenario6MassiveOverageNearEnd:
             time_elapsed_pct=80.0,
             time_remaining_hours=1.0,
             window_hours=5.0,
-            estimated_tools_per_hour=10.0,
-            max_delay=350
+            max_delay=350,
         )
 
         # Should hit max delay cap
-        assert result['delay_seconds'] == 350
-        assert result['strategy'] == 'emergency'
+        assert result["delay_seconds"] == 350
+        assert result["strategy"] == "emergency"
 
     def test_massive_overage_near_end_projects_way_over(self):
         """Should project massive overage."""
@@ -198,11 +191,11 @@ class TestScenario6MassiveOverageNearEnd:
             target_util=50.0,
             time_elapsed_pct=80.0,
             time_remaining_hours=1.0,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
         # Should project significant overage (relaxed from 120% to 115%)
-        assert result['projection']['util_if_no_throttle'] > 115.0
+        assert result["projection"]["util_if_no_throttle"] > 115.0
 
 
 class TestScenario7SevenDayWindow:
@@ -216,14 +209,13 @@ class TestScenario7SevenDayWindow:
             time_elapsed_pct=40.0,
             time_remaining_hours=100.0,
             window_hours=168.0,
-            estimated_tools_per_hour=10.0
         )
 
         # 20% overage still requires throttling even with more time
         # Algorithm uses gentler multiplier for long windows
-        assert result['delay_seconds'] >= 5
-        assert result['delay_seconds'] <= 250
-        assert result['strategy'] in ['gradual', 'aggressive']
+        assert result["delay_seconds"] >= 5
+        assert result["delay_seconds"] <= 250
+        assert result["strategy"] in ["gradual", "aggressive"]
 
 
 class TestEdgeCases:
@@ -237,11 +229,11 @@ class TestEdgeCases:
             time_elapsed_pct=100.0,
             time_remaining_hours=0.0,
             window_hours=5.0,
-            max_delay=350
+            max_delay=350,
         )
 
         # No time left = max delay
-        assert result['delay_seconds'] == 350
+        assert result["delay_seconds"] == 350
 
     def test_zero_utilization_no_delay(self):
         """Should not throttle with zero utilization."""
@@ -250,10 +242,10 @@ class TestEdgeCases:
             target_util=50.0,
             time_elapsed_pct=50.0,
             time_remaining_hours=2.5,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
-        assert result['delay_seconds'] == 0
+        assert result["delay_seconds"] == 0
 
     def test_negative_utilization_no_delay(self):
         """Should handle negative utilization gracefully."""
@@ -262,10 +254,10 @@ class TestEdgeCases:
             target_util=50.0,
             time_elapsed_pct=50.0,
             time_remaining_hours=2.5,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
-        assert result['delay_seconds'] == 0
+        assert result["delay_seconds"] == 0
 
     def test_100_percent_utilization_max_delay(self):
         """Should apply max delay at 100% utilization."""
@@ -275,10 +267,10 @@ class TestEdgeCases:
             time_elapsed_pct=50.0,
             time_remaining_hours=2.5,
             window_hours=5.0,
-            max_delay=350
+            max_delay=350,
         )
 
-        assert result['delay_seconds'] == 350
+        assert result["delay_seconds"] == 350
 
     def test_custom_min_max_delays(self):
         """Should respect custom min/max delay bounds."""
@@ -289,11 +281,11 @@ class TestEdgeCases:
             time_remaining_hours=3.45,
             window_hours=5.0,
             min_delay=10,
-            max_delay=180
+            max_delay=180,
         )
 
-        assert result['delay_seconds'] >= 10
-        assert result['delay_seconds'] <= 180
+        assert result["delay_seconds"] >= 10
+        assert result["delay_seconds"] <= 180
 
     def test_very_high_tools_per_hour(self):
         """Should handle high tool usage rate."""
@@ -303,12 +295,11 @@ class TestEdgeCases:
             time_elapsed_pct=31.0,
             time_remaining_hours=3.45,
             window_hours=5.0,
-            estimated_tools_per_hour=100.0
         )
 
         # Should still calculate reasonable delay
-        assert result['delay_seconds'] >= 5
-        assert result['delay_seconds'] <= 300
+        assert result["delay_seconds"] >= 5
+        assert result["delay_seconds"] <= 300
 
     def test_very_low_tools_per_hour(self):
         """Should handle low tool usage rate."""
@@ -318,12 +309,11 @@ class TestEdgeCases:
             time_elapsed_pct=31.0,
             time_remaining_hours=3.45,
             window_hours=5.0,
-            estimated_tools_per_hour=1.0
         )
 
         # Should still calculate reasonable delay
-        assert result['delay_seconds'] >= 5
-        assert result['delay_seconds'] <= 300
+        assert result["delay_seconds"] >= 5
+        assert result["delay_seconds"] <= 300
 
 
 class TestReturnStructure:
@@ -336,19 +326,18 @@ class TestReturnStructure:
             target_util=32.0,
             time_elapsed_pct=31.0,
             time_remaining_hours=3.45,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
         # Top-level fields
-        assert 'delay_seconds' in result
-        assert 'strategy' in result
-        assert 'projection' in result
+        assert "delay_seconds" in result
+        assert "strategy" in result
+        assert "projection" in result
 
         # Projection fields
-        assert 'util_if_no_throttle' in result['projection']
-        assert 'util_if_throttled' in result['projection']
-        assert 'tools_remaining_estimate' in result['projection']
-        assert 'credits_remaining_pct' in result['projection']
+        assert "util_if_no_throttle" in result["projection"]
+        assert "util_if_throttled" in result["projection"]
+        assert "credits_remaining_pct" in result["projection"]
 
     def test_delay_seconds_is_integer(self):
         """Should return delay as integer."""
@@ -357,10 +346,10 @@ class TestReturnStructure:
             target_util=32.0,
             time_elapsed_pct=31.0,
             time_remaining_hours=3.45,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
-        assert isinstance(result['delay_seconds'], int)
+        assert isinstance(result["delay_seconds"], int)
 
     def test_strategy_is_valid_value(self):
         """Should return valid strategy value."""
@@ -369,11 +358,11 @@ class TestReturnStructure:
             target_util=32.0,
             time_elapsed_pct=31.0,
             time_remaining_hours=3.45,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
-        valid_strategies = ['none', 'minimal', 'gradual', 'aggressive', 'emergency']
-        assert result['strategy'] in valid_strategies
+        valid_strategies = ["none", "minimal", "gradual", "aggressive", "emergency"]
+        assert result["strategy"] in valid_strategies
 
     def test_projection_values_are_numeric(self):
         """Should return numeric projection values."""
@@ -382,14 +371,13 @@ class TestReturnStructure:
             target_util=32.0,
             time_elapsed_pct=31.0,
             time_remaining_hours=3.45,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
-        proj = result['projection']
-        assert isinstance(proj['util_if_no_throttle'], (int, float))
-        assert isinstance(proj['util_if_throttled'], (int, float))
-        assert isinstance(proj['tools_remaining_estimate'], (int, float))
-        assert isinstance(proj['credits_remaining_pct'], (int, float))
+        proj = result["projection"]
+        assert isinstance(proj["util_if_no_throttle"], (int, float))
+        assert isinstance(proj["util_if_throttled"], (int, float))
+        assert isinstance(proj["credits_remaining_pct"], (int, float))
 
 
 class TestSlowdownCalculation:
@@ -402,11 +390,14 @@ class TestSlowdownCalculation:
             target_util=32.0,
             time_elapsed_pct=31.0,
             time_remaining_hours=3.45,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
         # Throttled projection should be lower than no-throttle
-        assert result['projection']['util_if_throttled'] < result['projection']['util_if_no_throttle']
+        assert (
+            result["projection"]["util_if_throttled"]
+            < result["projection"]["util_if_no_throttle"]
+        )
 
     def test_on_track_no_slowdown_needed(self):
         """When on track with safety buffer, minor slowdown needed."""
@@ -415,14 +406,14 @@ class TestSlowdownCalculation:
             target_util=50.0,
             time_elapsed_pct=50.0,
             time_remaining_hours=2.5,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
         # With 95% safety buffer, we're over safe_allowance so expect some throttling
         # But should be minimal since we're close to target
-        assert result['delay_seconds'] >= 0
+        assert result["delay_seconds"] >= 0
         # Throttled projection should aim for ~95%
-        throttled = result['projection']['util_if_throttled']
+        throttled = result["projection"]["util_if_throttled"]
         assert throttled <= 96.0  # Should target ~95%
 
 
@@ -436,11 +427,11 @@ class TestStrategySelection:
             target_util=50.0,
             time_elapsed_pct=50.0,
             time_remaining_hours=2.5,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
         # Only 2% over = minimal
-        assert result['strategy'] == 'minimal'
+        assert result["strategy"] == "minimal"
 
     def test_gradual_strategy_for_moderate_overage(self):
         """Should use gradual strategy for 5-20% overage."""
@@ -449,11 +440,11 @@ class TestStrategySelection:
             target_util=50.0,
             time_elapsed_pct=50.0,
             time_remaining_hours=2.5,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
         # 10% over = gradual
-        assert result['strategy'] == 'gradual'
+        assert result["strategy"] == "gradual"
 
     def test_aggressive_strategy_for_large_overage(self):
         """Should use aggressive or emergency strategy for >20% overage."""
@@ -462,11 +453,11 @@ class TestStrategySelection:
             target_util=50.0,
             time_elapsed_pct=50.0,
             time_remaining_hours=2.5,
-            window_hours=5.0
+            window_hours=5.0,
         )
 
         # 25% over = aggressive or emergency (may hit max delay)
-        assert result['strategy'] in ['aggressive', 'emergency']
+        assert result["strategy"] in ["aggressive", "emergency"]
 
     def test_emergency_strategy_for_critical_situation(self):
         """Should use emergency strategy when hitting max delay."""
@@ -476,12 +467,12 @@ class TestStrategySelection:
             time_elapsed_pct=80.0,
             time_remaining_hours=1.0,
             window_hours=5.0,
-            max_delay=350
+            max_delay=350,
         )
 
         # Massive overage near end = emergency
-        assert result['strategy'] == 'emergency'
-        assert result['delay_seconds'] == 350
+        assert result["strategy"] == "emergency"
+        assert result["delay_seconds"] == 350
 
 
 class TestIsWeekend:
@@ -529,7 +520,7 @@ class TestCountWeekdaySeconds:
     def test_monday_9am_to_5pm(self):
         """Monday 9am to 5pm should be 8 hours = 28,800 seconds."""
         start = datetime(2025, 1, 6, 9, 0, 0)  # Monday 9am
-        end = datetime(2025, 1, 6, 17, 0, 0)   # Monday 5pm
+        end = datetime(2025, 1, 6, 17, 0, 0)  # Monday 5pm
         result = count_weekday_seconds(start, end)
         assert result == 28800  # 8 hours * 3600
 
@@ -550,7 +541,7 @@ class TestCountWeekdaySeconds:
     def test_friday_6pm_to_monday_6am(self):
         """Friday 6pm to Monday 6am should count only Friday 6pm-midnight (6 hours)."""
         start = datetime(2025, 1, 10, 18, 0, 0)  # Friday 6pm
-        end = datetime(2025, 1, 13, 6, 0, 0)     # Monday 6am
+        end = datetime(2025, 1, 13, 6, 0, 0)  # Monday 6am
         result = count_weekday_seconds(start, end)
         # Friday 6pm to midnight = 6 hours = 21,600 seconds
         # Saturday = 0 (weekend)
@@ -561,8 +552,8 @@ class TestCountWeekdaySeconds:
 
     def test_wednesday_to_following_wednesday(self):
         """Wednesday to following Wednesday (7 days) should be 5 weekdays = 432,000 seconds."""
-        start = datetime(2025, 1, 8, 0, 0, 0)   # Wednesday midnight
-        end = datetime(2025, 1, 15, 0, 0, 0)    # Following Wednesday midnight
+        start = datetime(2025, 1, 8, 0, 0, 0)  # Wednesday midnight
+        end = datetime(2025, 1, 15, 0, 0, 0)  # Following Wednesday midnight
         result = count_weekday_seconds(start, end)
         # Wed, Thu, Fri, Sat, Sun, Mon, Tue = 5 weekdays * 86400 seconds
         assert result == 432000  # 5 days * 86400
@@ -570,28 +561,28 @@ class TestCountWeekdaySeconds:
     def test_friday_midnight_to_sunday_midnight(self):
         """Friday midnight to Sunday midnight should be 1 day (Friday only)."""
         start = datetime(2025, 1, 10, 0, 0, 0)  # Friday midnight
-        end = datetime(2025, 1, 12, 0, 0, 0)    # Sunday midnight
+        end = datetime(2025, 1, 12, 0, 0, 0)  # Sunday midnight
         result = count_weekday_seconds(start, end)
         assert result == 86400  # 1 day (Friday only)
 
     def test_single_minute_on_weekday(self):
         """Single minute on weekday should be 60 seconds."""
         start = datetime(2025, 1, 6, 12, 0, 0)  # Monday noon
-        end = datetime(2025, 1, 6, 12, 1, 0)    # Monday 12:01pm
+        end = datetime(2025, 1, 6, 12, 1, 0)  # Monday 12:01pm
         result = count_weekday_seconds(start, end)
         assert result == 60
 
     def test_single_minute_on_weekend(self):
         """Single minute on weekend should be 0 seconds."""
         start = datetime(2025, 1, 11, 12, 0, 0)  # Saturday noon
-        end = datetime(2025, 1, 11, 12, 1, 0)    # Saturday 12:01pm
+        end = datetime(2025, 1, 11, 12, 1, 0)  # Saturday 12:01pm
         result = count_weekday_seconds(start, end)
         assert result == 0
 
     def test_spanning_multiple_weeks(self):
         """Spanning 14 days should count 10 weekdays."""
-        start = datetime(2025, 1, 6, 0, 0, 0)   # Monday
-        end = datetime(2025, 1, 20, 0, 0, 0)    # Monday two weeks later
+        start = datetime(2025, 1, 6, 0, 0, 0)  # Monday
+        end = datetime(2025, 1, 20, 0, 0, 0)  # Monday two weeks later
         result = count_weekday_seconds(start, end)
         # 14 days with 4 weekend days = 10 weekdays
         assert result == 864000  # 10 days * 86400
@@ -602,7 +593,7 @@ class TestCalculateAllowancePct:
 
     def test_middle_of_week_50_percent(self):
         """Wednesday noon in Mon-Sun window should be ~50% allowance."""
-        window_start = datetime(2025, 1, 6, 0, 0, 0)   # Monday midnight
+        window_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday midnight
         current_time = datetime(2025, 1, 8, 12, 0, 0)  # Wednesday noon
         result = calculate_allowance_pct(window_start, current_time, window_hours=168.0)
         # 2.5 weekdays elapsed out of 5 total weekdays = 50%
@@ -610,7 +601,7 @@ class TestCalculateAllowancePct:
 
     def test_end_of_friday_100_percent(self):
         """End of Friday should be ~100% allowance."""
-        window_start = datetime(2025, 1, 6, 0, 0, 0)    # Monday midnight
+        window_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday midnight
         current_time = datetime(2025, 1, 10, 23, 59, 59)  # Friday 11:59:59pm
         result = calculate_allowance_pct(window_start, current_time, window_hours=168.0)
         # All 5 weekdays elapsed = 100%
@@ -618,7 +609,7 @@ class TestCalculateAllowancePct:
 
     def test_saturday_frozen_at_100_percent(self):
         """Saturday should show ~100% (frozen at Friday's end)."""
-        window_start = datetime(2025, 1, 6, 0, 0, 0)   # Monday midnight
+        window_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday midnight
         current_time = datetime(2025, 1, 11, 12, 0, 0)  # Saturday noon
         result = calculate_allowance_pct(window_start, current_time, window_hours=168.0)
         # Frozen at end of Friday = 100%
@@ -626,7 +617,7 @@ class TestCalculateAllowancePct:
 
     def test_sunday_frozen_at_100_percent(self):
         """Sunday should show ~100% (frozen at Friday's end)."""
-        window_start = datetime(2025, 1, 6, 0, 0, 0)   # Monday midnight
+        window_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday midnight
         current_time = datetime(2025, 1, 12, 12, 0, 0)  # Sunday noon
         result = calculate_allowance_pct(window_start, current_time, window_hours=168.0)
         # Frozen at end of Friday = 100%
@@ -635,7 +626,7 @@ class TestCalculateAllowancePct:
     def test_monday_new_week_starts_growing(self):
         """Monday in new week should start growing again (but window hasn't reset)."""
         # This tests overlapping windows - if window started previous Monday
-        window_start = datetime(2025, 1, 6, 0, 0, 0)   # Monday week 1
+        window_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday week 1
         current_time = datetime(2025, 1, 13, 12, 0, 0)  # Monday week 2, noon
         result = calculate_allowance_pct(window_start, current_time, window_hours=168.0)
         # Full 5 weekdays from week 1 + 0.5 day from week 2 = 5.5 / 5 = 110%
@@ -663,7 +654,7 @@ class TestWeekendAwareAdaptiveDelay:
 
     def test_under_budget_weekday_no_delay(self):
         """Under budget on weekday should have no delay."""
-        window_start = datetime(2025, 1, 6, 0, 0, 0)   # Monday midnight
+        window_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday midnight
         current_time = datetime(2025, 1, 8, 12, 0, 0)  # Wednesday noon
 
         result = calculate_adaptive_delay(
@@ -672,17 +663,16 @@ class TestWeekendAwareAdaptiveDelay:
             current_time=current_time,
             time_remaining_hours=84.0,  # 3.5 days left
             window_hours=168.0,
-            estimated_tools_per_hour=10.0,
             min_delay=5,
-            max_delay=350
+            max_delay=350,
         )
 
-        assert result['delay_seconds'] == 0
-        assert result['strategy'] == 'none'
+        assert result["delay_seconds"] == 0
+        assert result["strategy"] == "none"
 
     def test_under_budget_weekend_no_delay(self):
         """Under budget on weekend should have no delay."""
-        window_start = datetime(2025, 1, 6, 0, 0, 0)   # Monday midnight
+        window_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday midnight
         current_time = datetime(2025, 1, 11, 12, 0, 0)  # Saturday noon
 
         result = calculate_adaptive_delay(
@@ -691,17 +681,16 @@ class TestWeekendAwareAdaptiveDelay:
             current_time=current_time,
             time_remaining_hours=36.0,
             window_hours=168.0,
-            estimated_tools_per_hour=10.0,
             min_delay=5,
-            max_delay=350
+            max_delay=350,
         )
 
-        assert result['delay_seconds'] == 0
-        assert result['strategy'] == 'none'
+        assert result["delay_seconds"] == 0
+        assert result["strategy"] == "none"
 
     def test_over_budget_weekday_adaptive_delay(self):
         """Over budget on weekday should have adaptive delay (not max)."""
-        window_start = datetime(2025, 1, 6, 0, 0, 0)   # Monday midnight
+        window_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday midnight
         current_time = datetime(2025, 1, 8, 12, 0, 0)  # Wednesday noon
 
         result = calculate_adaptive_delay(
@@ -710,19 +699,18 @@ class TestWeekendAwareAdaptiveDelay:
             current_time=current_time,
             time_remaining_hours=84.0,
             window_hours=168.0,
-            estimated_tools_per_hour=10.0,
             min_delay=5,
-            max_delay=350
+            max_delay=350,
         )
 
         # Should throttle but NOT max delay (plenty of time left)
-        assert result['delay_seconds'] > 0
-        assert result['delay_seconds'] < 350  # Not max
-        assert result['strategy'] in ['minimal', 'gradual', 'aggressive']
+        assert result["delay_seconds"] > 0
+        assert result["delay_seconds"] < 350  # Not max
+        assert result["strategy"] in ["minimal", "gradual", "aggressive"]
 
     def test_over_budget_weekend_max_delay(self):
         """Over budget on weekend should have max delay (allowance frozen)."""
-        window_start = datetime(2025, 1, 6, 0, 0, 0)    # Monday midnight
+        window_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday midnight
         current_time = datetime(2025, 1, 11, 12, 0, 0)  # Saturday noon
 
         result = calculate_adaptive_delay(
@@ -731,18 +719,17 @@ class TestWeekendAwareAdaptiveDelay:
             current_time=current_time,
             time_remaining_hours=36.0,
             window_hours=168.0,
-            estimated_tools_per_hour=10.0,
             min_delay=5,
-            max_delay=350
+            max_delay=350,
         )
 
         # Should apply max delay on weekend when over budget
-        assert result['delay_seconds'] == 350
-        assert result['strategy'] == 'emergency'
+        assert result["delay_seconds"] == 350
+        assert result["strategy"] == "emergency"
 
     def test_exactly_on_budget_no_delay(self):
         """Exactly on budget with safety buffer should throttle slightly."""
-        window_start = datetime(2025, 1, 6, 0, 0, 0)   # Monday midnight
+        window_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday midnight
         current_time = datetime(2025, 1, 8, 12, 0, 0)  # Wednesday noon
 
         result = calculate_adaptive_delay(
@@ -751,15 +738,14 @@ class TestWeekendAwareAdaptiveDelay:
             current_time=current_time,
             time_remaining_hours=84.0,
             window_hours=168.0,
-            estimated_tools_per_hour=10.0,
             min_delay=5,
-            max_delay=350
+            max_delay=350,
         )
 
         # With 95% safety buffer, 50% usage is over safe_allowance (47.5%)
         # Should have minimal throttling
-        assert result['delay_seconds'] >= 0
-        assert result['strategy'] in ['none', 'minimal', 'gradual']
+        assert result["delay_seconds"] >= 0
+        assert result["strategy"] in ["none", "minimal", "gradual"]
 
     def test_backward_compatibility_with_old_signature(self):
         """Old signature without datetime args should still work."""
@@ -770,13 +756,12 @@ class TestWeekendAwareAdaptiveDelay:
             time_elapsed_pct=31.0,
             time_remaining_hours=3.45,
             window_hours=5.0,
-            estimated_tools_per_hour=10.0
         )
 
         # Should work and return valid result
-        assert 'delay_seconds' in result
-        assert 'strategy' in result
-        assert result['delay_seconds'] >= 0
+        assert "delay_seconds" in result
+        assert "strategy" in result
+        assert result["delay_seconds"] >= 0
 
 
 class TestPreloadAllowance:
@@ -790,7 +775,7 @@ class TestPreloadAllowance:
             window_start=monday,
             current_time=monday,  # Same time (0 hours elapsed)
             window_hours=168.0,
-            preload_hours=12.0
+            preload_hours=12.0,
         )
 
         assert allowance == pytest.approx(10.0, abs=0.1)
@@ -804,7 +789,7 @@ class TestPreloadAllowance:
             window_start=monday,
             current_time=monday_4am,
             window_hours=168.0,
-            preload_hours=12.0
+            preload_hours=12.0,
         )
 
         assert allowance == pytest.approx(10.0, abs=0.1)
@@ -818,7 +803,7 @@ class TestPreloadAllowance:
             window_start=monday,
             current_time=monday_noon,
             window_hours=168.0,
-            preload_hours=12.0
+            preload_hours=12.0,
         )
 
         assert allowance == pytest.approx(10.0, abs=0.1)
@@ -832,7 +817,7 @@ class TestPreloadAllowance:
             window_start=monday,
             current_time=monday_4pm,
             window_hours=168.0,
-            preload_hours=12.0
+            preload_hours=12.0,
         )
 
         # 16 hours / 120 hours × 100 = 13.33%
@@ -849,13 +834,13 @@ class TestPreloadAllowance:
         Total: 12 weekday hours → end of preload
         """
         friday_4pm = datetime(2025, 1, 10, 16, 0, 0)  # Friday 4 PM
-        monday_4am = datetime(2025, 1, 13, 4, 0, 0)   # Monday 4 AM
+        monday_4am = datetime(2025, 1, 13, 4, 0, 0)  # Monday 4 AM
 
         allowance = calculate_allowance_pct(
             window_start=friday_4pm,
             current_time=monday_4am,
             window_hours=168.0,
-            preload_hours=12.0
+            preload_hours=12.0,
         )
 
         # Should still be at preload (exactly 12 weekday hours)
@@ -873,7 +858,7 @@ class TestPreloadAllowance:
             window_start=friday_4pm,
             current_time=monday_4pm,
             window_hours=168.0,
-            preload_hours=12.0
+            preload_hours=12.0,
         )
 
         # 24 weekday hours / 120 hours × 100 = 20%
@@ -888,7 +873,7 @@ class TestPreloadAllowance:
             window_start=monday,
             current_time=monday_noon,
             window_hours=168.0,
-            preload_hours=24.0  # Custom: 24 hours
+            preload_hours=24.0,  # Custom: 24 hours
         )
 
         # 24h / 120h × 100 = 20% preload
@@ -903,7 +888,7 @@ class TestPreloadAllowance:
             window_start=monday,
             current_time=monday_noon,
             window_hours=168.0,
-            preload_hours=0.0  # No preload
+            preload_hours=0.0,  # No preload
         )
 
         # 12h / 120h × 100 = 10% (normal accrual from start)
@@ -920,16 +905,16 @@ class TestPreloadAllowance:
             time_remaining_hours=168.0,
             window_hours=168.0,
             safety_buffer_pct=95.0,
-            preload_hours=12.0
+            preload_hours=12.0,
         )
 
         # Allowance = 10%, Safe allowance = 9.5%
         # Usage = 5% < 9.5%
         # Should not throttle
-        assert result['delay_seconds'] == 0
-        assert result['projection']['allowance'] == pytest.approx(10.0, abs=0.1)
-        assert result['projection']['safe_allowance'] == pytest.approx(9.5, abs=0.1)
+        assert result["delay_seconds"] == 0
+        assert result["projection"]["allowance"] == pytest.approx(10.0, abs=0.1)
+        assert result["projection"]["safe_allowance"] == pytest.approx(9.5, abs=0.1)
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

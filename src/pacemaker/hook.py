@@ -28,7 +28,10 @@ DEFAULT_CONFIG = {
     "threshold_percent": 0,
     "poll_interval": 60,
     "safety_buffer_pct": 95.0,
-    "preload_hours": 12.0
+    "preload_hours": 12.0,
+    "api_timeout_seconds": 10,
+    "cleanup_interval_hours": 24,
+    "retention_days": 60,
 }
 
 
@@ -51,19 +54,23 @@ def load_state(state_path: str = DEFAULT_STATE_PATH) -> dict:
             with open(state_path) as f:
                 data = json.load(f)
                 # Convert timestamp strings back to datetime
-                if data.get('last_poll_time'):
-                    data['last_poll_time'] = datetime.fromisoformat(data['last_poll_time'])
-                if data.get('last_cleanup_time'):
-                    data['last_cleanup_time'] = datetime.fromisoformat(data['last_cleanup_time'])
+                if data.get("last_poll_time"):
+                    data["last_poll_time"] = datetime.fromisoformat(
+                        data["last_poll_time"]
+                    )
+                if data.get("last_cleanup_time"):
+                    data["last_cleanup_time"] = datetime.fromisoformat(
+                        data["last_cleanup_time"]
+                    )
                 return data
     except Exception:
         pass
 
     # Generate new session ID
     return {
-        'session_id': f"session-{int(time.time())}",
-        'last_poll_time': None,
-        'last_cleanup_time': None
+        "session_id": f"session-{int(time.time())}",
+        "last_poll_time": None,
+        "last_cleanup_time": None,
     }
 
 
@@ -75,12 +82,14 @@ def save_state(state: dict, state_path: str = DEFAULT_STATE_PATH):
 
         # Convert datetime to string for JSON serialization
         state_copy = state.copy()
-        if isinstance(state_copy.get('last_poll_time'), datetime):
-            state_copy['last_poll_time'] = state_copy['last_poll_time'].isoformat()
-        if isinstance(state_copy.get('last_cleanup_time'), datetime):
-            state_copy['last_cleanup_time'] = state_copy['last_cleanup_time'].isoformat()
+        if isinstance(state_copy.get("last_poll_time"), datetime):
+            state_copy["last_poll_time"] = state_copy["last_poll_time"].isoformat()
+        if isinstance(state_copy.get("last_cleanup_time"), datetime):
+            state_copy["last_cleanup_time"] = state_copy[
+                "last_cleanup_time"
+            ].isoformat()
 
-        with open(state_path, 'w') as f:
+        with open(state_path, "w") as f:
             json.dump(state_copy, f)
     except Exception:
         pass  # Graceful degradation
@@ -107,7 +116,7 @@ def run_hook():
     config = load_config()
 
     # Check if enabled
-    if not config.get('enabled', True):
+    if not config.get("enabled", True):
         return  # Disabled - do nothing
 
     # Load state
@@ -120,37 +129,40 @@ def run_hook():
     # Run pacing check
     result = pacing_engine.run_pacing_check(
         db_path=db_path,
-        session_id=state['session_id'],
-        last_poll_time=state.get('last_poll_time'),
-        poll_interval=config.get('poll_interval', 60),
-        last_cleanup_time=state.get('last_cleanup_time'),
-        safety_buffer_pct=config.get('safety_buffer_pct', 95.0),
-        preload_hours=config.get('preload_hours', 12.0)
+        session_id=state["session_id"],
+        last_poll_time=state.get("last_poll_time"),
+        poll_interval=config.get("poll_interval", 60),
+        last_cleanup_time=state.get("last_cleanup_time"),
+        safety_buffer_pct=config.get("safety_buffer_pct", 95.0),
+        preload_hours=config.get("preload_hours", 12.0),
+        api_timeout_seconds=config.get("api_timeout_seconds", 10),
+        cleanup_interval_hours=config.get("cleanup_interval_hours", 24),
+        retention_days=config.get("retention_days", 60),
     )
 
     # Update state if polled or cleaned up
     state_changed = False
-    if result.get('polled'):
-        state['last_poll_time'] = result.get('poll_time')
+    if result.get("polled"):
+        state["last_poll_time"] = result.get("poll_time")
         state_changed = True
-    if result.get('cleanup_time'):
-        state['last_cleanup_time'] = result.get('cleanup_time')
+    if result.get("cleanup_time"):
+        state["last_cleanup_time"] = result.get("cleanup_time")
         state_changed = True
 
     if state_changed:
         save_state(state)
 
     # Apply throttling if needed
-    decision = result.get('decision', {})
-    if decision.get('should_throttle'):
-        strategy = decision.get('strategy', {})
+    decision = result.get("decision", {})
+    if decision.get("should_throttle"):
+        strategy = decision.get("strategy", {})
 
-        if strategy.get('method') == 'direct':
+        if strategy.get("method") == "direct":
             # Direct execution - sleep
-            execute_delay(strategy['delay_seconds'])
-        elif strategy.get('method') == 'prompt':
+            execute_delay(strategy["delay_seconds"])
+        elif strategy.get("method") == "prompt":
             # Inject prompt
-            inject_prompt_delay(strategy['prompt'])
+            inject_prompt_delay(strategy["prompt"])
 
 
 def run_user_prompt_submit():
@@ -162,24 +174,19 @@ def run_user_prompt_submit():
         # Parse JSON input from Claude Code
         try:
             hook_data = json.loads(raw_input)
-            user_input = hook_data.get('prompt', '')
+            user_input = hook_data.get("prompt", "")
         except json.JSONDecodeError:
             # Fallback to treating as plain text if not JSON
             user_input = raw_input
 
         # Handle the prompt
         result = user_commands.handle_user_prompt(
-            user_input,
-            DEFAULT_CONFIG_PATH,
-            DEFAULT_DB_PATH
+            user_input, DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH
         )
 
-        if result['intercepted']:
+        if result["intercepted"]:
             # Command was intercepted - output JSON to block and display output
-            response = {
-                "decision": "block",
-                "reason": result['output']
-            }
+            response = {"decision": "block", "reason": result["output"]}
             print(json.dumps(response), file=sys.stdout, flush=True)
             sys.exit(0)
         else:
@@ -202,12 +209,12 @@ def run_user_prompt_submit():
 def main():
     """Entry point for hook script."""
     # Check if this is user-prompt-submit hook
-    if len(sys.argv) > 1 and sys.argv[1] == 'user_prompt_submit':
+    if len(sys.argv) > 1 and sys.argv[1] == "user_prompt_submit":
         run_user_prompt_submit()
         return
 
     # Check if this is post-tool-use hook (explicit handling for clarity)
-    if len(sys.argv) > 1 and sys.argv[1] == 'post_tool_use':
+    if len(sys.argv) > 1 and sys.argv[1] == "post_tool_use":
         try:
             run_hook()
         except Exception as e:
@@ -225,5 +232,5 @@ def main():
         # Continue execution without throttling
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
