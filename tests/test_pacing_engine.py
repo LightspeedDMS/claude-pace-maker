@@ -217,6 +217,121 @@ class TestPacingEngine(unittest.TestCase):
         self.assertFalse(result['polled'])
         self.assertFalse(result['decision']['should_throttle'])
 
+    def test_status_shows_weekend_aware_target_on_saturday(self):
+        """Status should show frozen 100% target on Saturday for 7-day window."""
+        from pacemaker.pacing_engine import calculate_pacing_decision
+
+        # Setup: Saturday noon in 7-day window
+        saturday_noon = datetime(2025, 1, 11, 12, 0, 0)  # Saturday
+        monday_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday
+        sunday_end = monday_start + timedelta(hours=168)
+
+        # Mock datetime.utcnow in both modules
+        with patch('pacemaker.pacing_engine.datetime') as mock_dt_engine:
+            with patch('pacemaker.adaptive_throttle.datetime') as mock_dt_adaptive:
+                mock_dt_engine.utcnow.return_value = saturday_noon
+                mock_dt_adaptive.utcnow.return_value = saturday_noon
+                # Allow datetime constructor to work normally
+                mock_dt_adaptive.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs) if args else saturday_noon
+
+                decision = calculate_pacing_decision(
+                    five_hour_util=50.0,
+                    five_hour_resets_at=saturday_noon + timedelta(hours=2),
+                    seven_day_util=95.0,
+                    seven_day_resets_at=sunday_end,
+                    use_adaptive=True
+                )
+
+        # Should show frozen 100% target (all weekday time elapsed)
+        self.assertAlmostEqual(decision['seven_day']['target'], 100.0, delta=0.1)
+
+    def test_status_shows_weekend_aware_target_on_wednesday(self):
+        """Status should show ~50% target on Wednesday for 7-day window."""
+        from pacemaker.pacing_engine import calculate_pacing_decision
+
+        # Wednesday noon (2.5 weekdays / 5 weekdays = 50%)
+        wednesday_noon = datetime(2025, 1, 8, 12, 0, 0)  # Wednesday
+        monday_start = datetime(2025, 1, 6, 0, 0, 0)  # Monday
+        sunday_end = monday_start + timedelta(hours=168)
+
+        # Mock datetime.utcnow in pacing_engine (adaptive_throttle doesn't need mocking for allowance calc)
+        with patch('pacemaker.pacing_engine.datetime') as mock_dt:
+            mock_dt.utcnow.return_value = wednesday_noon
+            mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs) if args else wednesday_noon
+
+            decision = calculate_pacing_decision(
+                five_hour_util=50.0,
+                five_hour_resets_at=wednesday_noon + timedelta(hours=2),
+                seven_day_util=45.0,
+                seven_day_resets_at=sunday_end,
+                use_adaptive=True
+            )
+
+        # Should show ~50% target (2.5 weekdays / 5 weekdays)
+        self.assertAlmostEqual(decision['seven_day']['target'], 50.0, delta=1.0)
+
+    def test_status_shows_legacy_linear_target_when_not_adaptive(self):
+        """Status should show linear target when use_adaptive=False."""
+        from pacemaker.pacing_engine import calculate_pacing_decision
+        from pacemaker.calculator import calculate_time_percent
+
+        # Wednesday noon is 60 hours into 168-hour window = 35.71% elapsed
+        wednesday_noon = datetime(2025, 1, 8, 12, 0, 0)
+        monday_start = datetime(2025, 1, 6, 0, 0, 0)
+        sunday_end = monday_start + timedelta(hours=168)
+
+        # Mock calculator.datetime.utcnow to control time_percent calculation
+        with patch('pacemaker.calculator.datetime') as mock_calc_dt:
+            mock_calc_dt.utcnow.return_value = wednesday_noon
+            mock_calc_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs) if args else wednesday_noon
+
+            decision = calculate_pacing_decision(
+                five_hour_util=50.0,
+                five_hour_resets_at=wednesday_noon + timedelta(hours=2),
+                seven_day_util=45.0,
+                seven_day_resets_at=sunday_end,
+                use_adaptive=False  # Legacy mode
+            )
+
+        # Should show linear target (not weekend-aware)
+        # At 35.71% time elapsed, linear target = 35.71%
+        self.assertIsNotNone(decision['seven_day']['target'])
+        self.assertAlmostEqual(decision['seven_day']['target'], 35.71, delta=0.5)
+
+    def test_status_five_hour_window_unchanged_logarithmic(self):
+        """5-hour window should still use logarithmic target (no weekend awareness)."""
+        from pacemaker.pacing_engine import calculate_pacing_decision
+
+        # Saturday noon
+        saturday_noon = datetime(2025, 1, 11, 12, 0, 0)
+        five_hour_resets = saturday_noon + timedelta(hours=4)  # 20% elapsed, 80% remaining
+        monday_start = datetime(2025, 1, 6, 0, 0, 0)
+        sunday_end = monday_start + timedelta(hours=168)
+
+        # Mock calculator.datetime.utcnow to control time_percent calculation
+        with patch('pacemaker.calculator.datetime') as mock_calc_dt:
+            with patch('pacemaker.pacing_engine.datetime') as mock_engine_dt:
+                mock_calc_dt.utcnow.return_value = saturday_noon
+                mock_engine_dt.utcnow.return_value = saturday_noon
+                mock_calc_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs) if args else saturday_noon
+                mock_engine_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs) if args else saturday_noon
+
+                decision = calculate_pacing_decision(
+                    five_hour_util=50.0,
+                    five_hour_resets_at=five_hour_resets,
+                    seven_day_util=95.0,
+                    seven_day_resets_at=sunday_end,
+                    use_adaptive=True
+                )
+
+        # 5-hour window should use logarithmic target (not linear or weekend-aware)
+        # At 20% elapsed (1 hour / 5 hours), logarithmic = 29.54% (higher than linear 20%)
+        five_hour_target = decision['five_hour']['target']
+        # Logarithmic at 20% elapsed ≈ 29.54%
+        self.assertAlmostEqual(five_hour_target, 29.54, delta=0.5)
+        # Verify it's using logarithmic (not linear which would be 20%)
+        self.assertGreater(five_hour_target, 20.0)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -149,7 +149,7 @@ def determine_most_constrained_window(
 def calculate_delay(
     deviation_percent: float,
     base_delay: int = 5,
-    threshold: int = 10,
+    threshold: int = 0,
     max_delay: int = 120
 ) -> int:
     """
@@ -158,14 +158,17 @@ def calculate_delay(
     Formula: delay = base_delay * (1 + 2 * excess_deviation)
     Where excess_deviation = max(0, deviation - threshold) as percentage points
 
+    Zero-tolerance throttling: By default (threshold=0), throttling activates
+    IMMEDIATELY when actual usage exceeds the target curve by any amount.
+
     Args:
         deviation_percent: How far actual is above target (%)
         base_delay: Base delay in seconds (default 5)
-        threshold: Deviation threshold before throttling kicks in (default 10%)
+        threshold: Deviation threshold before throttling kicks in (default 0% - zero tolerance)
         max_delay: Maximum delay cap in seconds (default 120)
 
     Returns:
-        Delay in seconds (0 if under threshold, capped at max_delay)
+        Delay in seconds (0 if at or under threshold, capped at max_delay)
     """
     # No delay if under threshold
     if deviation_percent <= threshold:

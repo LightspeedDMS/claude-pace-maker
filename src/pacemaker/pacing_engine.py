@@ -11,7 +11,7 @@ Orchestrates:
 
 from datetime import datetime, timedelta
 from typing import Optional, Dict
-from . import calculator, database, api_client
+from . import calculator, database, api_client, adaptive_throttle
 
 
 def should_poll_api(
@@ -40,9 +40,12 @@ def calculate_pacing_decision(
     five_hour_resets_at: Optional[datetime],
     seven_day_util: float,
     seven_day_resets_at: Optional[datetime],
-    threshold_percent: int = 10,
+    threshold_percent: int = 0,
     base_delay: int = 5,
-    max_delay: int = 120
+    max_delay: int = 350,
+    use_adaptive: bool = True,
+    safety_buffer_pct: float = 95.0,
+    preload_hours: float = 0.0
 ) -> Dict:
     """
     Calculate pacing decision based on current usage.
@@ -52,9 +55,12 @@ def calculate_pacing_decision(
         five_hour_resets_at: When 5-hour window resets (or None)
         seven_day_util: Current 7-day utilization (%)
         seven_day_resets_at: When 7-day window resets (or None)
-        threshold_percent: Deviation threshold (default 10%)
+        threshold_percent: Deviation threshold (default 0% - zero tolerance)
         base_delay: Base delay in seconds (default 5)
-        max_delay: Maximum delay in seconds (default 120)
+        max_delay: Maximum delay in seconds (default 350 = 360s timeout - 10s safety)
+        use_adaptive: Use adaptive throttling algorithm (default True)
+        safety_buffer_pct: Safety buffer percentage (default 95.0)
+        preload_hours: First N weekday hours with preloaded allowance (default 0 = no preload)
 
     Returns:
         Dict with pacing decision details
@@ -65,7 +71,22 @@ def calculate_pacing_decision(
 
     # Calculate target utilization for each window
     five_hour_target = calculator.calculate_logarithmic_target(five_hour_time_pct)
-    seven_day_target = calculator.calculate_linear_target(seven_day_time_pct)
+
+    # Calculate 7-day target: weekend-aware if adaptive, linear if legacy
+    now = datetime.utcnow()
+    if use_adaptive and seven_day_resets_at:
+        # Weekend-aware target for status display
+        window_hours = 168.0
+        window_start = seven_day_resets_at - timedelta(hours=window_hours)
+        seven_day_target = adaptive_throttle.calculate_allowance_pct(
+            window_start=window_start,
+            current_time=now,
+            window_hours=window_hours,
+            preload_hours=preload_hours
+        )
+    else:
+        # Legacy linear target
+        seven_day_target = calculator.calculate_linear_target(seven_day_time_pct)
 
     # Determine most constrained window
     constrained = calculator.determine_most_constrained_window(
@@ -75,13 +96,80 @@ def calculate_pacing_decision(
         seven_day_target=seven_day_target
     )
 
-    # Calculate delay based on deviation
-    delay_seconds = calculator.calculate_delay(
-        deviation_percent=constrained['deviation'],
-        base_delay=base_delay,
-        threshold=threshold_percent,
-        max_delay=max_delay
-    )
+    # Choose algorithm: adaptive (new) or legacy (old)
+    if use_adaptive and constrained['window'] is not None:
+        # Use new adaptive throttling algorithm with forward-looking projection
+        now = datetime.utcnow()
+
+        if constrained['window'] == '5-hour':
+            window_hours = 5.0
+            time_elapsed_pct = five_hour_time_pct
+            current_util = five_hour_util
+            target_util = five_hour_target
+            # Calculate time remaining
+            if five_hour_resets_at:
+                time_remaining = (five_hour_resets_at - now).total_seconds() / 3600.0
+                time_remaining = max(0.0, time_remaining)
+            else:
+                time_remaining = 0.0
+
+            # 5-hour window: use legacy mode (no weekend awareness needed for short window)
+            adaptive_result = adaptive_throttle.calculate_adaptive_delay(
+                current_util=current_util,
+                target_util=target_util,
+                time_elapsed_pct=time_elapsed_pct,
+                time_remaining_hours=time_remaining,
+                window_hours=window_hours,
+                estimated_tools_per_hour=10.0,
+                min_delay=base_delay,
+                max_delay=max_delay,
+                safety_buffer_pct=safety_buffer_pct
+            )
+        else:  # 7-day window
+            window_hours = 168.0
+            current_util = seven_day_util
+            # Calculate time remaining
+            if seven_day_resets_at:
+                time_remaining = (seven_day_resets_at - now).total_seconds() / 3600.0
+                time_remaining = max(0.0, time_remaining)
+                # Calculate window start from reset time
+                window_start = seven_day_resets_at - timedelta(hours=window_hours)
+            else:
+                time_remaining = 0.0
+                window_start = now - timedelta(hours=window_hours)
+
+            # 7-day window: use weekend-aware mode
+            adaptive_result = adaptive_throttle.calculate_adaptive_delay(
+                current_util=current_util,
+                window_start=window_start,
+                current_time=now,
+                time_remaining_hours=time_remaining,
+                window_hours=window_hours,
+                estimated_tools_per_hour=10.0,
+                min_delay=base_delay,
+                max_delay=max_delay,
+                safety_buffer_pct=safety_buffer_pct,
+                preload_hours=preload_hours
+            )
+
+        delay_seconds = adaptive_result['delay_seconds']
+        strategy_info = {
+            'algorithm': 'adaptive',
+            'strategy': adaptive_result['strategy'],
+            'projection': adaptive_result['projection']
+        }
+    else:
+        # Use legacy algorithm (simple deviation-based)
+        delay_seconds = calculator.calculate_delay(
+            deviation_percent=constrained['deviation'],
+            base_delay=base_delay,
+            threshold=threshold_percent,
+            max_delay=max_delay
+        )
+        strategy_info = {
+            'algorithm': 'legacy',
+            'strategy': 'legacy'
+        }
 
     return {
         'should_throttle': delay_seconds > 0,
@@ -97,13 +185,14 @@ def calculate_pacing_decision(
             'utilization': seven_day_util,
             'target': seven_day_target,
             'time_elapsed_pct': seven_day_time_pct
-        }
+        },
+        **strategy_info
     }
 
 
 def determine_delay_strategy(delay_seconds: int) -> Dict:
     """
-    Determine how to apply the delay (hybrid strategy).
+    Determine how to apply the delay - always use direct sleep in hook.
 
     Args:
         delay_seconds: Calculated delay in seconds
@@ -111,20 +200,13 @@ def determine_delay_strategy(delay_seconds: int) -> Dict:
     Returns:
         Dict with strategy details
     """
-    if delay_seconds < 30:
-        # Direct execution - sleep in hook
-        return {
-            'method': 'direct',
-            'delay_seconds': delay_seconds,
-            'prompt': None
-        }
-    else:
-        # Inject prompt - Claude waits
-        return {
-            'method': 'prompt',
-            'delay_seconds': delay_seconds,
-            'prompt': f"[PACING] Please wait {delay_seconds} seconds to maintain credit budget..."
-        }
+    # Always use direct execution - sleep in hook
+    # Hook timeout is configured to 360 seconds (6 minutes) to allow delays
+    return {
+        'method': 'direct',
+        'delay_seconds': delay_seconds,
+        'prompt': None
+    }
 
 
 def process_usage_update(
@@ -159,7 +241,9 @@ def run_pacing_check(
     session_id: str,
     last_poll_time: Optional[datetime] = None,
     poll_interval: int = 60,
-    last_cleanup_time: Optional[datetime] = None
+    last_cleanup_time: Optional[datetime] = None,
+    safety_buffer_pct: float = 95.0,
+    preload_hours: float = 0.0
 ) -> Dict:
     """
     Run complete pacing check cycle.
@@ -178,6 +262,8 @@ def run_pacing_check(
         last_poll_time: When we last polled (or None)
         poll_interval: Polling interval in seconds (default 60)
         last_cleanup_time: When we last cleaned up old records (or None)
+        safety_buffer_pct: Safety buffer percentage (default 95.0)
+        preload_hours: First N weekday hours with preloaded allowance (default 0 = no preload)
 
     Returns:
         Dict with pacing check results
@@ -239,7 +325,9 @@ def run_pacing_check(
         five_hour_util=usage_data['five_hour_util'],
         five_hour_resets_at=usage_data['five_hour_resets_at'],
         seven_day_util=usage_data['seven_day_util'],
-        seven_day_resets_at=usage_data['seven_day_resets_at']
+        seven_day_resets_at=usage_data['seven_day_resets_at'],
+        safety_buffer_pct=safety_buffer_pct,
+        preload_hours=preload_hours
     )
 
     # Determine strategy

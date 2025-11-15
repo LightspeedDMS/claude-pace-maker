@@ -149,18 +149,18 @@ def test_adaptive_delays():
     """AC5: Test adaptive delay application."""
     print_test("Acceptance Criterion 5: Adaptive Delay Application")
 
-    # No delay when under threshold
-    delay1 = calculator.calculate_delay(deviation_percent=10.0, threshold=10)
-    if not print_result(delay1 == 0, f"Under threshold: {delay1}s delay (should be 0)"):
+    # No delay at zero deviation (zero tolerance)
+    delay1 = calculator.calculate_delay(deviation_percent=0.0, threshold=0)
+    if not print_result(delay1 == 0, f"Zero deviation: {delay1}s delay (should be 0)"):
         return False
 
-    # Delay when over threshold
-    delay2 = calculator.calculate_delay(deviation_percent=20.0, threshold=10)
-    if not print_result(delay2 > 0, f"Over threshold: {delay2}s delay (should be >0)"):
+    # Delay when over target (zero tolerance - immediate throttling)
+    delay2 = calculator.calculate_delay(deviation_percent=10.0, threshold=0)
+    if not print_result(delay2 == 105, f"10% over target: {delay2}s delay (should be 105)"):
         return False
 
     # Capped at max delay
-    delay3 = calculator.calculate_delay(deviation_percent=200.0, max_delay=120)
+    delay3 = calculator.calculate_delay(deviation_percent=200.0, threshold=0, max_delay=120)
     return print_result(delay3 == 120, f"Large deviation: {delay3}s delay (should be capped at 120)")
 
 

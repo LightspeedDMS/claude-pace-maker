@@ -160,8 +160,8 @@ class TestPacingCalculator(unittest.TestCase):
         """Should return 0 delay when deviation is <= threshold."""
         from pacemaker.calculator import calculate_delay
 
-        # Deviation at threshold (10%) - no delay
-        delay = calculate_delay(deviation_percent=10.0, base_delay=5, threshold=10)
+        # Deviation at threshold (0%) - no delay
+        delay = calculate_delay(deviation_percent=0.0, base_delay=5, threshold=0)
 
         self.assertEqual(delay, 0)
 
@@ -169,11 +169,11 @@ class TestPacingCalculator(unittest.TestCase):
         """Should return proportional delay for small deviation."""
         from pacemaker.calculator import calculate_delay
 
-        # Deviation 20% over threshold 10% => 10% over
-        # delay = base * (1 + 2 * 10) = 5 * 21 = 105
-        delay = calculate_delay(deviation_percent=20.0, base_delay=5, threshold=10)
+        # Deviation 20% over threshold 0% => 20% over
+        # delay = base * (1 + 2 * 20) = 5 * 41 = 205 (capped at 120)
+        delay = calculate_delay(deviation_percent=20.0, base_delay=5, threshold=0, max_delay=120)
 
-        self.assertAlmostEqual(delay, 105.0, places=1)
+        self.assertEqual(delay, 120)
 
     def test_calculate_delay_large_deviation(self):
         """Should cap delay at max_delay."""
@@ -188,10 +188,93 @@ class TestPacingCalculator(unittest.TestCase):
         """Should enforce minimum delay of 5 seconds when throttling."""
         from pacemaker.calculator import calculate_delay
 
-        # Very small deviation, but should still be at least 5s
-        delay = calculate_delay(deviation_percent=11.0, base_delay=5, threshold=10)
+        # Very small deviation (0.1% over), should be at least 5s (base_delay)
+        delay = calculate_delay(deviation_percent=0.1, base_delay=5, threshold=0)
 
         self.assertGreaterEqual(delay, 5)
+
+    # ====================================================================
+    # ZERO-TOLERANCE THRESHOLD TESTS
+    # These tests verify that throttling activates IMMEDIATELY when
+    # actual usage exceeds target (threshold=0 by default)
+    # ====================================================================
+
+    def test_calculate_delay_zero_tolerance_tiny_positive_deviation(self):
+        """Should throttle immediately at +0.01% deviation (zero tolerance)."""
+        from pacemaker.calculator import calculate_delay
+
+        # With default threshold=0, even tiny positive deviation should throttle
+        delay = calculate_delay(deviation_percent=0.01, base_delay=5)
+
+        # Should return base_delay (5 seconds)
+        self.assertEqual(delay, 5)
+
+    def test_calculate_delay_zero_tolerance_exactly_zero_deviation(self):
+        """Should NOT throttle at exactly 0% deviation."""
+        from pacemaker.calculator import calculate_delay
+
+        # At exactly 0%, no throttling
+        delay = calculate_delay(deviation_percent=0.0, base_delay=5)
+
+        self.assertEqual(delay, 0)
+
+    def test_calculate_delay_zero_tolerance_negative_deviation(self):
+        """Should NOT throttle at negative deviation (under target)."""
+        from pacemaker.calculator import calculate_delay
+
+        # Under target - no throttling
+        delay = calculate_delay(deviation_percent=-0.01, base_delay=5)
+
+        self.assertEqual(delay, 0)
+
+    def test_calculate_delay_zero_tolerance_one_percent_deviation(self):
+        """Should throttle at +1% deviation with zero tolerance."""
+        from pacemaker.calculator import calculate_delay
+
+        # 1% over target
+        # Formula: delay = base * (1 + 2 * excess)
+        # excess = 1.0 - 0 = 1.0
+        # delay = 5 * (1 + 2 * 1.0) = 5 * 3 = 15
+        delay = calculate_delay(deviation_percent=1.0, base_delay=5)
+
+        self.assertEqual(delay, 15)
+
+    def test_calculate_delay_zero_tolerance_five_percent_deviation(self):
+        """Should throttle at +5% deviation with zero tolerance."""
+        from pacemaker.calculator import calculate_delay
+
+        # 5% over target
+        # Formula: delay = base * (1 + 2 * excess)
+        # excess = 5.0 - 0 = 5.0
+        # delay = 5 * (1 + 2 * 5.0) = 5 * 11 = 55
+        delay = calculate_delay(deviation_percent=5.0, base_delay=5)
+
+        self.assertEqual(delay, 55)
+
+    def test_calculate_delay_zero_tolerance_ten_percent_deviation(self):
+        """Should throttle at +10% deviation with zero tolerance."""
+        from pacemaker.calculator import calculate_delay
+
+        # 10% over target
+        # Formula: delay = base * (1 + 2 * excess)
+        # excess = 10.0 - 0 = 10.0
+        # delay = 5 * (1 + 2 * 10.0) = 5 * 21 = 105
+        delay = calculate_delay(deviation_percent=10.0, base_delay=5)
+
+        self.assertEqual(delay, 105)
+
+    def test_calculate_delay_zero_tolerance_twenty_percent_deviation(self):
+        """Should cap at max_delay for large deviations."""
+        from pacemaker.calculator import calculate_delay
+
+        # 20% over target
+        # Formula: delay = base * (1 + 2 * excess)
+        # excess = 20.0 - 0 = 20.0
+        # delay = 5 * (1 + 2 * 20.0) = 5 * 41 = 205
+        # But should cap at max_delay=120
+        delay = calculate_delay(deviation_percent=20.0, base_delay=5, max_delay=120)
+
+        self.assertEqual(delay, 120)
 
 
 if __name__ == '__main__':

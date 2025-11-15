@@ -24,9 +24,11 @@ DEFAULT_STATE_PATH = str(Path.home() / ".claude-pace-maker" / "state.json")
 DEFAULT_CONFIG = {
     "enabled": True,
     "base_delay": 5,
-    "max_delay": 120,
-    "threshold_percent": 10,
-    "poll_interval": 60
+    "max_delay": 350,
+    "threshold_percent": 0,
+    "poll_interval": 60,
+    "safety_buffer_pct": 95.0,
+    "preload_hours": 12.0
 }
 
 
@@ -87,7 +89,10 @@ def save_state(state: dict, state_path: str = DEFAULT_STATE_PATH):
 def execute_delay(delay_seconds: int):
     """Execute direct delay (sleep)."""
     if delay_seconds > 0:
-        time.sleep(delay_seconds)
+        # Cap at 350 seconds (360s timeout - 10s safety margin)
+        MAX_DELAY = 350
+        actual_delay = min(delay_seconds, MAX_DELAY)
+        time.sleep(actual_delay)
 
 
 def inject_prompt_delay(prompt: str):
@@ -118,7 +123,9 @@ def run_hook():
         session_id=state['session_id'],
         last_poll_time=state.get('last_poll_time'),
         poll_interval=config.get('poll_interval', 60),
-        last_cleanup_time=state.get('last_cleanup_time')
+        last_cleanup_time=state.get('last_cleanup_time'),
+        safety_buffer_pct=config.get('safety_buffer_pct', 95.0),
+        preload_hours=config.get('preload_hours', 12.0)
     )
 
     # Update state if polled or cleaned up
@@ -187,24 +194,8 @@ def run_user_prompt_submit():
         try:
             sys.stdin.seek(0)
             print(sys.stdin.read(), file=sys.stdout, flush=True)
-        except:
+        except Exception:
             pass
-        sys.exit(0)
-
-
-def run_stop_hook():
-    """Handle stop hook - inject momentum preservation prompt (Story #3)."""
-    try:
-        # Short, subtle reminder to verify completion
-        # Just inject context, don't block - let Claude decide if work is complete
-        context_message = "Before finishing: Did you complete all requested tasks and verify they work?"
-
-        print(context_message, file=sys.stdout, flush=True)
-        sys.exit(0)
-
-    except Exception as e:
-        # Graceful degradation - log error and allow stop
-        print(f"[PACE-MAKER ERROR] {e}", file=sys.stderr)
         sys.exit(0)
 
 
@@ -215,12 +206,17 @@ def main():
         run_user_prompt_submit()
         return
 
-    # Check if this is stop hook
-    if len(sys.argv) > 1 and sys.argv[1] == 'stop':
-        run_stop_hook()
+    # Check if this is post-tool-use hook (explicit handling for clarity)
+    if len(sys.argv) > 1 and sys.argv[1] == 'post_tool_use':
+        try:
+            run_hook()
+        except Exception as e:
+            # Graceful degradation - log error but don't crash
+            print(f"[PACE-MAKER ERROR] {e}", file=sys.stderr)
+            # Continue execution without throttling
         return
 
-    # Otherwise, run post-tool-use hook
+    # Default fallback: treat as post-tool-use hook
     try:
         run_hook()
     except Exception as e:

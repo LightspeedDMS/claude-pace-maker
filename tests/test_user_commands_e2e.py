@@ -34,7 +34,7 @@ class TestUserCommandsE2E(unittest.TestCase):
             "enabled": False,
             "base_delay": 5,
             "max_delay": 120,
-            "threshold_percent": 10,
+            "threshold_percent": 0,
             "poll_interval": 60
         }
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -337,7 +337,7 @@ class TestHookScriptIntegration(unittest.TestCase):
             "enabled": False,
             "base_delay": 5,
             "max_delay": 120,
-            "threshold_percent": 10,
+            "threshold_percent": 0,
             "poll_interval": 60
         }
         os.makedirs(self.temp_dir, exist_ok=True)

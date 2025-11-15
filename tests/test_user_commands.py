@@ -100,7 +100,7 @@ class TestCommandExecution(unittest.TestCase):
             "enabled": False,
             "base_delay": 5,
             "max_delay": 120,
-            "threshold_percent": 10,
+            "threshold_percent": 0,
             "poll_interval": 60
         }
         with open(self.config_path, 'w') as f:
@@ -213,7 +213,7 @@ class TestStatusDisplay(unittest.TestCase):
             "enabled": True,
             "base_delay": 5,
             "max_delay": 120,
-            "threshold_percent": 10,
+            "threshold_percent": 0,
             "poll_interval": 60
         }
         with open(self.config_path, 'w') as f:
@@ -293,7 +293,7 @@ class TestHookIntegration(unittest.TestCase):
             "enabled": False,
             "base_delay": 5,
             "max_delay": 120,
-            "threshold_percent": 10,
+            "threshold_percent": 0,
             "poll_interval": 60
         }
         with open(self.config_path, 'w') as f:

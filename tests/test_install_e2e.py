@@ -76,7 +76,7 @@ class TestInstallationE2E:
         assert config["enabled"] is True
         assert config["base_delay"] == 5
         assert config["max_delay"] == 120
-        assert config["threshold_percent"] == 10
+        assert config["threshold_percent"] == 0
         assert config["poll_interval"] == 60
 
         # Verify database created with correct schema
@@ -123,9 +123,11 @@ class TestInstallationE2E:
             settings = json.load(f)
 
         assert "hooks" in settings
-        assert settings["hooks"]["postToolUse"] == "~/.claude/hooks/post-tool-use.sh"
-        assert settings["hooks"]["stop"] == "~/.claude/hooks/stop.sh"
-        assert settings["hooks"]["userPromptSubmit"] == "~/.claude/hooks/user-prompt-submit.sh"
+        # Verify new array-based format with PascalCase names
+        assert settings["hooks"]["Start"][0]["hooks"][0]["command"] == "~/.claude/hooks/start.sh"
+        assert settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "~/.claude/hooks/post-tool-use.sh"
+        assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "~/.claude/hooks/stop.sh"
+        assert settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == "~/.claude/hooks/user-prompt-submit.sh"
 
     def test_idempotent_reinstallation(self, isolated_home):
         """
@@ -237,9 +239,11 @@ class TestInstallationE2E:
         assert settings["user"] == "test_user", "Existing settings should be preserved"
         assert settings["theme"] == "dark", "Existing settings should be preserved"
         assert settings["hooks"]["preExecution"] == "~/my-hook.sh", "Existing hooks should be preserved"
-        assert settings["hooks"]["postToolUse"] == "~/.claude/hooks/post-tool-use.sh"
-        assert settings["hooks"]["stop"] == "~/.claude/hooks/stop.sh"
-        assert settings["hooks"]["userPromptSubmit"] == "~/.claude/hooks/user-prompt-submit.sh"
+        # Verify new array-based format with PascalCase names
+        assert settings["hooks"]["Start"][0]["hooks"][0]["command"] == "~/.claude/hooks/start.sh"
+        assert settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "~/.claude/hooks/post-tool-use.sh"
+        assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "~/.claude/hooks/stop.sh"
+        assert settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == "~/.claude/hooks/user-prompt-submit.sh"
 
     def test_hook_scripts_functionality(self, isolated_home):
         """
@@ -331,3 +335,124 @@ class TestInstallationE2E:
         assert len(rows) == 3
 
         conn.close()
+
+    def test_installation_preserves_existing_hooks_from_other_tools(self, isolated_home):
+        """
+        E2E Test: Installation preserves hooks from other tools (e.g., tdd-guard).
+
+        Verifies that:
+        1. Existing hooks from other tools are preserved
+        2. Pace-maker hooks are appended to existing hooks
+        3. Multiple tools can coexist
+        """
+        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+
+        # Pre-create settings.json with hooks from another tool (tdd-guard)
+        claude_dir = isolated_home / ".claude"
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / "settings.json"
+
+        existing_settings = {
+            "user": "test_user",
+            "hooks": {
+                "Start": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/tdd-guard-start.sh"}]}],
+                "PostToolUse": [
+                    {"hooks": [{"type": "command", "command": "~/.claude/hooks/tdd-guard-post.sh", "timeout": 300}]}
+                ],
+                "Stop": [{"hooks": [{"type": "command", "command": "~/.claude/hooks/tdd-guard-stop.sh"}]}],
+            }
+        }
+
+        with open(settings_file, "w") as f:
+            json.dump(existing_settings, f, indent=2)
+
+        # Run installation
+        result = subprocess.run(
+            [str(install_script)],
+            env={**os.environ, "HOME": str(isolated_home)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Installation failed: {result.stderr}\n{result.stdout}"
+
+        # Verify hooks from both tools are present
+        with open(settings_file) as f:
+            settings = json.load(f)
+
+        # Verify user settings preserved
+        assert settings["user"] == "test_user"
+
+        # Verify both tdd-guard and pace-maker hooks exist
+        assert len(settings["hooks"]["Start"]) == 2, "Should have hooks from both tools"
+        assert len(settings["hooks"]["PostToolUse"]) == 2, "Should have hooks from both tools"
+        assert len(settings["hooks"]["Stop"]) == 2, "Should have hooks from both tools"
+
+        # Extract all commands for verification
+        start_commands = [hook["hooks"][0]["command"] for hook in settings["hooks"]["Start"]]
+        post_commands = [hook["hooks"][0]["command"] for hook in settings["hooks"]["PostToolUse"]]
+        stop_commands = [hook["hooks"][0]["command"] for hook in settings["hooks"]["Stop"]]
+
+        # Verify tdd-guard hooks preserved
+        assert "~/.claude/hooks/tdd-guard-start.sh" in start_commands
+        assert "~/.claude/hooks/tdd-guard-post.sh" in post_commands
+        assert "~/.claude/hooks/tdd-guard-stop.sh" in stop_commands
+
+        # Verify pace-maker hooks added
+        assert "~/.claude/hooks/start.sh" in start_commands
+        assert "~/.claude/hooks/post-tool-use.sh" in post_commands
+        assert "~/.claude/hooks/stop.sh" in stop_commands
+
+    def test_idempotent_installation_no_duplicate_hooks(self, isolated_home):
+        """
+        E2E Test: Running installation multiple times doesn't create duplicate hooks.
+
+        Verifies that:
+        1. Running install twice doesn't duplicate pace-maker hooks
+        2. Idempotent behavior is maintained
+        3. Hook configuration remains clean
+        """
+        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+
+        # First installation
+        result1 = subprocess.run(
+            [str(install_script)],
+            env={**os.environ, "HOME": str(isolated_home)},
+            capture_output=True,
+            text=True,
+        )
+        assert result1.returncode == 0, f"First install failed: {result1.stderr}"
+
+        # Second installation
+        result2 = subprocess.run(
+            [str(install_script)],
+            env={**os.environ, "HOME": str(isolated_home)},
+            capture_output=True,
+            text=True,
+        )
+        assert result2.returncode == 0, f"Second install failed: {result2.stderr}"
+
+        # Third installation (just to be thorough)
+        result3 = subprocess.run(
+            [str(install_script)],
+            env={**os.environ, "HOME": str(isolated_home)},
+            capture_output=True,
+            text=True,
+        )
+        assert result3.returncode == 0, f"Third install failed: {result3.stderr}"
+
+        # Verify no duplicate hooks
+        settings_file = isolated_home / ".claude" / "settings.json"
+        with open(settings_file) as f:
+            settings = json.load(f)
+
+        # Should have exactly one hook per type (no duplicates)
+        assert len(settings["hooks"]["Start"]) == 1, "Should have exactly one Start hook"
+        assert len(settings["hooks"]["PostToolUse"]) == 1, "Should have exactly one PostToolUse hook"
+        assert len(settings["hooks"]["Stop"]) == 1, "Should have exactly one Stop hook"
+        assert len(settings["hooks"]["UserPromptSubmit"]) == 1, "Should have exactly one UserPromptSubmit hook"
+
+        # Verify they're the correct pace-maker hooks
+        assert settings["hooks"]["Start"][0]["hooks"][0]["command"] == "~/.claude/hooks/start.sh"
+        assert settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "~/.claude/hooks/post-tool-use.sh"
+        assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "~/.claude/hooks/stop.sh"
+        assert settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == "~/.claude/hooks/user-prompt-submit.sh"

@@ -161,9 +161,11 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
                     five_hour_resets_at=usage_data.get('five_hour_resets_at'),
                     seven_day_util=usage_data.get('seven_day_util', 0.0),
                     seven_day_resets_at=usage_data.get('seven_day_resets_at'),
-                    threshold_percent=config.get('threshold_percent', 10),
+                    threshold_percent=config.get('threshold_percent', 0),
                     base_delay=config.get('base_delay', 5),
-                    max_delay=config.get('max_delay', 120)
+                    max_delay=config.get('max_delay', 120),
+                    safety_buffer_pct=config.get('safety_buffer_pct', 95.0),
+                    preload_hours=config.get('preload_hours', 12.0)
                 )
 
                 status_text += "\n\nPacing Status:"
@@ -182,9 +184,23 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
 
                 if decision['should_throttle']:
                     delay = decision['delay_seconds']
+                    projection = decision.get('projection', {})
+                    safe_allowance = projection.get('safe_allowance')
+                    buffer_remaining = projection.get('buffer_remaining')
+
                     status_text += f"\n\n⚠️  Next tool use will be delayed by {delay}s to maintain pace"
+
+                    if safe_allowance is not None and buffer_remaining is not None:
+                        status_text += f"\n  Safe threshold (95%): {safe_allowance:.1f}%"
+                        status_text += f"\n  Safety buffer remaining: {buffer_remaining:+.1f}%"
                 else:
+                    projection = decision.get('projection', {})
+                    buffer_remaining = projection.get('buffer_remaining')
+
                     status_text += f"\n\n✓ On pace - no throttling needed"
+
+                    if buffer_remaining is not None:
+                        status_text += f"\n  Safety buffer remaining: {buffer_remaining:+.1f}%"
         else:
             status_text += "\n\nNo usage data available yet."
 
@@ -247,9 +263,11 @@ def _load_config(config_path: str) -> Dict[str, Any]:
     default_config = {
         "enabled": False,
         "base_delay": 5,
-        "max_delay": 120,
-        "threshold_percent": 10,
-        "poll_interval": 60
+        "max_delay": 350,
+        "threshold_percent": 0,
+        "poll_interval": 60,
+        "safety_buffer_pct": 95.0,
+        "preload_hours": 12.0
     }
 
     if not os.path.exists(config_path):
@@ -315,14 +333,14 @@ def _get_latest_usage(db_path: str) -> Optional[Dict[str, Any]]:
             if row[2]:
                 try:
                     five_hour_resets = datetime.fromisoformat(row[2])
-                except:
+                except Exception:
                     pass
 
             seven_day_resets = None
             if row[3]:
                 try:
                     seven_day_resets = datetime.fromisoformat(row[3])
-                except:
+                except Exception:
                     pass
 
             return {

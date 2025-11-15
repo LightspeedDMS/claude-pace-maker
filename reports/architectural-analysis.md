@@ -1,5 +1,9 @@
 # Claude Pace Maker - Architectural Analysis Report
 
+> ⚠️ **HISTORICAL PLANNING DOCUMENT**
+> This is pre-implementation planning from early development.
+> See [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) for actual implementation.
+
 ## Executive Summary
 
 The Claude Pace Maker epic aims to solve the critical problem of Claude Code burning through 5-hour credit limits during long missions, forcing developers to either stop work or incur overage charges. This architectural analysis evaluates the technical feasibility and provides recommendations for implementing an intelligent pacing system using Claude Code's hook infrastructure.

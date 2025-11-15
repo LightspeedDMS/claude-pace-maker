@@ -165,52 +165,6 @@ def query_recent_snapshots(
         return []
 
 
-def query_snapshots_by_session(
-    db_path: str,
-    session_id: str
-) -> List[Dict]:
-    """
-    Query all usage snapshots for a specific session.
-
-    Args:
-        db_path: Path to SQLite database file
-        session_id: Session identifier to filter by
-
-    Returns:
-        List of snapshot dictionaries, ordered by timestamp DESC
-    """
-    try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            SELECT
-                id,
-                timestamp,
-                five_hour_util,
-                five_hour_resets_at,
-                seven_day_util,
-                seven_day_resets_at,
-                session_id,
-                created_at
-            FROM usage_snapshots
-            WHERE session_id = ?
-            ORDER BY timestamp DESC
-        """, (session_id,))
-
-        rows = cursor.fetchall()
-        conn.close()
-
-        snapshots = [dict(row) for row in rows]
-
-        return snapshots
-
-    except Exception as e:
-        print(f"Error querying snapshots by session: {e}")
-        return []
-
-
 def cleanup_old_snapshots(
     db_path: str,
     retention_days: int = 60
@@ -247,29 +201,3 @@ def cleanup_old_snapshots(
     except Exception as e:
         print(f"Error cleaning up old snapshots: {e}")
         return -1
-
-
-def get_snapshot_count(db_path: str) -> int:
-    """
-    Get total number of snapshots in database.
-
-    Args:
-        db_path: Path to SQLite database file
-
-    Returns:
-        Number of snapshots, or 0 on error
-    """
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT COUNT(*) FROM usage_snapshots")
-        count = cursor.fetchone()[0]
-
-        conn.close()
-
-        return count
-
-    except Exception as e:
-        print(f"Error getting snapshot count: {e}")
-        return 0

@@ -135,34 +135,6 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(len(snapshots), 3)
         self.assertEqual(snapshots[0]['session_id'], 'session-0')  # Most recent
 
-    def test_query_snapshots_by_session(self):
-        """Should filter snapshots by session ID."""
-        from pacemaker.database import initialize_database, insert_usage_snapshot, query_snapshots_by_session
-
-        initialize_database(self.db_path)
-
-        timestamp = datetime.utcnow()
-
-        # Insert snapshots for different sessions
-        for session in ['session-a', 'session-b']:
-            for i in range(3):
-                insert_usage_snapshot(
-                    db_path=self.db_path,
-                    timestamp=timestamp - timedelta(minutes=i * 10),
-                    five_hour_util=float(i * 5),
-                    five_hour_resets_at=timestamp,
-                    seven_day_util=float(i * 3),
-                    seven_day_resets_at=timestamp,
-                    session_id=session
-                )
-
-        # Query specific session
-        snapshots = query_snapshots_by_session(self.db_path, 'session-a')
-
-        self.assertEqual(len(snapshots), 3)
-        for snap in snapshots:
-            self.assertEqual(snap['session_id'], 'session-a')
-
     def test_database_handles_concurrent_inserts(self):
         """Should handle multiple rapid inserts without corruption."""
         from pacemaker.database import initialize_database, insert_usage_snapshot
