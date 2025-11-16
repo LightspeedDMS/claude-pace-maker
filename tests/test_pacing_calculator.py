@@ -277,6 +277,57 @@ class TestPacingCalculator(unittest.TestCase):
 
         self.assertEqual(delay, 120)
 
+    # ====================================================================
+    # BUG #8 FIX TESTS - FUTURE RESET TIME HANDLING
+    # Tests for calculate_time_percent when reset time is more than
+    # window_hours in the future (window hasn't started yet)
+    # ====================================================================
+
+    def test_calculate_time_percent_far_future_reset(self):
+        """Should return 0% when reset time is > window_hours in future (window not started)."""
+        from pacemaker.calculator import calculate_time_percent
+
+        # Reset time 5.76 hours from now (more than 5-hour window)
+        resets_at = datetime.utcnow() + timedelta(hours=5.76)
+        time_pct = calculate_time_percent(resets_at, window_hours=5.0)
+
+        # Window hasn't started yet - should be 0% elapsed
+        self.assertEqual(time_pct, 0.0)
+
+    def test_calculate_time_percent_exactly_window_hours_future(self):
+        """Should return 0% when reset time is exactly window_hours in future."""
+        from pacemaker.calculator import calculate_time_percent
+
+        # Reset time exactly 5.0 hours from now
+        resets_at = datetime.utcnow() + timedelta(hours=5.0)
+        time_pct = calculate_time_percent(resets_at, window_hours=5.0)
+
+        # At exact window start - should be 0% elapsed (allowing for tiny float precision)
+        self.assertLess(time_pct, 0.001)
+
+    def test_calculate_time_percent_at_midpoint(self):
+        """Should return ~50% when reset time is 2.5 hours in future (midpoint of 5-hour window)."""
+        from pacemaker.calculator import calculate_time_percent
+
+        # Reset time 2.5 hours from now (middle of 5-hour window)
+        resets_at = datetime.utcnow() + timedelta(hours=2.5)
+        time_pct = calculate_time_percent(resets_at, window_hours=5.0)
+
+        # Should be approximately 50% elapsed
+        self.assertGreater(time_pct, 49.0)
+        self.assertLess(time_pct, 51.0)
+
+    def test_calculate_time_percent_past_reset(self):
+        """Should return 100% when reset time is in the past."""
+        from pacemaker.calculator import calculate_time_percent
+
+        # Reset time 1 hour ago
+        resets_at = datetime.utcnow() - timedelta(hours=1.0)
+        time_pct = calculate_time_percent(resets_at, window_hours=5.0)
+
+        # Window is complete - should be 100%
+        self.assertEqual(time_pct, 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()

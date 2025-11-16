@@ -91,7 +91,13 @@ def calculate_time_percent(
     # Calculate total window duration in seconds
     window_seconds = window_hours * 3600
 
-    # Calculate elapsed time
+    # BUGFIX #8: If reset time is more than window_hours in the future,
+    # the window hasn't started yet - return 0%
+    # This prevents negative elapsed_seconds calculations
+    if time_remaining >= window_seconds:
+        return 0.0
+
+    # Normal case: calculate elapsed time within the window
     elapsed_seconds = window_seconds - time_remaining
 
     # Convert to percentage
