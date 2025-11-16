@@ -10,7 +10,6 @@ import unittest
 import tempfile
 import os
 import json
-import sys
 import io
 from unittest.mock import patch
 
@@ -86,79 +85,27 @@ class TestSessionLifecycleMarkers(unittest.TestCase):
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
-    def test_detect_implementation_start_marker_in_state(self):
-        """Should detect IMPLEMENTATION_START marker in state file."""
-        from pacemaker.lifecycle import has_implementation_started
-
-        # Create state with IMPLEMENTATION_START marker
-        state = {
-            "session_id": "test-session",
-            "implementation_started": True,
-            "implementation_completed": False,
-        }
-
-        with open(self.state_path, "w") as f:
-            json.dump(state, f)
-
-        result = has_implementation_started(self.state_path)
-        self.assertTrue(result)
-
-    def test_detect_implementation_complete_marker_in_state(self):
-        """Should detect IMPLEMENTATION_COMPLETE marker in state file."""
-        from pacemaker.lifecycle import has_implementation_completed
-
-        # Create state with IMPLEMENTATION_COMPLETE marker
-        state = {
-            "session_id": "test-session",
-            "implementation_started": True,
-            "implementation_completed": True,
-        }
-
-        with open(self.state_path, "w") as f:
-            json.dump(state, f)
-
-        result = has_implementation_completed(self.state_path)
-        self.assertTrue(result)
-
-    def test_no_markers_when_state_empty(self):
-        """Should return False for both markers when state is empty."""
-        from pacemaker.lifecycle import (
-            has_implementation_started,
-            has_implementation_completed,
-        )
-
-        # Create empty state
-        state = {"session_id": "test-session"}
-
-        with open(self.state_path, "w") as f:
-            json.dump(state, f)
-
-        self.assertFalse(has_implementation_started(self.state_path))
-        self.assertFalse(has_implementation_completed(self.state_path))
-
     def test_mark_implementation_started(self):
         """Should set IMPLEMENTATION_START marker in state."""
-        from pacemaker.lifecycle import (
-            mark_implementation_started,
-            has_implementation_started,
-        )
+        from pacemaker.lifecycle import mark_implementation_started
 
         mark_implementation_started(self.state_path)
 
-        # Verify marker was set
-        self.assertTrue(has_implementation_started(self.state_path))
+        # Verify marker was set in state file
+        with open(self.state_path) as f:
+            state = json.load(f)
+        self.assertTrue(state.get("implementation_started", False))
 
     def test_mark_implementation_completed(self):
         """Should set IMPLEMENTATION_COMPLETE marker in state."""
-        from pacemaker.lifecycle import (
-            mark_implementation_completed,
-            has_implementation_completed,
-        )
+        from pacemaker.lifecycle import mark_implementation_completed
 
         mark_implementation_completed(self.state_path)
 
-        # Verify marker was set
-        self.assertTrue(has_implementation_completed(self.state_path))
+        # Verify marker was set in state file
+        with open(self.state_path) as f:
+            state = json.load(f)
+        self.assertTrue(state.get("implementation_completed", False))
 
     def test_clear_lifecycle_markers(self):
         """Should clear both lifecycle markers from state."""
@@ -166,8 +113,6 @@ class TestSessionLifecycleMarkers(unittest.TestCase):
             mark_implementation_started,
             mark_implementation_completed,
             clear_lifecycle_markers,
-            has_implementation_started,
-            has_implementation_completed,
         )
 
         # Set both markers
@@ -178,8 +123,10 @@ class TestSessionLifecycleMarkers(unittest.TestCase):
         clear_lifecycle_markers(self.state_path)
 
         # Verify both are cleared
-        self.assertFalse(has_implementation_started(self.state_path))
-        self.assertFalse(has_implementation_completed(self.state_path))
+        with open(self.state_path) as f:
+            state = json.load(f)
+        self.assertFalse(state.get("implementation_started", False))
+        self.assertFalse(state.get("implementation_completed", False))
 
 
 class TestSessionStartHook(unittest.TestCase):
@@ -224,7 +171,6 @@ class TestSessionStartHook(unittest.TestCase):
     def test_session_start_hook_marks_implementation_started(self):
         """Should mark implementation started when /implement-* is detected."""
         from pacemaker.hook import run_session_start_hook
-        from pacemaker.lifecycle import has_implementation_started
 
         # Create config with tempo enabled
         config = {"tempo_enabled": True}
@@ -238,13 +184,14 @@ class TestSessionStartHook(unittest.TestCase):
             with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
                 run_session_start_hook(user_input)
 
-        # Verify marker was set
-        self.assertTrue(has_implementation_started(self.state_path))
+        # Verify marker was set in state
+        with open(self.state_path) as f:
+            state = json.load(f)
+        self.assertTrue(state.get("implementation_started", False))
 
     def test_session_start_hook_disabled_when_tempo_off(self):
         """Should not mark implementation started when tempo is disabled."""
         from pacemaker.hook import run_session_start_hook
-        from pacemaker.lifecycle import has_implementation_started
 
         # Create config with tempo disabled
         config = {"tempo_enabled": False}
@@ -258,8 +205,8 @@ class TestSessionStartHook(unittest.TestCase):
             with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
                 run_session_start_hook(user_input)
 
-        # Verify marker was NOT set
-        self.assertFalse(has_implementation_started(self.state_path))
+        # Verify marker was NOT set (state file shouldn't exist)
+        self.assertFalse(os.path.exists(self.state_path))
 
 
 class TestStopHook(unittest.TestCase):
@@ -278,127 +225,34 @@ class TestStopHook(unittest.TestCase):
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
-    def test_stop_hook_prompts_when_implementation_incomplete(self):
-        """Should prompt when IMPLEMENTATION_START exists but COMPLETE is missing."""
-        from pacemaker.hook import run_stop_hook
-        from pacemaker.lifecycle import mark_implementation_started
-
-        # Create config with tempo enabled
-        config = {"tempo_enabled": True}
-        with open(self.config_path, "w") as f:
-            json.dump(config, f)
-
-        # Mark implementation started but not completed
-        mark_implementation_started(self.state_path)
-
-        # Capture stdout
-        captured = io.StringIO()
-        sys.stdout = captured
-
-        try:
-            with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
-                with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
-                    result = run_stop_hook()
-
-            output = captured.getvalue()
-
-            # Should block session end
-            self.assertEqual(result["decision"], "block")
-            self.assertIn("IMPLEMENTATION_COMPLETE", output)
-        finally:
-            sys.stdout = sys.__stdout__
-
-    def test_stop_hook_allows_when_implementation_complete(self):
-        """Should allow session end when IMPLEMENTATION_COMPLETE is detected."""
-        from pacemaker.hook import run_stop_hook
-        from pacemaker.lifecycle import (
-            mark_implementation_started,
-            mark_implementation_completed,
-        )
-
-        # Create config with tempo enabled
-        config = {"tempo_enabled": True}
-        with open(self.config_path, "w") as f:
-            json.dump(config, f)
-
-        # Mark implementation started AND completed
-        mark_implementation_started(self.state_path)
-        mark_implementation_completed(self.state_path)
-
-        with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
-            with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
-                result = run_stop_hook()
-
-        # Should allow session end
-        self.assertEqual(result["decision"], "allow")
-
-    def test_stop_hook_allows_when_no_implementation_started(self):
-        """Should allow session end when no IMPLEMENTATION_START marker exists."""
-        from pacemaker.hook import run_stop_hook
-
-        # Create config with tempo enabled
-        config = {"tempo_enabled": True}
-        with open(self.config_path, "w") as f:
-            json.dump(config, f)
-
-        # No markers set - just exploring code
-        state = {"session_id": "test-session"}
-        with open(self.state_path, "w") as f:
-            json.dump(state, f)
-
-        with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
-            with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
-                result = run_stop_hook()
-
-        # Should allow session end
-        self.assertEqual(result["decision"], "allow")
+    # NOTE: Stop hook tests have been moved to test_stop_hook_conversation_scanning.py
+    # The Stop hook now scans conversation transcripts instead of state files
 
     def test_stop_hook_allows_when_tempo_disabled(self):
         """Should allow session end when tempo tracking is disabled."""
         from pacemaker.hook import run_stop_hook
-        from pacemaker.lifecycle import mark_implementation_started
 
         # Create config with tempo DISABLED
         config = {"tempo_enabled": False}
         with open(self.config_path, "w") as f:
             json.dump(config, f)
 
-        # Mark implementation started (should be ignored)
-        mark_implementation_started(self.state_path)
+        # Mock stdin (doesn't matter what's in transcript when tempo disabled)
+        mock_stdin = io.StringIO(json.dumps({"transcript_path": "/nonexistent"}))
 
         with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
             with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
-                result = run_stop_hook()
+                with patch("sys.stdin", mock_stdin):
+                    result = run_stop_hook()
 
         # Should allow session end (tempo disabled)
         self.assertEqual(result["decision"], "allow")
 
     def test_stop_hook_prevents_infinite_loop(self):
-        """Should prevent infinite loop by tracking prompt count."""
-        from pacemaker.hook import run_stop_hook
-        from pacemaker.lifecycle import mark_implementation_started
-
-        # Create config with tempo enabled
-        config = {"tempo_enabled": True}
-        with open(self.config_path, "w") as f:
-            json.dump(config, f)
-
-        # Mark implementation started
-        mark_implementation_started(self.state_path)
-
-        # First call - should prompt
-        with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
-            with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
-                result1 = run_stop_hook()
-
-        self.assertEqual(result1["decision"], "block")
-
-        # Second call - should allow (prevent loop)
-        with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
-            with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
-                result2 = run_stop_hook()
-
-        self.assertEqual(result2["decision"], "allow")
+        """Should prevent infinite loop by tracking prompt count - see test_stop_hook_conversation_scanning.py for full test."""
+        # This test is now in test_stop_hook_conversation_scanning.py
+        # which uses the conversation scanning approach
+        pass
 
 
 class TestImplementationCompleteDetection(unittest.TestCase):
@@ -410,21 +264,83 @@ class TestImplementationCompleteDetection(unittest.TestCase):
 
         self.assertTrue(is_implementation_complete_response("IMPLEMENTATION_COMPLETE"))
 
-    def test_reject_implementation_complete_with_extra_text(self):
-        """Should reject IMPLEMENTATION_COMPLETE with additional text."""
+    def test_detect_implementation_complete_with_text_before(self):
+        """Should detect IMPLEMENTATION_COMPLETE with text before it."""
+        from pacemaker.lifecycle import is_implementation_complete_response
+
+        self.assertTrue(
+            is_implementation_complete_response("All done. IMPLEMENTATION_COMPLETE")
+        )
+        self.assertTrue(
+            is_implementation_complete_response(
+                "Tests passed, code reviewed.\n\nIMPLEMENTATION_COMPLETE"
+            )
+        )
+
+    def test_detect_implementation_complete_with_text_after(self):
+        """Should detect IMPLEMENTATION_COMPLETE with text after it."""
+        from pacemaker.lifecycle import is_implementation_complete_response
+
+        self.assertTrue(
+            is_implementation_complete_response("IMPLEMENTATION_COMPLETE. Moving on.")
+        )
+        self.assertTrue(
+            is_implementation_complete_response(
+                "IMPLEMENTATION_COMPLETE\n\nDeploying now."
+            )
+        )
+
+    def test_detect_implementation_complete_with_text_before_and_after(self):
+        """Should detect IMPLEMENTATION_COMPLETE with text before and after."""
+        from pacemaker.lifecycle import is_implementation_complete_response
+
+        self.assertTrue(
+            is_implementation_complete_response(
+                "All tests pass.\n\nIMPLEMENTATION_COMPLETE\n\nDeploying now."
+            )
+        )
+        self.assertTrue(
+            is_implementation_complete_response(
+                "Code review approved. IMPLEMENTATION_COMPLETE Ready for production."
+            )
+        )
+
+    def test_detect_implementation_complete_multiline(self):
+        """Should detect IMPLEMENTATION_COMPLETE in multiline response."""
+        from pacemaker.lifecycle import is_implementation_complete_response
+
+        multiline = """All tasks completed successfully:
+- Unit tests: PASS
+- Integration tests: PASS
+- Code review: APPROVED
+
+IMPLEMENTATION_COMPLETE
+
+Ready for deployment."""
+
+        self.assertTrue(is_implementation_complete_response(multiline))
+
+    def test_reject_lowercase_implementation_complete(self):
+        """Should reject lowercase 'implementation_complete' (case sensitive)."""
+        from pacemaker.lifecycle import is_implementation_complete_response
+
+        self.assertFalse(is_implementation_complete_response("implementation_complete"))
+        self.assertFalse(is_implementation_complete_response("Implementation_Complete"))
+        self.assertFalse(is_implementation_complete_response("IMPLEMENTATION_complete"))
+
+    def test_reject_partial_match_in_variable_name(self):
+        """Should reject partial matches like MY_IMPLEMENTATION_COMPLETE_VAR."""
         from pacemaker.lifecycle import is_implementation_complete_response
 
         self.assertFalse(
-            is_implementation_complete_response(
-                "IMPLEMENTATION_COMPLETE - all tests pass"
-            )
+            is_implementation_complete_response("MY_IMPLEMENTATION_COMPLETE_THING")
         )
         self.assertFalse(
-            is_implementation_complete_response("Yes, IMPLEMENTATION_COMPLETE")
+            is_implementation_complete_response("IMPLEMENTATION_COMPLETE_VAR")
         )
         self.assertFalse(
-            is_implementation_complete_response("implementation_complete")
-        )  # case sensitive
+            is_implementation_complete_response("PREFIX_IMPLEMENTATION_COMPLETE")
+        )
 
     def test_allow_implementation_complete_with_whitespace(self):
         """Should allow IMPLEMENTATION_COMPLETE with surrounding whitespace."""
@@ -435,6 +351,20 @@ class TestImplementationCompleteDetection(unittest.TestCase):
         )
         self.assertTrue(
             is_implementation_complete_response("\nIMPLEMENTATION_COMPLETE\n")
+        )
+        self.assertTrue(
+            is_implementation_complete_response("\t\tIMPLEMENTATION_COMPLETE\t\t")
+        )
+
+    def test_reject_empty_or_missing_marker(self):
+        """Should reject empty strings or responses without marker."""
+        from pacemaker.lifecycle import is_implementation_complete_response
+
+        self.assertFalse(is_implementation_complete_response(""))
+        self.assertFalse(is_implementation_complete_response("All tasks complete"))
+        self.assertFalse(is_implementation_complete_response("Done"))
+        self.assertFalse(
+            is_implementation_complete_response("Implementation is complete")
         )
 
 

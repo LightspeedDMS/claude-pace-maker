@@ -134,6 +134,7 @@ install_hooks() {
   cp "$SCRIPT_DIR/src/hooks/stop.sh" "$HOOKS_DIR/"
   cp "$SCRIPT_DIR/src/hooks/post-tool-use.sh" "$HOOKS_DIR/"
   cp "$SCRIPT_DIR/src/hooks/user-prompt-submit.sh" "$HOOKS_DIR/"
+  cp "$SCRIPT_DIR/src/hooks/session-start.sh" "$HOOKS_DIR/"
 
   # Set executable permissions
   chmod +x "$HOOKS_DIR"/*.sh
@@ -198,6 +199,13 @@ EOF
 register_hooks() {
   echo "Registering hooks..."
 
+  # Full paths for hooks
+  HOOKS_DIR="$HOME/.claude/hooks"
+  SESSION_START_HOOK="$HOOKS_DIR/session-start.sh"
+  USER_PROMPT_HOOK="$HOOKS_DIR/user-prompt-submit.sh"
+  POST_HOOK="$HOOKS_DIR/post-tool-use.sh"
+  STOP_HOOK="$HOOKS_DIR/stop.sh"
+
   # Handle settings file - backup if has content, initialize if empty or missing
   if [ -f "$SETTINGS_FILE" ]; then
     if [ -s "$SETTINGS_FILE" ]; then
@@ -214,48 +222,42 @@ register_hooks() {
     echo "{}" > "$SETTINGS_FILE"
   fi
 
-  # Update settings.json with hook registrations using merge logic
-  # Use a temp file to avoid issues with jq in-place editing
   TEMP_FILE=$(mktemp)
-  trap 'rm -f "$TEMP_FILE"' EXIT ERR
 
-  HOOK_DIR="$HOME/.claude/hooks"
+  # Remove ALL pace-maker hooks, then add them back
+  # This ensures no duplicates
+  jq --arg session_start "$SESSION_START_HOOK" \
+     --arg user_prompt "$USER_PROMPT_HOOK" \
+     --arg post_hook "$POST_HOOK" \
+     --arg stop_hook "$STOP_HOOK" \
+    '
+     # Remove all pace-maker hooks (handles both ~ and full paths)
+     .hooks.SessionStart = [(.hooks.SessionStart // [])[] |
+       select(.hooks[0].command | contains("session-start.sh") | not)] |
+     .hooks.UserPromptSubmit = [(.hooks.UserPromptSubmit // [])[] |
+       select(.hooks[0].command | contains("user-prompt-submit.sh") | not)] |
+     .hooks.PostToolUse = [(.hooks.PostToolUse // [])[] |
+       select(.hooks[0].command | contains("post-tool-use.sh") | not)] |
+     .hooks.Stop = [(.hooks.Stop // [])[] |
+       select(.hooks[0].command | contains("stop.sh") | not)] |
 
-  jq --arg stop_hook "$HOOK_DIR/stop.sh" \
-     --arg post_hook "$HOOK_DIR/post-tool-use.sh" \
-     --arg prompt_hook "$HOOK_DIR/user-prompt-submit.sh" \
-     '
-     .hooks.Stop = (
-       (.hooks.Stop // []) |
-       if type != "array" then [] else . end |
-       if ([.[] | .hooks[]? | select(.command == $stop_hook)] | length > 0) then .
-       else . + [{"hooks": [{"type": "command", "command": $stop_hook}]}]
-       end
-     ) |
-     .hooks.PostToolUse = (
-       (.hooks.PostToolUse // []) |
-       if type != "array" then [] else . end |
-       if ([.[] | .hooks[]? | select(.command == $post_hook)] | length > 0) then .
-       else . + [{"hooks": [{"type": "command", "command": $post_hook, "timeout": 360}]}]
-       end
-     ) |
-     .hooks.UserPromptSubmit = (
-       (.hooks.UserPromptSubmit // []) |
-       if type != "array" then [] else . end |
-       if ([.[] | .hooks[]? | select(.command == $prompt_hook)] | length > 0) then .
-       else . + [{"hooks": [{"type": "command", "command": $prompt_hook}]}]
-       end
-     )
-     ' "$SETTINGS_FILE" > "$TEMP_FILE"
+     # Add them back with full paths
+     .hooks.SessionStart += [{"hooks": [{"type": "command", "command": $session_start}]}] |
+     .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $user_prompt}]}] |
+     .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $post_hook, "timeout": 360}]}] |
+     .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_hook}]}]
+    ' "$SETTINGS_FILE" > "$TEMP_FILE"
 
   if [ $? -ne 0 ]; then
     echo -e "${RED}✗ Failed to register hooks - jq command failed${NC}"
+    rm -f "$TEMP_FILE"
     return 1
   fi
 
   # Validate the result
   if ! jq -e '.hooks' "$TEMP_FILE" > /dev/null 2>&1; then
     echo -e "${RED}✗ Failed to register hooks - invalid JSON structure${NC}"
+    rm -f "$TEMP_FILE"
     return 1
   fi
 
@@ -274,6 +276,7 @@ verify_installation() {
   [ -f "$HOOKS_DIR/stop.sh" ] || { echo -e "${RED}✗ stop.sh missing${NC}"; ((errors++)); }
   [ -f "$HOOKS_DIR/post-tool-use.sh" ] || { echo -e "${RED}✗ post-tool-use.sh missing${NC}"; ((errors++)); }
   [ -f "$HOOKS_DIR/user-prompt-submit.sh" ] || { echo -e "${RED}✗ user-prompt-submit.sh missing${NC}"; ((errors++)); }
+  [ -f "$HOOKS_DIR/session-start.sh" ] || { echo -e "${RED}✗ session-start.sh missing${NC}"; ((errors++)); }
   [ -f "$PACEMAKER_DIR/config.json" ] || { echo -e "${RED}✗ config.json missing${NC}"; ((errors++)); }
   [ -f "$PACEMAKER_DIR/usage.db" ] || { echo -e "${RED}✗ usage.db missing${NC}"; ((errors++)); }
 
@@ -281,6 +284,7 @@ verify_installation() {
   [ -x "$HOOKS_DIR/stop.sh" ] || { echo -e "${RED}✗ stop.sh not executable${NC}"; ((errors++)); }
   [ -x "$HOOKS_DIR/post-tool-use.sh" ] || { echo -e "${RED}✗ post-tool-use.sh not executable${NC}"; ((errors++)); }
   [ -x "$HOOKS_DIR/user-prompt-submit.sh" ] || { echo -e "${RED}✗ user-prompt-submit.sh not executable${NC}"; ((errors++)); }
+  [ -x "$HOOKS_DIR/session-start.sh" ] || { echo -e "${RED}✗ session-start.sh not executable${NC}"; ((errors++)); }
 
   # Check database schema using Python
   local table_exists=$(python3 - <<EOF

@@ -55,7 +55,7 @@ pace-maker tempo off
 
 **Tempo Tracking:**
 - Tempo tracking prevents Claude from prematurely ending implementation sessions
-- When you run `/implement-story` or `/implement-epic`, the Stop hook requires Claude to declare `IMPLEMENTATION_COMPLETE` before allowing the session to end
+- When Claude says `IMPLEMENTATION_START`, the Stop hook requires Claude to declare `IMPLEMENTATION_COMPLETE` before allowing the session to end
 - Enabled by default - disable with `pace-maker tempo off` if you don't want this behavior
 
 ### Configuration
@@ -88,6 +88,17 @@ Edit `~/.claude-pace-maker/config.json`:
 - `preload_hours`: Hours of preload allowance on weekdays (default: `12.0`)
 
 ## How It Works
+
+### Hooks
+
+Pace Maker uses four Claude Code hooks:
+
+1. **SessionStart Hook**: When Claude Code starts, shows the IMPLEMENTATION LIFECYCLE PROTOCOL reminder (when tempo enabled)
+2. **UserPromptSubmit Hook**: Intercepts `pace-maker` user commands
+3. **PostToolUse Hook**: After each tool execution, checks current credit usage and applies throttling
+4. **Stop Hook**: Prevents premature session termination when IMPLEMENTATION_START marker is detected without IMPLEMENTATION_COMPLETE (when tempo enabled)
+
+### Throttling Flow
 
 1. **PostToolUse Hook**: After each tool execution, checks current credit usage
 2. **12-Hour Preload**: First 12 weekday hours get flat 10% allowance

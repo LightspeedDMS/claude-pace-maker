@@ -274,7 +274,7 @@ WEEKLY LIMIT:
 
 TEMPO TRACKING:
   Session lifecycle tracking prevents Claude from prematurely ending
-  implementation sessions. When you run /implement-story or /implement-epic,
+  implementation sessions. When Claude says IMPLEMENTATION_START,
   the Stop hook will require Claude to declare IMPLEMENTATION_COMPLETE
   before allowing the session to end.
 

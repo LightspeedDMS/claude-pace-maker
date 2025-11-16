@@ -353,5 +353,135 @@ class TestAdaptiveThrottleIntegration(unittest.TestCase):
         self.assertEqual(result["strategy"], "emergency")
 
 
+class TestImplementMarkerDetection(unittest.TestCase):
+    """Test /implement-* marker detection in UserPromptSubmit hook."""
+
+    def setUp(self):
+        """Set up temp environment."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.config_path = os.path.join(self.temp_dir, "config.json")
+        self.state_path = os.path.join(self.temp_dir, "state.json")
+
+    def tearDown(self):
+        """Clean up."""
+        import shutil
+
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+
+    def test_implement_story_sets_marker(self):
+        """Should set implementation_started marker when /implement-story is detected."""
+        from pacemaker.hook import run_session_start_hook
+
+        # Create enabled tempo config
+        config = {"tempo_enabled": True}
+        with open(self.config_path, "w") as f:
+            json.dump(config, f)
+
+        # Capture stdout
+        captured = io.StringIO()
+        sys.stdout = captured
+
+        try:
+            with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
+                with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
+                    result = run_session_start_hook("/implement-story #7")
+
+            output = captured.getvalue()
+
+            # Should return True indicating implementation started
+            self.assertTrue(result)
+
+            # Should NOT inject reminder text (that's SessionStart hook's job)
+            self.assertNotIn("IMPLEMENTATION LIFECYCLE PROTOCOL", output)
+
+            # Should set implementation_started marker in state
+            with open(self.state_path) as f:
+                state = json.load(f)
+            self.assertTrue(state.get("implementation_started", False))
+        finally:
+            sys.stdout = sys.__stdout__
+
+    def test_implement_epic_sets_marker(self):
+        """Should set implementation_started marker when /implement-epic is detected."""
+        from pacemaker.hook import run_session_start_hook
+
+        # Create enabled tempo config
+        config = {"tempo_enabled": True}
+        with open(self.config_path, "w") as f:
+            json.dump(config, f)
+
+        # Suppress stdout
+        captured = io.StringIO()
+        sys.stdout = captured
+
+        try:
+            with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
+                with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
+                    result = run_session_start_hook("/implement-epic #5")
+
+            # Should return True
+            self.assertTrue(result)
+
+            # Should set marker in state
+            with open(self.state_path) as f:
+                state = json.load(f)
+            self.assertTrue(state.get("implementation_started", False))
+        finally:
+            sys.stdout = sys.__stdout__
+
+    def test_regular_command_no_marker(self):
+        """Should NOT set marker for regular commands."""
+        from pacemaker.hook import run_session_start_hook
+
+        # Create enabled tempo config
+        config = {"tempo_enabled": True}
+        with open(self.config_path, "w") as f:
+            json.dump(config, f)
+
+        # Suppress stdout
+        captured = io.StringIO()
+        sys.stdout = captured
+
+        try:
+            with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
+                with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
+                    result = run_session_start_hook("help me debug this code")
+
+            # Should return False
+            self.assertFalse(result)
+
+            # Should NOT create state file
+            self.assertFalse(os.path.exists(self.state_path))
+        finally:
+            sys.stdout = sys.__stdout__
+
+    def test_no_marker_when_tempo_disabled(self):
+        """Should NOT set marker when tempo_enabled is False."""
+        from pacemaker.hook import run_session_start_hook
+
+        # Create disabled tempo config
+        config = {"tempo_enabled": False}
+        with open(self.config_path, "w") as f:
+            json.dump(config, f)
+
+        # Suppress stdout
+        captured = io.StringIO()
+        sys.stdout = captured
+
+        try:
+            with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
+                with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
+                    result = run_session_start_hook("/implement-story #7")
+
+            # Should return False (no implementation started)
+            self.assertFalse(result)
+
+            # Should NOT create state file
+            self.assertFalse(os.path.exists(self.state_path))
+        finally:
+            sys.stdout = sys.__stdout__
+
+
 if __name__ == "__main__":
     unittest.main()

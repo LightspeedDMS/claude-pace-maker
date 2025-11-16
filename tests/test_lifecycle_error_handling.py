@@ -27,29 +27,9 @@ class TestLifecycleErrorHandling(unittest.TestCase):
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
 
-    def test_has_implementation_started_with_corrupted_json(self):
-        """Should return False when state file contains invalid JSON."""
-        from pacemaker.lifecycle import has_implementation_started
+    # NOTE: has_implementation_started() removed - Stop hook now scans conversation transcripts
 
-        # Write corrupted JSON to state file
-        with open(self.state_path, "w") as f:
-            f.write("{invalid json content!@#")
-
-        # Should gracefully return False instead of crashing
-        result = has_implementation_started(self.state_path)
-        self.assertFalse(result)
-
-    def test_has_implementation_completed_with_corrupted_json(self):
-        """Should return False when state file contains invalid JSON."""
-        from pacemaker.lifecycle import has_implementation_completed
-
-        # Write corrupted JSON to state file
-        with open(self.state_path, "w") as f:
-            f.write("not valid json at all")
-
-        # Should gracefully return False instead of crashing
-        result = has_implementation_completed(self.state_path)
-        self.assertFalse(result)
+    # NOTE: has_implementation_completed() removed - Stop hook now scans conversation transcripts
 
     def test_mark_implementation_started_with_corrupted_existing_state(self):
         """Should handle corrupted state file gracefully when marking started."""
@@ -183,14 +163,7 @@ class TestLifecycleErrorHandling(unittest.TestCase):
         count = get_stop_hook_prompt_count(nonexistent)
         self.assertEqual(count, 0)
 
-    def test_has_implementation_completed_with_nonexistent_file(self):
-        """Should return False when state file doesn't exist."""
-        from pacemaker.lifecycle import has_implementation_completed
-
-        nonexistent = os.path.join(self.temp_dir, "does_not_exist.json")
-
-        result = has_implementation_completed(nonexistent)
-        self.assertFalse(result)
+    # NOTE: has_implementation_completed() removed - Stop hook now scans conversation transcripts
 
     def test_increment_stop_hook_prompt_count_with_file_write_error(self):
         """Should handle file write errors gracefully."""

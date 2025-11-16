@@ -5,13 +5,14 @@
 1. [System Overview](#system-overview)
 2. [Core Components](#core-components)
 3. [Hook Integration](#hook-integration)
-4. [Throttling Algorithms](#throttling-algorithms)
-5. [Weekend-Aware Logic](#weekend-aware-logic)
-6. [Safety Buffer System](#safety-buffer-system)
-7. [Data Flow](#data-flow)
-8. [Configuration](#configuration)
-9. [Database Schema](#database-schema)
-10. [Error Handling](#error-handling)
+4. [Tempo System](#tempo-system)
+5. [Throttling Algorithms](#throttling-algorithms)
+6. [Weekend-Aware Logic](#weekend-aware-logic)
+7. [Safety Buffer System](#safety-buffer-system)
+8. [Data Flow](#data-flow)
+9. [Configuration](#configuration)
+10. [Database Schema](#database-schema)
+11. [Error Handling](#error-handling)
 
 ---
 
@@ -229,6 +230,72 @@ Handles `pace-maker status/on/off` commands.
 3. If no: pass through to Claude unchanged
 
 **Python Handler**: `src/pacemaker/hook.py:run_user_prompt_submit()`
+
+### SessionStart Hook
+
+**Trigger**: When Claude Code session starts
+**Script**: `~/.claude/hooks/session-start.sh`
+**Purpose**: Show IMPLEMENTATION LIFECYCLE PROTOCOL reminder
+
+**Flow**:
+1. Check if tempo is enabled
+2. If yes: print reminder text to Claude about IMPLEMENTATION_START/COMPLETE markers
+3. If no: do nothing
+
+**Python Handler**: `src/pacemaker/hook.py:run_session_start()`
+
+### Stop Hook
+
+**Trigger**: When Claude Code session attempts to stop/exit
+**Script**: `~/.claude/hooks/stop.sh`
+**Purpose**: Prevent premature session termination during implementations
+
+**Flow**:
+1. Check if tempo is enabled
+2. Read conversation transcript from JSONL file
+3. Scan for IMPLEMENTATION_START marker in conversation text
+4. If START found but no IMPLEMENTATION_COMPLETE:
+   - Check prompt count (prevent infinite loop)
+   - If first time: block exit and prompt Claude to finish or declare complete
+   - If already prompted once: allow exit (infinite loop prevention)
+5. If both markers found or no START marker: allow exit
+
+**Python Handler**: `src/pacemaker/hook.py:run_stop_hook()`
+
+---
+
+## Tempo System
+
+The tempo system prevents Claude from prematurely ending implementation sessions by enforcing a simple protocol using text markers.
+
+### How It Works
+
+**Protocol**:
+1. Claude says `IMPLEMENTATION_START` when beginning implementation work
+2. Claude says `IMPLEMENTATION_COMPLETE` when all tasks are fully done
+3. Stop hook scans conversation transcript for these markers
+4. If START found without COMPLETE, Stop hook blocks session exit
+
+**Key Features**:
+- **Pure marker detection**: No slash command dependency
+- **Conversation scanning**: Reads entire JSONL transcript
+- **Infinite loop prevention**: Only prompts once per session
+- **Configurable**: Can be disabled with `tempo_enabled: false`
+
+**Implementation** (`src/pacemaker/lifecycle.py`):
+- `IMPLEMENTATION_REMINDER_TEXT`: Reminder shown at session start
+- `get_stop_hook_prompt_count()`: Track how many times Stop hook has prompted
+- `increment_stop_hook_prompt_count()`: Increment counter to prevent loops
+
+**State Tracking**:
+The system uses `~/.claude-pace-maker/state.json` to track:
+```json
+{
+  "stop_hook_prompt_count": 0
+}
+```
+
+This counter is reset to 0 when a new session starts or when state is cleared.
 
 ---
 
@@ -693,6 +760,7 @@ python -m pytest tests/ --cov=src/pacemaker --cov-report=html
 
 ---
 
-**Document Version**: 1.0
-**Last Updated**: 2025-11-14
+**Document Version**: 1.1
+**Last Updated**: 2025-11-16
 **Maintainer**: Claude Code Pace Maker Team
+**Changes**: Added Tempo System section, documented SessionStart and Stop hooks, removed slash command references

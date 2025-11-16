@@ -167,9 +167,6 @@ def run_user_prompt_submit():
             # Fallback to treating as plain text if not JSON
             user_input = raw_input
 
-        # Check for session start (implementation commands)
-        run_session_start_hook(user_input)
-
         # Handle the prompt
         result = user_commands.handle_user_prompt(
             user_input, DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH
@@ -197,12 +194,12 @@ def run_user_prompt_submit():
         sys.exit(0)
 
 
-def run_session_start_hook(user_input: str):
+def run_session_start():
     """
-    Handle session start hook - detect /implement-* commands.
+    Handle SessionStart hook - show IMPLEMENTATION LIFECYCLE PROTOCOL reminder.
 
-    Args:
-        user_input: User's input text
+    This function runs when a Claude Code session starts.
+    If tempo is enabled, it prints the reminder text to stdout so Claude sees it.
     """
     from . import lifecycle
 
@@ -212,18 +209,49 @@ def run_session_start_hook(user_input: str):
         if not config.get("tempo_enabled", True):
             return  # Tempo disabled - do nothing
 
-        # Check if this is an implementation command
-        if lifecycle.should_mark_implementation_start(user_input):
-            # Mark implementation started
-            lifecycle.mark_implementation_started(DEFAULT_STATE_PATH)
+        # Print reminder text to stdout so Claude sees it
+        print(lifecycle.IMPLEMENTATION_REMINDER_TEXT, file=sys.stdout, flush=True)
+
     except Exception as e:
-        # Graceful degradation - log but don't crash
+        # Graceful degradation - log error but don't crash
         print(f"[PACE-MAKER ERROR] Session start hook: {e}", file=sys.stderr)
+
+
+def read_conversation_from_transcript(transcript_path: str) -> str:
+    """
+    Read JSONL transcript and extract all conversation text.
+
+    Args:
+        transcript_path: Path to the JSONL transcript file
+
+    Returns:
+        Combined text from all messages in conversation
+    """
+    try:
+        conversation_parts = []
+
+        with open(transcript_path, "r") as f:
+            for line in f:
+                entry = json.loads(line)
+                content = entry.get("content", [])
+
+                # Extract text from content
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            conversation_parts.append(block.get("text", ""))
+                elif isinstance(content, str):
+                    conversation_parts.append(content)
+
+        return "\n".join(conversation_parts)
+
+    except Exception:
+        return ""
 
 
 def run_stop_hook():
     """
-    Handle Stop hook - check for incomplete implementation.
+    Handle Stop hook - scan conversation for IMPLEMENTATION markers.
 
     Returns:
         Dictionary with:
@@ -238,31 +266,49 @@ def run_stop_hook():
         if not config.get("tempo_enabled", True):
             return {"decision": "allow"}  # Tempo disabled - allow exit
 
-        # Check if implementation started
-        if not lifecycle.has_implementation_started(DEFAULT_STATE_PATH):
-            return {"decision": "allow"}  # No implementation - allow exit
+        # Read hook data from stdin to get transcript path
+        raw_input = sys.stdin.read()
+        if not raw_input:
+            return {"decision": "allow"}
 
-        # Check if implementation completed
-        if lifecycle.has_implementation_completed(DEFAULT_STATE_PATH):
-            return {"decision": "allow"}  # Implementation complete - allow exit
+        hook_data = json.loads(raw_input)
+        transcript_path = hook_data.get("transcript_path")
 
-        # Check prompt count for infinite loop prevention
+        if not transcript_path or not os.path.exists(transcript_path):
+            return {"decision": "allow"}
+
+        # Read entire conversation from transcript
+        conversation_text = read_conversation_from_transcript(transcript_path)
+
+        # Check for IMPLEMENTATION_START in conversation
+        has_start = "IMPLEMENTATION_START" in conversation_text
+
+        if not has_start:
+            # No implementation started - allow exit
+            return {"decision": "allow"}
+
+        # Check for IMPLEMENTATION_COMPLETE in conversation
+        has_complete = "IMPLEMENTATION_COMPLETE" in conversation_text
+
+        if has_complete:
+            # Implementation complete - allow exit
+            return {"decision": "allow"}
+
+        # Implementation started but not complete - check prompt count for infinite loop
         prompt_count = lifecycle.get_stop_hook_prompt_count(DEFAULT_STATE_PATH)
         if prompt_count > 0:
-            # Already prompted once - allow exit to prevent loop
-            return {"decision": "allow"}
+            return {"decision": "allow"}  # Prevent infinite loop
 
         # Increment prompt count
         lifecycle.increment_stop_hook_prompt_count(DEFAULT_STATE_PATH)
 
-        # Implementation incomplete - block and prompt
+        # Block and prompt
         prompt = (
             "You started an implementation but haven't declared IMPLEMENTATION_COMPLETE. "
             "If all tasks are done, respond with exactly 'IMPLEMENTATION_COMPLETE' (nothing else). "
             "If not done, continue working."
         )
         print(prompt, file=sys.stdout, flush=True)
-
         return {"decision": "block", "reason": prompt}
 
     except Exception as e:
@@ -273,6 +319,11 @@ def run_stop_hook():
 
 def main():
     """Entry point for hook script."""
+    # Check if this is session start hook
+    if len(sys.argv) > 1 and sys.argv[1] == "session_start":
+        run_session_start()
+        return
+
     # Check if this is stop hook
     if len(sys.argv) > 1 and sys.argv[1] == "stop":
         result = run_stop_hook()
