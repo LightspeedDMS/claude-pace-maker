@@ -12,6 +12,8 @@ import re
 import tempfile
 from typing import Dict, Optional, Any
 
+from .constants import DEFAULT_CONFIG
+
 
 def parse_command(user_input: str) -> Dict[str, Any]:
     """
@@ -23,32 +25,63 @@ def parse_command(user_input: str) -> Dict[str, Any]:
     Returns:
         Dictionary with:
         - is_pace_maker_command: bool
-        - command: str ('on'|'off'|'status') if pace-maker command, else None
+        - command: str ('on'|'off'|'status'|'help') if pace-maker command, else None
+        - subcommand: str (for 'weekly-limit on/off' or 'tempo on/off') if applicable, else None
     """
     # Normalize input: lowercase and strip extra whitespace
     normalized = user_input.strip().lower()
     normalized = re.sub(r"\s+", " ", normalized)  # Collapse multiple spaces
 
-    # Pattern: pace-maker (on|off|status)
-    pattern = r"^pace-maker\s+(on|off|status)$"
-    match = re.match(pattern, normalized)
+    # Pattern 1: pace-maker (on|off|status|help)
+    pattern_simple = r"^pace-maker\s+(on|off|status|help)$"
+    match_simple = re.match(pattern_simple, normalized)
 
-    if match:
-        return {"is_pace_maker_command": True, "command": match.group(1)}
-    else:
-        return {"is_pace_maker_command": False, "command": None}
+    if match_simple:
+        return {
+            "is_pace_maker_command": True,
+            "command": match_simple.group(1),
+            "subcommand": None,
+        }
+
+    # Pattern 2: pace-maker weekly-limit (on|off)
+    pattern_weekly = r"^pace-maker\s+weekly-limit\s+(.+)$"
+    match_weekly = re.match(pattern_weekly, normalized)
+
+    if match_weekly:
+        return {
+            "is_pace_maker_command": True,
+            "command": "weekly-limit",
+            "subcommand": match_weekly.group(1),
+        }
+
+    # Pattern 3: pace-maker tempo (on|off)
+    pattern_tempo = r"^pace-maker\s+tempo\s+(.+)$"
+    match_tempo = re.match(pattern_tempo, normalized)
+
+    if match_tempo:
+        return {
+            "is_pace_maker_command": True,
+            "command": "tempo",
+            "subcommand": match_tempo.group(1),
+        }
+
+    return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
 def execute_command(
-    command: str, config_path: str, db_path: Optional[str] = None
+    command: str,
+    config_path: str,
+    db_path: Optional[str] = None,
+    subcommand: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute a pace-maker command.
 
     Args:
-        command: Command to execute ('on'|'off'|'status')
+        command: Command to execute ('on'|'off'|'status'|'help'|'weekly-limit'|'tempo')
         config_path: Path to configuration file
         db_path: Optional path to database (for status command)
+        subcommand: Optional subcommand (for 'weekly-limit on/off' or 'tempo on/off')
 
     Returns:
         Dictionary with:
@@ -63,6 +96,12 @@ def execute_command(
         return _execute_off(config_path)
     elif command == "status":
         return _execute_status(config_path, db_path)
+    elif command == "help":
+        return _execute_help(config_path)
+    elif command == "weekly-limit":
+        return _execute_weekly_limit(config_path, subcommand)
+    elif command == "tempo":
+        return _execute_tempo(config_path, subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -136,10 +175,8 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
                     status_text += f"\n  Resets at: {usage_data['five_hour_resets_at']}"
 
             # Only show 7-day window for Pro Max accounts (enterprise has no 7-day limit)
-            if (
-                usage_data.get("seven_day_util") is not None
-                and usage_data.get("seven_day_util") > 0
-            ):
+            seven_day_util = usage_data.get("seven_day_util")
+            if seven_day_util is not None and seven_day_util > 0:
                 # API already returns as percentage
                 status_text += (
                     f"\n  7-day window: {usage_data['seven_day_util']:.1f}% used"
@@ -159,6 +196,7 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
                     max_delay=config.get("max_delay", 120),
                     safety_buffer_pct=config.get("safety_buffer_pct", 95.0),
                     preload_hours=config.get("preload_hours", 12.0),
+                    weekly_limit_enabled=config.get("weekly_limit_enabled", True),
                 )
 
                 status_text += "\n\nPacing Status:"
@@ -215,6 +253,110 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         return {"success": False, "message": f"Error getting status: {str(e)}"}
 
 
+def _execute_help(config_path: str) -> Dict[str, Any]:
+    """Display help text."""
+    help_text = """Pace Maker - Credit-Aware Adaptive Throttling
+
+COMMANDS:
+  pace-maker on               Enable pace maker throttling
+  pace-maker off              Disable pace maker throttling
+  pace-maker status           Show current status and usage
+  pace-maker help             Show this help message
+  pace-maker weekly-limit on  Enable weekly (7-day) limit throttling
+  pace-maker weekly-limit off Disable weekly limit throttling
+  pace-maker tempo on         Enable session lifecycle tracking
+  pace-maker tempo off        Disable session lifecycle tracking
+
+WEEKLY LIMIT:
+  The weekly limiter uses weekend-aware throttling to pace your usage
+  over 7-day windows. When enabled, it will slow down tool usage on
+  weekends if you're ahead of the target pace.
+
+TEMPO TRACKING:
+  Session lifecycle tracking prevents Claude from prematurely ending
+  implementation sessions. When you run /implement-story or /implement-epic,
+  the Stop hook will require Claude to declare IMPLEMENTATION_COMPLETE
+  before allowing the session to end.
+
+CONFIGURATION:
+  Config file: ~/.claude-pace-maker/config.json
+  Database: ~/.claude-pace-maker/usage.db
+
+For more information, see the project documentation.
+"""
+    return {"success": True, "message": help_text}
+
+
+def _execute_weekly_limit(
+    config_path: str, subcommand: Optional[str]
+) -> Dict[str, Any]:
+    """Enable or disable weekly limit throttling."""
+    if subcommand == "on":
+        try:
+            config = _load_config(config_path)
+            config["weekly_limit_enabled"] = True
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": "✓ Weekly limit ENABLED\n7-day throttling will be applied based on weekday usage pace.",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error enabling weekly limit: {str(e)}",
+            }
+    elif subcommand == "off":
+        try:
+            config = _load_config(config_path)
+            config["weekly_limit_enabled"] = False
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": "✓ Weekly limit DISABLED\n7-day throttling will be skipped (5-hour limit still applies).",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error disabling weekly limit: {str(e)}",
+            }
+    else:
+        return {
+            "success": False,
+            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker weekly-limit [on|off]",
+        }
+
+
+def _execute_tempo(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
+    """Enable or disable tempo (session lifecycle) tracking."""
+    if subcommand == "on":
+        try:
+            config = _load_config(config_path)
+            config["tempo_enabled"] = True
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": "✓ Tempo tracking ENABLED\nSession lifecycle tracking will prevent premature session exits during implementations.",
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error enabling tempo: {str(e)}"}
+    elif subcommand == "off":
+        try:
+            config = _load_config(config_path)
+            config["tempo_enabled"] = False
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": "✓ Tempo tracking DISABLED\nSession lifecycle tracking will not prevent session exits.",
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error disabling tempo: {str(e)}"}
+    else:
+        return {
+            "success": False,
+            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker tempo [on|off]",
+        }
+
+
 def handle_user_prompt(
     user_input: str, config_path: str, db_path: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -238,7 +380,9 @@ def handle_user_prompt(
 
     if parsed["is_pace_maker_command"]:
         # Execute command
-        result = execute_command(parsed["command"], config_path, db_path)
+        result = execute_command(
+            parsed["command"], config_path, db_path, parsed.get("subcommand")
+        )
 
         return {"intercepted": True, "output": result["message"]}
     else:
@@ -253,26 +397,12 @@ def _load_config(config_path: str) -> Dict[str, Any]:
     Creates file with defaults if it doesn't exist.
     Raises exception if file is corrupted.
     """
-    # Default configuration
-    default_config = {
-        "enabled": False,
-        "base_delay": 5,
-        "max_delay": 350,
-        "threshold_percent": 0,
-        "poll_interval": 60,
-        "safety_buffer_pct": 95.0,
-        "preload_hours": 12.0,
-        "api_timeout_seconds": 10,
-        "cleanup_interval_hours": 24,
-        "retention_days": 60,
-    }
-
     if not os.path.exists(config_path):
         # Create with defaults
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
         with open(config_path, "w") as f:
-            json.dump(default_config, f, indent=2)
-        return default_config
+            json.dump(DEFAULT_CONFIG, f, indent=2)
+        return DEFAULT_CONFIG.copy()
 
     try:
         with open(config_path) as f:

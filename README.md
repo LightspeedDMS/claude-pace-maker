@@ -30,15 +30,33 @@ Pace Maker monitors your Claude Code credit usage in real-time and automatically
 ### Usage
 
 ```bash
+# Show help
+pace-maker help
+
 # Check status
 pace-maker status
 
-# Enable throttling
+# Enable/disable all throttling
 pace-maker on
-
-# Disable throttling
 pace-maker off
+
+# Enable/disable weekly (7-day) limit only
+pace-maker weekly-limit on
+pace-maker weekly-limit off
+
+# Enable/disable session lifecycle tracking (tempo)
+pace-maker tempo on
+pace-maker tempo off
 ```
+
+**Throttling Notes:**
+- When weekly limit is disabled, only the 5-hour window throttling remains active
+- The 7-day window is completely ignored in pacing decisions
+
+**Tempo Tracking:**
+- Tempo tracking prevents Claude from prematurely ending implementation sessions
+- When you run `/implement-story` or `/implement-epic`, the Stop hook requires Claude to declare `IMPLEMENTATION_COMPLETE` before allowing the session to end
+- Enabled by default - disable with `pace-maker tempo off` if you don't want this behavior
 
 ### Configuration
 
@@ -47,6 +65,8 @@ Edit `~/.claude-pace-maker/config.json`:
 ```json
 {
   "enabled": true,
+  "weekly_limit_enabled": true,
+  "tempo_enabled": true,
   "base_delay": 5,
   "max_delay": 350,
   "threshold_percent": 0,
@@ -55,6 +75,17 @@ Edit `~/.claude-pace-maker/config.json`:
   "preload_hours": 12.0
 }
 ```
+
+**Configuration Options:**
+- `enabled`: Master on/off switch for all throttling (default: `true`)
+- `weekly_limit_enabled`: Enable/disable 7-day window throttling only (default: `true`)
+- `tempo_enabled`: Enable/disable session lifecycle tracking (default: `true`)
+- `base_delay`: Minimum throttle delay in seconds (default: `5`)
+- `max_delay`: Maximum throttle delay in seconds (default: `350`)
+- `threshold_percent`: Deviation threshold before throttling starts (default: `0` = zero tolerance)
+- `poll_interval`: Seconds between credit usage checks (default: `60`)
+- `safety_buffer_pct`: Target percentage of allowance to use (default: `95.0`)
+- `preload_hours`: Hours of preload allowance on weekdays (default: `12.0`)
 
 ## How It Works
 

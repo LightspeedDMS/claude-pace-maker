@@ -144,5 +144,214 @@ class TestHook(unittest.TestCase):
         self.assertLess(elapsed, 0.1)
 
 
+class TestWeeklyLimitToggle(unittest.TestCase):
+    """Test weekly limit toggle commands."""
+
+    def setUp(self):
+        """Set up temp environment."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.config_path = os.path.join(self.temp_dir, "config.json")
+
+    def tearDown(self):
+        """Clean up."""
+        import shutil
+
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+
+    def test_weekly_limit_off_returns_success(self):
+        """Should execute 'pace-maker weekly-limit off' and return success."""
+        from pacemaker.user_commands import handle_user_prompt
+
+        result = handle_user_prompt(
+            "pace-maker weekly-limit off", self.config_path, None
+        )
+
+        self.assertTrue(result["intercepted"])
+        self.assertIn("weekly", result["output"].lower())
+
+        # Verify config was updated
+        with open(self.config_path) as f:
+            config = json.load(f)
+            self.assertFalse(config["weekly_limit_enabled"])
+
+    def test_weekly_limit_on_returns_success(self):
+        """Should execute 'pace-maker weekly-limit on' and return success."""
+        from pacemaker.user_commands import handle_user_prompt
+
+        # First turn it off
+        handle_user_prompt("pace-maker weekly-limit off", self.config_path, None)
+
+        # Then turn it back on
+        result = handle_user_prompt(
+            "pace-maker weekly-limit on", self.config_path, None
+        )
+
+        self.assertTrue(result["intercepted"])
+        self.assertIn("weekly", result["output"].lower())
+
+        # Verify config was updated
+        with open(self.config_path) as f:
+            config = json.load(f)
+            self.assertTrue(config["weekly_limit_enabled"])
+
+    def test_weekly_limit_invalid_subcommand(self):
+        """Should reject invalid subcommand like 'pace-maker weekly-limit invalid'."""
+        from pacemaker.user_commands import handle_user_prompt
+
+        result = handle_user_prompt(
+            "pace-maker weekly-limit invalid", self.config_path, None
+        )
+
+        self.assertTrue(result["intercepted"])
+        self.assertIn("unknown", result["output"].lower())
+
+    def test_config_defaults_to_weekly_limit_enabled(self):
+        """Should default weekly_limit_enabled to true in new config."""
+        from pacemaker.user_commands import _load_config
+
+        config = _load_config(self.config_path)
+
+        self.assertTrue(config["weekly_limit_enabled"])
+
+    def test_config_persists_weekly_limit_enabled_flag(self):
+        """Should persist weekly_limit_enabled flag across reads/writes."""
+        from pacemaker.user_commands import _load_config, _write_config_atomic
+
+        # Load default config
+        config = _load_config(self.config_path)
+
+        # Modify flag
+        config["weekly_limit_enabled"] = False
+        _write_config_atomic(config, self.config_path)
+
+        # Read back
+        reloaded = _load_config(self.config_path)
+        self.assertFalse(reloaded["weekly_limit_enabled"])
+
+        # Toggle back
+        reloaded["weekly_limit_enabled"] = True
+        _write_config_atomic(reloaded, self.config_path)
+
+        # Verify again
+        final = _load_config(self.config_path)
+        self.assertTrue(final["weekly_limit_enabled"])
+
+
+class TestHelpCommand(unittest.TestCase):
+    """Test help command."""
+
+    def setUp(self):
+        """Set up temp environment."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.config_path = os.path.join(self.temp_dir, "config.json")
+
+    def tearDown(self):
+        """Clean up."""
+        import shutil
+
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+
+    def test_help_command_returns_success(self):
+        """Should execute 'pace-maker help' and return success with help text."""
+        from pacemaker.user_commands import handle_user_prompt
+
+        result = handle_user_prompt("pace-maker help", self.config_path, None)
+
+        self.assertTrue(result["intercepted"])
+        output = result["output"].lower()
+
+        # Verify help text contains key information
+        self.assertIn("pace-maker", output)
+        self.assertIn("on", output)
+        self.assertIn("off", output)
+        self.assertIn("status", output)
+        self.assertIn("help", output)
+        self.assertIn("weekly-limit", output)
+        self.assertIn("config", output)
+
+
+class TestAdaptiveThrottleIntegration(unittest.TestCase):
+    """Test adaptive throttle respects weekly_limit_enabled flag."""
+
+    def test_calculate_adaptive_delay_skips_weekly_limit_when_disabled(self):
+        """Should skip weekly limit calculations when flag is false."""
+        from pacemaker.adaptive_throttle import calculate_adaptive_delay
+
+        # Test with weekend-aware mode but weekly_limit_enabled=False
+        window_start = datetime(2025, 11, 10, 0, 0, 0)  # Monday
+        current_time = datetime(2025, 11, 16, 12, 0, 0)  # Sunday noon
+
+        # Over safe budget on weekend (would normally trigger max delay)
+        result = calculate_adaptive_delay(
+            current_util=97.0,  # Over 95% safe allowance
+            time_remaining_hours=12.0,
+            window_hours=168.0,
+            min_delay=5,
+            max_delay=350,
+            window_start=window_start,
+            current_time=current_time,
+            safety_buffer_pct=95.0,
+            preload_hours=12.0,
+            weekly_limit_enabled=False,  # NEW PARAMETER
+        )
+
+        # When weekly limit disabled, should NOT apply weekend emergency throttling
+        self.assertNotEqual(result["delay_seconds"], 350)
+        self.assertNotEqual(result["strategy"], "emergency")
+
+    def test_calculate_adaptive_delay_applies_weekly_limit_when_enabled(self):
+        """Should apply weekly limit calculations when flag is true."""
+        from pacemaker.adaptive_throttle import calculate_adaptive_delay
+
+        # Test with weekend-aware mode and weekly_limit_enabled=True
+        window_start = datetime(2025, 11, 10, 0, 0, 0)  # Monday
+        current_time = datetime(2025, 11, 16, 12, 0, 0)  # Sunday noon
+
+        # Over safe budget on weekend (should trigger max delay)
+        result = calculate_adaptive_delay(
+            current_util=97.0,  # Over 95% safe allowance
+            time_remaining_hours=12.0,
+            window_hours=168.0,
+            min_delay=5,
+            max_delay=350,
+            window_start=window_start,
+            current_time=current_time,
+            safety_buffer_pct=95.0,
+            preload_hours=12.0,
+            weekly_limit_enabled=True,  # NEW PARAMETER
+        )
+
+        # When weekly limit enabled, should apply emergency throttling
+        self.assertEqual(result["delay_seconds"], 350)
+        self.assertEqual(result["strategy"], "emergency")
+
+    def test_calculate_adaptive_delay_defaults_to_enabled(self):
+        """Should default to weekly_limit_enabled=True for backward compatibility."""
+        from pacemaker.adaptive_throttle import calculate_adaptive_delay
+
+        # Test without passing weekly_limit_enabled parameter
+        window_start = datetime(2025, 11, 10, 0, 0, 0)  # Monday
+        current_time = datetime(2025, 11, 16, 12, 0, 0)  # Sunday noon
+
+        result = calculate_adaptive_delay(
+            current_util=97.0,
+            time_remaining_hours=12.0,
+            window_hours=168.0,
+            min_delay=5,
+            max_delay=350,
+            window_start=window_start,
+            current_time=current_time,
+            safety_buffer_pct=95.0,
+            preload_hours=12.0,
+            # weekly_limit_enabled NOT passed - should default to True
+        )
+
+        # Should apply weekly limit by default
+        self.assertEqual(result["delay_seconds"], 350)
+        self.assertEqual(result["strategy"], "emergency")
+
+
 if __name__ == "__main__":
     unittest.main()

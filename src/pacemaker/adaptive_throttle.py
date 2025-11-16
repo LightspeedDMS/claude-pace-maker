@@ -67,6 +67,68 @@ def count_weekday_seconds(start_dt: datetime, end_dt: datetime) -> int:
     return total_seconds
 
 
+def calculate_continuous_allowance_pct(
+    window_start: datetime,
+    current_time: datetime,
+    window_hours: float = 5.0,
+    preload_hours: float = 0.0,
+) -> float:
+    """
+    Calculate allowance percentage for continuous-time windows (5-hour).
+
+    Unlike weekend-aware allowance, this accumulates linearly across ALL time
+    (weekdays + weekends), with optional preload period.
+
+    Args:
+        window_start: When the window started
+        current_time: Current point in time
+        window_hours: Total window duration (default 5 hours)
+        preload_hours: First N hours with preloaded allowance (default 0 = no preload)
+
+    Returns:
+        Allowance percentage (0-100) available at current_time
+
+    Logic:
+        total_seconds = window_hours × 3600
+        seconds_elapsed = (current_time - window_start).total_seconds()
+
+        If preload_hours > 0 and hours_elapsed <= preload_hours:
+            allowance = (preload_hours / window_hours) × 100  # Flat preload
+        Else:
+            allowance = (seconds_elapsed / total_seconds) × 100  # Linear accrual
+
+    Examples:
+        5-hour window with 30-minute preload:
+        T+0 min:   allowance = 10% (preload: 0.5h / 5h = 10%)
+        T+15 min:  allowance = 10% (still in preload)
+        T+30 min:  allowance = 10% (end of preload: 0.5h / 5h)
+        T+60 min:  allowance = 20% (linear: 1h / 5h)
+        T+150 min: allowance = 50% (linear: 2.5h / 5h)
+        T+300 min: allowance = 100% (linear: 5h / 5h)
+    """
+    # Calculate total seconds in window
+    total_seconds = window_hours * 3600.0
+
+    # Calculate seconds elapsed from start to current time
+    seconds_elapsed = (current_time - window_start).total_seconds()
+
+    # Clamp to [0, total_seconds]
+    seconds_elapsed = max(0.0, min(seconds_elapsed, total_seconds))
+
+    # Calculate hours elapsed
+    hours_elapsed = seconds_elapsed / 3600.0
+
+    # Apply preload logic if configured
+    if preload_hours > 0 and hours_elapsed <= preload_hours:
+        # First N hours: use flat preload allowance
+        preload_allowance = (preload_hours / window_hours) * 100.0
+        return preload_allowance
+    else:
+        # After preload period (or no preload): normal linear accrual
+        allowance_pct = (seconds_elapsed / total_seconds) * 100.0
+        return allowance_pct
+
+
 def calculate_allowance_pct(
     window_start: datetime,
     current_time: datetime,
@@ -144,6 +206,7 @@ def calculate_adaptive_delay(
     current_time: Optional[datetime] = None,
     safety_buffer_pct: float = 95.0,
     preload_hours: float = 0.0,
+    weekly_limit_enabled: bool = True,
 ) -> dict:
     """
     Calculate adaptive delay to smoothly return to target curve.
@@ -170,6 +233,7 @@ def calculate_adaptive_delay(
         current_time: Current time (weekend-aware mode)
         safety_buffer_pct: Target percentage of allowance (default 95% for 5% safety buffer)
         preload_hours: First N weekday hours with preloaded allowance (default 0 = no preload)
+        weekly_limit_enabled: Enable weekly limit calculations (default True)
 
     Returns:
         {
@@ -187,10 +251,37 @@ def calculate_adaptive_delay(
     """
     # Determine which mode we're in and calculate allowance/target
     if window_start is not None and current_time is not None:
-        # Weekend-aware mode: calculate allowance from weekday seconds
-        allowance_pct = calculate_allowance_pct(
-            window_start, current_time, window_hours, preload_hours
-        )
+        # Check if this is a 7-day window and weekly limit is disabled
+        if window_hours >= 168.0 and not weekly_limit_enabled:
+            # Weekly limit disabled for 7-day window - return no throttling
+            budget_remaining_pct = 100.0 - current_util
+            return {
+                "delay_seconds": 0,
+                "strategy": "none",
+                "reason": "weekly limit disabled",
+                "projection": {
+                    "util_if_no_throttle": current_util,
+                    "util_if_throttled": current_util,
+                    "credits_remaining_pct": budget_remaining_pct,
+                    "allowance": 100.0,  # Unlimited when disabled
+                    "safe_allowance": 100.0,
+                    "buffer_remaining": 100.0 - current_util,
+                },
+            }
+
+        # Calculate allowance based on window type:
+        # - 5-hour window: continuous-time linear (24/7 accrual)
+        # - 7-day window: weekend-aware (weekday-only accrual)
+        if window_hours < 168.0:
+            # Short window (5-hour): use continuous-time linear allowance
+            allowance_pct = calculate_continuous_allowance_pct(
+                window_start, current_time, window_hours, preload_hours
+            )
+        else:
+            # Long window (7-day): use weekend-aware allowance
+            allowance_pct = calculate_allowance_pct(
+                window_start, current_time, window_hours, preload_hours
+            )
         target_util = allowance_pct
 
         # Apply safety buffer: throttle if over X% of allowance

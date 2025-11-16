@@ -152,7 +152,7 @@ def query_recent_snapshots(db_path: str, minutes: int = 60) -> List[Dict]:
             WHERE timestamp >= ?
             ORDER BY timestamp DESC
         """,
-            (cutoff_time.isoformat(),),
+            (int(cutoff_time.timestamp()),),
         )
 
         rows = cursor.fetchall()
@@ -191,7 +191,7 @@ def cleanup_old_snapshots(db_path: str, retention_days: int = 60) -> int:
             DELETE FROM usage_snapshots
             WHERE timestamp < ?
         """,
-            (cutoff_time.isoformat(),),
+            (int(cutoff_time.timestamp()),),
         )
 
         deleted_count = cursor.rowcount

@@ -14,25 +14,13 @@ from datetime import datetime
 import json
 
 from . import pacing_engine, database, user_commands
-
-
-# Configuration
-DEFAULT_DB_PATH = str(Path.home() / ".claude-pace-maker" / "usage.db")
-DEFAULT_CONFIG_PATH = str(Path.home() / ".claude-pace-maker" / "config.json")
-DEFAULT_STATE_PATH = str(Path.home() / ".claude-pace-maker" / "state.json")
-
-DEFAULT_CONFIG = {
-    "enabled": True,
-    "base_delay": 5,
-    "max_delay": 350,
-    "threshold_percent": 0,
-    "poll_interval": 60,
-    "safety_buffer_pct": 95.0,
-    "preload_hours": 12.0,
-    "api_timeout_seconds": 10,
-    "cleanup_interval_hours": 24,
-    "retention_days": 60,
-}
+from .constants import (
+    DEFAULT_CONFIG,
+    DEFAULT_DB_PATH,
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_STATE_PATH,
+    MAX_DELAY_SECONDS,
+)
 
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
@@ -98,9 +86,8 @@ def save_state(state: dict, state_path: str = DEFAULT_STATE_PATH):
 def execute_delay(delay_seconds: int):
     """Execute direct delay (sleep)."""
     if delay_seconds > 0:
-        # Cap at 350 seconds (360s timeout - 10s safety margin)
-        MAX_DELAY = 350
-        actual_delay = min(delay_seconds, MAX_DELAY)
+        # Cap at MAX_DELAY_SECONDS (360s timeout - 10s safety margin)
+        actual_delay = min(delay_seconds, MAX_DELAY_SECONDS)
         time.sleep(actual_delay)
 
 
@@ -113,14 +100,14 @@ def inject_prompt_delay(prompt: str):
 def run_hook():
     """Main hook execution."""
     # Load configuration
-    config = load_config()
+    config = load_config(DEFAULT_CONFIG_PATH)
 
     # Check if enabled
     if not config.get("enabled", True):
         return  # Disabled - do nothing
 
     # Load state
-    state = load_state()
+    state = load_state(DEFAULT_STATE_PATH)
 
     # Ensure database is initialized
     db_path = DEFAULT_DB_PATH
@@ -138,6 +125,7 @@ def run_hook():
         api_timeout_seconds=config.get("api_timeout_seconds", 10),
         cleanup_interval_hours=config.get("cleanup_interval_hours", 24),
         retention_days=config.get("retention_days", 60),
+        weekly_limit_enabled=config.get("weekly_limit_enabled", True),
     )
 
     # Update state if polled or cleaned up
@@ -179,6 +167,9 @@ def run_user_prompt_submit():
             # Fallback to treating as plain text if not JSON
             user_input = raw_input
 
+        # Check for session start (implementation commands)
+        run_session_start_hook(user_input)
+
         # Handle the prompt
         result = user_commands.handle_user_prompt(
             user_input, DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH
@@ -206,8 +197,89 @@ def run_user_prompt_submit():
         sys.exit(0)
 
 
+def run_session_start_hook(user_input: str):
+    """
+    Handle session start hook - detect /implement-* commands.
+
+    Args:
+        user_input: User's input text
+    """
+    from . import lifecycle
+
+    try:
+        # Load config to check if tempo is enabled
+        config = load_config(DEFAULT_CONFIG_PATH)
+        if not config.get("tempo_enabled", True):
+            return  # Tempo disabled - do nothing
+
+        # Check if this is an implementation command
+        if lifecycle.should_mark_implementation_start(user_input):
+            # Mark implementation started
+            lifecycle.mark_implementation_started(DEFAULT_STATE_PATH)
+    except Exception as e:
+        # Graceful degradation - log but don't crash
+        print(f"[PACE-MAKER ERROR] Session start hook: {e}", file=sys.stderr)
+
+
+def run_stop_hook():
+    """
+    Handle Stop hook - check for incomplete implementation.
+
+    Returns:
+        Dictionary with:
+        - decision: "allow" or "block"
+        - reason: Optional message if blocking
+    """
+    from . import lifecycle
+
+    try:
+        # Load config to check if tempo is enabled
+        config = load_config(DEFAULT_CONFIG_PATH)
+        if not config.get("tempo_enabled", True):
+            return {"decision": "allow"}  # Tempo disabled - allow exit
+
+        # Check if implementation started
+        if not lifecycle.has_implementation_started(DEFAULT_STATE_PATH):
+            return {"decision": "allow"}  # No implementation - allow exit
+
+        # Check if implementation completed
+        if lifecycle.has_implementation_completed(DEFAULT_STATE_PATH):
+            return {"decision": "allow"}  # Implementation complete - allow exit
+
+        # Check prompt count for infinite loop prevention
+        prompt_count = lifecycle.get_stop_hook_prompt_count(DEFAULT_STATE_PATH)
+        if prompt_count > 0:
+            # Already prompted once - allow exit to prevent loop
+            return {"decision": "allow"}
+
+        # Increment prompt count
+        lifecycle.increment_stop_hook_prompt_count(DEFAULT_STATE_PATH)
+
+        # Implementation incomplete - block and prompt
+        prompt = (
+            "You started an implementation but haven't declared IMPLEMENTATION_COMPLETE. "
+            "If all tasks are done, respond with exactly 'IMPLEMENTATION_COMPLETE' (nothing else). "
+            "If not done, continue working."
+        )
+        print(prompt, file=sys.stdout, flush=True)
+
+        return {"decision": "block", "reason": prompt}
+
+    except Exception as e:
+        # Graceful degradation - log error and allow exit
+        print(f"[PACE-MAKER ERROR] Stop hook: {e}", file=sys.stderr)
+        return {"decision": "allow"}
+
+
 def main():
     """Entry point for hook script."""
+    # Check if this is stop hook
+    if len(sys.argv) > 1 and sys.argv[1] == "stop":
+        result = run_stop_hook()
+        # Output JSON response
+        print(json.dumps(result), file=sys.stdout, flush=True)
+        sys.exit(0 if result["decision"] == "allow" else 1)
+
     # Check if this is user-prompt-submit hook
     if len(sys.argv) > 1 and sys.argv[1] == "user_prompt_submit":
         run_user_prompt_submit()
