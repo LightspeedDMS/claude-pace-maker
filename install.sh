@@ -340,27 +340,45 @@ register_hooks() {
 
   # Remove ALL pace-maker hooks, then add them back
   # This ensures no duplicates and preserves other hooks like tdd-guard
+  # Strategy: Remove pace-maker commands from within hook entries (not entire entries)
   jq --arg session_start "$SESSION_START_HOOK" \
      --arg user_prompt "$USER_PROMPT_HOOK" \
      --arg post_hook "$POST_HOOK" \
      --arg stop_hook "$STOP_HOOK" \
     '
-     # Helper function to check if a hook entry contains pace-maker hooks
-     def has_pacemaker_hook(pattern):
-       [.hooks[]? | select(.command? // "" | test(pattern))] | length > 0;
+     # Helper function to remove pace-maker commands from a hook entry
+     def remove_pacemaker_commands(pattern):
+       if .hooks then
+         .hooks = [.hooks[] | select(.command? // "" | test(pattern) | not)]
+       else
+         .
+       end;
 
-     # Remove all pace-maker hooks (handles both ~ and full paths)
-     # This preserves non-pace-maker hooks by checking if ANY command in the hooks array matches
-     .hooks.SessionStart = [(.hooks.SessionStart // [])[] |
-       select(has_pacemaker_hook("\\.claude/hooks/session-start\\.sh") | not)] |
-     .hooks.UserPromptSubmit = [(.hooks.UserPromptSubmit // [])[] |
-       select(has_pacemaker_hook("\\.claude/hooks/user-prompt-submit\\.sh") | not)] |
-     .hooks.PostToolUse = [(.hooks.PostToolUse // [])[] |
-       select(has_pacemaker_hook("\\.claude/hooks/post-tool-use\\.sh") | not)] |
-     .hooks.Stop = [(.hooks.Stop // [])[] |
-       select(has_pacemaker_hook("\\.claude/hooks/stop\\.sh") | not)] |
+     # Remove pace-maker commands from within each hook entry
+     .hooks.SessionStart = [
+       (.hooks.SessionStart // [])[] |
+       remove_pacemaker_commands("\\.claude/hooks/session-start\\.sh")
+     ] |
+     .hooks.UserPromptSubmit = [
+       (.hooks.UserPromptSubmit // [])[] |
+       remove_pacemaker_commands("\\.claude/hooks/user-prompt-submit\\.sh")
+     ] |
+     .hooks.PostToolUse = [
+       (.hooks.PostToolUse // [])[] |
+       remove_pacemaker_commands("\\.claude/hooks/post-tool-use\\.sh")
+     ] |
+     .hooks.Stop = [
+       (.hooks.Stop // [])[] |
+       remove_pacemaker_commands("\\.claude/hooks/stop\\.sh")
+     ] |
 
-     # Add them back with full paths
+     # Remove entries that have no hooks left after pace-maker removal
+     .hooks.SessionStart = [.hooks.SessionStart[] | select(.hooks | length > 0)] |
+     .hooks.UserPromptSubmit = [.hooks.UserPromptSubmit[] | select(.hooks | length > 0)] |
+     .hooks.PostToolUse = [.hooks.PostToolUse[] | select(.hooks | length > 0)] |
+     .hooks.Stop = [.hooks.Stop[] | select(.hooks | length > 0)] |
+
+     # Add pace-maker back as separate entries with full paths
      .hooks.SessionStart += [{"hooks": [{"type": "command", "command": $session_start}]}] |
      .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $user_prompt}]}] |
      .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $post_hook, "timeout": 360}]}] |

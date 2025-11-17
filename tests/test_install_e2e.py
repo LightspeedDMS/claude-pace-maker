@@ -126,21 +126,21 @@ class TestInstallationE2E:
         assert "hooks" in settings
         # Verify new array-based format with PascalCase names
         assert (
-            settings["hooks"]["Start"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/start.sh"
-        )
+            ".claude/hooks/session-start.sh"
+            in settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        ), f"SessionStart hook not found: {settings['hooks'].get('SessionStart')}"
         assert (
-            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/post-tool-use.sh"
-        )
+            ".claude/hooks/post-tool-use.sh"
+            in settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        ), f"PostToolUse hook not found: {settings['hooks'].get('PostToolUse')}"
         assert (
-            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/stop.sh"
-        )
+            ".claude/hooks/stop.sh"
+            in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        ), f"Stop hook not found: {settings['hooks'].get('Stop')}"
         assert (
-            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/user-prompt-submit.sh"
-        )
+            ".claude/hooks/user-prompt-submit.sh"
+            in settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        ), f"UserPromptSubmit hook not found: {settings['hooks'].get('UserPromptSubmit')}"
 
     def test_idempotent_reinstallation(self, isolated_home):
         """
@@ -265,21 +265,21 @@ class TestInstallationE2E:
         ), "Existing hooks should be preserved"
         # Verify new array-based format with PascalCase names
         assert (
-            settings["hooks"]["Start"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/start.sh"
-        )
+            ".claude/hooks/session-start.sh"
+            in settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        ), f"SessionStart hook not found: {settings['hooks'].get('SessionStart')}"
         assert (
-            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/post-tool-use.sh"
-        )
+            ".claude/hooks/post-tool-use.sh"
+            in settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        ), f"PostToolUse hook not found: {settings['hooks'].get('PostToolUse')}"
         assert (
-            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/stop.sh"
-        )
+            ".claude/hooks/stop.sh"
+            in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        ), f"Stop hook not found: {settings['hooks'].get('Stop')}"
         assert (
-            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/user-prompt-submit.sh"
-        )
+            ".claude/hooks/user-prompt-submit.sh"
+            in settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        ), f"UserPromptSubmit hook not found: {settings['hooks'].get('UserPromptSubmit')}"
 
     def test_hook_scripts_functionality(self, isolated_home):
         """
@@ -422,12 +422,12 @@ class TestInstallationE2E:
         existing_settings = {
             "user": "test_user",
             "hooks": {
-                "Start": [
+                "SessionStart": [
                     {
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "~/.claude/hooks/tdd-guard-start.sh",
+                                "command": "~/.claude/hooks/tdd-guard-session-start.sh",
                             }
                         ]
                     }
@@ -478,15 +478,17 @@ class TestInstallationE2E:
         assert settings["user"] == "test_user"
 
         # Verify both tdd-guard and pace-maker hooks exist
-        assert len(settings["hooks"]["Start"]) == 2, "Should have hooks from both tools"
+        assert (
+            len(settings["hooks"]["SessionStart"]) == 2
+        ), "Should have hooks from both tools"
         assert (
             len(settings["hooks"]["PostToolUse"]) == 2
         ), "Should have hooks from both tools"
         assert len(settings["hooks"]["Stop"]) == 2, "Should have hooks from both tools"
 
         # Extract all commands for verification
-        start_commands = [
-            hook["hooks"][0]["command"] for hook in settings["hooks"]["Start"]
+        session_start_commands = [
+            hook["hooks"][0]["command"] for hook in settings["hooks"]["SessionStart"]
         ]
         post_commands = [
             hook["hooks"][0]["command"] for hook in settings["hooks"]["PostToolUse"]
@@ -496,14 +498,16 @@ class TestInstallationE2E:
         ]
 
         # Verify tdd-guard hooks preserved
-        assert "~/.claude/hooks/tdd-guard-start.sh" in start_commands
+        assert "~/.claude/hooks/tdd-guard-session-start.sh" in session_start_commands
         assert "~/.claude/hooks/tdd-guard-post.sh" in post_commands
         assert "~/.claude/hooks/tdd-guard-stop.sh" in stop_commands
 
-        # Verify pace-maker hooks added
-        assert "~/.claude/hooks/start.sh" in start_commands
-        assert "~/.claude/hooks/post-tool-use.sh" in post_commands
-        assert "~/.claude/hooks/stop.sh" in stop_commands
+        # Verify pace-maker hooks added (check for path substring since it might be full path)
+        assert any(
+            ".claude/hooks/session-start.sh" in cmd for cmd in session_start_commands
+        )
+        assert any(".claude/hooks/post-tool-use.sh" in cmd for cmd in post_commands)
+        assert any(".claude/hooks/stop.sh" in cmd for cmd in stop_commands)
 
     def test_idempotent_installation_no_duplicate_hooks(self, isolated_home):
         """
@@ -550,8 +554,8 @@ class TestInstallationE2E:
 
         # Should have exactly one hook per type (no duplicates)
         assert (
-            len(settings["hooks"]["Start"]) == 1
-        ), "Should have exactly one Start hook"
+            len(settings["hooks"]["SessionStart"]) == 1
+        ), "Should have exactly one SessionStart hook"
         assert (
             len(settings["hooks"]["PostToolUse"]) == 1
         ), "Should have exactly one PostToolUse hook"
@@ -562,18 +566,18 @@ class TestInstallationE2E:
 
         # Verify they're the correct pace-maker hooks
         assert (
-            settings["hooks"]["Start"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/start.sh"
-        )
+            ".claude/hooks/session-start.sh"
+            in settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        ), f"SessionStart hook not found: {settings['hooks'].get('SessionStart')}"
         assert (
-            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/post-tool-use.sh"
-        )
+            ".claude/hooks/post-tool-use.sh"
+            in settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        ), f"PostToolUse hook not found: {settings['hooks'].get('PostToolUse')}"
         assert (
-            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/stop.sh"
-        )
+            ".claude/hooks/stop.sh"
+            in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        ), f"Stop hook not found: {settings['hooks'].get('Stop')}"
         assert (
-            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/user-prompt-submit.sh"
-        )
+            ".claude/hooks/user-prompt-submit.sh"
+            in settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        ), f"UserPromptSubmit hook not found: {settings['hooks'].get('UserPromptSubmit')}"

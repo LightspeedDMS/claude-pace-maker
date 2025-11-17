@@ -575,6 +575,115 @@ class TestInstallScript:
         assert len(settings["hooks"]["Stop"]) == 1
         assert len(settings["hooks"]["UserPromptSubmit"]) == 1
 
+    def test_install_handles_combined_hook_entries(self, install_env, temp_home):
+        """Installation must handle when other hooks and pace-maker are in same entry.
+
+        This tests the real-world scenario where Claude Code merges hooks from different
+        sources (e.g., tdd-guard + pace-maker) into a single hook entry with multiple commands.
+        The install script must:
+        1. Remove pace-maker commands from within combined entries
+        2. Preserve other commands (e.g., tdd-guard) and their matchers
+        3. Add pace-maker back as a separate entry
+        """
+        # Pre-create settings.json with combined hooks (code-indexer scenario)
+        claude_dir = Path(install_env["CLAUDE_DIR"])
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        settings_file = Path(install_env["SETTINGS_FILE"])
+
+        existing_settings = {
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "matcher": "startup|resume|clear",
+                        "hooks": [
+                            {"type": "command", "command": "tdd-guard"},
+                            {
+                                "type": "command",
+                                "command": "~/.claude/hooks/session-start.sh",
+                            },
+                        ],
+                    }
+                ],
+                "PostToolUse": [
+                    {
+                        "hooks": [
+                            {"type": "command", "command": "tdd-guard-post"},
+                            {
+                                "type": "command",
+                                "command": "~/.claude/hooks/post-tool-use.sh",
+                                "timeout": 360,
+                            },
+                        ]
+                    }
+                ],
+            }
+        }
+
+        with open(settings_file, "w") as f:
+            json.dump(existing_settings, f)
+
+        # Run installation
+        result = self._run_install(temp_home)
+        assert result.returncode == 0, f"Install failed: {result.stderr}"
+
+        # Load settings and verify
+        with open(settings_file) as f:
+            settings = json.load(f)
+
+        # Should have TWO SessionStart entries: one for tdd-guard (with matcher), one for pace-maker
+        assert (
+            len(settings["hooks"]["SessionStart"]) == 2
+        ), f"Should have 2 SessionStart entries (tdd-guard + pace-maker), got {len(settings['hooks']['SessionStart'])}"
+
+        # Find tdd-guard and pace-maker entries
+        tdd_entry = None
+        pace_entry = None
+        for entry in settings["hooks"]["SessionStart"]:
+            commands = [h["command"] for h in entry["hooks"]]
+            if "tdd-guard" in commands:
+                tdd_entry = entry
+            elif any(".claude/hooks/session-start.sh" in cmd for cmd in commands):
+                pace_entry = entry
+
+        assert tdd_entry is not None, "tdd-guard entry must exist"
+        assert pace_entry is not None, "pace-maker entry must exist"
+
+        # Verify tdd-guard entry preserved matcher and has only tdd-guard command
+        assert (
+            tdd_entry.get("matcher") == "startup|resume|clear"
+        ), "tdd-guard entry must preserve matcher"
+        assert (
+            len(tdd_entry["hooks"]) == 1
+        ), "tdd-guard entry should have only tdd-guard command (pace-maker removed)"
+        assert tdd_entry["hooks"][0]["command"] == "tdd-guard"
+
+        # Verify pace-maker entry has no matcher and has only pace-maker command
+        assert (
+            len(pace_entry["hooks"]) == 1
+        ), "pace-maker entry should have only pace-maker command"
+        assert ".claude/hooks/session-start.sh" in pace_entry["hooks"][0]["command"]
+
+        # Same checks for PostToolUse
+        assert (
+            len(settings["hooks"]["PostToolUse"]) == 2
+        ), f"Should have 2 PostToolUse entries, got {len(settings['hooks']['PostToolUse'])}"
+
+        tdd_post_entry = None
+        pace_post_entry = None
+        for entry in settings["hooks"]["PostToolUse"]:
+            commands = [h["command"] for h in entry["hooks"]]
+            if "tdd-guard-post" in commands:
+                tdd_post_entry = entry
+            elif any(".claude/hooks/post-tool-use.sh" in cmd for cmd in commands):
+                pace_post_entry = entry
+
+        assert tdd_post_entry is not None, "tdd-guard PostToolUse entry must exist"
+        assert pace_post_entry is not None, "pace-maker PostToolUse entry must exist"
+        assert (
+            len(tdd_post_entry["hooks"]) == 1
+        ), "tdd-guard PostToolUse entry should have only tdd-guard-post command"
+        assert tdd_post_entry["hooks"][0]["command"] == "tdd-guard-post"
+
     def _run_install(self, home_dir):
         """Helper to run install.sh with custom HOME directory."""
         install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
