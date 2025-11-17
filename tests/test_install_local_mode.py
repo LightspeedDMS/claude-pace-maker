@@ -123,26 +123,26 @@ class TestLocalInstallMode:
             settings = json.load(f)
 
         # Verify all hooks are registered
-        assert "Start" in settings["hooks"]
+        assert "SessionStart" in settings["hooks"]
         assert "PostToolUse" in settings["hooks"]
         assert "Stop" in settings["hooks"]
         assert "UserPromptSubmit" in settings["hooks"]
 
-        # Verify hooks point to global location
+        # Verify hooks point to global location (check path substring since might be full path)
         assert (
-            "~/.claude/hooks/start.sh"
-            in settings["hooks"]["Start"][0]["hooks"][0]["command"]
+            ".claude/hooks/session-start.sh"
+            in settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         )
         assert (
-            "~/.claude/hooks/post-tool-use.sh"
+            ".claude/hooks/post-tool-use.sh"
             in settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
         )
         assert (
-            "~/.claude/hooks/stop.sh"
+            ".claude/hooks/stop.sh"
             in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
         )
         assert (
-            "~/.claude/hooks/user-prompt-submit.sh"
+            ".claude/hooks/user-prompt-submit.sh"
             in settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
         )
 
@@ -204,10 +204,16 @@ class TestLocalInstallMode:
 
         assert result.returncode == 0, f"Local install failed: {result.stderr}"
 
-        # Verify backup was created
-        backup_file = project_claude_dir / "settings.json.backup"
-        assert backup_file.exists(), "Backup file must be created when merging"
+        # Verify backup was created (with timestamp)
+        backup_files = list(project_claude_dir.glob("settings.json.backup.*"))
+        assert len(backup_files) > 0, "Backup file must be created when merging"
 
+        # Verify the most recent backup contains original settings
+        backup_file = (
+            backup_files[-1]
+            if len(backup_files) == 1
+            else max(backup_files, key=lambda p: p.stat().st_mtime)
+        )
         with open(backup_file) as f:
             backup = json.load(f)
 
@@ -229,7 +235,7 @@ class TestLocalInstallMode:
             "post-tool-use.sh",
             "stop.sh",
             "user-prompt-submit.sh",
-            "start.sh",
+            "session-start.sh",
         ]
 
         for hook in expected_hooks:
@@ -337,11 +343,13 @@ class TestLocalInstallMode:
         """Helper to run install.sh with custom HOME directory and arguments."""
         install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
 
+        # Run from home_dir to avoid detecting pace-maker's own .claude directory
         result = subprocess.run(
             [str(install_script)] + args,
             env={**os.environ, "HOME": str(home_dir)},
             capture_output=True,
             text=True,
+            cwd=str(home_dir),
         )
 
         return result

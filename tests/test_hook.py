@@ -483,5 +483,158 @@ class TestImplementMarkerDetection(unittest.TestCase):
             sys.stdout = sys.__stdout__
 
 
+class TestLoadStateFieldMerging(unittest.TestCase):
+    """Test load_state merges loaded data with defaults to handle missing fields."""
+
+    def setUp(self):
+        """Set up temp environment."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.state_path = os.path.join(self.temp_dir, "state.json")
+
+    def tearDown(self):
+        """Clean up."""
+        import shutil
+
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+
+    def test_load_state_missing_session_id_field(self):
+        """Should merge defaults when session_id is missing from state file."""
+        from pacemaker.hook import load_state
+
+        # Create state file with only stop_hook_prompt_count
+        state_data = {"stop_hook_prompt_count": 1}
+        with open(self.state_path, "w") as f:
+            json.dump(state_data, f)
+
+        # Load state
+        result = load_state(self.state_path)
+
+        # Should have all required fields
+        self.assertIn("session_id", result)
+        self.assertIn("last_poll_time", result)
+        self.assertIn("last_cleanup_time", result)
+        self.assertIn("stop_hook_prompt_count", result)
+
+        # Should preserve loaded value
+        self.assertEqual(result["stop_hook_prompt_count"], 1)
+
+        # Should provide default values for missing fields
+        self.assertIsNotNone(result["session_id"])
+        self.assertTrue(result["session_id"].startswith("session-"))
+        self.assertIsNone(result["last_poll_time"])
+        self.assertIsNone(result["last_cleanup_time"])
+
+    def test_load_state_partial_fields_preserved(self):
+        """Should preserve existing fields and add missing ones."""
+        from pacemaker.hook import load_state
+
+        # Create state with partial data
+        state_data = {
+            "session_id": "session-12345",
+            "stop_hook_prompt_count": 2,
+            # Missing last_poll_time and last_cleanup_time
+        }
+        with open(self.state_path, "w") as f:
+            json.dump(state_data, f)
+
+        # Load state
+        result = load_state(self.state_path)
+
+        # Should preserve existing values
+        self.assertEqual(result["session_id"], "session-12345")
+        self.assertEqual(result["stop_hook_prompt_count"], 2)
+
+        # Should add missing fields with defaults
+        self.assertIsNone(result["last_poll_time"])
+        self.assertIsNone(result["last_cleanup_time"])
+
+    def test_load_state_complete_state_unchanged(self):
+        """Should preserve all fields when state is complete."""
+        from pacemaker.hook import load_state
+
+        # Create complete state
+        poll_time = datetime.utcnow()
+        cleanup_time = datetime.utcnow() - timedelta(hours=1)
+        state_data = {
+            "session_id": "session-67890",
+            "last_poll_time": poll_time.isoformat(),
+            "last_cleanup_time": cleanup_time.isoformat(),
+            "stop_hook_prompt_count": 3,
+        }
+        with open(self.state_path, "w") as f:
+            json.dump(state_data, f)
+
+        # Load state
+        result = load_state(self.state_path)
+
+        # Should preserve all values
+        self.assertEqual(result["session_id"], "session-67890")
+        self.assertEqual(result["stop_hook_prompt_count"], 3)
+
+        # Datetime fields should be converted from ISO strings
+        self.assertIsInstance(result["last_poll_time"], datetime)
+        self.assertIsInstance(result["last_cleanup_time"], datetime)
+        self.assertEqual(result["last_poll_time"], poll_time)
+        self.assertEqual(result["last_cleanup_time"], cleanup_time)
+
+    def test_load_state_nonexistent_file_returns_defaults(self):
+        """Should return defaults when state file doesn't exist."""
+        from pacemaker.hook import load_state
+
+        # State file doesn't exist
+        self.assertFalse(os.path.exists(self.state_path))
+
+        # Load state
+        result = load_state(self.state_path)
+
+        # Should have all required fields with defaults
+        self.assertIn("session_id", result)
+        self.assertIn("last_poll_time", result)
+        self.assertIn("last_cleanup_time", result)
+
+        self.assertIsNotNone(result["session_id"])
+        self.assertTrue(result["session_id"].startswith("session-"))
+        self.assertIsNone(result["last_poll_time"])
+        self.assertIsNone(result["last_cleanup_time"])
+
+    def test_load_state_corrupt_file_returns_defaults(self):
+        """Should return defaults when state file is corrupt."""
+        from pacemaker.hook import load_state
+
+        # Create corrupt JSON file
+        with open(self.state_path, "w") as f:
+            f.write("{invalid json}")
+
+        # Load state
+        result = load_state(self.state_path)
+
+        # Should gracefully degrade to defaults
+        self.assertIn("session_id", result)
+        self.assertIn("last_poll_time", result)
+        self.assertIn("last_cleanup_time", result)
+
+        self.assertIsNotNone(result["session_id"])
+        self.assertTrue(result["session_id"].startswith("session-"))
+        self.assertIsNone(result["last_poll_time"])
+        self.assertIsNone(result["last_cleanup_time"])
+
+    def test_load_state_empty_file_returns_defaults(self):
+        """Should return defaults when state file is empty."""
+        from pacemaker.hook import load_state
+
+        # Create empty file
+        with open(self.state_path, "w") as f:
+            f.write("")
+
+        # Load state
+        result = load_state(self.state_path)
+
+        # Should gracefully degrade to defaults
+        self.assertIn("session_id", result)
+        self.assertIn("last_poll_time", result)
+        self.assertIn("last_cleanup_time", result)
+
+
 if __name__ == "__main__":
     unittest.main()

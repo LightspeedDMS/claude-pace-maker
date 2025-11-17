@@ -37,10 +37,18 @@ def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
 
 def load_state(state_path: str = DEFAULT_STATE_PATH) -> dict:
     """Load hook state (last poll time, last cleanup time, session ID)."""
+    # Default state
+    default_state = {
+        "session_id": f"session-{int(time.time())}",
+        "last_poll_time": None,
+        "last_cleanup_time": None,
+    }
+
     try:
         if os.path.exists(state_path):
             with open(state_path) as f:
                 data = json.load(f)
+
                 # Convert timestamp strings back to datetime
                 if data.get("last_poll_time"):
                     data["last_poll_time"] = datetime.fromisoformat(
@@ -50,16 +58,15 @@ def load_state(state_path: str = DEFAULT_STATE_PATH) -> dict:
                     data["last_cleanup_time"] = datetime.fromisoformat(
                         data["last_cleanup_time"]
                     )
-                return data
+
+                # Merge with defaults to ensure all required fields exist
+                # Loaded data takes precedence, defaults fill in missing fields
+                return {**default_state, **data}
     except Exception:
         pass
 
-    # Generate new session ID
-    return {
-        "session_id": f"session-{int(time.time())}",
-        "last_poll_time": None,
-        "last_cleanup_time": None,
-    }
+    # File doesn't exist or failed to load - return defaults
+    return default_state
 
 
 def save_state(state: dict, state_path: str = DEFAULT_STATE_PATH):

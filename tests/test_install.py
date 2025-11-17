@@ -225,7 +225,7 @@ class TestInstallScript:
             settings = json.load(f)
 
         assert "hooks" in settings, "settings must have 'hooks' section"
-        assert "Start" in settings["hooks"], "hooks must have Start"
+        assert "SessionStart" in settings["hooks"], "hooks must have SessionStart"
         assert "PostToolUse" in settings["hooks"], "hooks must have PostToolUse"
         assert "Stop" in settings["hooks"], "hooks must have Stop"
         assert (
@@ -233,7 +233,9 @@ class TestInstallScript:
         ), "hooks must have UserPromptSubmit"
 
         # Verify array-based format
-        assert isinstance(settings["hooks"]["Start"], list), "Start hook must be array"
+        assert isinstance(
+            settings["hooks"]["SessionStart"], list
+        ), "SessionStart hook must be array"
         assert isinstance(
             settings["hooks"]["PostToolUse"], list
         ), "PostToolUse hook must be array"
@@ -242,22 +244,22 @@ class TestInstallScript:
             settings["hooks"]["UserPromptSubmit"], list
         ), "UserPromptSubmit hook must be array"
 
-        # Verify hook commands
+        # Verify hook commands contain the expected paths
         assert (
-            settings["hooks"]["Start"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/start.sh"
+            ".claude/hooks/session-start.sh"
+            in settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         )
         assert (
-            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/post-tool-use.sh"
+            ".claude/hooks/post-tool-use.sh"
+            in settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
         )
         assert (
-            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/stop.sh"
+            ".claude/hooks/stop.sh"
+            in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
         )
         assert (
-            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/user-prompt-submit.sh"
+            ".claude/hooks/user-prompt-submit.sh"
+            in settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
         )
 
     def test_install_is_idempotent(self, install_env, temp_home):
@@ -333,12 +335,12 @@ class TestInstallScript:
 
         existing_settings = {
             "hooks": {
-                "Start": [
+                "SessionStart": [
                     {
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "~/.claude/hooks/tdd-guard-start.sh",
+                                "command": "~/.claude/hooks/tdd-guard-session-start.sh",
                             }
                         ]
                     }
@@ -380,8 +382,8 @@ class TestInstallScript:
 
         # Verify existing hooks preserved
         assert (
-            len(settings["hooks"]["Start"]) == 2
-        ), "Should have both tdd-guard and pace-maker Start hooks"
+            len(settings["hooks"]["SessionStart"]) == 2
+        ), "Should have both tdd-guard and pace-maker SessionStart hooks"
         assert (
             len(settings["hooks"]["PostToolUse"]) == 2
         ), "Should have both tdd-guard and pace-maker PostToolUse hooks"
@@ -390,12 +392,12 @@ class TestInstallScript:
         ), "Should have both tdd-guard and pace-maker Stop hooks"
 
         # Verify tdd-guard hooks still present
-        start_commands = [
-            hook["hooks"][0]["command"] for hook in settings["hooks"]["Start"]
+        session_start_commands = [
+            hook["hooks"][0]["command"] for hook in settings["hooks"]["SessionStart"]
         ]
         assert (
-            "~/.claude/hooks/tdd-guard-start.sh" in start_commands
-        ), "tdd-guard Start hook must be preserved"
+            "~/.claude/hooks/tdd-guard-session-start.sh" in session_start_commands
+        ), "tdd-guard SessionStart hook must be preserved"
 
         post_commands = [
             hook["hooks"][0]["command"] for hook in settings["hooks"]["PostToolUse"]
@@ -411,15 +413,15 @@ class TestInstallScript:
             "~/.claude/hooks/tdd-guard-stop.sh" in stop_commands
         ), "tdd-guard Stop hook must be preserved"
 
-        # Verify pace-maker hooks added
-        assert (
-            "~/.claude/hooks/start.sh" in start_commands
-        ), "pace-maker Start hook must be added"
-        assert (
-            "~/.claude/hooks/post-tool-use.sh" in post_commands
+        # Verify pace-maker hooks added (check for path substring since it might be full path)
+        assert any(
+            ".claude/hooks/session-start.sh" in cmd for cmd in session_start_commands
+        ), "pace-maker SessionStart hook must be added"
+        assert any(
+            ".claude/hooks/post-tool-use.sh" in cmd for cmd in post_commands
         ), "pace-maker PostToolUse hook must be added"
-        assert (
-            "~/.claude/hooks/stop.sh" in stop_commands
+        assert any(
+            ".claude/hooks/stop.sh" in cmd for cmd in stop_commands
         ), "pace-maker Stop hook must be added"
 
     def test_install_is_idempotent_no_duplicate_hooks(self, install_env, temp_home):
@@ -439,8 +441,8 @@ class TestInstallScript:
 
         # Each hook type should have exactly one pace-maker hook entry
         assert (
-            len(settings["hooks"]["Start"]) == 1
-        ), "Should have exactly one Start hook after reinstall"
+            len(settings["hooks"]["SessionStart"]) == 1
+        ), "Should have exactly one SessionStart hook after reinstall"
         assert (
             len(settings["hooks"]["PostToolUse"]) == 1
         ), "Should have exactly one PostToolUse hook after reinstall"
@@ -451,22 +453,22 @@ class TestInstallScript:
             len(settings["hooks"]["UserPromptSubmit"]) == 1
         ), "Should have exactly one UserPromptSubmit hook after reinstall"
 
-        # Verify it's the pace-maker hook
+        # Verify it's the pace-maker hook (check for path substring since it might be full path)
         assert (
-            settings["hooks"]["Start"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/start.sh"
+            ".claude/hooks/session-start.sh"
+            in settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         )
         assert (
-            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/post-tool-use.sh"
+            ".claude/hooks/post-tool-use.sh"
+            in settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
         )
         assert (
-            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/stop.sh"
+            ".claude/hooks/stop.sh"
+            in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
         )
         assert (
-            settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/user-prompt-submit.sh"
+            ".claude/hooks/user-prompt-submit.sh"
+            in settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
         )
 
     def test_install_handles_empty_hook_arrays(self, install_env, temp_home):
@@ -478,7 +480,7 @@ class TestInstallScript:
 
         existing_settings = {
             "hooks": {
-                "Start": [],
+                "SessionStart": [],
                 "PostToolUse": [],
                 "Stop": [],
             }
@@ -496,23 +498,25 @@ class TestInstallScript:
             settings = json.load(f)
 
         # Verify pace-maker hooks added to empty arrays
-        assert len(settings["hooks"]["Start"]) == 1, "Should have one Start hook"
+        assert (
+            len(settings["hooks"]["SessionStart"]) == 1
+        ), "Should have one SessionStart hook"
         assert (
             len(settings["hooks"]["PostToolUse"]) == 1
         ), "Should have one PostToolUse hook"
         assert len(settings["hooks"]["Stop"]) == 1, "Should have one Stop hook"
 
         assert (
-            settings["hooks"]["Start"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/start.sh"
+            ".claude/hooks/session-start.sh"
+            in settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         )
         assert (
-            settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/post-tool-use.sh"
+            ".claude/hooks/post-tool-use.sh"
+            in settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
         )
         assert (
-            settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-            == "~/.claude/hooks/stop.sh"
+            ".claude/hooks/stop.sh"
+            in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
         )
 
     def test_install_handles_missing_hook_types(self, install_env, temp_home):
@@ -524,8 +528,12 @@ class TestInstallScript:
 
         existing_settings = {
             "hooks": {
-                "Start": [
-                    {"hooks": [{"type": "command", "command": "~/other-start.sh"}]}
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {"type": "command", "command": "~/other-session-start.sh"}
+                        ]
+                    }
                 ],
                 # PostToolUse, Stop, UserPromptSubmit are missing
             }
@@ -542,15 +550,17 @@ class TestInstallScript:
         with open(settings_file) as f:
             settings = json.load(f)
 
-        # Verify Start hook preserved and pace-maker added
+        # Verify SessionStart hook preserved and pace-maker added
         assert (
-            len(settings["hooks"]["Start"]) == 2
-        ), "Should have both existing and pace-maker Start hooks"
-        start_commands = [
-            hook["hooks"][0]["command"] for hook in settings["hooks"]["Start"]
+            len(settings["hooks"]["SessionStart"]) == 2
+        ), "Should have both existing and pace-maker SessionStart hooks"
+        session_start_commands = [
+            hook["hooks"][0]["command"] for hook in settings["hooks"]["SessionStart"]
         ]
-        assert "~/other-start.sh" in start_commands
-        assert "~/.claude/hooks/start.sh" in start_commands
+        assert "~/other-session-start.sh" in session_start_commands
+        assert any(
+            ".claude/hooks/session-start.sh" in cmd for cmd in session_start_commands
+        ), f"pace-maker SessionStart hook must be added, found: {session_start_commands}"
 
         # Verify missing hook types were created
         assert (
@@ -569,11 +579,13 @@ class TestInstallScript:
         """Helper to run install.sh with custom HOME directory."""
         install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
 
+        # Run from home_dir to avoid detecting pace-maker's own .claude directory
         result = subprocess.run(
             [str(install_script)],
             env={**os.environ, "HOME": str(home_dir)},
             capture_output=True,
             text=True,
+            cwd=str(home_dir),
         )
 
         return result
@@ -600,3 +612,254 @@ class TestHookScriptsExist:
             "/home/jsbattig/Dev/claude-pace-maker/src/hooks/user-prompt-submit.sh"
         )
         assert hook_path.exists(), "user-prompt-submit.sh must exist in src/hooks/"
+
+
+class TestHookConflictDetection:
+    """Test suite for hook conflict detection between global and project settings."""
+
+    @pytest.fixture
+    def temp_home(self, tmp_path):
+        """Create a temporary home directory for testing."""
+        home = tmp_path / "test_home"
+        home.mkdir()
+        return home
+
+    @pytest.fixture
+    def test_project(self, tmp_path):
+        """Create a temporary project directory for testing."""
+        project = tmp_path / "test_project"
+        project.mkdir()
+        return project
+
+    @pytest.fixture
+    def install_env(self, temp_home, monkeypatch):
+        """Set up environment for installation testing."""
+        monkeypatch.setenv("HOME", str(temp_home))
+        return {"HOME": str(temp_home)}
+
+    def test_no_conflict_on_fresh_global_install(self, temp_home, install_env):
+        """Fresh global install with no existing hooks should not detect conflicts."""
+        result = self._run_install(temp_home, [])
+        assert result.returncode == 0, f"Global install failed: {result.stderr}"
+
+        output = result.stdout + result.stderr
+        assert (
+            "WARNING: Hook Conflict" not in output
+        ), "Should not warn about conflicts on fresh install"
+        assert "conflict detected" not in output.lower(), "Should not detect conflicts"
+
+    def test_no_conflict_on_fresh_local_install(
+        self, temp_home, test_project, install_env
+    ):
+        """Fresh local install with no existing hooks should not detect conflicts."""
+        result = self._run_install(temp_home, [str(test_project)])
+        assert result.returncode == 0, f"Local install failed: {result.stderr}"
+
+        output = result.stdout + result.stderr
+        assert (
+            "WARNING: Hook Conflict" not in output
+        ), "Should not warn about conflicts on fresh install"
+        assert "conflict detected" not in output.lower(), "Should not detect conflicts"
+
+    def test_conflict_detection_global_then_local(
+        self, temp_home, test_project, install_env
+    ):
+        """Installing local after global should detect conflict and warn user."""
+        # First install globally
+        result1 = self._run_install(temp_home, [])
+        assert result1.returncode == 0, f"Global install failed: {result1.stderr}"
+
+        # Then try to install locally - should detect conflict
+        result2 = self._run_install_with_input(temp_home, [str(test_project)], "n\n")
+
+        output = result2.stdout + result2.stderr
+        assert (
+            "WARNING: Hook Conflict" in output
+            or "hook conflict detected" in output.lower()
+        ), "Should warn about hook conflict"
+        assert (
+            "FIRE TWICE" in output or "fire twice" in output.lower()
+        ), "Should warn about double-firing"
+
+        # User answered 'n', so installation should abort
+        assert result2.returncode != 0, "Should exit with error when user cancels"
+
+        # Verify project settings were NOT created
+        project_settings = test_project / ".claude" / "settings.json"
+        assert (
+            not project_settings.exists()
+        ), "Project settings should not be created when user cancels"
+
+    def test_conflict_detection_local_then_global(
+        self, temp_home, test_project, install_env
+    ):
+        """Installing global after local should detect conflict when run from project directory."""
+        # First install locally
+        result1 = self._run_install(temp_home, [str(test_project)])
+        assert result1.returncode == 0, f"Local install failed: {result1.stderr}"
+
+        # Then try to install globally FROM THE PROJECT DIRECTORY - should detect conflict
+        result2 = self._run_install_with_input_and_cwd(
+            temp_home, [], "n\n", cwd=str(test_project)
+        )
+
+        output = result2.stdout + result2.stderr
+        assert (
+            "WARNING: Hook Conflict" in output
+            or "hook conflict detected" in output.lower()
+        ), "Should warn about hook conflict"
+
+        # User answered 'n', so installation should abort
+        assert result2.returncode != 0, "Should exit with error when user cancels"
+
+    def test_user_proceeds_despite_conflict(self, temp_home, test_project, install_env):
+        """User can choose to proceed despite conflict warning."""
+        # First install globally
+        result1 = self._run_install(temp_home, [])
+        assert result1.returncode == 0, f"Global install failed: {result1.stderr}"
+
+        # Then install locally with user answering 'y' to proceed
+        result2 = self._run_install_with_input(temp_home, [str(test_project)], "y\n")
+
+        output = result2.stdout + result2.stderr
+        assert (
+            "WARNING: Hook Conflict" in output
+            or "hook conflict detected" in output.lower()
+        ), "Should still warn about conflict"
+
+        # User answered 'y', so installation should succeed
+        assert (
+            result2.returncode == 0
+        ), f"Should succeed when user proceeds: {result2.stderr}"
+
+        # Verify project settings were created
+        project_settings = test_project / ".claude" / "settings.json"
+        assert (
+            project_settings.exists()
+        ), "Project settings should be created when user proceeds"
+
+    def test_conflict_check_handles_missing_opposite_file(
+        self, temp_home, test_project, install_env
+    ):
+        """Conflict check should handle missing opposite settings file gracefully."""
+        # Install locally when no global settings exist
+        result = self._run_install(temp_home, [str(test_project)])
+        assert result.returncode == 0, f"Local install failed: {result.stderr}"
+
+        output = result.stdout + result.stderr
+        assert (
+            "WARNING: Hook Conflict" not in output
+        ), "Should not warn when opposite file missing"
+
+    def test_conflict_check_handles_empty_hooks_in_opposite_file(
+        self, temp_home, test_project, install_env
+    ):
+        """Conflict check should not warn if opposite file has no pace-maker hooks."""
+        # Create global settings with different hooks
+        global_settings_dir = temp_home / ".claude"
+        global_settings_dir.mkdir(parents=True, exist_ok=True)
+        global_settings_file = global_settings_dir / "settings.json"
+
+        other_settings = {
+            "hooks": {
+                "Start": [
+                    {"hooks": [{"type": "command", "command": "~/other-hook.sh"}]}
+                ]
+            }
+        }
+
+        with open(global_settings_file, "w") as f:
+            json.dump(other_settings, f)
+
+        # Install locally - should not conflict (no pace-maker hooks in global)
+        result = self._run_install(temp_home, [str(test_project)])
+        assert result.returncode == 0, f"Local install failed: {result.stderr}"
+
+        output = result.stdout + result.stderr
+        assert (
+            "WARNING: Hook Conflict" not in output
+        ), "Should not warn when opposite file has no pace-maker hooks"
+
+    def test_conflict_warning_shows_conflicting_file_path(
+        self, temp_home, test_project, install_env
+    ):
+        """Conflict warning should show the path of the conflicting file."""
+        # Install globally first
+        result1 = self._run_install(temp_home, [])
+        assert result1.returncode == 0
+
+        # Try local install - should show global settings path in warning
+        result2 = self._run_install_with_input(temp_home, [str(test_project)], "n\n")
+
+        output = result2.stdout + result2.stderr
+        str(temp_home / ".claude" / "settings.json")
+
+        # Warning should mention the conflicting file
+        assert (
+            ".claude/settings.json" in output or "settings.json" in output
+        ), "Should show conflicting file path in warning"
+
+    def test_conflict_warning_provides_clear_recommendation(
+        self, temp_home, test_project, install_env
+    ):
+        """Conflict warning should provide clear resolution recommendations."""
+        # Install globally first
+        result1 = self._run_install(temp_home, [])
+        assert result1.returncode == 0
+
+        # Try local install
+        result2 = self._run_install_with_input(temp_home, [str(test_project)], "n\n")
+
+        output = result2.stdout + result2.stderr
+        assert (
+            "Recommendation" in output or "recommendation" in output.lower()
+        ), "Should provide recommendations"
+        assert (
+            "Remove" in output or "remove" in output.lower()
+        ), "Should recommend removing hooks from one location"
+
+    def _run_install(self, home_dir, args):
+        """Helper to run install.sh with custom HOME directory and arguments."""
+        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+
+        # Run from home_dir to avoid detecting pace-maker's own .claude directory
+        result = subprocess.run(
+            [str(install_script)] + args,
+            env={**os.environ, "HOME": str(home_dir)},
+            capture_output=True,
+            text=True,
+            cwd=str(home_dir),
+        )
+
+        return result
+
+    def _run_install_with_input(self, home_dir, args, user_input):
+        """Helper to run install.sh with simulated user input."""
+        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+
+        # Run from home_dir to avoid detecting pace-maker's own .claude directory
+        result = subprocess.run(
+            [str(install_script)] + args,
+            env={**os.environ, "HOME": str(home_dir)},
+            input=user_input,
+            capture_output=True,
+            text=True,
+            cwd=str(home_dir),
+        )
+
+        return result
+
+    def _run_install_with_input_and_cwd(self, home_dir, args, user_input, cwd):
+        """Helper to run install.sh with simulated user input and specific CWD."""
+        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+
+        result = subprocess.run(
+            [str(install_script)] + args,
+            env={**os.environ, "HOME": str(home_dir)},
+            input=user_input,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+        )
+
+        return result

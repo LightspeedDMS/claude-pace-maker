@@ -195,9 +195,123 @@ EOF
   echo -e "${GREEN}✓ Database initialized${NC}"
 }
 
+# Check for hook conflicts between global and project settings
+check_hook_conflicts() {
+  local opposite_file=""
+  local has_pacemaker_hooks=0
+
+  # Determine which settings file to check based on current mode
+  if [ "$INSTALL_MODE" = "local" ]; then
+    # Installing locally - check global settings
+    opposite_file="$HOME/.claude/settings.json"
+
+    # If opposite file doesn't exist, no conflict
+    [ ! -f "$opposite_file" ] && return 1
+
+    # Check if global settings has pace-maker hooks
+    has_pacemaker_hooks=$(jq -r '
+      [
+        ((.hooks.SessionStart // [])[] | select(.hooks[0].command | contains("session-start.sh"))),
+        ((.hooks.UserPromptSubmit // [])[] | select(.hooks[0].command | contains("user-prompt-submit.sh"))),
+        ((.hooks.PostToolUse // [])[] | select(.hooks[0].command | contains("post-tool-use.sh"))),
+        ((.hooks.Stop // [])[] | select(.hooks[0].command | contains("stop.sh")))
+      ] | length
+    ' "$opposite_file" 2>/dev/null || echo "0")
+
+    if [ "$has_pacemaker_hooks" -gt 0 ]; then
+      echo "$opposite_file"
+      return 0
+    fi
+  else
+    # Installing globally - check current working directory for local settings
+    # This handles the case where user runs global install from within a project
+    local cwd_settings="$PWD/.claude/settings.json"
+    local global_settings="$HOME/.claude/settings.json"
+
+    # Only check if CWD settings is different from the global settings we're installing to
+    # This avoids false positives when reinstalling globally
+    if [ -f "$cwd_settings" ] && [ "$(readlink -f "$cwd_settings")" != "$(readlink -f "$global_settings")" ]; then
+      has_pacemaker_hooks=$(jq -r '
+        [
+          ((.hooks.SessionStart // [])[] | select(.hooks[0].command | contains("session-start.sh"))),
+          ((.hooks.UserPromptSubmit // [])[] | select(.hooks[0].command | contains("user-prompt-submit.sh"))),
+          ((.hooks.PostToolUse // [])[] | select(.hooks[0].command | contains("post-tool-use.sh"))),
+          ((.hooks.Stop // [])[] | select(.hooks[0].command | contains("stop.sh")))
+        ] | length
+      ' "$cwd_settings" 2>/dev/null || echo "0")
+
+      if [ "$has_pacemaker_hooks" -gt 0 ]; then
+        echo "$cwd_settings"
+        return 0
+      fi
+    fi
+
+    # Also check common project parent directories if we can find them
+    # Look for any .claude/settings.json files with pace-maker hooks in subdirectories
+    # But this is expensive, so we skip it for now
+    # The main protection is when installing locally (which is most common)
+  fi
+
+  # No conflict
+  return 1
+}
+
+# Display conflict warning and get user confirmation
+warn_about_conflict() {
+  local conflicting_file="$1"
+
+  echo ""
+  echo -e "${YELLOW}⚠ WARNING: Hook Conflict Detected${NC}"
+  echo ""
+  echo "Claude Code merges settings from both global and project-local files."
+  echo "Pace-maker hooks found in: $conflicting_file"
+  echo ""
+  echo "If you continue, hooks will be registered in both locations and will"
+  echo "FIRE TWICE on each trigger, causing duplicate behavior."
+  echo ""
+  echo -e "${YELLOW}Recommendation:${NC}"
+  echo "  - For project-specific installation: Remove hooks from ~/.claude/settings.json"
+  echo "  - For global installation: Remove hooks from project .claude/settings.json"
+  echo ""
+  echo -n "Do you want to proceed anyway? [y/N]: "
+
+  # Read user input with timeout for non-interactive environments
+  local answer
+  if read -r -t 60 answer 2>/dev/null; then
+    case "$answer" in
+      [Yy]|[Yy][Ee][Ss])
+        echo ""
+        echo -e "${YELLOW}Proceeding with installation despite conflict...${NC}"
+        echo ""
+        return 0
+        ;;
+      *)
+        echo ""
+        echo -e "${RED}Installation cancelled by user.${NC}"
+        echo "Please remove pace-maker hooks from one location and try again."
+        return 1
+        ;;
+    esac
+  else
+    # Non-interactive or timeout - default to cancelling
+    echo ""
+    echo -e "${RED}No response received. Installation cancelled.${NC}"
+    return 1
+  fi
+}
+
 # Register hooks in settings.json
 register_hooks() {
   echo "Registering hooks..."
+
+  # Check for conflicts BEFORE making any changes
+  local conflicting_file
+  if conflicting_file=$(check_hook_conflicts); then
+    if ! warn_about_conflict "$conflicting_file"; then
+      # User cancelled or non-interactive mode
+      exit 1
+    fi
+  fi
 
   # Full paths for hooks
   HOOKS_DIR="$HOME/.claude/hooks"
@@ -225,21 +339,26 @@ register_hooks() {
   TEMP_FILE=$(mktemp)
 
   # Remove ALL pace-maker hooks, then add them back
-  # This ensures no duplicates
+  # This ensures no duplicates and preserves other hooks like tdd-guard
   jq --arg session_start "$SESSION_START_HOOK" \
      --arg user_prompt "$USER_PROMPT_HOOK" \
      --arg post_hook "$POST_HOOK" \
      --arg stop_hook "$STOP_HOOK" \
     '
+     # Helper function to check if a hook entry contains pace-maker hooks
+     def has_pacemaker_hook(pattern):
+       [.hooks[]? | select(.command? // "" | test(pattern))] | length > 0;
+
      # Remove all pace-maker hooks (handles both ~ and full paths)
+     # This preserves non-pace-maker hooks by checking if ANY command in the hooks array matches
      .hooks.SessionStart = [(.hooks.SessionStart // [])[] |
-       select(.hooks[0].command | contains("session-start.sh") | not)] |
+       select(has_pacemaker_hook("\\.claude/hooks/session-start\\.sh") | not)] |
      .hooks.UserPromptSubmit = [(.hooks.UserPromptSubmit // [])[] |
-       select(.hooks[0].command | contains("user-prompt-submit.sh") | not)] |
+       select(has_pacemaker_hook("\\.claude/hooks/user-prompt-submit\\.sh") | not)] |
      .hooks.PostToolUse = [(.hooks.PostToolUse // [])[] |
-       select(.hooks[0].command | contains("post-tool-use.sh") | not)] |
+       select(has_pacemaker_hook("\\.claude/hooks/post-tool-use\\.sh") | not)] |
      .hooks.Stop = [(.hooks.Stop // [])[] |
-       select(.hooks[0].command | contains("stop.sh") | not)] |
+       select(has_pacemaker_hook("\\.claude/hooks/stop\\.sh") | not)] |
 
      # Add them back with full paths
      .hooks.SessionStart += [{"hooks": [{"type": "command", "command": $session_start}]}] |
