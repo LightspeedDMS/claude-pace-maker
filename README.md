@@ -19,7 +19,20 @@ Pace Maker monitors your Claude Code credit usage in real-time and automatically
 
 ### Installation
 
+**Option 1: One-command installation via pipx (recommended)**
+
 ```bash
+pipx install git+https://github.com/LightspeedDMS/claude-pace-maker.git
+claude-pace-maker
+```
+
+**Option 2: Manual installation from source**
+
+```bash
+# Clone repository
+git clone https://github.com/LightspeedDMS/claude-pace-maker.git
+cd claude-pace-maker
+
 # Global installation (all projects)
 ./install.sh
 
