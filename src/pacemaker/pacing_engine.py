@@ -12,7 +12,6 @@ Orchestrates:
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 from . import calculator, database, api_client, adaptive_throttle
-from .constants import PROMPT_INJECTION_THRESHOLD_SECONDS
 
 
 def should_poll_api(last_poll_time: Optional[datetime], interval: int = 60) -> bool:
@@ -223,7 +222,7 @@ def calculate_pacing_decision(
 
 def determine_delay_strategy(delay_seconds: int) -> Dict:
     """
-    Determine how to apply the delay (hybrid strategy).
+    Determine how to apply the delay (always uses direct sleep).
 
     Args:
         delay_seconds: Calculated delay in seconds
@@ -231,16 +230,8 @@ def determine_delay_strategy(delay_seconds: int) -> Dict:
     Returns:
         Dict with strategy details
     """
-    if delay_seconds < PROMPT_INJECTION_THRESHOLD_SECONDS:
-        # Direct execution - sleep in hook
-        return {"method": "direct", "delay_seconds": delay_seconds, "prompt": None}
-    else:
-        # Inject prompt - Claude waits
-        return {
-            "method": "prompt",
-            "delay_seconds": delay_seconds,
-            "prompt": f"[PACING] Please wait {delay_seconds} seconds to maintain credit budget...",
-        }
+    # Always use direct delays - prompt injection doesn't work in Claude Code
+    return {"method": "direct", "delay_seconds": delay_seconds, "prompt": None}
 
 
 def process_usage_update(usage_data: Dict, db_path: str, session_id: str) -> bool:

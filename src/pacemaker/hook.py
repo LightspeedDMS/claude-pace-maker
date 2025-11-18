@@ -95,7 +95,13 @@ def execute_delay(delay_seconds: int):
     if delay_seconds > 0:
         # Cap at MAX_DELAY_SECONDS (360s timeout - 10s safety margin)
         actual_delay = min(delay_seconds, MAX_DELAY_SECONDS)
+        print(
+            f"[PACING] Sleeping for {actual_delay} seconds...",
+            file=sys.stderr,
+            flush=True,
+        )
         time.sleep(actual_delay)
+        print("[PACING] Sleep complete", file=sys.stderr, flush=True)
 
 
 def inject_prompt_delay(prompt: str):
@@ -149,8 +155,32 @@ def run_hook():
 
     # Apply throttling if needed
     decision = result.get("decision", {})
+
+    # Show usage status if we polled
+    if result.get("polled") and decision:
+        five_hour = decision.get("five_hour", {})
+        constrained = decision.get("constrained_window")
+
+        if five_hour and constrained:
+            util = five_hour.get("utilization", 0)
+            target = five_hour.get("target", 0)
+            overage = util - target
+
+            print(
+                f"[PACING] 5-hour usage: {util}% (target: {target:.1f}%, over by: {overage:.1f}%)",
+                file=sys.stderr,
+                flush=True,
+            )
+
     if decision.get("should_throttle"):
         strategy = decision.get("strategy", {})
+        delay = strategy.get("delay_seconds", 0)
+
+        print(
+            f"[PACING] Throttling for {delay}s (method={strategy.get('method')})",
+            file=sys.stderr,
+            flush=True,
+        )
 
         if strategy.get("method") == "direct":
             # Direct execution - sleep
@@ -158,6 +188,8 @@ def run_hook():
         elif strategy.get("method") == "prompt":
             # Inject prompt
             inject_prompt_delay(strategy["prompt"])
+    else:
+        print("[PACING] No throttling needed", file=sys.stderr, flush=True)
 
 
 def run_user_prompt_submit():

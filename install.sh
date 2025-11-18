@@ -471,6 +471,9 @@ register_hooks() {
      --arg post_hook "$POST_HOOK" \
      --arg stop_hook "$STOP_HOOK" \
     '
+     # Ensure .hooks exists as an object
+     if .hooks == null then .hooks = {} else . end |
+
      # Helper function to remove pace-maker commands from a hook entry
      def remove_pacemaker_commands(pattern):
        if .hooks then
