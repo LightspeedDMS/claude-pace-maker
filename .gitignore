@@ -8,3 +8,4 @@
 /scripts/__pycache__
 /~/.claude-pace-maker
 /.analysis
+.ssh-mcp-server.port
