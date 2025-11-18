@@ -1,0 +1,4 @@
+include install.sh
+include README.md
+include LICENSE
+recursive-include src/hooks *.sh

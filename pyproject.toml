@@ -1,2 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-pace-maker"
+version = "1.0.0"
+description = "Intelligent credit consumption throttling for Claude Code"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Lightspeed DMS"}
+]
+dependencies = [
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+claude-pace-maker = "pacemaker.hook:main"
+
+[project.urls]
+Homepage = "https://github.com/LightspeedDMS/claude-pace-maker"
+Repository = "https://github.com/LightspeedDMS/claude-pace-maker"
+
 [tool.pytest.ini_options]
 tdd_guard_project_root = "/home/jsbattig/Dev/claude-pace-maker"
