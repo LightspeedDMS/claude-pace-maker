@@ -261,9 +261,9 @@ def run_stop_hook():
     Handle Stop hook - scan conversation for IMPLEMENTATION markers.
 
     Returns:
-        Dictionary with:
-        - decision: "allow" or "block"
-        - reason: Optional message if blocking
+        Dictionary with Claude Code Stop hook schema:
+        - continue: boolean (True to allow exit, False to block)
+        - stopReason: string (message when blocking)
     """
     from . import lifecycle
 
@@ -271,18 +271,18 @@ def run_stop_hook():
         # Load config to check if tempo is enabled
         config = load_config(DEFAULT_CONFIG_PATH)
         if not config.get("tempo_enabled", True):
-            return {"decision": "allow"}  # Tempo disabled - allow exit
+            return {"continue": True}  # Tempo disabled - allow exit
 
         # Read hook data from stdin to get transcript path
         raw_input = sys.stdin.read()
         if not raw_input:
-            return {"decision": "allow"}
+            return {"continue": True}
 
         hook_data = json.loads(raw_input)
         transcript_path = hook_data.get("transcript_path")
 
         if not transcript_path or not os.path.exists(transcript_path):
-            return {"decision": "allow"}
+            return {"continue": True}
 
         # Read entire conversation from transcript
         conversation_text = read_conversation_from_transcript(transcript_path)
@@ -292,19 +292,19 @@ def run_stop_hook():
 
         if not has_start:
             # No implementation started - allow exit
-            return {"decision": "allow"}
+            return {"continue": True}
 
         # Check for IMPLEMENTATION_COMPLETE in conversation
         has_complete = "IMPLEMENTATION_COMPLETE" in conversation_text
 
         if has_complete:
             # Implementation complete - allow exit
-            return {"decision": "allow"}
+            return {"continue": True}
 
         # Implementation started but not complete - check prompt count for infinite loop
         prompt_count = lifecycle.get_stop_hook_prompt_count(DEFAULT_STATE_PATH)
         if prompt_count > 0:
-            return {"decision": "allow"}  # Prevent infinite loop
+            return {"continue": True}  # Prevent infinite loop
 
         # Increment prompt count
         lifecycle.increment_stop_hook_prompt_count(DEFAULT_STATE_PATH)
@@ -315,13 +315,12 @@ def run_stop_hook():
             "If all tasks are done, respond with exactly 'IMPLEMENTATION_COMPLETE' (nothing else). "
             "If not done, continue working."
         )
-        print(prompt, file=sys.stdout, flush=True)
-        return {"decision": "block", "reason": prompt}
+        return {"continue": False, "stopReason": prompt}
 
     except Exception as e:
         # Graceful degradation - log error and allow exit
         print(f"[PACE-MAKER ERROR] Stop hook: {e}", file=sys.stderr)
-        return {"decision": "allow"}
+        return {"continue": True}
 
 
 def main():
@@ -336,7 +335,7 @@ def main():
         result = run_stop_hook()
         # Output JSON response
         print(json.dumps(result), file=sys.stdout, flush=True)
-        sys.exit(0 if result["decision"] == "allow" else 1)
+        sys.exit(0 if result.get("continue", True) else 1)
 
     # Check if this is user-prompt-submit hook
     if len(sys.argv) > 1 and sys.argv[1] == "user_prompt_submit":

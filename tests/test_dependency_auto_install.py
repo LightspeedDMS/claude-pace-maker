@@ -7,8 +7,6 @@ detects and installs missing dependencies using available package managers.
 """
 
 import subprocess
-import tempfile
-import os
 import sys
 from pathlib import Path
 import pytest
@@ -24,7 +22,8 @@ class TestPackageManagerDetection:
     def test_detect_brew_on_macos(self, tmp_path):
         """Should detect brew when available on macOS"""
         script = tmp_path / "test_brew.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 detect_package_manager() {
   if command -v brew >/dev/null 2>&1; then
@@ -46,7 +45,8 @@ detect_package_manager() {
 }
 
 detect_package_manager
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -58,10 +58,12 @@ detect_package_manager
         """Should detect apt when available on Debian/Ubuntu"""
         # This test would pass on Debian/Ubuntu systems with apt
         script = tmp_path / "test_apt.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 command -v apt >/dev/null 2>&1 && echo "apt" || echo "not_found"
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -71,7 +73,8 @@ command -v apt >/dev/null 2>&1 && echo "apt" || echo "not_found"
     def test_fallback_to_yum_or_dnf(self, tmp_path):
         """Should detect yum or dnf on RHEL/CentOS/Fedora"""
         script = tmp_path / "test_yum.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 if command -v dnf >/dev/null 2>&1; then
   echo "dnf"
@@ -80,7 +83,8 @@ elif command -v yum >/dev/null 2>&1; then
 else
   echo "not_found"
 fi
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -89,7 +93,8 @@ fi
     def test_no_package_manager_returns_error(self, tmp_path):
         """Should return error when no package manager is available"""
         script = tmp_path / "test_none.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 # Simulate environment with no package managers
 PATH=/bin:/usr/bin
@@ -114,7 +119,8 @@ detect_package_manager() {
 
 detect_package_manager
 exit $?
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -129,7 +135,8 @@ class TestDependencyChecking:
     def test_detect_missing_dependencies(self, tmp_path):
         """Should correctly identify which dependencies are missing"""
         script = tmp_path / "test_missing.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 check_missing() {
   local missing=()
@@ -148,7 +155,8 @@ check_missing() {
 }
 
 check_missing
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -164,7 +172,8 @@ check_missing
     def test_all_dependencies_present(self, tmp_path):
         """Should return success when all dependencies are present"""
         script = tmp_path / "test_present.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 # Mock all dependencies as present
 command() {
@@ -192,7 +201,8 @@ check_missing() {
 
 check_missing
 exit $?
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -206,7 +216,8 @@ class TestUserConfirmation:
     def test_user_confirms_installation(self, tmp_path):
         """Should proceed when user confirms installation"""
         script = tmp_path / "test_confirm.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 prompt_install() {
   local deps="$1"
@@ -231,23 +242,21 @@ prompt_install() {
 
 prompt_install "jq curl"
 exit $?
-""")
+"""
+        )
         script.chmod(0o755)
 
         # Test with "yes" input
         result = subprocess.run(
-            [str(script)],
-            input="y\n",
-            capture_output=True,
-            text=True,
-            timeout=2
+            [str(script)], input="y\n", capture_output=True, text=True, timeout=2
         )
         assert result.returncode == 0
 
     def test_user_declines_installation(self, tmp_path):
         """Should abort when user declines installation"""
         script = tmp_path / "test_decline.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 prompt_install() {
   local deps="$1"
@@ -271,23 +280,21 @@ prompt_install() {
 
 prompt_install "jq curl"
 exit $?
-""")
+"""
+        )
         script.chmod(0o755)
 
         # Test with "no" input
         result = subprocess.run(
-            [str(script)],
-            input="n\n",
-            capture_output=True,
-            text=True,
-            timeout=2
+            [str(script)], input="n\n", capture_output=True, text=True, timeout=2
         )
         assert result.returncode == 1
 
     def test_non_interactive_defaults_to_yes(self, tmp_path):
         """Should default to yes in non-interactive mode"""
         script = tmp_path / "test_noninteractive.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 prompt_install() {
   local deps="$1"
@@ -304,15 +311,13 @@ prompt_install() {
 
 prompt_install "jq"
 exit $?
-""")
+"""
+        )
         script.chmod(0o755)
 
         # Run without stdin
         result = subprocess.run(
-            [str(script)],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True
+            [str(script)], stdin=subprocess.DEVNULL, capture_output=True, text=True
         )
         assert result.returncode == 0
 
@@ -323,7 +328,8 @@ class TestInstallationLogic:
     def test_construct_install_command_brew(self, tmp_path):
         """Should construct correct install command for brew"""
         script = tmp_path / "test_brew_cmd.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 get_install_command() {
   local pkg_manager="$1"
@@ -349,7 +355,8 @@ get_install_command() {
 }
 
 get_install_command "brew" "jq"
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -359,7 +366,8 @@ get_install_command "brew" "jq"
     def test_construct_install_command_apt(self, tmp_path):
         """Should construct correct install command for apt"""
         script = tmp_path / "test_apt_cmd.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 get_install_command() {
   local pkg_manager="$1"
@@ -385,7 +393,8 @@ get_install_command() {
 }
 
 get_install_command "apt" "python3"
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -395,7 +404,8 @@ get_install_command "apt" "python3"
     def test_install_multiple_dependencies(self, tmp_path):
         """Should handle installation of multiple dependencies"""
         script = tmp_path / "test_multi.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 install_dependencies() {
   local pkg_manager="$1"
@@ -422,7 +432,8 @@ install_dependencies() {
 }
 
 install_dependencies "brew" "jq" "curl" "python3"
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -436,7 +447,8 @@ class TestErrorHandling:
     def test_error_when_no_package_manager(self, tmp_path):
         """Should return error when no package manager is available"""
         script = tmp_path / "test_no_pm.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 check_dependencies() {
   local pkg_manager=""
@@ -459,7 +471,8 @@ check_dependencies() {
 # Simulate no package manager by restricting PATH
 PATH=/bin
 check_dependencies
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -470,7 +483,8 @@ check_dependencies
     def test_error_when_installation_fails(self, tmp_path):
         """Should return error when installation fails"""
         script = tmp_path / "test_fail.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 install_dependency() {
   local pkg="$1"
@@ -486,7 +500,8 @@ install_dependency() {
 }
 
 install_dependency "nonexistent-package"
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -496,7 +511,8 @@ install_dependency "nonexistent-package"
     def test_provides_clear_error_messages(self, tmp_path):
         """Should provide clear error messages for debugging"""
         script = tmp_path / "test_messages.sh"
-        script.write_text("""
+        script.write_text(
+            """
 #!/bin/bash
 RED='\\033[0;31m'
 NC='\\033[0m'
@@ -509,7 +525,8 @@ show_error() {
 show_error "Missing required dependencies: jq curl"
 show_error "No package manager found. Please install homebrew, apt, or yum/dnf."
 show_error "Installation failed for: jq"
-""")
+"""
+        )
         script.chmod(0o755)
 
         result = subprocess.run([str(script)], capture_output=True, text=True)
@@ -538,7 +555,7 @@ class TestIntegration:
         # Look for the call in main function
         main_start = content.find("main() {")
         if main_start != -1:
-            main_section = content[main_start:main_start+500]
+            main_section = content[main_start : main_start + 500]
             assert "check_dependencies" in main_section
 
 

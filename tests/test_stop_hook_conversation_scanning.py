@@ -107,7 +107,7 @@ class TestStopHookConversationScanning(unittest.TestCase):
                     result = run_stop_hook()
 
         # Should allow exit
-        self.assertEqual(result["decision"], "allow")
+        self.assertTrue(result["continue"])
 
     def test_stop_hook_blocks_when_start_without_complete(self):
         """Should block exit when IMPLEMENTATION_START without COMPLETE."""
@@ -125,26 +125,15 @@ class TestStopHookConversationScanning(unittest.TestCase):
         hook_data = {"transcript_path": self.transcript_path}
         mock_stdin = io.StringIO(json.dumps(hook_data))
 
-        # Capture stdout
-        captured = io.StringIO()
-        sys.stdout = captured
+        with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
+            with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
+                with patch("sys.stdin", mock_stdin):
+                    result = run_stop_hook()
 
-        try:
-            with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", self.config_path):
-                with patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path):
-                    with patch("sys.stdin", mock_stdin):
-                        result = run_stop_hook()
-
-            output = captured.getvalue()
-
-            # Should block
-            self.assertEqual(result["decision"], "block")
-            self.assertIn("reason", result)
-
-            # Should print prompt
-            self.assertIn("IMPLEMENTATION_COMPLETE", output)
-        finally:
-            sys.stdout = sys.__stdout__
+        # Should block
+        self.assertFalse(result["continue"])
+        self.assertIn("stopReason", result)
+        self.assertIn("IMPLEMENTATION_COMPLETE", result["stopReason"])
 
     def test_stop_hook_allows_when_both_markers_present(self):
         """Should allow exit when both START and COMPLETE present."""
@@ -168,7 +157,7 @@ class TestStopHookConversationScanning(unittest.TestCase):
                     result = run_stop_hook()
 
         # Should allow exit
-        self.assertEqual(result["decision"], "allow")
+        self.assertTrue(result["continue"])
 
     def test_stop_hook_prevents_infinite_loop_after_one_prompt(self):
         """Should allow exit after prompting once to prevent infinite loop."""
@@ -197,7 +186,7 @@ class TestStopHookConversationScanning(unittest.TestCase):
                     result = run_stop_hook()
 
         # Should allow exit (infinite loop prevention)
-        self.assertEqual(result["decision"], "allow")
+        self.assertTrue(result["continue"])
 
     def test_stop_hook_increments_prompt_count_on_block(self):
         """Should increment prompt count when blocking."""
@@ -254,7 +243,7 @@ class TestStopHookConversationScanning(unittest.TestCase):
                     result = run_stop_hook()
 
         # Should allow exit (tempo disabled)
-        self.assertEqual(result["decision"], "allow")
+        self.assertTrue(result["continue"])
 
     def test_stop_hook_allows_when_no_transcript_path(self):
         """Should allow exit when transcript_path not provided."""
@@ -275,7 +264,7 @@ class TestStopHookConversationScanning(unittest.TestCase):
                     result = run_stop_hook()
 
         # Should allow exit (graceful degradation)
-        self.assertEqual(result["decision"], "allow")
+        self.assertTrue(result["continue"])
 
     def test_stop_hook_allows_when_transcript_missing(self):
         """Should allow exit when transcript file doesn't exist."""
@@ -296,7 +285,7 @@ class TestStopHookConversationScanning(unittest.TestCase):
                     result = run_stop_hook()
 
         # Should allow exit (graceful degradation)
-        self.assertEqual(result["decision"], "allow")
+        self.assertTrue(result["continue"])
 
 
 if __name__ == "__main__":

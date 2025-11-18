@@ -246,7 +246,7 @@ class TestStopHook(unittest.TestCase):
                     result = run_stop_hook()
 
         # Should allow session end (tempo disabled)
-        self.assertEqual(result["decision"], "allow")
+        self.assertTrue(result["continue"])
 
     def test_stop_hook_prevents_infinite_loop(self):
         """Should prevent infinite loop by tracking prompt count - see test_stop_hook_conversation_scanning.py for full test."""
