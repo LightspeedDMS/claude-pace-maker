@@ -242,11 +242,21 @@ create_directories() {
 install_hooks() {
   echo "Installing hook scripts..."
 
+  # Detect hooks source directory (dev: src/hooks/, pipx: hooks/)
+  if [ -d "$SCRIPT_DIR/src/hooks" ]; then
+    HOOKS_SOURCE_DIR="$SCRIPT_DIR/src/hooks"
+  elif [ -d "$SCRIPT_DIR/hooks" ]; then
+    HOOKS_SOURCE_DIR="$SCRIPT_DIR/hooks"
+  else
+    echo -e "${RED}Error: Hook scripts not found${NC}"
+    exit 1
+  fi
+
   # Copy hooks from source
-  cp "$SCRIPT_DIR/src/hooks/stop.sh" "$HOOKS_DIR/"
-  cp "$SCRIPT_DIR/src/hooks/post-tool-use.sh" "$HOOKS_DIR/"
-  cp "$SCRIPT_DIR/src/hooks/user-prompt-submit.sh" "$HOOKS_DIR/"
-  cp "$SCRIPT_DIR/src/hooks/session-start.sh" "$HOOKS_DIR/"
+  cp "$HOOKS_SOURCE_DIR/stop.sh" "$HOOKS_DIR/"
+  cp "$HOOKS_SOURCE_DIR/post-tool-use.sh" "$HOOKS_DIR/"
+  cp "$HOOKS_SOURCE_DIR/user-prompt-submit.sh" "$HOOKS_DIR/"
+  cp "$HOOKS_SOURCE_DIR/session-start.sh" "$HOOKS_DIR/"
 
   # Set executable permissions
   chmod +x "$HOOKS_DIR"/*.sh
