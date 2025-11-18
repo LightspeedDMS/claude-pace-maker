@@ -1,0 +1,2 @@
+[tool.pytest.ini_options]
+tdd_guard_project_root = "/home/jsbattig/Dev/claude-pace-maker"
