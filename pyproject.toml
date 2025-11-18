@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-claude-pace-maker = "pacemaker.hook:main"
+claude-pace-maker = "pacemaker.installer:main"
 
 [project.urls]
 Homepage = "https://github.com/LightspeedDMS/claude-pace-maker"
