@@ -102,18 +102,130 @@ else
 fi
 echo ""
 
-# Check dependencies
+# Check and auto-install dependencies
 check_dependencies() {
   local missing=()
+  local pkg_manager=""
 
+  # Check which dependencies are missing
   command -v jq >/dev/null 2>&1 || missing+=("jq")
   command -v curl >/dev/null 2>&1 || missing+=("curl")
   command -v python3 >/dev/null 2>&1 || missing+=("python3")
 
-  if [ ${#missing[@]} -ne 0 ]; then
-    echo -e "${RED}Error: Missing required dependencies: ${missing[*]}${NC}"
-    echo "Please install them and try again."
-    exit 1
+  # If all dependencies are present, return success
+  if [ ${#missing[@]} -eq 0 ]; then
+    return 0
+  fi
+
+  # Detect available package manager
+  if command -v brew >/dev/null 2>&1; then
+    pkg_manager="brew"
+  elif command -v apt >/dev/null 2>&1; then
+    pkg_manager="apt"
+  elif command -v dnf >/dev/null 2>&1; then
+    pkg_manager="dnf"
+  elif command -v yum >/dev/null 2>&1; then
+    pkg_manager="yum"
+  else
+    echo -e "${RED}Error: No supported package manager found (brew, apt, dnf, yum)${NC}"
+    echo -e "${RED}Missing dependencies: ${missing[*]}${NC}"
+    echo "Please install them manually and try again."
+    return 1
+  fi
+
+  # Prompt user for confirmation
+  echo -e "${YELLOW}The following dependencies are missing: ${missing[*]}${NC}"
+  echo -n "Would you like to install them now using $pkg_manager? [Y/n]: "
+
+  local answer
+  # Use timeout for non-interactive environments (e.g., CI/CD)
+  if [ -t 0 ]; then
+    # Interactive mode - read user input
+    read -r answer
+  else
+    # Non-interactive mode - default to yes
+    answer="y"
+    echo "y (non-interactive mode, defaulting to yes)"
+  fi
+
+  case "$answer" in
+    [Nn]|[Nn][Oo])
+      echo -e "${RED}Installation cancelled by user.${NC}"
+      echo "Please install the following dependencies manually: ${missing[*]}"
+      return 1
+      ;;
+    *)
+      # Proceed with installation
+      ;;
+  esac
+
+  # Install missing dependencies
+  echo "Installing dependencies..."
+  local failed=()
+
+  for dep in "${missing[@]}"; do
+    echo -n "Installing $dep... "
+
+    case "$pkg_manager" in
+      brew)
+        if brew install "$dep" >/dev/null 2>&1; then
+          echo -e "${GREEN}✓${NC}"
+        else
+          echo -e "${RED}✗${NC}"
+          failed+=("$dep")
+        fi
+        ;;
+      apt)
+        if sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y "$dep" >/dev/null 2>&1; then
+          echo -e "${GREEN}✓${NC}"
+        else
+          echo -e "${RED}✗${NC}"
+          failed+=("$dep")
+        fi
+        ;;
+      dnf)
+        if sudo dnf install -y "$dep" >/dev/null 2>&1; then
+          echo -e "${GREEN}✓${NC}"
+        else
+          echo -e "${RED}✗${NC}"
+          failed+=("$dep")
+        fi
+        ;;
+      yum)
+        if sudo yum install -y "$dep" >/dev/null 2>&1; then
+          echo -e "${GREEN}✓${NC}"
+        else
+          echo -e "${RED}✗${NC}"
+          failed+=("$dep")
+        fi
+        ;;
+    esac
+  done
+
+  # Check if any installations failed
+  if [ ${#failed[@]} -ne 0 ]; then
+    echo -e "${RED}Error: Failed to install: ${failed[*]}${NC}"
+    echo "Please install them manually and try again."
+    return 1
+  fi
+
+  echo -e "${GREEN}✓ All dependencies installed successfully${NC}"
+  return 0
+}
+
+# Install Python dependencies
+install_python_deps() {
+  echo "Installing Python dependencies..."
+
+  # Install requests library needed by pace-maker
+  # Try with --user first, fall back to --break-system-packages on macOS
+  if python3 -m pip install --user requests >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ Python dependencies installed${NC}"
+  elif python3 -m pip install --break-system-packages requests >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ Python dependencies installed${NC}"
+  else
+    echo -e "${YELLOW}⚠ Warning: Could not install Python dependencies${NC}"
+    echo -e "${YELLOW}  You may need to run: python3 -m pip install --break-system-packages requests${NC}"
   fi
 }
 
@@ -138,6 +250,9 @@ install_hooks() {
 
   # Set executable permissions
   chmod +x "$HOOKS_DIR"/*.sh
+
+  # Create install_source marker pointing to source directory
+  echo "$SCRIPT_DIR" > "$PACEMAKER_DIR/install_source"
 
   echo -e "${GREEN}✓ Hook scripts installed${NC}"
 }
@@ -460,6 +575,7 @@ EOF
 # Main installation flow
 main() {
   check_dependencies
+  install_python_deps
   create_directories
   install_hooks
   create_config
