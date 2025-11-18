@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
 """Setup script for Claude Pace Maker."""
 
-import os
-import subprocess
 from setuptools import setup, find_packages
-from setuptools.command.install import install
-
-
-class PostInstallCommand(install):
-    """Post-installation command to run install.sh."""
-
-    def run(self):
-        """Run standard installation and then execute install.sh."""
-        install.run(self)
-        
-        # Get the installation directory
-        install_dir = os.path.dirname(os.path.abspath(__file__))
-        install_script = os.path.join(install_dir, "install.sh")
-        
-        # Run the installer
-        if os.path.exists(install_script):
-            print("\nRunning Claude Pace Maker installer...")
-            subprocess.run([install_script], check=False)
 
 
 setup(
@@ -37,11 +17,18 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "claude-pace-maker=pacemaker.hook:main",
+            "claude-pace-maker-install=pacemaker.installer:main",
         ],
     },
-    cmdclass={
-        "install": PostInstallCommand,
-    },
+    # Include install.sh and hook scripts as data files
+    data_files=[
+        ("share/claude-pace-maker", ["install.sh"]),
+        ("share/claude-pace-maker/hooks", [
+            "src/hooks/post-tool-use.sh",
+            "src/hooks/stop.sh",
+            "src/hooks/user-prompt-submit.sh",
+            "src/hooks/session-start.sh",
+        ]),
+    ],
     include_package_data=True,
 )
