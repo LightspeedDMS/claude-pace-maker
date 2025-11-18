@@ -240,7 +240,10 @@ def read_conversation_from_transcript(transcript_path: str) -> str:
         with open(transcript_path, "r") as f:
             for line in f:
                 entry = json.loads(line)
-                content = entry.get("content", [])
+
+                # Claude Code transcript format: entries have .message.content
+                message = entry.get("message", {})
+                content = message.get("content", [])
 
                 # Extract text from content
                 if isinstance(content, list):
@@ -265,62 +268,65 @@ def run_stop_hook():
         - continue: boolean (True to allow exit, False to block)
         - stopReason: string (message when blocking)
     """
-    from . import lifecycle
 
     try:
         # Load config to check if tempo is enabled
         config = load_config(DEFAULT_CONFIG_PATH)
         if not config.get("tempo_enabled", True):
-            return {"continue": True}  # Tempo disabled - allow exit
+            return {}  # Tempo disabled - allow exit
 
         # Read hook data from stdin to get transcript path
         raw_input = sys.stdin.read()
         if not raw_input:
-            return {"continue": True}
+            return {}
 
         hook_data = json.loads(raw_input)
+
+        # Check if already continuing from stop hook (prevent infinite loop)
+        if hook_data.get("stop_hook_active", False):
+            return {}
+
         transcript_path = hook_data.get("transcript_path")
 
         if not transcript_path or not os.path.exists(transcript_path):
-            return {"continue": True}
+            return {}
 
         # Read entire conversation from transcript
         conversation_text = read_conversation_from_transcript(transcript_path)
 
-        # Check for IMPLEMENTATION_START in conversation
-        has_start = "IMPLEMENTATION_START" in conversation_text
-
-        if not has_start:
+        # Find LAST occurrence of IMPLEMENTATION_START
+        last_start_pos = conversation_text.rfind("IMPLEMENTATION_START")
+        if last_start_pos == -1:
             # No implementation started - allow exit
-            return {"continue": True}
+            return {}
 
-        # Check for IMPLEMENTATION_COMPLETE in conversation
-        has_complete = "IMPLEMENTATION_COMPLETE" in conversation_text
-
-        if has_complete:
+        # Check if IMPLEMENTATION_COMPLETE appears AFTER the last start marker
+        complete_after_start = conversation_text.find(
+            "IMPLEMENTATION_COMPLETE", last_start_pos
+        )
+        if complete_after_start != -1:
             # Implementation complete - allow exit
-            return {"continue": True}
+            return {}
 
-        # Implementation started but not complete - check prompt count for infinite loop
-        prompt_count = lifecycle.get_stop_hook_prompt_count(DEFAULT_STATE_PATH)
-        if prompt_count > 0:
-            return {"continue": True}  # Prevent infinite loop
-
-        # Increment prompt count
-        lifecycle.increment_stop_hook_prompt_count(DEFAULT_STATE_PATH)
-
+        # Implementation started but not complete - BLOCK
         # Block and prompt
         prompt = (
             "You started an implementation but haven't declared IMPLEMENTATION_COMPLETE. "
             "If all tasks are done, respond with exactly 'IMPLEMENTATION_COMPLETE' (nothing else). "
             "If not done, continue working."
         )
-        return {"continue": False, "stopReason": prompt}
+        # ========================================================================
+        # CRITICAL: DO NOT CHANGE THIS BLOCKING CODE PATH!
+        # The exit code 2 and {"decision": "block", "reason": "..."} format
+        # are required for Claude Code to actually continue and show the nudge.
+        # Changing this will break the nudge functionality!
+        # ========================================================================
+        return {"decision": "block", "reason": prompt}
 
     except Exception as e:
         # Graceful degradation - log error and allow exit
         print(f"[PACE-MAKER ERROR] Stop hook: {e}", file=sys.stderr)
-        return {"continue": True}
+        return {}
 
 
 def main():
@@ -335,7 +341,7 @@ def main():
         result = run_stop_hook()
         # Output JSON response
         print(json.dumps(result), file=sys.stdout, flush=True)
-        sys.exit(0 if result.get("continue", True) else 1)
+        sys.exit(2)
 
     # Check if this is user-prompt-submit hook
     if len(sys.argv) > 1 and sys.argv[1] == "user_prompt_submit":

@@ -9,3 +9,6 @@
 /~/.claude-pace-maker
 /.analysis
 .ssh-mcp-server.port
+.claude/tdd-guard/data/instructions.md
+.claude/tdd-guard/data/modifications.json
+/.claude/tdd-guard
