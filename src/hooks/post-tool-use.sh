@@ -26,13 +26,15 @@ if [ -f "$INSTALL_MARKER" ]; then
     
     # Check if this is a pipx installation (has pipx in path)
     if [[ "$SOURCE_DIR" == *"pipx"* ]]; then
-        # Pipx installation - use pipx's Python interpreter
-        VENV_PYTHON=$(find "$SOURCE_DIR" -path "*/bin/python3" -o -path "*/bin/python" | head -1)
-        if [ -n "$VENV_PYTHON" ]; then
+        # Pipx installation - Python is in venv/bin
+        # SOURCE_DIR is .../venvs/claude-pace-maker/share/claude-pace-maker
+        # We need .../venvs/claude-pace-maker/bin/python3
+        VENV_PYTHON=$(echo "$SOURCE_DIR" | sed 's|/share/claude-pace-maker|/bin/python3|')
+        if [ -x "$VENV_PYTHON" ]; then
             # Use pipx venv Python which has pacemaker installed
             PYTHON_CMD="$VENV_PYTHON"
         else
-            # Fallback to system Python with pipx inject
+            # Fallback to system Python
             PYTHON_CMD="python3"
         fi
     else
