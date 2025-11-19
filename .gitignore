@@ -12,3 +12,15 @@
 .claude/tdd-guard/data/instructions.md
 .claude/tdd-guard/data/modifications.json
 /.claude/tdd-guard
+
+# FilesystemVectorStore collection
+voyage-code-3/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Code indexer
+.code-indexer/
+.code-indexer-override.yaml
