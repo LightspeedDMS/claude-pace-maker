@@ -361,11 +361,31 @@ If work remains:
 - Don't declare completion until truly done"""
 
         # ========================================================================
-        # CRITICAL: Claude Code Stop hook schema:
-        # {"decision": "block", "reason": "message"} prevents stopping and prompts
-        #   Claude to generate additional responses (THIS IS WHAT WE WANT!)
-        # {"continue": false, "stopReason": "message"} terminates completely
-        #   without generating further responses (NOT what we want)
+        # CRITICAL: WHY WE USE "decision": "block" AND NOT "continue": false
+        # ========================================================================
+        #
+        # DO NOT CHANGE THIS TO {"continue": false, "stopReason": "..."}
+        #
+        # According to Claude Code hooks documentation:
+        # https://code.claude.com/docs/en/hooks
+        #
+        # {"decision": "block", "reason": "message"}
+        #   - Prevents Claude from stopping
+        #   - Prompts Claude with the reason message
+        #   - FORCES Claude to generate additional responses
+        #   - Claude reads the reason and continues working
+        #   - THIS IS WHAT WE WANT!
+        #
+        # {"continue": false, "stopReason": "message"}
+        #   - Terminates execution COMPLETELY
+        #   - Does NOT force Claude to generate more responses
+        #   - Just shows message and HALTS
+        #   - THIS DOES NOT WORK FOR OUR USE CASE!
+        #
+        # Historical note: This was incorrectly changed to "continue": false
+        # which broke the hook's ability to force continuation. The hook would
+        # show a nudge message but Claude would not actually continue working.
+        #
         # ========================================================================
         return {"decision": "block", "reason": reason}
 
@@ -387,12 +407,23 @@ def main():
         result = run_stop_hook()
         # Output JSON response
         print(json.dumps(result), file=sys.stdout, flush=True)
-        # Exit with code 2 when using "decision": "block" to force continuation
-        # Exit with code 0 when allowing normal exit
+
+        # ========================================================================
+        # CRITICAL: Exit code determines Claude Code behavior
+        # ========================================================================
+        # Exit code 2: Signals blocking error - Claude Code will show the
+        #              "reason" message to Claude and force it to continue
+        #              responding. Used with {"decision": "block", "reason": "..."}
+        #
+        # Exit code 0: Signals success - Claude Code allows normal exit.
+        #              Used with {"continue": true}
+        #
+        # DO NOT change these exit codes or the hook will not work correctly.
+        # ========================================================================
         if result.get("decision") == "block":
-            sys.exit(2)
+            sys.exit(2)  # Force continuation by signaling blocking error
         else:
-            sys.exit(0)
+            sys.exit(0)  # Allow normal exit
 
     # Check if this is user-prompt-submit hook
     if len(sys.argv) > 1 and sys.argv[1] == "user_prompt_submit":
