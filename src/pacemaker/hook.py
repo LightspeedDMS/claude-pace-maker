@@ -332,16 +332,18 @@ def run_stop_hook():
         # Get ONLY the last assistant message
         last_message = get_last_assistant_message(transcript_path)
 
-        # Check if the LAST LINE of the last message STARTS WITH a completion marker
-        # This allows markers with context like "IMPLEMENTATION_COMPLETE for Story #123"
+        # Check if completion marker appears ANYWHERE in the last message
+        # This is more robust than checking only the last line because:
+        # 1. LLMs may add text after the marker
+        # 2. Formatting (bold, code blocks) can split lines unexpectedly
+        # 3. The intent is clear if the marker exists anywhere in the response
         if last_message:
-            lines = last_message.strip().split("\n")
-            if lines:
-                last_line = lines[-1].strip()
-                if last_line.startswith(
-                    "IMPLEMENTATION_COMPLETE"
-                ) or last_line.startswith("EXCHANGE_COMPLETE"):
-                    return {"continue": True}
+            # Check if either marker appears as a standalone word/phrase in the message
+            if (
+                "IMPLEMENTATION_COMPLETE" in last_message
+                or "EXCHANGE_COMPLETE" in last_message
+            ):
+                return {"continue": True}
 
         # No completion marker found - block and nudge
         reason = """You haven't declared session completion.
