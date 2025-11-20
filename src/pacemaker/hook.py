@@ -344,7 +344,7 @@ def run_stop_hook():
                     return {"continue": True}
 
         # No completion marker found - block and nudge
-        prompt = """You haven't declared session completion.
+        reason = """You haven't declared session completion.
 
 Review your work:
 - Are ALL user objectives complete?
@@ -361,11 +361,13 @@ If work remains:
 - Don't declare completion until truly done"""
 
         # ========================================================================
-        # CRITICAL: Claude Code Stop hook schema requires:
-        # {"continue": false, "stopReason": "message"} to block
-        # {"continue": true} to allow exit
+        # CRITICAL: Claude Code Stop hook schema:
+        # {"decision": "block", "reason": "message"} prevents stopping and prompts
+        #   Claude to generate additional responses (THIS IS WHAT WE WANT!)
+        # {"continue": false, "stopReason": "message"} terminates completely
+        #   without generating further responses (NOT what we want)
         # ========================================================================
-        return {"continue": False, "stopReason": prompt}
+        return {"decision": "block", "reason": reason}
 
     except Exception as e:
         # Graceful degradation - log error and allow exit
@@ -385,9 +387,12 @@ def main():
         result = run_stop_hook()
         # Output JSON response
         print(json.dumps(result), file=sys.stdout, flush=True)
-        # Exit with code 2 ONLY when blocking (to trigger nudge display)
-        # Exit with code 0 when allowing normal continuation
-        sys.exit(2 if not result.get("continue") else 0)
+        # Exit with code 2 when using "decision": "block" to force continuation
+        # Exit with code 0 when allowing normal exit
+        if result.get("decision") == "block":
+            sys.exit(2)
+        else:
+            sys.exit(0)
 
     # Check if this is user-prompt-submit hook
     if len(sys.argv) > 1 and sys.argv[1] == "user_prompt_submit":
