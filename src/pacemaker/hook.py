@@ -293,7 +293,10 @@ def read_conversation_from_transcript(transcript_path: str) -> str:
 
 def run_stop_hook():
     """
-    Handle Stop hook - scan conversation for IMPLEMENTATION markers.
+    Handle Stop hook - always fire unless completion marker is present.
+
+    Checks for IMPLEMENTATION_COMPLETE or EXCHANGE_COMPLETE markers.
+    If neither is found, blocks exit and nudges LLM to use appropriate marker.
 
     Returns:
         Dictionary with Claude Code Stop hook schema:
@@ -313,11 +316,6 @@ def run_stop_hook():
             return {"continue": True}
 
         hook_data = json.loads(raw_input)
-
-        # Check if already continuing from stop hook (prevent infinite loop)
-        if hook_data.get("stop_hook_active", False):
-            return {"continue": True}
-
         transcript_path = hook_data.get("transcript_path")
 
         if not transcript_path or not os.path.exists(transcript_path):
@@ -326,33 +324,34 @@ def run_stop_hook():
         # Read entire conversation from transcript
         conversation_text = read_conversation_from_transcript(transcript_path)
 
-        # Find LAST occurrence of IMPLEMENTATION_START
-        last_start_pos = conversation_text.rfind("IMPLEMENTATION_START")
-        if last_start_pos == -1:
-            # No implementation started - allow exit
+        # Check for either completion marker
+        if "IMPLEMENTATION_COMPLETE" in conversation_text:
             return {"continue": True}
 
-        # Check if IMPLEMENTATION_COMPLETE appears AFTER the last start marker
-        complete_after_start = conversation_text.find(
-            "IMPLEMENTATION_COMPLETE", last_start_pos
-        )
-        if complete_after_start != -1:
-            # Implementation complete - allow exit
+        if "EXCHANGE_COMPLETE" in conversation_text:
             return {"continue": True}
 
-        # Implementation started but not complete - BLOCK
-        # Block and prompt
-        prompt = (
-            "You started an implementation but haven't declared IMPLEMENTATION_COMPLETE. "
-            "If all tasks are done, respond with exactly 'IMPLEMENTATION_COMPLETE' (nothing else). "
-            "If not done, continue working."
-        )
+        # No completion marker found - block and nudge
+        prompt = """You haven't declared session completion.
+
+Review your work:
+- Are ALL user objectives complete?
+- Are ALL questions answered?
+- Is ALL code working and tested?
+
+If EVERYTHING is done:
+- For implementation: Say exactly 'IMPLEMENTATION_COMPLETE'
+- For conversations: Say exactly 'EXCHANGE_COMPLETE'
+
+If work remains:
+- List what's incomplete
+- Continue working
+- Don't declare completion until truly done"""
+
         # ========================================================================
         # CRITICAL: Claude Code Stop hook schema requires:
         # {"continue": false, "stopReason": "message"} to block
         # {"continue": true} to allow exit
-        # The old {"decision": "block", "reason": "..."} format was incorrect
-        # and caused Claude Code to ignore the hook.
         # ========================================================================
         return {"continue": False, "stopReason": prompt}
 

@@ -12,16 +12,24 @@ from pathlib import Path
 
 
 # Reminder text injected to Claude at session start
-IMPLEMENTATION_REMINDER_TEXT = """
-IMPLEMENTATION LIFECYCLE PROTOCOL:
+SESSION_COMPLETION_PROTOCOL = """
+SESSION COMPLETION PROTOCOL:
 
-When doing implementation work:
-1. Before starting ANY implementation work, say exactly: "IMPLEMENTATION_START"
-2. When ALL tasks are 100% complete (code + tests + manual validation all passed), say exactly: "IMPLEMENTATION_COMPLETE"
-3. Never say IMPLEMENTATION_COMPLETE unless everything is truly done.
+Before ending ANY session, you must declare completion:
+
+1. For implementation work:
+   - Say exactly: IMPLEMENTATION_COMPLETE
+   - Only after all code is working and tested
+
+2. For conversations/discussions/research:
+   - Say exactly: EXCHANGE_COMPLETE
+   - Only after all questions answered and objectives met
 
 These markers prevent premature session termination.
 """.strip()
+
+# Backwards compatibility alias
+IMPLEMENTATION_REMINDER_TEXT = SESSION_COMPLETION_PROTOCOL
 
 
 def get_stop_hook_prompt_count(state_path: str) -> int:
