@@ -332,16 +332,15 @@ def run_stop_hook():
         # Get ONLY the last assistant message
         last_message = get_last_assistant_message(transcript_path)
 
-        # Check if the LAST LINE of the last message is a completion marker
-        # This ensures the exchange ENDS with the magic words
+        # Check if the LAST LINE of the last message STARTS WITH a completion marker
+        # This allows markers with context like "IMPLEMENTATION_COMPLETE for Story #123"
         if last_message:
             lines = last_message.strip().split("\n")
             if lines:
                 last_line = lines[-1].strip()
-                if (
-                    last_line == "IMPLEMENTATION_COMPLETE"
-                    or last_line == "EXCHANGE_COMPLETE"
-                ):
+                if last_line.startswith(
+                    "IMPLEMENTATION_COMPLETE"
+                ) or last_line.startswith("EXCHANGE_COMPLETE"):
                     return {"continue": True}
 
         # No completion marker found - block and nudge
