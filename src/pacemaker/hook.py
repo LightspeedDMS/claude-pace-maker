@@ -324,12 +324,13 @@ def run_stop_hook():
         # Read entire conversation from transcript
         conversation_text = read_conversation_from_transcript(transcript_path)
 
-        # Check for either completion marker
-        if "IMPLEMENTATION_COMPLETE" in conversation_text:
-            return {"continue": True}
-
-        if "EXCHANGE_COMPLETE" in conversation_text:
-            return {"continue": True}
+        # Check for either completion marker as exact standalone statement
+        # Look for the marker on its own line (not in quotes, code, or explanations)
+        lines = conversation_text.split("\n")
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "IMPLEMENTATION_COMPLETE" or stripped == "EXCHANGE_COMPLETE":
+                return {"continue": True}
 
         # No completion marker found - block and nudge
         prompt = """You haven't declared session completion.
