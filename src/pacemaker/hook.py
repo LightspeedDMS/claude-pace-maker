@@ -256,36 +256,44 @@ def run_session_start():
         print(f"[PACE-MAKER ERROR] Session start hook: {e}", file=sys.stderr)
 
 
-def read_conversation_from_transcript(transcript_path: str) -> str:
+def get_last_assistant_message(transcript_path: str) -> str:
     """
-    Read JSONL transcript and extract all conversation text.
+    Read JSONL transcript and extract ONLY the last assistant message.
 
     Args:
         transcript_path: Path to the JSONL transcript file
 
     Returns:
-        Combined text from all messages in conversation
+        Text from the last assistant message only
     """
     try:
-        conversation_parts = []
+        last_assistant_text = ""
 
         with open(transcript_path, "r") as f:
             for line in f:
                 entry = json.loads(line)
 
-                # Claude Code transcript format: entries have .message.content
+                # Check if this is an assistant message
                 message = entry.get("message", {})
-                content = message.get("content", [])
+                role = message.get("role")
 
-                # Extract text from content
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            conversation_parts.append(block.get("text", ""))
-                elif isinstance(content, str):
-                    conversation_parts.append(content)
+                if role == "assistant":
+                    # This is an assistant message - extract its text
+                    content = message.get("content", [])
+                    text_parts = []
 
-        return "\n".join(conversation_parts)
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_parts.append(block.get("text", ""))
+                    elif isinstance(content, str):
+                        text_parts.append(content)
+
+                    # Store this as the last assistant message (will be overwritten by next one)
+                    if text_parts:
+                        last_assistant_text = "\n".join(text_parts)
+
+        return last_assistant_text
 
     except Exception:
         return ""
@@ -321,16 +329,20 @@ def run_stop_hook():
         if not transcript_path or not os.path.exists(transcript_path):
             return {"continue": True}
 
-        # Read entire conversation from transcript
-        conversation_text = read_conversation_from_transcript(transcript_path)
+        # Get ONLY the last assistant message
+        last_message = get_last_assistant_message(transcript_path)
 
-        # Check for either completion marker as exact standalone statement
-        # Look for the marker on its own line (not in quotes, code, or explanations)
-        lines = conversation_text.split("\n")
-        for line in lines:
-            stripped = line.strip()
-            if stripped == "IMPLEMENTATION_COMPLETE" or stripped == "EXCHANGE_COMPLETE":
-                return {"continue": True}
+        # Check if the LAST LINE of the last message is a completion marker
+        # This ensures the exchange ENDS with the magic words
+        if last_message:
+            lines = last_message.strip().split("\n")
+            if lines:
+                last_line = lines[-1].strip()
+                if (
+                    last_line == "IMPLEMENTATION_COMPLETE"
+                    or last_line == "EXCHANGE_COMPLETE"
+                ):
+                    return {"continue": True}
 
         # No completion marker found - block and nudge
         prompt = """You haven't declared session completion.
