@@ -373,7 +373,9 @@ def main():
         result = run_stop_hook()
         # Output JSON response
         print(json.dumps(result), file=sys.stdout, flush=True)
-        sys.exit(2)
+        # Exit with code 2 ONLY when blocking (to trigger nudge display)
+        # Exit with code 0 when allowing normal continuation
+        sys.exit(2 if not result.get("continue") else 0)
 
     # Check if this is user-prompt-submit hook
     if len(sys.argv) > 1 and sys.argv[1] == "user_prompt_submit":
