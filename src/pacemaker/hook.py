@@ -312,6 +312,11 @@ def run_stop_hook():
         - stopReason: string (message when blocking)
     """
 
+    # Debug log path
+    debug_log = os.path.join(
+        os.path.dirname(DEFAULT_CONFIG_PATH), "stop_hook_debug.log"
+    )
+
     try:
         # Load config to check if tempo is enabled
         config = load_config(DEFAULT_CONFIG_PATH)
@@ -321,16 +326,36 @@ def run_stop_hook():
         # Read hook data from stdin to get transcript path
         raw_input = sys.stdin.read()
         if not raw_input:
+            with open(debug_log, "a") as f:
+                f.write(f"\n[{datetime.now()}] No raw input from stdin\n")
             return {"continue": True}
 
         hook_data = json.loads(raw_input)
         transcript_path = hook_data.get("transcript_path")
 
         if not transcript_path or not os.path.exists(transcript_path):
+            with open(debug_log, "a") as f:
+                f.write(
+                    f"\n[{datetime.now()}] No transcript path or doesn't exist: {transcript_path}\n"
+                )
             return {"continue": True}
 
         # Get ONLY the last assistant message
         last_message = get_last_assistant_message(transcript_path)
+
+        # Debug log the last message
+        with open(debug_log, "a") as f:
+            f.write(f"\n[{datetime.now()}] === STOP HOOK EXECUTION ===\n")
+            f.write(f"Transcript path: {transcript_path}\n")
+            f.write(f"Last message length: {len(last_message)}\n")
+            f.write(f"Last message (first 500 chars):\n{last_message[:500]}\n")
+            f.write(f"Last message (last 500 chars):\n{last_message[-500:]}\n")
+            f.write(
+                f"Contains IMPLEMENTATION_COMPLETE: {'IMPLEMENTATION_COMPLETE' in last_message}\n"
+            )
+            f.write(
+                f"Contains EXCHANGE_COMPLETE: {'EXCHANGE_COMPLETE' in last_message}\n"
+            )
 
         # Check if completion marker appears ANYWHERE in the last message
         # This is more robust than checking only the last line because:
@@ -343,9 +368,14 @@ def run_stop_hook():
                 "IMPLEMENTATION_COMPLETE" in last_message
                 or "EXCHANGE_COMPLETE" in last_message
             ):
+                with open(debug_log, "a") as f:
+                    f.write("DECISION: Allow exit (marker found)\n")
                 return {"continue": True}
 
         # No completion marker found - block and nudge
+        with open(debug_log, "a") as f:
+            f.write("DECISION: Block exit (no marker found)\n")
+
         reason = """You haven't declared session completion.
 
 Review your work:
