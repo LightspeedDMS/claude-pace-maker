@@ -305,23 +305,23 @@ def run_stop_hook():
         # Load config to check if tempo is enabled
         config = load_config(DEFAULT_CONFIG_PATH)
         if not config.get("tempo_enabled", True):
-            return {}  # Tempo disabled - allow exit
+            return {"continue": True}  # Tempo disabled - allow exit
 
         # Read hook data from stdin to get transcript path
         raw_input = sys.stdin.read()
         if not raw_input:
-            return {}
+            return {"continue": True}
 
         hook_data = json.loads(raw_input)
 
         # Check if already continuing from stop hook (prevent infinite loop)
         if hook_data.get("stop_hook_active", False):
-            return {}
+            return {"continue": True}
 
         transcript_path = hook_data.get("transcript_path")
 
         if not transcript_path or not os.path.exists(transcript_path):
-            return {}
+            return {"continue": True}
 
         # Read entire conversation from transcript
         conversation_text = read_conversation_from_transcript(transcript_path)
@@ -330,7 +330,7 @@ def run_stop_hook():
         last_start_pos = conversation_text.rfind("IMPLEMENTATION_START")
         if last_start_pos == -1:
             # No implementation started - allow exit
-            return {}
+            return {"continue": True}
 
         # Check if IMPLEMENTATION_COMPLETE appears AFTER the last start marker
         complete_after_start = conversation_text.find(
@@ -338,7 +338,7 @@ def run_stop_hook():
         )
         if complete_after_start != -1:
             # Implementation complete - allow exit
-            return {}
+            return {"continue": True}
 
         # Implementation started but not complete - BLOCK
         # Block and prompt
@@ -348,17 +348,18 @@ def run_stop_hook():
             "If not done, continue working."
         )
         # ========================================================================
-        # CRITICAL: DO NOT CHANGE THIS BLOCKING CODE PATH!
-        # The exit code 2 and {"decision": "block", "reason": "..."} format
-        # are required for Claude Code to actually continue and show the nudge.
-        # Changing this will break the nudge functionality!
+        # CRITICAL: Claude Code Stop hook schema requires:
+        # {"continue": false, "stopReason": "message"} to block
+        # {"continue": true} to allow exit
+        # The old {"decision": "block", "reason": "..."} format was incorrect
+        # and caused Claude Code to ignore the hook.
         # ========================================================================
-        return {"decision": "block", "reason": prompt}
+        return {"continue": False, "stopReason": prompt}
 
     except Exception as e:
         # Graceful degradation - log error and allow exit
         print(f"[PACE-MAKER ERROR] Stop hook: {e}", file=sys.stderr)
-        return {}
+        return {"continue": True}
 
 
 def main():
