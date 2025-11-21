@@ -308,15 +308,28 @@ def calculate_adaptive_delay(
                 },
             }
 
-        # Calculate time_elapsed_pct from weekday seconds for burn rate calculation
-        window_end = window_start + timedelta(hours=window_hours)
-        total_weekday_seconds = count_weekday_seconds(window_start, window_end)
-        weekday_seconds_elapsed = count_weekday_seconds(window_start, current_time)
-
-        if total_weekday_seconds > 0:
-            time_elapsed_pct = (weekday_seconds_elapsed / total_weekday_seconds) * 100.0
+        # Calculate time_elapsed_pct consistently with allowance calculation
+        # CRITICAL: Must match the method used for allowance calculation to avoid mismatch
+        if window_hours < 168.0:
+            # 5-hour window: use CONTINUOUS time (not weekday-only)
+            # This matches calculate_continuous_allowance_pct() which uses 24/7 accrual
+            total_seconds = window_hours * 3600.0
+            seconds_elapsed = (current_time - window_start).total_seconds()
+            seconds_elapsed = max(0.0, min(seconds_elapsed, total_seconds))
+            time_elapsed_pct = (seconds_elapsed / total_seconds) * 100.0
         else:
-            time_elapsed_pct = 0.0
+            # 7-day window: use weekday-only time for weekend-aware pacing
+            # This matches calculate_allowance_pct() which uses weekday-only accrual
+            window_end = window_start + timedelta(hours=window_hours)
+            total_weekday_seconds = count_weekday_seconds(window_start, window_end)
+            weekday_seconds_elapsed = count_weekday_seconds(window_start, current_time)
+
+            if total_weekday_seconds > 0:
+                time_elapsed_pct = (
+                    weekday_seconds_elapsed / total_weekday_seconds
+                ) * 100.0
+            else:
+                time_elapsed_pct = 0.0
     else:
         # Legacy mode: use provided target_util and time_elapsed_pct
         if target_util is None or time_elapsed_pct is None:
