@@ -47,9 +47,9 @@ class TestSessionStartHook(unittest.TestCase):
             output = captured.getvalue()
 
             # Should show reminder text
-            self.assertIn("IMPLEMENTATION LIFECYCLE PROTOCOL", output)
-            self.assertIn("IMPLEMENTATION_START", output)
+            self.assertIn("SESSION COMPLETION PROTOCOL", output)
             self.assertIn("IMPLEMENTATION_COMPLETE", output)
+            self.assertIn("EXCHANGE_COMPLETE", output)
         finally:
             sys.stdout = sys.__stdout__
 
@@ -97,7 +97,7 @@ class TestSessionStartHook(unittest.TestCase):
             output = captured.getvalue()
 
             # Should show reminder (default to enabled)
-            self.assertIn("IMPLEMENTATION LIFECYCLE PROTOCOL", output)
+            self.assertIn("SESSION COMPLETION PROTOCOL", output)
         finally:
             sys.stdout = sys.__stdout__
 

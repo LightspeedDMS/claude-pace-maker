@@ -65,20 +65,22 @@ class TestStopHookConversationScanning(unittest.TestCase):
                 }
                 f.write(json.dumps(entry) + "\n")
 
-    def test_read_conversation_extracts_text_from_transcript(self):
-        """Should extract all text from JSONL transcript."""
+    def test_read_conversation_extracts_last_assistant_message(self):
+        """Should extract only the last assistant message from JSONL transcript."""
         from src.pacemaker.hook import read_conversation_from_transcript
 
         # Create transcript
         self.create_transcript_with_markers(has_start=True, has_complete=False)
 
-        # Read conversation
+        # Read last assistant message
         text = read_conversation_from_transcript(self.transcript_path)
 
-        # Should contain messages
-        self.assertIn("Please implement this feature", text)
+        # Should contain only assistant message content (not user messages)
+        self.assertIn("I will implement this feature", text)
         self.assertIn("IMPLEMENTATION_START", text)
         self.assertIn("Working on the implementation", text)
+        # Should NOT contain user message
+        self.assertNotIn("Please implement this feature", text)
 
     def test_read_conversation_handles_missing_transcript(self):
         """Should return empty string for missing transcript."""
@@ -88,8 +90,8 @@ class TestStopHookConversationScanning(unittest.TestCase):
 
         self.assertEqual(text, "")
 
-    def test_stop_hook_allows_exit_when_no_markers(self):
-        """Should allow exit when no IMPLEMENTATION markers in conversation."""
+    def test_stop_hook_blocks_when_no_completion_marker(self):
+        """Should block exit when no completion marker in conversation."""
         from src.pacemaker.hook import run_stop_hook
 
         # Create transcript without markers
@@ -109,8 +111,8 @@ class TestStopHookConversationScanning(unittest.TestCase):
                 with patch("sys.stdin", mock_stdin):
                     result = run_stop_hook()
 
-        # Should allow exit (empty dict or decision:allow)
-        self.assertTrue(result == {} or result.get("decision") == "allow")
+        # Should block (no completion marker)
+        self.assertEqual(result.get("decision"), "block")
 
     def test_stop_hook_blocks_when_start_without_complete(self):
         """Should block exit when IMPLEMENTATION_START without COMPLETE."""
@@ -138,11 +140,11 @@ class TestStopHookConversationScanning(unittest.TestCase):
         self.assertIn("reason", result)
         self.assertIn("IMPLEMENTATION_COMPLETE", result["reason"])
 
-    def test_stop_hook_allows_when_both_markers_present(self):
-        """Should allow exit when both START and COMPLETE present."""
+    def test_stop_hook_allows_when_completion_marker_present(self):
+        """Should allow exit when COMPLETE marker present."""
         from src.pacemaker.hook import run_stop_hook
 
-        # Create transcript with both markers
+        # Create transcript with complete marker
         self.create_transcript_with_markers(has_start=True, has_complete=True)
 
         # Create enabled tempo config
@@ -159,8 +161,8 @@ class TestStopHookConversationScanning(unittest.TestCase):
                 with patch("sys.stdin", mock_stdin):
                     result = run_stop_hook()
 
-        # Should allow exit (empty dict or decision:allow)
-        self.assertTrue(result == {} or result.get("decision") == "allow")
+        # Should allow exit (continue: True)
+        self.assertEqual(result.get("continue"), True)
 
     def test_stop_hook_allows_when_tempo_disabled(self):
         """Should allow exit when tempo_enabled is False."""
@@ -184,7 +186,7 @@ class TestStopHookConversationScanning(unittest.TestCase):
                     result = run_stop_hook()
 
         # Should allow exit (tempo disabled)
-        self.assertTrue(result == {} or result.get("decision") == "allow")
+        self.assertEqual(result.get("continue"), True)
 
     def test_stop_hook_allows_when_no_transcript_path(self):
         """Should allow exit when transcript_path not provided."""
@@ -205,7 +207,7 @@ class TestStopHookConversationScanning(unittest.TestCase):
                     result = run_stop_hook()
 
         # Should allow exit (graceful degradation)
-        self.assertTrue(result == {} or result.get("decision") == "allow")
+        self.assertEqual(result.get("continue"), True)
 
     def test_stop_hook_allows_when_transcript_missing(self):
         """Should allow exit when transcript file doesn't exist."""
@@ -226,7 +228,7 @@ class TestStopHookConversationScanning(unittest.TestCase):
                     result = run_stop_hook()
 
         # Should allow exit (graceful degradation)
-        self.assertTrue(result == {} or result.get("decision") == "allow")
+        self.assertEqual(result.get("continue"), True)
 
 
 if __name__ == "__main__":

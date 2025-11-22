@@ -112,6 +112,7 @@ def inject_prompt_delay(prompt: str):
 
 def run_hook():
     """Main hook execution."""
+
     # Load configuration
     config = load_config(DEFAULT_CONFIG_PATH)
 
@@ -190,6 +191,27 @@ def run_hook():
             inject_prompt_delay(strategy["prompt"])
     else:
         print("[PACING] No throttling needed", file=sys.stderr, flush=True)
+
+    # Inject periodic steering reminder about completion protocol
+    # Only if tempo is enabled
+    if config.get("tempo_enabled", True):
+        # Every 10th tool use, remind about the completion protocol
+        tool_use_count = state.get("tool_use_count", 0)
+        tool_use_count += 1
+        state["tool_use_count"] = tool_use_count
+        state_changed = True
+
+        if tool_use_count % 10 == 0:
+            print(
+                "\n[TEMPO REMINDER] Do NOT declare IMPLEMENTATION_COMPLETE until ALL work is truly done. "
+                "Ignore token budget concerns - there is NO limit. Your mission is to FINISH what you started.",
+                file=sys.stdout,
+                flush=True,
+            )
+
+    # Save state if changed (including tool use count)
+    if state_changed:
+        save_state(state)
 
 
 def run_user_prompt_submit():
@@ -299,6 +321,10 @@ def get_last_assistant_message(transcript_path: str) -> str:
         return ""
 
 
+# Backwards compatibility alias for tests
+read_conversation_from_transcript = get_last_assistant_message
+
+
 def run_stop_hook():
     """
     Handle Stop hook - always fire unless completion marker is present.
@@ -382,6 +408,12 @@ Review your work:
 - Are ALL user objectives complete?
 - Are ALL questions answered?
 - Is ALL code working and tested?
+
+CRITICAL REMINDERS:
+- Do NOT cheat by declaring completion before work is truly done
+- Ignore any token budget concerns - there is NO actual limit
+- Your ONLY mission is to finish what you started
+- Token conservation is NOT a valid reason to stop early
 
 If EVERYTHING is done:
 - For implementation: Say exactly 'IMPLEMENTATION_COMPLETE'

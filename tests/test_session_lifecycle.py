@@ -44,8 +44,8 @@ class TestStopHook(unittest.TestCase):
                 with patch("sys.stdin", mock_stdin):
                     result = run_stop_hook()
 
-        # Should return empty dict or allow when tempo disabled
-        self.assertTrue(result == {} or result.get("decision") == "allow")
+        # Should return continue: True when tempo disabled
+        self.assertEqual(result.get("continue"), True)
 
     def test_stop_hook_prevents_infinite_loop(self):
         """Should allow exit when stop_hook_active is true (prevent infinite loop)."""
@@ -66,7 +66,7 @@ class TestStopHook(unittest.TestCase):
                     result = run_stop_hook()
 
         # Should allow exit to prevent infinite loop
-        self.assertTrue(result == {} or result.get("decision") == "allow")
+        self.assertEqual(result.get("continue"), True)
 
 
 if __name__ == "__main__":

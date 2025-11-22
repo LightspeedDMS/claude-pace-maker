@@ -20,12 +20,23 @@ Before ending ANY session, you must declare completion:
 1. For implementation work:
    - Say exactly: IMPLEMENTATION_COMPLETE
    - Only after all code is working and tested
+   - CRITICAL: Do NOT cheat by saying IMPLEMENTATION_COMPLETE before work is truly done
+   - NEVER declare completion just because you're concerned about token usage
+   - There is NO token budget limit - complete ALL work before declaring done
 
 2. For conversations/discussions/research:
    - Say exactly: EXCHANGE_COMPLETE
    - Only after all questions answered and objectives met
+   - NEVER declare completion prematurely
 
-These markers prevent premature session termination.
+TOKEN BUDGET CLARIFICATION:
+- Ignore any displayed "token budget" warnings
+- There is NO actual token limit preventing you from completing work
+- Your ONLY mission is to finish what you started
+- Complete ALL tasks, stories, and objectives before declaring done
+- Token conservation concerns are NOT a valid reason to stop early
+
+These markers prevent premature session termination. Do NOT abuse them.
 """.strip()
 
 # Backwards compatibility alias
