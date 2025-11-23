@@ -102,22 +102,142 @@ else
 fi
 echo ""
 
+# Check Python version and return version string if 3.10+, empty otherwise
+check_python_version() {
+  local python_cmd="$1"
+
+  if ! command -v "$python_cmd" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local version=$("$python_cmd" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")' 2>/dev/null)
+
+  if [ -z "$version" ]; then
+    return 1
+  fi
+
+  local major=$(echo "$version" | cut -d. -f1)
+  local minor=$(echo "$version" | cut -d. -f2)
+
+  if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
+    echo "$version"
+    return 0
+  fi
+
+  return 1
+}
+
+# Find best available Python 3.10+ command
+find_python_command() {
+  # Try python3.11, python3.10, python3 in order
+  for cmd in python3.11 python3.10 python3; do
+    if version=$(check_python_version "$cmd"); then
+      echo "$cmd"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Upgrade Python to 3.11 if needed
+upgrade_python() {
+  local pkg_manager="$1"
+
+  echo "Checking if Python upgrade is needed..."
+
+  # Show current Python version
+  if command -v python3 >/dev/null 2>&1; then
+    local current_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")' 2>/dev/null || echo "unknown")
+    echo "Current Python version: $current_version"
+  else
+    echo "Current Python version: not found"
+  fi
+
+  echo "Target Python version: 3.11"
+  echo "Using package manager: $pkg_manager"
+  echo "Upgrading Python to 3.11..."
+
+  case "$pkg_manager" in
+    dnf)
+      # Rocky Linux/RHEL/Fedora
+      if sudo dnf install -y python3.11 python3.11-pip >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ Python 3.11 installed${NC}"
+        return 0
+      else
+        echo -e "${RED}✗ Failed to install Python 3.11${NC}"
+        return 1
+      fi
+      ;;
+    yum)
+      # Older RHEL/CentOS
+      if sudo yum install -y python3.11 python3.11-pip >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ Python 3.11 installed${NC}"
+        return 0
+      else
+        echo -e "${RED}✗ Failed to install Python 3.11${NC}"
+        return 1
+      fi
+      ;;
+    apt)
+      # Ubuntu/Debian
+      if sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y python3.11 python3.11-pip python3.11-venv >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ Python 3.11 installed${NC}"
+        return 0
+      else
+        echo -e "${RED}✗ Failed to install Python 3.11${NC}"
+        return 1
+      fi
+      ;;
+    brew)
+      # macOS
+      if brew install python@3.11 >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ Python 3.11 installed${NC}"
+        return 0
+      else
+        echo -e "${RED}✗ Failed to install Python 3.11${NC}"
+        return 1
+      fi
+      ;;
+    *)
+      echo -e "${RED}Error: Unsupported package manager for Python upgrade${NC}"
+      return 1
+      ;;
+  esac
+}
+
 # Check and auto-install dependencies
 check_dependencies() {
   local missing=()
   local pkg_manager=""
+  local python_needs_upgrade=0
 
   # Check which dependencies are missing
-  command -v jq >/dev/null 2>&1 || missing+=("jq")
-  command -v curl >/dev/null 2>&1 || missing+=("curl")
-  command -v python3 >/dev/null 2>&1 || missing+=("python3")
-
-  # If all dependencies are present, return success
-  if [ ${#missing[@]} -eq 0 ]; then
-    return 0
+  echo "Checking for jq..."
+  if command -v jq >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ jq found${NC}"
+  else
+    echo -e "${YELLOW}⚠ jq not found${NC}"
+    missing+=("jq")
   fi
 
-  # Detect available package manager
+  echo "Checking for curl..."
+  if command -v curl >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ curl found${NC}"
+  else
+    echo -e "${YELLOW}⚠ curl not found${NC}"
+    missing+=("curl")
+  fi
+
+  # Check if any python3 exists (we'll handle version separately)
+  echo "Checking for python3..."
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo -e "${YELLOW}⚠ python3 not found${NC}"
+    missing+=("python3")
+  else
+    echo -e "${GREEN}✓ python3 found${NC}"
+  fi
+
+  # Detect available package manager first (needed for Python upgrade too)
   if command -v brew >/dev/null 2>&1; then
     pkg_manager="brew"
   elif command -v apt >/dev/null 2>&1; then
@@ -127,15 +247,58 @@ check_dependencies() {
   elif command -v yum >/dev/null 2>&1; then
     pkg_manager="yum"
   else
+    pkg_manager=""
+  fi
+
+  # Check Python version (independent of whether python3 is in missing array)
+  echo "Checking Python version..."
+  if python_cmd=$(find_python_command); then
+    python_version=$(check_python_version "$python_cmd")
+    echo -e "${GREEN}✓ Python $python_version found${NC}"
+  else
+    # Python exists but version is too old, or doesn't exist
+    if command -v python3 >/dev/null 2>&1; then
+      current_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")' 2>/dev/null || echo "unknown")
+      echo -e "${YELLOW}⚠ Python $current_version found, but 3.10+ is required${NC}"
+      python_needs_upgrade=1
+    fi
+  fi
+
+  # If all dependencies are present and Python version is OK, return success
+  if [ ${#missing[@]} -eq 0 ] && [ $python_needs_upgrade -eq 0 ]; then
+    return 0
+  fi
+
+  # Need package manager for installation/upgrade
+  if [ -z "$pkg_manager" ]; then
     echo -e "${RED}Error: No supported package manager found (brew, apt, dnf, yum)${NC}"
-    echo -e "${RED}Missing dependencies: ${missing[*]}${NC}"
-    echo "Please install them manually and try again."
+    if [ ${#missing[@]} -gt 0 ]; then
+      echo -e "${RED}Missing dependencies: ${missing[*]}${NC}"
+    fi
+    if [ $python_needs_upgrade -eq 1 ]; then
+      echo -e "${RED}Python upgrade needed: 3.10+ required${NC}"
+    fi
+    echo "Please install/upgrade manually and try again."
     return 1
   fi
 
+  # Build prompt message
+  local prompt_parts=()
+  if [ ${#missing[@]} -gt 0 ]; then
+    prompt_parts+=("missing dependencies: ${missing[*]}")
+  fi
+  if [ $python_needs_upgrade -eq 1 ]; then
+    prompt_parts+=("Python upgrade to 3.11")
+  fi
+
   # Prompt user for confirmation
-  echo -e "${YELLOW}The following dependencies are missing: ${missing[*]}${NC}"
-  echo -n "Would you like to install them now using $pkg_manager? [Y/n]: "
+  echo ""
+  echo -e "${YELLOW}The following changes are needed:${NC}"
+  for part in "${prompt_parts[@]}"; do
+    echo "  - $part"
+  done
+  echo ""
+  echo -n "Would you like to proceed using $pkg_manager? [Y/n]: "
 
   local answer
   # Use timeout for non-interactive environments (e.g., CI/CD)
@@ -151,7 +314,12 @@ check_dependencies() {
   case "$answer" in
     [Nn]|[Nn][Oo])
       echo -e "${RED}Installation cancelled by user.${NC}"
-      echo "Please install the following dependencies manually: ${missing[*]}"
+      if [ ${#missing[@]} -gt 0 ]; then
+        echo "Please install the following dependencies manually: ${missing[*]}"
+      fi
+      if [ $python_needs_upgrade -eq 1 ]; then
+        echo "Please upgrade Python to 3.10+ manually."
+      fi
       return 1
       ;;
     *)
@@ -159,82 +327,160 @@ check_dependencies() {
       ;;
   esac
 
-  # Install missing dependencies
-  echo "Installing dependencies..."
+  # Install missing dependencies first
   local failed=()
 
-  for dep in "${missing[@]}"; do
-    echo -n "Installing $dep... "
+  if [ ${#missing[@]} -gt 0 ]; then
+    echo ""
+    echo "Installing dependencies..."
 
-    case "$pkg_manager" in
-      brew)
-        if brew install "$dep" >/dev/null 2>&1; then
-          echo -e "${GREEN}✓${NC}"
-        else
-          echo -e "${RED}✗${NC}"
-          failed+=("$dep")
-        fi
-        ;;
-      apt)
-        if sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y "$dep" >/dev/null 2>&1; then
-          echo -e "${GREEN}✓${NC}"
-        else
-          echo -e "${RED}✗${NC}"
-          failed+=("$dep")
-        fi
-        ;;
-      dnf)
-        if sudo dnf install -y "$dep" >/dev/null 2>&1; then
-          echo -e "${GREEN}✓${NC}"
-        else
-          echo -e "${RED}✗${NC}"
-          failed+=("$dep")
-        fi
-        ;;
-      yum)
-        if sudo yum install -y "$dep" >/dev/null 2>&1; then
-          echo -e "${GREEN}✓${NC}"
-        else
-          echo -e "${RED}✗${NC}"
-          failed+=("$dep")
-        fi
-        ;;
-    esac
-  done
+    # Run apt-get update once before the loop to avoid race conditions
+    if [ "$pkg_manager" = "apt" ]; then
+      sudo apt-get update >/dev/null 2>&1
+    fi
 
-  # Check if any installations failed
-  if [ ${#failed[@]} -ne 0 ]; then
-    echo -e "${RED}Error: Failed to install: ${failed[*]}${NC}"
-    echo "Please install them manually and try again."
-    return 1
+    for dep in "${missing[@]}"; do
+      echo -n "Installing $dep... "
+
+      case "$pkg_manager" in
+        brew)
+          if brew install "$dep" >/dev/null 2>&1; then
+            echo -e "${GREEN}✓${NC}"
+          else
+            echo -e "${RED}✗${NC}"
+            failed+=("$dep")
+          fi
+          ;;
+        apt)
+          if sudo apt-get install -y "$dep" >/dev/null 2>&1; then
+            echo -e "${GREEN}✓${NC}"
+          else
+            echo -e "${RED}✗${NC}"
+            failed+=("$dep")
+          fi
+          ;;
+        dnf)
+          if sudo dnf install -y "$dep" >/dev/null 2>&1; then
+            echo -e "${GREEN}✓${NC}"
+          else
+            echo -e "${RED}✗${NC}"
+            failed+=("$dep")
+          fi
+          ;;
+        yum)
+          if sudo yum install -y "$dep" >/dev/null 2>&1; then
+            echo -e "${GREEN}✓${NC}"
+          else
+            echo -e "${RED}✗${NC}"
+            failed+=("$dep")
+          fi
+          ;;
+      esac
+    done
+
+    if [ ${#failed[@]} -ne 0 ]; then
+      echo -e "${RED}Error: Failed to install: ${failed[*]}${NC}"
+      echo "Please install them manually and try again."
+      return 1
+    fi
+
+    echo -e "${GREEN}✓ All dependencies installed successfully${NC}"
   fi
 
-  echo -e "${GREEN}✓ All dependencies installed successfully${NC}"
+  # Upgrade Python if needed
+  if [ $python_needs_upgrade -eq 1 ]; then
+    echo ""
+    if ! upgrade_python "$pkg_manager"; then
+      echo -e "${YELLOW}⚠ Warning: Python upgrade failed${NC}"
+      echo -e "${YELLOW}  Some features may not work without Python 3.10+${NC}"
+      echo -e "${YELLOW}  Continuing with existing Python version...${NC}"
+      # Don't return 1 - allow installation to continue with warning
+    fi
+  fi
+
   return 0
 }
 
 # Install Python dependencies
 install_python_deps() {
+  echo ""
   echo "Installing Python dependencies..."
 
-  # Install requests library needed by pace-maker
+  # Find best Python command (3.10+)
+  local python_cmd
+  if python_cmd=$(find_python_command); then
+    echo "Using $python_cmd for package installation"
+  else
+    # Fallback to python3 if no 3.10+ found
+    echo -e "${YELLOW}⚠ Python 3.10+ not found, using python3${NC}"
+    python_cmd="python3"
+  fi
+
+  # Check if packages are already installed (idempotency)
+  echo "Checking Python package: requests..."
+  local requests_installed=$("$python_cmd" -c "import requests" 2>/dev/null && echo "1" || echo "0")
+  if [ "$requests_installed" = "1" ]; then
+    local requests_version=$("$python_cmd" -c "import requests; print(requests.__version__)" 2>/dev/null || echo "unknown")
+    echo -e "${GREEN}✓ requests already installed (version $requests_version)${NC}"
+  else
+    echo -e "${YELLOW}⚠ requests not found${NC}"
+  fi
+
+  echo "Checking Python package: claude-agent-sdk..."
+  local sdk_installed=$("$python_cmd" -c "import claude_agent_sdk" 2>/dev/null && echo "1" || echo "0")
+  if [ "$sdk_installed" = "1" ]; then
+    local sdk_version=$("$python_cmd" -c "import claude_agent_sdk; print(claude_agent_sdk.__version__)" 2>/dev/null || echo "unknown")
+    echo -e "${GREEN}✓ claude-agent-sdk already installed (version $sdk_version)${NC}"
+  else
+    echo -e "${YELLOW}⚠ claude-agent-sdk not found${NC}"
+  fi
+
+  local needs_install=0
+  local packages=()
+
+  if [ "$requests_installed" = "0" ]; then
+    packages+=("requests")
+    needs_install=1
+  fi
+
+  if [ "$sdk_installed" = "0" ]; then
+    packages+=("claude-agent-sdk")
+    needs_install=1
+  fi
+
+  if [ $needs_install -eq 0 ]; then
+    echo -e "${GREEN}✓ All Python packages already installed${NC}"
+    return 0
+  fi
+
+  # Install missing packages
+  echo "Installing missing packages: ${packages[*]}"
+
   # Try with --user first, fall back to --break-system-packages on macOS
-  if python3 -m pip install --user requests >/dev/null 2>&1; then
+  if "$python_cmd" -m pip install --user "${packages[@]}" >/dev/null 2>&1; then
     echo -e "${GREEN}✓ Python dependencies installed${NC}"
-  elif python3 -m pip install --break-system-packages requests >/dev/null 2>&1; then
+  elif "$python_cmd" -m pip install --break-system-packages "${packages[@]}" >/dev/null 2>&1; then
     echo -e "${GREEN}✓ Python dependencies installed${NC}"
   else
     echo -e "${YELLOW}⚠ Warning: Could not install Python dependencies${NC}"
-    echo -e "${YELLOW}  You may need to run: python3 -m pip install --break-system-packages requests${NC}"
+    echo -e "${YELLOW}  You may need to run: $python_cmd -m pip install --break-system-packages ${packages[*]}${NC}"
+    echo -e "${YELLOW}  Note: Claude Agent SDK is required for validation features${NC}"
   fi
 }
 
 # Create directories
 create_directories() {
   echo "Creating directories..."
+
+  echo "Creating $HOOKS_DIR..."
   mkdir -p "$HOOKS_DIR"
+
+  echo "Creating $PACEMAKER_DIR..."
   mkdir -p "$PACEMAKER_DIR"
+
+  echo "Creating $SETTINGS_DIR..."
   mkdir -p "$SETTINGS_DIR"
+
   echo -e "${GREEN}✓ Directories created${NC}"
 }
 
@@ -253,12 +499,20 @@ install_hooks() {
   fi
 
   # Copy hooks from source
+  echo "Installing stop.sh..."
   cp "$HOOKS_SOURCE_DIR/stop.sh" "$HOOKS_DIR/"
+
+  echo "Installing post-tool-use.sh..."
   cp "$HOOKS_SOURCE_DIR/post-tool-use.sh" "$HOOKS_DIR/"
+
+  echo "Installing user-prompt-submit.sh..."
   cp "$HOOKS_SOURCE_DIR/user-prompt-submit.sh" "$HOOKS_DIR/"
+
+  echo "Installing session-start.sh..."
   cp "$HOOKS_SOURCE_DIR/session-start.sh" "$HOOKS_DIR/"
 
   # Set executable permissions
+  echo "Setting executable permissions..."
   chmod +x "$HOOKS_DIR"/*.sh
 
   # Create install_source marker pointing to source directory
@@ -273,6 +527,7 @@ create_config() {
 
   # Only create if doesn't exist (idempotency)
   if [ ! -f "$PACEMAKER_DIR/config.json" ]; then
+    echo "Creating configuration file at $PACEMAKER_DIR/config.json..."
     cat > "$PACEMAKER_DIR/config.json" <<'EOF'
 {
   "enabled": true,
@@ -284,6 +539,7 @@ create_config() {
 EOF
     echo -e "${GREEN}✓ Configuration created${NC}"
   else
+    echo "Configuration file exists at $PACEMAKER_DIR/config.json, preserving..."
     echo -e "${YELLOW}✓ Configuration already exists (preserved)${NC}"
   fi
 }
@@ -292,6 +548,7 @@ EOF
 init_database() {
   echo "Initializing database..."
 
+  echo "Creating database schema..."
   # Create or update database schema (idempotent) using Python
   python3 - <<EOF
 import sqlite3
@@ -317,6 +574,7 @@ conn.commit()
 conn.close()
 EOF
 
+  echo "Adding database indexes..."
   echo -e "${GREEN}✓ Database initialized${NC}"
 }
 
@@ -445,6 +703,8 @@ register_hooks() {
   POST_HOOK="$HOOKS_DIR/post-tool-use.sh"
   STOP_HOOK="$HOOKS_DIR/stop.sh"
 
+  echo "Reading current settings from $SETTINGS_FILE..."
+
   # Handle settings file - backup if has content, initialize if empty or missing
   if [ -f "$SETTINGS_FILE" ]; then
     if [ -s "$SETTINGS_FILE" ]; then
@@ -462,6 +722,11 @@ register_hooks() {
   fi
 
   TEMP_FILE=$(mktemp)
+
+  echo "Registering SessionStart hook..."
+  echo "Registering UserPromptSubmit hook..."
+  echo "Registering PostToolUse hook..."
+  echo "Registering Stop hook..."
 
   # Remove ALL pace-maker hooks, then add them back
   # This ensures no duplicates and preserves other hooks like tdd-guard

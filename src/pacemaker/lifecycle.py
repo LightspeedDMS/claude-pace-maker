@@ -23,6 +23,8 @@ Before ending ANY session, you must declare completion:
    - CRITICAL: Do NOT cheat by saying IMPLEMENTATION_COMPLETE before work is truly done
    - NEVER declare completion just because you're concerned about token usage
    - There is NO token budget limit - complete ALL work before declaring done
+   - NOTE: Your IMPLEMENTATION_COMPLETE claim will be validated by an AI judge
+   - If the judge finds incomplete work, you'll be challenged to confirm with CONFIRMED_IMPLEMENTATION_COMPLETE
 
 2. For conversations/discussions/research:
    - Say exactly: EXCHANGE_COMPLETE
@@ -35,6 +37,13 @@ TOKEN BUDGET CLARIFICATION:
 - Your ONLY mission is to finish what you started
 - Complete ALL tasks, stories, and objectives before declaring done
 - Token conservation concerns are NOT a valid reason to stop early
+
+VALIDATION PROTOCOL:
+- When you claim IMPLEMENTATION_COMPLETE, an AI judge analyzes the last 5 messages
+- The judge checks for: incomplete work, failing tests, TODOs, partial implementations
+- If issues are found, you'll receive a challenge message
+- Respond with CONFIRMED_IMPLEMENTATION_COMPLETE ONLY if you're certain all work is done
+- Otherwise, continue working until completion is genuine
 
 These markers prevent premature session termination. Do NOT abuse them.
 """.strip()

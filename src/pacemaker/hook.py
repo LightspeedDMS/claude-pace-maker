@@ -325,11 +325,56 @@ def get_last_assistant_message(transcript_path: str) -> str:
 read_conversation_from_transcript = get_last_assistant_message
 
 
+def get_last_n_messages(transcript_path: str, n: int = 5) -> list:
+    """
+    Read JSONL transcript and extract the last N messages (user + assistant).
+
+    Args:
+        transcript_path: Path to the JSONL transcript file
+        n: Number of messages to extract (default: 5)
+
+    Returns:
+        List of message texts (most recent last)
+    """
+    try:
+        all_messages = []
+
+        with open(transcript_path, "r") as f:
+            for line in f:
+                entry = json.loads(line)
+
+                # Extract message content
+                message = entry.get("message", {})
+                role = message.get("role")
+                content = message.get("content", [])
+
+                text_parts = []
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                elif isinstance(content, str):
+                    text_parts.append(content)
+
+                if text_parts:
+                    message_text = "\n".join(text_parts)
+                    # Prefix with role for context
+                    all_messages.append(f"[{role.upper()}]\n{message_text}")
+
+        # Return last N messages
+        return all_messages[-n:] if len(all_messages) >= n else all_messages
+
+    except Exception:
+        return []
+
+
 def run_stop_hook():
     """
     Handle Stop hook - always fire unless completion marker is present.
 
     Checks for IMPLEMENTATION_COMPLETE or EXCHANGE_COMPLETE markers.
+    If IMPLEMENTATION_COMPLETE is found, validates the claim with AI judge.
+    If EXCHANGE_COMPLETE is found, allows exit immediately.
     If neither is found, blocks exit and nudges LLM to use appropriate marker.
 
     Returns:
@@ -382,21 +427,82 @@ def run_stop_hook():
             f.write(
                 f"Contains EXCHANGE_COMPLETE: {'EXCHANGE_COMPLETE' in last_message}\n"
             )
+            f.write(
+                f"Contains CONFIRMED_IMPLEMENTATION_COMPLETE: {'CONFIRMED_IMPLEMENTATION_COMPLETE' in last_message}\n"
+            )
 
         # Check if completion marker appears ANYWHERE in the last message
-        # This is more robust than checking only the last line because:
-        # 1. LLMs may add text after the marker
-        # 2. Formatting (bold, code blocks) can split lines unexpectedly
-        # 3. The intent is clear if the marker exists anywhere in the response
         if last_message:
-            # Check if either marker appears as a standalone word/phrase in the message
-            if (
-                "IMPLEMENTATION_COMPLETE" in last_message
-                or "EXCHANGE_COMPLETE" in last_message
-            ):
+            # EXCHANGE_COMPLETE - always allow exit (no validation needed)
+            if "EXCHANGE_COMPLETE" in last_message:
                 with open(debug_log, "a") as f:
-                    f.write("DECISION: Allow exit (marker found)\n")
+                    f.write("DECISION: Allow exit (EXCHANGE_COMPLETE found)\n")
                 return {"continue": True}
+
+            # CONFIRMED_IMPLEMENTATION_COMPLETE - allow exit (already validated)
+            if "CONFIRMED_IMPLEMENTATION_COMPLETE" in last_message:
+                with open(debug_log, "a") as f:
+                    f.write(
+                        "DECISION: Allow exit (CONFIRMED_IMPLEMENTATION_COMPLETE found)\n"
+                    )
+                return {"continue": True}
+
+            # IMPLEMENTATION_COMPLETE - validate with AI judge
+            if "IMPLEMENTATION_COMPLETE" in last_message:
+                with open(debug_log, "a") as f:
+                    f.write(
+                        "VALIDATION STATE MACHINE: IMPLEMENTATION_COMPLETE detected\n"
+                    )
+
+                # Get last 5 messages for context
+                last_5_messages = get_last_n_messages(transcript_path, n=5)
+
+                if not last_5_messages:
+                    # Can't validate without context - allow exit (graceful degradation)
+                    with open(debug_log, "a") as f:
+                        f.write("VALIDATION: No messages extracted - allow exit\n")
+                    return {"continue": True}
+
+                # Import validator (lazy import to avoid dependency issues if SDK not installed)
+                try:
+                    from . import completion_validator
+
+                    # Validate with AI judge
+                    validation_result = (
+                        completion_validator.validate_implementation_complete(
+                            last_5_messages
+                        )
+                    )
+
+                    with open(debug_log, "a") as f:
+                        f.write(f"VALIDATION RESULT: {validation_result}\n")
+
+                    if validation_result.get("confirmed"):
+                        # AI judge confirmed completion - allow exit
+                        with open(debug_log, "a") as f:
+                            f.write(
+                                "DECISION: Allow exit (AI judge confirmed completion)\n"
+                            )
+                        return {"continue": True}
+                    else:
+                        # AI judge found issues - challenge Claude
+                        challenge_message = validation_result.get("challenge_message")
+                        with open(debug_log, "a") as f:
+                            f.write("DECISION: Block exit (AI challenge)\n")
+                            f.write(f"Challenge: {challenge_message}\n")
+
+                        return {"decision": "block", "reason": challenge_message}
+
+                except ImportError:
+                    # SDK not available - allow exit (graceful degradation)
+                    with open(debug_log, "a") as f:
+                        f.write("VALIDATION: SDK not available - allow exit\n")
+                    return {"continue": True}
+                except Exception as e:
+                    # Validation error - allow exit (graceful degradation)
+                    with open(debug_log, "a") as f:
+                        f.write(f"VALIDATION ERROR: {e} - allow exit\n")
+                    return {"continue": True}
 
         # No completion marker found - block and nudge
         with open(debug_log, "a") as f:

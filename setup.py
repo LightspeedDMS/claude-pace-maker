@@ -6,14 +6,15 @@ from setuptools import setup, find_packages
 
 setup(
     name="claude-pace-maker",
-    version="1.0.0",
+    version="1.1.0",
     description="Intelligent credit consumption throttling for Claude Code",
     author="Lightspeed DMS",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
-    python_requires=">=3.9",
+    python_requires=">=3.10",
     install_requires=[
         "requests>=2.31.0",
+        "claude-agent-sdk>=0.1.0",
     ],
     entry_points={
         "console_scripts": [

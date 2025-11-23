@@ -40,6 +40,18 @@ cd claude-pace-maker
 ./install.sh /path/to/project
 ```
 
+**Installation Process:**
+
+The installer provides detailed feedback for every step:
+- ✓ Checks for system dependencies (jq, curl, python3)
+- ✓ Detects Python version (requires 3.10+, auto-upgrades if needed)
+- ✓ Installs Python packages with version verification (requests≥2.31.0, claude-agent-sdk≥0.1.0)
+- ✓ Creates directories and installs hook scripts with correct Python detection
+- ✓ Registers hooks in Claude Code settings
+- ✓ Shows exactly what's being installed, created, or preserved
+
+The installer is fully idempotent - safe to run multiple times.
+
 ### Usage
 
 ```bash
@@ -70,6 +82,43 @@ pace-maker tempo off
 - Tempo tracking prevents Claude from prematurely ending implementation sessions
 - When Claude says `IMPLEMENTATION_START`, the Stop hook requires Claude to declare `IMPLEMENTATION_COMPLETE` before allowing the session to end
 - Enabled by default - disable with `pace-maker tempo off` if you don't want this behavior
+
+### Implementation Validation
+
+Pace Maker includes AI-powered validation of `IMPLEMENTATION_COMPLETE` claims to prevent Claude from declaring work complete when it isn't. This anti-cheating mechanism uses the Claude Agent SDK to analyze conversation history.
+
+**How It Works:**
+
+When Claude declares `IMPLEMENTATION_COMPLETE`, an AI judge automatically:
+1. Analyzes the last 5 conversation messages for context
+2. Checks for signs of incomplete work:
+   - TODO markers or FIXME comments
+   - Failing tests or build errors
+   - Partial implementations or missing features
+   - Unresolved issues or error conditions
+3. Either confirms completion or challenges Claude with specific evidence
+
+**The Validation Flow:**
+
+If work appears incomplete, Claude receives a challenge message:
+```
+❌ IMPLEMENTATION_COMPLETE REJECTED
+
+The AI judge analyzed your work and found evidence of incomplete implementation:
+[Specific issues listed here]
+
+You MUST address these issues. Once genuinely complete, use:
+CONFIRMED_IMPLEMENTATION_COMPLETE
+```
+
+Only after using `CONFIRMED_IMPLEMENTATION_COMPLETE` will the session be allowed to end.
+
+**Requirements:**
+- Python 3.10+ required for validation (installer auto-upgrades if needed)
+- Claude Agent SDK (automatically installed by installer)
+- Falls back gracefully if SDK unavailable (accepts IMPLEMENTATION_COMPLETE without validation)
+
+**Note:** This validation only triggers when tempo tracking is enabled (`pace-maker tempo on`).
 
 ### Configuration
 
@@ -146,9 +195,12 @@ Pacing Status:
 ## Requirements
 
 - Claude Code subscription (Pro or Enterprise)
-- Python 3.7+
+- Python 3.10+ (required for AI validation feature; installer auto-upgrades from Python 3.7+ if needed)
+- Claude Agent SDK (automatically installed by installer for implementation validation)
 - jq (for JSON manipulation)
 - Bash shell
+
+**Note:** The implementation validation feature gracefully degrades if Python 3.10+ or Claude Agent SDK are unavailable, falling back to basic completion markers.
 
 ## License
 
