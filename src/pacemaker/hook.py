@@ -421,20 +421,30 @@ def run_stop_hook():
             f.write(f"Last message length: {len(last_message)}\n")
             f.write(f"Last message (first 500 chars):\n{last_message[:500]}\n")
             f.write(f"Last message (last 500 chars):\n{last_message[-500:]}\n")
-            f.write(
-                f"Contains IMPLEMENTATION_COMPLETE: {'IMPLEMENTATION_COMPLETE' in last_message}\n"
+            # Check last 200 chars for markers (reduces false positives from explanatory text)
+            message_end_check = (
+                last_message[-200:] if len(last_message) > 200 else last_message
             )
             f.write(
-                f"Contains EXCHANGE_COMPLETE: {'EXCHANGE_COMPLETE' in last_message}\n"
+                f"Contains IMPLEMENTATION_COMPLETE (in last 200 chars): {'IMPLEMENTATION_COMPLETE' in message_end_check}\n"
             )
             f.write(
-                f"Contains CONFIRMED_IMPLEMENTATION_COMPLETE: {'CONFIRMED_IMPLEMENTATION_COMPLETE' in last_message}\n"
+                f"Contains EXCHANGE_COMPLETE (in last 200 chars): {'EXCHANGE_COMPLETE' in message_end_check}\n"
+            )
+            f.write(
+                f"Contains CONFIRMED_IMPLEMENTATION_COMPLETE (in last 200 chars): {'CONFIRMED_IMPLEMENTATION_COMPLETE' in message_end_check}\n"
             )
 
-        # Check if completion marker appears ANYWHERE in the last message
+        # Check if completion marker appears near END of the last message (last 200 chars)
+        # This reduces false positives from explanatory text while catching real completion claims
         if last_message:
+            # Get last 200 characters for marker detection
+            message_end = (
+                last_message[-200:] if len(last_message) > 200 else last_message
+            )
+
             # COMPLETELY_BLOCKED - validate blockage legitimacy
-            if "COMPLETELY_BLOCKED" in last_message:
+            if "COMPLETELY_BLOCKED" in message_end:
                 with open(debug_log, "a") as f:
                     f.write("VALIDATION STATE MACHINE: COMPLETELY_BLOCKED detected\n")
 
@@ -491,7 +501,7 @@ def run_stop_hook():
                     return {"continue": True}
 
             # EXCHANGE_COMPLETE - validate with AI judge to prevent work avoidance
-            if "EXCHANGE_COMPLETE" in last_message:
+            if "EXCHANGE_COMPLETE" in message_end:
                 with open(debug_log, "a") as f:
                     f.write("VALIDATION STATE MACHINE: EXCHANGE_COMPLETE detected\n")
 
@@ -546,7 +556,7 @@ def run_stop_hook():
                     return {"continue": True}
 
             # CONFIRMED_IMPLEMENTATION_COMPLETE - allow exit (already validated)
-            if "CONFIRMED_IMPLEMENTATION_COMPLETE" in last_message:
+            if "CONFIRMED_IMPLEMENTATION_COMPLETE" in message_end:
                 with open(debug_log, "a") as f:
                     f.write(
                         "DECISION: Allow exit (CONFIRMED_IMPLEMENTATION_COMPLETE found)\n"
@@ -554,7 +564,7 @@ def run_stop_hook():
                 return {"continue": True}
 
             # IMPLEMENTATION_COMPLETE - validate with AI judge
-            if "IMPLEMENTATION_COMPLETE" in last_message:
+            if "IMPLEMENTATION_COMPLETE" in message_end:
                 with open(debug_log, "a") as f:
                     f.write(
                         "VALIDATION STATE MACHINE: IMPLEMENTATION_COMPLETE detected\n"
