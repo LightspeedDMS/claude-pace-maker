@@ -83,11 +83,39 @@ pace-maker tempo off
 - When Claude says `IMPLEMENTATION_START`, the Stop hook requires Claude to declare `IMPLEMENTATION_COMPLETE` before allowing the session to end
 - Enabled by default - disable with `pace-maker tempo off` if you don't want this behavior
 
-### Implementation Validation
+### AI-Powered Completion Validation
 
-Pace Maker includes AI-powered validation of `IMPLEMENTATION_COMPLETE` claims to prevent Claude from declaring work complete when it isn't. This anti-cheating mechanism uses the Claude Agent SDK to analyze conversation history.
+Pace Maker includes AI-powered validation of completion markers to prevent Claude from avoiding implementation work or declaring work complete when it isn't. This anti-cheating mechanism uses the Claude Agent SDK to analyze conversation history.
 
-**How It Works:**
+#### EXCHANGE_COMPLETE Validation (Work Avoidance Detection)
+
+When Claude declares `EXCHANGE_COMPLETE`, an AI judge automatically:
+1. Analyzes the last 5 conversation messages for context
+2. Checks if the user requested implementation work that Claude didn't do
+3. Detects work avoidance patterns:
+   - Providing only analysis or suggestions instead of implementation
+   - Writing documentation but not code when code was requested
+   - Identifying what needs to be done without doing it
+   - Giving recommendations without executing them
+   - Using wrong completion marker (EXCHANGE_COMPLETE when IMPLEMENTATION_COMPLETE required)
+4. Either accepts the completion or challenges Claude with specific evidence
+
+**The Challenge Format:**
+
+If Claude avoided work, it receives this challenge:
+```
+❌ EXCHANGE_COMPLETE REJECTED - WORK REQUIRED
+
+The AI judge found evidence that you're avoiding implementation work:
+[Specific evidence with quotes from conversation]
+
+You MUST do the work the user requested. Once implementation is complete, use:
+IMPLEMENTATION_COMPLETE
+```
+
+Claude must then perform the actual implementation and use `IMPLEMENTATION_COMPLETE` marker.
+
+#### IMPLEMENTATION_COMPLETE Validation (Incomplete Work Detection)
 
 When Claude declares `IMPLEMENTATION_COMPLETE`, an AI judge automatically:
 1. Analyzes the last 5 conversation messages for context
@@ -98,9 +126,9 @@ When Claude declares `IMPLEMENTATION_COMPLETE`, an AI judge automatically:
    - Unresolved issues or error conditions
 3. Either confirms completion or challenges Claude with specific evidence
 
-**The Validation Flow:**
+**The Challenge Format:**
 
-If work appears incomplete, Claude receives a challenge message:
+If work appears incomplete, Claude receives this challenge:
 ```
 ❌ IMPLEMENTATION_COMPLETE REJECTED
 
@@ -113,12 +141,14 @@ CONFIRMED_IMPLEMENTATION_COMPLETE
 
 Only after using `CONFIRMED_IMPLEMENTATION_COMPLETE` will the session be allowed to end.
 
+#### Requirements and Fallbacks
+
 **Requirements:**
 - Python 3.10+ required for validation (installer auto-upgrades if needed)
 - Claude Agent SDK (automatically installed by installer)
-- Falls back gracefully if SDK unavailable (accepts IMPLEMENTATION_COMPLETE without validation)
+- Falls back gracefully if SDK unavailable (accepts completion markers without validation)
 
-**Note:** This validation only triggers when tempo tracking is enabled (`pace-maker tempo on`).
+**Note:** Both validations only trigger when tempo tracking is enabled (`pace-maker tempo on`).
 
 ### Configuration
 

@@ -18,7 +18,7 @@ except ImportError:
     SDK_AVAILABLE = False
 
 
-VALIDATION_PROMPT_TEMPLATE = """You are a STRICT code completion validator with ZERO TOLERANCE for incomplete work.
+IMPLEMENTATION_VALIDATION_PROMPT = """You are a STRICT code completion validator with ZERO TOLERANCE for incomplete work.
 
 CONVERSATION CONTEXT:
 {conversation_messages}
@@ -57,6 +57,62 @@ CRITICAL RULES:
 """
 
 
+EXCHANGE_VALIDATION_PROMPT = """You are a RUTHLESS work-avoidance detector with ZERO TOLERANCE for laziness.
+
+CONVERSATION CONTEXT:
+{conversation_messages}
+
+CRITICAL ASSESSMENT:
+The developer (Claude) claimed EXCHANGE_COMPLETE in their last message.
+Your job is to determine if this is LEGITIMATE (truly just a conversation/research task) or if Claude is CHEATING to avoid doing implementation work.
+
+YOU MUST CHALLENGE if you find ANY of these:
+
+1. USER REQUESTED IMPLEMENTATION WORK:
+   - User asked to "implement", "create", "build", "write code", "fix bug", "add feature"
+   - User requested changes to actual code files
+   - User asked to modify, update, or enhance existing functionality
+   - User reported a bug or issue that requires code changes
+
+2. CLAUDE AVOIDED DOING THE WORK:
+   - Claude only provided analysis, suggestions, or plans WITHOUT implementing
+   - Claude wrote documentation or comments but NOT the actual code
+   - Claude identified what needs to be done but didn't DO it
+   - Claude gave recommendations without executing them
+   - Claude said "you should do X" or "here's how to do X" instead of doing X
+
+3. WORK IS STILL PENDING:
+   - Code changes were discussed but not committed
+   - Tests were mentioned but not written/run
+   - User objectives remain unmet
+   - Claude admits work is incomplete or suggests "next steps"
+
+LEGITIMATE EXCHANGE_COMPLETE SCENARIOS (allow these):
+- Pure research/investigation with no implementation request
+- Answering questions about how something works
+- Providing explanations or documentation WHEN THAT WAS THE REQUEST
+- Discussion/planning sessions where user explicitly didn't want implementation yet
+
+ASSUME CLAUDE IS TRYING TO AVOID WORK - be aggressive in catching laziness.
+
+REQUIRED RESPONSE FORMAT:
+You must respond with EXACTLY ONE of these two options:
+
+Option 1 - ONLY if this was truly just conversation/research with NO implementation expected:
+EXCHANGE_LEGITIMATE
+
+Option 2 - If user requested implementation work that Claude avoided:
+WORK_REQUIRED: [Quote evidence that user requested implementation, then list what Claude failed to do. Demand Claude use IMPLEMENTATION_COMPLETE only after actually doing the work]
+
+CRITICAL RULES:
+- NO other text before or after your response
+- When in doubt → ALWAYS assume WORK_REQUIRED
+- Be ruthless: if user asked for code changes, Claude must DO them
+- Quote user's words showing they wanted implementation
+- If Claude gave advice instead of implementing → WORK_REQUIRED immediately
+"""
+
+
 async def validate_implementation_complete_async(
     messages: List[str],
 ) -> Dict[str, Union[bool, str, None]]:
@@ -78,7 +134,9 @@ async def validate_implementation_complete_async(
 
     # Build conversation context
     conversation_text = "\n\n---\n\n".join(messages)
-    prompt = VALIDATION_PROMPT_TEMPLATE.format(conversation_messages=conversation_text)
+    prompt = IMPLEMENTATION_VALIDATION_PROMPT.format(
+        conversation_messages=conversation_text
+    )
 
     # Log the validation attempt
     import os
@@ -181,3 +239,132 @@ def validate_implementation_complete(
             file=sys.stderr,
         )
         return {"confirmed": True, "challenge_message": None}
+
+
+async def validate_exchange_complete_async(
+    messages: List[str],
+) -> Dict[str, Union[bool, str, None]]:
+    """
+    Validate if EXCHANGE_COMPLETE claim is legitimate (not avoiding work).
+
+    Detects cases where Claude uses EXCHANGE_COMPLETE to escape from doing
+    implementation work that the user requested.
+
+    Args:
+        messages: List of last 5 conversation messages (raw text)
+
+    Returns:
+        {
+            'legitimate': True/False,
+            'challenge_message': None or str with challenge text
+        }
+    """
+    if not SDK_AVAILABLE:
+        # SDK not available - allow completion (graceful degradation)
+        return {"legitimate": True, "challenge_message": None}
+
+    # Build conversation context
+    conversation_text = "\n\n---\n\n".join(messages)
+    prompt = EXCHANGE_VALIDATION_PROMPT.format(conversation_messages=conversation_text)
+
+    # Log the validation attempt
+    import os
+
+    log_file = os.path.join(
+        os.path.expanduser("~/.claude-pace-maker"), "validation_debug.log"
+    )
+    try:
+        with open(log_file, "a") as f:
+            import datetime
+
+            f.write(f"\n{'='*80}\n")
+            f.write(f"[{datetime.datetime.now()}] EXCHANGE VALIDATION CALLED\n")
+            f.write(f"Number of messages: {len(messages)}\n")
+            f.write(
+                f"Last message preview: {messages[-1][:300] if messages else 'NO MESSAGES'}...\n"
+            )
+            f.write(f"Prompt preview: {prompt[:500]}...\n")
+    except Exception:
+        pass
+
+    # Configure SDK options
+    options = ClaudeAgentOptions(
+        max_turns=1,
+        model="claude-sonnet-4-5",
+        system_prompt="You are a ruthless work-avoidance detector. Catch any attempt to escape from doing implementation work.",
+        disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
+        max_thinking_tokens=2000,
+    )
+
+    # Call SDK
+    response_text = ""
+    try:
+        async for message in query(prompt=prompt, options=options):
+            # Messages are typed dataclass objects, not dictionaries
+            if isinstance(message, ResultMessage):
+                # ResultMessage has result attribute
+                if hasattr(message, "result") and message.result:
+                    response_text = message.result.strip()
+                    break
+    except Exception as e:
+        # Fallback on SDK error - treat as work required with explanation
+        return {
+            "legitimate": False,
+            "challenge_message": (
+                f"Exchange completion validation failed (SDK error: {e}). "
+                "If you were asked to do implementation work, use IMPLEMENTATION_COMPLETE "
+                "only after completing it. If this was truly just conversation, continue."
+            ),
+        }
+
+    # Parse deterministic response
+    if response_text == "EXCHANGE_LEGITIMATE":
+        return {"legitimate": True, "challenge_message": None}
+    elif response_text.startswith("WORK_REQUIRED:"):
+        challenge = response_text.replace("WORK_REQUIRED:", "").strip()
+        return {"legitimate": False, "challenge_message": challenge}
+    else:
+        # Unexpected response - treat as work required
+        return {
+            "legitimate": False,
+            "challenge_message": (
+                "Exchange completion could not be verified. "
+                "If the user requested implementation work, you must DO it and use "
+                "IMPLEMENTATION_COMPLETE. If this was truly just conversation, continue."
+            ),
+        }
+
+
+def validate_exchange_complete(
+    messages: List[str],
+) -> Dict[str, Union[bool, str, None]]:
+    """
+    Synchronous wrapper for async exchange validation function.
+
+    Args:
+        messages: List of last 5 conversation messages (raw text)
+
+    Returns:
+        {
+            'legitimate': True/False,
+            'challenge_message': None or str with challenge text
+        }
+    """
+    try:
+        # Run async function in event loop
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Already in async context - create new loop
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        return loop.run_until_complete(validate_exchange_complete_async(messages))
+    except Exception as e:
+        # Fallback on any error - allow completion with warning
+        import sys
+
+        print(
+            f"[PACE-MAKER WARNING] Exchange validation error: {e}",
+            file=sys.stderr,
+        )
+        return {"legitimate": True, "challenge_message": None}
