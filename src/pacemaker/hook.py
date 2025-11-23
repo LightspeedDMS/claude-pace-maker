@@ -433,6 +433,63 @@ def run_stop_hook():
 
         # Check if completion marker appears ANYWHERE in the last message
         if last_message:
+            # COMPLETELY_BLOCKED - validate blockage legitimacy
+            if "COMPLETELY_BLOCKED" in last_message:
+                with open(debug_log, "a") as f:
+                    f.write("VALIDATION STATE MACHINE: COMPLETELY_BLOCKED detected\n")
+
+                # Get last 5 messages for context
+                last_5_messages = get_last_n_messages(transcript_path, n=5)
+
+                if not last_5_messages:
+                    # Can't validate without context - allow exit (graceful degradation)
+                    with open(debug_log, "a") as f:
+                        f.write("VALIDATION: No messages extracted - allow exit\n")
+                    return {"continue": True}
+
+                # Import validator (lazy import to avoid dependency issues if SDK not installed)
+                try:
+                    from . import completion_validator
+
+                    # Validate with AI judge
+                    validation_result = (
+                        completion_validator.validate_blockage_legitimacy(
+                            last_5_messages
+                        )
+                    )
+
+                    with open(debug_log, "a") as f:
+                        f.write(f"BLOCKAGE VALIDATION RESULT: {validation_result}\n")
+
+                    if validation_result.get("legitimate"):
+                        # AI judge confirmed legitimate blockage - allow exit
+                        with open(debug_log, "a") as f:
+                            f.write(
+                                "DECISION: Allow exit (AI judge confirmed legitimate blockage)\n"
+                            )
+                        return {"continue": True}
+                    else:
+                        # AI judge rejected blockage - challenge Claude
+                        challenge_message = validation_result.get("challenge_message")
+                        with open(debug_log, "a") as f:
+                            f.write(
+                                "DECISION: Block exit (AI rejected blockage - invalid excuse)\n"
+                            )
+                            f.write(f"Challenge: {challenge_message}\n")
+
+                        return {"decision": "block", "reason": challenge_message}
+
+                except ImportError:
+                    # SDK not available - allow exit (graceful degradation)
+                    with open(debug_log, "a") as f:
+                        f.write("VALIDATION: SDK not available - allow exit\n")
+                    return {"continue": True}
+                except Exception as e:
+                    # Validation error - allow exit (graceful degradation)
+                    with open(debug_log, "a") as f:
+                        f.write(f"VALIDATION ERROR: {e} - allow exit\n")
+                    return {"continue": True}
+
             # EXCHANGE_COMPLETE - validate with AI judge to prevent work avoidance
             if "EXCHANGE_COMPLETE" in last_message:
                 with open(debug_log, "a") as f:
