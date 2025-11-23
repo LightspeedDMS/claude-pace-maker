@@ -63,53 +63,39 @@ CONVERSATION CONTEXT:
 {conversation_messages}
 
 CRITICAL ASSESSMENT:
-The developer (Claude) claimed EXCHANGE_COMPLETE in their last message.
-Your job is to determine if this is LEGITIMATE (truly just a conversation/research task) or if Claude is CHEATING to avoid doing implementation work.
+Claude claimed EXCHANGE_COMPLETE. Determine if LEGITIMATE (pure conversation/research) or CHEATING (avoiding implementation work user requested).
 
-YOU MUST CHALLENGE if you find ANY of these:
+CHALLENGE if you find ANY of these:
+- User asked to "implement", "create", "build", "write code", "fix bug", "add feature"
+- User requested code file changes or new functionality
+- Claude provided ONLY analysis, suggestions, or plans WITHOUT implementing
+- Claude wrote docs but NOT actual code when code was requested
+- Claude said "you should do X" instead of doing X
+- Code changes discussed but not committed
+- Files mentioned but not created/modified
+- User objectives remain unmet
 
-1. USER REQUESTED IMPLEMENTATION WORK:
-   - User asked to "implement", "create", "build", "write code", "fix bug", "add feature"
-   - User requested changes to actual code files
-   - User asked to modify, update, or enhance existing functionality
-   - User reported a bug or issue that requires code changes
+ALLOW only if:
+- Pure research/investigation with NO implementation request
+- Answering "how does X work?" questions
+- Documentation when that was the request
+- Planning where user explicitly didn't want implementation yet
 
-2. CLAUDE AVOIDED DOING THE WORK:
-   - Claude only provided analysis, suggestions, or plans WITHOUT implementing
-   - Claude wrote documentation or comments but NOT the actual code
-   - Claude identified what needs to be done but didn't DO it
-   - Claude gave recommendations without executing them
-   - Claude said "you should do X" or "here's how to do X" instead of doing X
+ASSUME CLAUDE IS CHEATING - be aggressive.
 
-3. WORK IS STILL PENDING:
-   - Code changes were discussed but not committed
-   - Tests were mentioned but not written/run
-   - User objectives remain unmet
-   - Claude admits work is incomplete or suggests "next steps"
+RESPONSE FORMAT - Choose EXACTLY one:
 
-LEGITIMATE EXCHANGE_COMPLETE SCENARIOS (allow these):
-- Pure research/investigation with no implementation request
-- Answering questions about how something works
-- Providing explanations or documentation WHEN THAT WAS THE REQUEST
-- Discussion/planning sessions where user explicitly didn't want implementation yet
-
-ASSUME CLAUDE IS TRYING TO AVOID WORK - be aggressive in catching laziness.
-
-REQUIRED RESPONSE FORMAT:
-You must respond with EXACTLY ONE of these two options:
-
-Option 1 - ONLY if this was truly just conversation/research with NO implementation expected:
 EXCHANGE_LEGITIMATE
 
-Option 2 - If user requested implementation work that Claude avoided:
-WORK_REQUIRED: [Quote evidence that user requested implementation, then list what Claude failed to do. Demand Claude use IMPLEMENTATION_COMPLETE only after actually doing the work]
+OR
 
-CRITICAL RULES:
-- NO other text before or after your response
-- When in doubt → ALWAYS assume WORK_REQUIRED
-- Be ruthless: if user asked for code changes, Claude must DO them
-- Quote user's words showing they wanted implementation
-- If Claude gave advice instead of implementing → WORK_REQUIRED immediately
+WORK_REQUIRED: [Quote user's implementation request, list what Claude failed to do, demand IMPLEMENTATION_COMPLETE after doing the work]
+
+CRITICAL:
+- Output ONLY one of the two formats above
+- NO extra text before or after
+- When in doubt → WORK_REQUIRED
+- Quote evidence from conversation
 """
 
 
@@ -317,6 +303,14 @@ async def validate_exchange_complete_async(
             ),
         }
 
+    # Log the actual response for debugging
+    try:
+        with open(log_file, "a") as f:
+            f.write(f"SDK RESPONSE: '{response_text}'\n")
+            f.write(f"Response length: {len(response_text)}\n")
+    except Exception:
+        pass
+
     # Parse deterministic response
     if response_text == "EXCHANGE_LEGITIMATE":
         return {"legitimate": True, "challenge_message": None}
@@ -325,6 +319,14 @@ async def validate_exchange_complete_async(
         return {"legitimate": False, "challenge_message": challenge}
     else:
         # Unexpected response - treat as work required
+        # Log the unexpected format
+        try:
+            with open(log_file, "a") as f:
+                f.write(
+                    "UNEXPECTED RESPONSE FORMAT - falling back to generic message\n"
+                )
+        except Exception:
+            pass
         return {
             "legitimate": False,
             "challenge_message": (

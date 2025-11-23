@@ -6,7 +6,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="claude-pace-maker",
-    version="1.2.0",
+    version="1.2.1",
     description="Intelligent credit consumption throttling for Claude Code",
     author="Lightspeed DMS",
     packages=find_packages(where="src"),
