@@ -508,8 +508,11 @@ install_hooks() {
   echo "Installing user-prompt-submit.sh..."
   cp "$HOOKS_SOURCE_DIR/user-prompt-submit.sh" "$HOOKS_DIR/"
 
-  echo "Installing session-start.sh..."
-  cp "$HOOKS_SOURCE_DIR/session-start.sh" "$HOOKS_DIR/"
+  # Remove session-start.sh if it exists (no longer used)
+  if [ -f "$HOOKS_DIR/session-start.sh" ]; then
+    echo "Removing obsolete session-start.sh..."
+    rm -f "$HOOKS_DIR/session-start.sh"
+  fi
 
   # Set executable permissions
   echo "Setting executable permissions..."
@@ -594,7 +597,6 @@ check_hook_conflicts() {
     # Check if global settings has pace-maker hooks
     has_pacemaker_hooks=$(jq -r '
       [
-        ((.hooks.SessionStart // [])[] | select(.hooks[0].command | contains("session-start.sh"))),
         ((.hooks.UserPromptSubmit // [])[] | select(.hooks[0].command | contains("user-prompt-submit.sh"))),
         ((.hooks.PostToolUse // [])[] | select(.hooks[0].command | contains("post-tool-use.sh"))),
         ((.hooks.Stop // [])[] | select(.hooks[0].command | contains("stop.sh")))
@@ -616,7 +618,6 @@ check_hook_conflicts() {
     if [ -f "$cwd_settings" ] && [ "$(readlink -f "$cwd_settings")" != "$(readlink -f "$global_settings")" ]; then
       has_pacemaker_hooks=$(jq -r '
         [
-          ((.hooks.SessionStart // [])[] | select(.hooks[0].command | contains("session-start.sh"))),
           ((.hooks.UserPromptSubmit // [])[] | select(.hooks[0].command | contains("user-prompt-submit.sh"))),
           ((.hooks.PostToolUse // [])[] | select(.hooks[0].command | contains("post-tool-use.sh"))),
           ((.hooks.Stop // [])[] | select(.hooks[0].command | contains("stop.sh")))
@@ -698,7 +699,6 @@ register_hooks() {
 
   # Full paths for hooks
   HOOKS_DIR="$HOME/.claude/hooks"
-  SESSION_START_HOOK="$HOOKS_DIR/session-start.sh"
   USER_PROMPT_HOOK="$HOOKS_DIR/user-prompt-submit.sh"
   POST_HOOK="$HOOKS_DIR/post-tool-use.sh"
   STOP_HOOK="$HOOKS_DIR/stop.sh"
@@ -723,7 +723,6 @@ register_hooks() {
 
   TEMP_FILE=$(mktemp)
 
-  echo "Registering SessionStart hook..."
   echo "Registering UserPromptSubmit hook..."
   echo "Registering PostToolUse hook..."
   echo "Registering Stop hook..."
@@ -731,8 +730,7 @@ register_hooks() {
   # Remove ALL pace-maker hooks, then add them back
   # This ensures no duplicates and preserves other hooks like tdd-guard
   # Strategy: Remove pace-maker commands from within hook entries (not entire entries)
-  jq --arg session_start "$SESSION_START_HOOK" \
-     --arg user_prompt "$USER_PROMPT_HOOK" \
+  jq --arg user_prompt "$USER_PROMPT_HOOK" \
      --arg post_hook "$POST_HOOK" \
      --arg stop_hook "$STOP_HOOK" \
     '
@@ -748,6 +746,7 @@ register_hooks() {
        end;
 
      # Remove pace-maker commands from within each hook entry
+     # Also remove obsolete session-start.sh hook (no longer used)
      .hooks.SessionStart = [
        (.hooks.SessionStart // [])[] |
        remove_pacemaker_commands("\\.claude/hooks/session-start\\.sh")
@@ -771,8 +770,8 @@ register_hooks() {
      .hooks.PostToolUse = [.hooks.PostToolUse[] | select(.hooks | length > 0)] |
      .hooks.Stop = [.hooks.Stop[] | select(.hooks | length > 0)] |
 
-     # Add pace-maker back as separate entries with full paths
-     .hooks.SessionStart += [{"hooks": [{"type": "command", "command": $session_start}]}] |
+     # Add pace-maker hooks back as separate entries with full paths
+     # Note: SessionStart is NOT added back (obsolete)
      .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $user_prompt}]}] |
      .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $post_hook, "timeout": 360}]}] |
      .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_hook}]}]
@@ -806,7 +805,6 @@ verify_installation() {
   [ -f "$HOOKS_DIR/stop.sh" ] || { echo -e "${RED}✗ stop.sh missing${NC}"; ((errors++)); }
   [ -f "$HOOKS_DIR/post-tool-use.sh" ] || { echo -e "${RED}✗ post-tool-use.sh missing${NC}"; ((errors++)); }
   [ -f "$HOOKS_DIR/user-prompt-submit.sh" ] || { echo -e "${RED}✗ user-prompt-submit.sh missing${NC}"; ((errors++)); }
-  [ -f "$HOOKS_DIR/session-start.sh" ] || { echo -e "${RED}✗ session-start.sh missing${NC}"; ((errors++)); }
   [ -f "$PACEMAKER_DIR/config.json" ] || { echo -e "${RED}✗ config.json missing${NC}"; ((errors++)); }
   [ -f "$PACEMAKER_DIR/usage.db" ] || { echo -e "${RED}✗ usage.db missing${NC}"; ((errors++)); }
 
@@ -814,7 +812,6 @@ verify_installation() {
   [ -x "$HOOKS_DIR/stop.sh" ] || { echo -e "${RED}✗ stop.sh not executable${NC}"; ((errors++)); }
   [ -x "$HOOKS_DIR/post-tool-use.sh" ] || { echo -e "${RED}✗ post-tool-use.sh not executable${NC}"; ((errors++)); }
   [ -x "$HOOKS_DIR/user-prompt-submit.sh" ] || { echo -e "${RED}✗ user-prompt-submit.sh not executable${NC}"; ((errors++)); }
-  [ -x "$HOOKS_DIR/session-start.sh" ] || { echo -e "${RED}✗ session-start.sh not executable${NC}"; ((errors++)); }
 
   # Check database schema using Python
   local table_exists=$(python3 - <<EOF

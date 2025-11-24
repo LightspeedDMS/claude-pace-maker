@@ -260,19 +260,6 @@ def run_user_prompt_submit():
         sys.exit(0)
 
 
-def run_session_start():
-    """
-    Handle SessionStart hook.
-
-    Note: With Story #9, completion protocol reminders are removed.
-    Intent validation happens automatically in Stop hook.
-
-    This function is kept for backwards compatibility and future extensions.
-    """
-    # No-op: Intent validation happens in Stop hook
-    pass
-
-
 def get_last_assistant_message(transcript_path: str) -> str:
     """
     Read JSONL transcript and extract ONLY the last assistant message.
@@ -446,11 +433,6 @@ def run_stop_hook():
 
 def main():
     """Entry point for hook script."""
-    # Check if this is session start hook
-    if len(sys.argv) > 1 and sys.argv[1] == "session_start":
-        run_session_start()
-        return
-
     # Check if this is stop hook
     if len(sys.argv) > 1 and sys.argv[1] == "stop":
         result = run_stop_hook()
