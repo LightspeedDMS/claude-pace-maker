@@ -47,6 +47,7 @@ class TestRefactoredIntentValidator(unittest.TestCase):
         last_assistant_messages = ["Assistant response 1", "Assistant response 2"]
         last_assistant = "This is what Claude just said"
 
+        # Function should only accept 3 parameters (no liveliness_detected)
         prompt = build_validation_prompt(
             all_user_messages, last_assistant_messages, last_assistant
         )
@@ -266,6 +267,25 @@ class TestValidationPromptTemplate(unittest.TestCase):
 
         # Should mention last assistant message
         self.assertIn("CLAUDE", VALIDATION_PROMPT_TEMPLATE.upper())
+
+    def test_template_contains_tempo_liveliness_instructions(self):
+        """Template should contain tempo liveliness check instructions for SDK."""
+        from src.pacemaker.intent_validator import VALIDATION_PROMPT_TEMPLATE
+
+        # Should contain tempo liveliness detection section
+        self.assertIn("TEMPO", VALIDATION_PROMPT_TEMPLATE.upper())
+        self.assertIn("LIVELINESS", VALIDATION_PROMPT_TEMPLATE.upper())
+
+        # Should contain example phrases
+        self.assertIn("tempo, are you alive", VALIDATION_PROMPT_TEMPLATE.lower())
+        self.assertIn("tempo status", VALIDATION_PROMPT_TEMPLATE.lower())
+
+        # Should instruct SDK to detect and respond to liveliness checks
+        self.assertIn("SYSTEM CHECK", VALIDATION_PROMPT_TEMPLATE.upper())
+        self.assertIn("BLOCKED:", VALIDATION_PROMPT_TEMPLATE)
+
+        # Should NOT have a {liveliness_check_detected} placeholder
+        self.assertNotIn("{liveliness_check_detected}", VALIDATION_PROMPT_TEMPLATE)
 
     def test_template_maintains_response_format(self):
         """Template should maintain APPROVED/BLOCKED format."""
