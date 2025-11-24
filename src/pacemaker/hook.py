@@ -192,43 +192,49 @@ def run_hook():
     else:
         print("[PACING] No throttling needed", file=sys.stderr, flush=True)
 
-    # Inject periodic steering reminder about completion protocol
-    # Only if tempo is enabled
-    if config.get("tempo_enabled", True):
-        # Every 10th tool use, remind about the completion protocol
-        tool_use_count = state.get("tool_use_count", 0)
-        tool_use_count += 1
-        state["tool_use_count"] = tool_use_count
-        state_changed = True
-
-        if tool_use_count % 10 == 0:
-            print(
-                "\n[TEMPO REMINDER] Do NOT declare IMPLEMENTATION_COMPLETE until ALL work is truly done. "
-                "Ignore token budget concerns - there is NO limit. Your mission is to FINISH what you started.",
-                file=sys.stdout,
-                flush=True,
-            )
-
-    # Save state if changed (including tool use count)
+    # Save state if changed
     if state_changed:
         save_state(state)
 
 
+def parse_user_prompt_input(raw_input: str) -> dict:
+    """
+    Parse user prompt input from Claude Code.
+
+    Handles both JSON format and plain text fallback.
+
+    Args:
+        raw_input: Raw stdin input from Claude Code
+
+    Returns:
+        Dict with session_id and prompt keys
+    """
+    try:
+        # Try to parse as JSON first
+        hook_data = json.loads(raw_input)
+        session_id = hook_data.get("session_id", f"sess-{int(time.time())}")
+        prompt = hook_data.get("prompt", "")
+        return {"session_id": session_id, "prompt": prompt}
+    except json.JSONDecodeError:
+        # Fallback to plain text - generate session ID
+        return {
+            "session_id": f"sess-{int(time.time())}",
+            "prompt": raw_input.strip(),
+        }
+
+
 def run_user_prompt_submit():
-    """Handle user prompt submit hook."""
+    """Handle user prompt submit hook with intent-based validation support."""
     try:
         # Read user input from stdin
         raw_input = sys.stdin.read().strip()
 
-        # Parse JSON input from Claude Code
-        try:
-            hook_data = json.loads(raw_input)
-            user_input = hook_data.get("prompt", "")
-        except json.JSONDecodeError:
-            # Fallback to treating as plain text if not JSON
-            user_input = raw_input
+        # Parse input (JSON or plain text)
+        parsed_data = parse_user_prompt_input(raw_input)
+        session_id = parsed_data["session_id"]
+        user_input = parsed_data["prompt"]
 
-        # Handle the prompt
+        # Handle pace-maker commands
         result = user_commands.handle_user_prompt(
             user_input, DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH
         )
@@ -238,10 +244,35 @@ def run_user_prompt_submit():
             response = {"decision": "block", "reason": result["output"]}
             print(json.dumps(response), file=sys.stdout, flush=True)
             sys.exit(0)
-        else:
-            # Not a pace-maker command - pass through original input
-            print(raw_input, file=sys.stdout, flush=True)
-            sys.exit(0)
+
+        # Store user prompt for intent validation by Stop hook
+        from . import prompt_storage
+
+        prompts_dir = os.path.join(os.path.dirname(DEFAULT_CONFIG_PATH), "prompts")
+
+        # Get command directories
+        project_commands_dir = None
+        if os.environ.get("CLAUDE_PROJECT_DIR"):
+            project_commands_dir = os.path.join(
+                os.environ["CLAUDE_PROJECT_DIR"], ".claude", "commands"
+            )
+
+        global_commands_dir = os.path.join(
+            os.path.expanduser("~"), ".claude", "commands"
+        )
+
+        # Store prompt with slash command expansion
+        prompt_storage.store_user_prompt(
+            session_id=session_id,
+            raw_prompt=user_input,
+            prompts_dir=prompts_dir,
+            project_commands_dir=project_commands_dir,
+            global_commands_dir=global_commands_dir,
+        )
+
+        # Pass through original input
+        print(raw_input, file=sys.stdout, flush=True)
+        sys.exit(0)
 
     except Exception as e:
         # Graceful degradation - log error and pass through
@@ -257,25 +288,15 @@ def run_user_prompt_submit():
 
 def run_session_start():
     """
-    Handle SessionStart hook - show IMPLEMENTATION LIFECYCLE PROTOCOL reminder.
+    Handle SessionStart hook.
 
-    This function runs when a Claude Code session starts.
-    If tempo is enabled, it prints the reminder text to stdout so Claude sees it.
+    Note: With Story #9, completion protocol reminders are removed.
+    Intent validation happens automatically in Stop hook.
+
+    This function is kept for backwards compatibility and future extensions.
     """
-    from . import lifecycle
-
-    try:
-        # Load config to check if tempo is enabled
-        config = load_config(DEFAULT_CONFIG_PATH)
-        if not config.get("tempo_enabled", True):
-            return  # Tempo disabled - do nothing
-
-        # Print reminder text to stdout so Claude sees it
-        print(lifecycle.IMPLEMENTATION_REMINDER_TEXT, file=sys.stdout, flush=True)
-
-    except Exception as e:
-        # Graceful degradation - log error but don't crash
-        print(f"[PACE-MAKER ERROR] Session start hook: {e}", file=sys.stderr)
+    # No-op: Intent validation happens in Stop hook
+    pass
 
 
 def get_last_assistant_message(transcript_path: str) -> str:
@@ -370,17 +391,19 @@ def get_last_n_messages(transcript_path: str, n: int = 5) -> list:
 
 def run_stop_hook():
     """
-    Handle Stop hook - always fire unless completion marker is present.
+    Handle Stop hook using intent-based validation.
 
-    Checks for IMPLEMENTATION_COMPLETE or EXCHANGE_COMPLETE markers.
-    If IMPLEMENTATION_COMPLETE is found, validates the claim with AI judge.
-    If EXCHANGE_COMPLETE is found, allows exit immediately.
-    If neither is found, blocks exit and nudges LLM to use appropriate marker.
+    New behavior (Story #9):
+    - Reads stored user prompt (expanded for slash commands)
+    - Extracts last 10 messages from transcript
+    - Calls SDK to validate if Claude completed the user's original request
+    - SDK acts as user proxy to judge completion
+    - Returns APPROVED (allow exit) or BLOCKED with feedback
 
     Returns:
         Dictionary with Claude Code Stop hook schema:
-        - continue: boolean (True to allow exit, False to block)
-        - stopReason: string (message when blocking)
+        - {"continue": True} - Allow exit
+        - {"decision": "block", "reason": "feedback"} - Block with feedback
     """
 
     # Debug log path
@@ -392,9 +415,11 @@ def run_stop_hook():
         # Load config to check if tempo is enabled
         config = load_config(DEFAULT_CONFIG_PATH)
         if not config.get("tempo_enabled", True):
+            with open(debug_log, "a") as f:
+                f.write(f"\n[{datetime.now()}] Tempo disabled - allow exit\n")
             return {"continue": True}  # Tempo disabled - allow exit
 
-        # Read hook data from stdin to get transcript path
+        # Read hook data from stdin
         raw_input = sys.stdin.read()
         if not raw_input:
             with open(debug_log, "a") as f:
@@ -402,278 +427,44 @@ def run_stop_hook():
             return {"continue": True}
 
         hook_data = json.loads(raw_input)
+        session_id = hook_data.get("session_id")
         transcript_path = hook_data.get("transcript_path")
+
+        # Debug log
+        with open(debug_log, "a") as f:
+            f.write(f"\n[{datetime.now()}] === INTENT VALIDATION (Story #9) ===\n")
+            f.write(f"Session ID: {session_id}\n")
+            f.write(f"Transcript path: {transcript_path}\n")
 
         if not transcript_path or not os.path.exists(transcript_path):
             with open(debug_log, "a") as f:
-                f.write(
-                    f"\n[{datetime.now()}] No transcript path or doesn't exist: {transcript_path}\n"
-                )
+                f.write("No transcript - allow exit\n")
             return {"continue": True}
 
-        # Get ONLY the last assistant message
-        last_message = get_last_assistant_message(transcript_path)
+        if not session_id:
+            with open(debug_log, "a") as f:
+                f.write("No session ID - allow exit (fail open)\n")
+            return {"continue": True}
 
-        # Debug log the last message
+        # Use intent validator to check if work is complete
+        from . import intent_validator
+
+        prompts_dir = os.path.join(os.path.dirname(DEFAULT_CONFIG_PATH), "prompts")
+
         with open(debug_log, "a") as f:
-            f.write(f"\n[{datetime.now()}] === STOP HOOK EXECUTION ===\n")
-            f.write(f"Transcript path: {transcript_path}\n")
-            f.write(f"Last message length: {len(last_message)}\n")
-            f.write(f"Last message (first 500 chars):\n{last_message[:500]}\n")
-            f.write(f"Last message (last 500 chars):\n{last_message[-500:]}\n")
-            # Check last 200 chars for markers (reduces false positives from explanatory text)
-            message_end_check = (
-                last_message[-200:] if len(last_message) > 200 else last_message
-            )
-            f.write(
-                f"Contains IMPLEMENTATION_COMPLETE (in last 200 chars): {'IMPLEMENTATION_COMPLETE' in message_end_check}\n"
-            )
-            f.write(
-                f"Contains EXCHANGE_COMPLETE (in last 200 chars): {'EXCHANGE_COMPLETE' in message_end_check}\n"
-            )
-            f.write(
-                f"Contains CONFIRMED_IMPLEMENTATION_COMPLETE (in last 200 chars): {'CONFIRMED_IMPLEMENTATION_COMPLETE' in message_end_check}\n"
-            )
+            f.write("Calling intent validator...\n")
 
-        # Check if completion marker appears near END of the last message (last 200 chars)
-        # This reduces false positives from explanatory text while catching real completion claims
-        if last_message:
-            # Get last 200 characters for marker detection
-            message_end = (
-                last_message[-200:] if len(last_message) > 200 else last_message
-            )
+        result = intent_validator.validate_intent(
+            session_id=session_id,
+            transcript_path=transcript_path,
+            prompts_dir=prompts_dir,
+        )
 
-            # COMPLETELY_BLOCKED - validate blockage legitimacy
-            if "COMPLETELY_BLOCKED" in message_end:
-                with open(debug_log, "a") as f:
-                    f.write("VALIDATION STATE MACHINE: COMPLETELY_BLOCKED detected\n")
-
-                # Get last 5 messages for context
-                last_5_messages = get_last_n_messages(transcript_path, n=5)
-
-                if not last_5_messages:
-                    # Can't validate without context - allow exit (graceful degradation)
-                    with open(debug_log, "a") as f:
-                        f.write("VALIDATION: No messages extracted - allow exit\n")
-                    return {"continue": True}
-
-                # Import validator (lazy import to avoid dependency issues if SDK not installed)
-                try:
-                    from . import completion_validator
-
-                    # Validate with AI judge
-                    validation_result = (
-                        completion_validator.validate_blockage_legitimacy(
-                            last_5_messages
-                        )
-                    )
-
-                    with open(debug_log, "a") as f:
-                        f.write(f"BLOCKAGE VALIDATION RESULT: {validation_result}\n")
-
-                    if validation_result.get("legitimate"):
-                        # AI judge confirmed legitimate blockage - allow exit
-                        with open(debug_log, "a") as f:
-                            f.write(
-                                "DECISION: Allow exit (AI judge confirmed legitimate blockage)\n"
-                            )
-                        return {"continue": True}
-                    else:
-                        # AI judge rejected blockage - challenge Claude
-                        challenge_message = validation_result.get("challenge_message")
-                        with open(debug_log, "a") as f:
-                            f.write(
-                                "DECISION: Block exit (AI rejected blockage - invalid excuse)\n"
-                            )
-                            f.write(f"Challenge: {challenge_message}\n")
-
-                        return {"decision": "block", "reason": challenge_message}
-
-                except ImportError:
-                    # SDK not available - allow exit (graceful degradation)
-                    with open(debug_log, "a") as f:
-                        f.write("VALIDATION: SDK not available - allow exit\n")
-                    return {"continue": True}
-                except Exception as e:
-                    # Validation error - allow exit (graceful degradation)
-                    with open(debug_log, "a") as f:
-                        f.write(f"VALIDATION ERROR: {e} - allow exit\n")
-                    return {"continue": True}
-
-            # EXCHANGE_COMPLETE - validate with AI judge to prevent work avoidance
-            if "EXCHANGE_COMPLETE" in message_end:
-                with open(debug_log, "a") as f:
-                    f.write("VALIDATION STATE MACHINE: EXCHANGE_COMPLETE detected\n")
-
-                # Get last 5 messages for context
-                last_5_messages = get_last_n_messages(transcript_path, n=5)
-
-                if not last_5_messages:
-                    # Can't validate without context - allow exit (graceful degradation)
-                    with open(debug_log, "a") as f:
-                        f.write("VALIDATION: No messages extracted - allow exit\n")
-                    return {"continue": True}
-
-                # Import validator (lazy import to avoid dependency issues if SDK not installed)
-                try:
-                    from . import completion_validator
-
-                    # Validate with AI judge
-                    validation_result = completion_validator.validate_exchange_complete(
-                        last_5_messages
-                    )
-
-                    with open(debug_log, "a") as f:
-                        f.write(f"VALIDATION RESULT: {validation_result}\n")
-
-                    if validation_result.get("legitimate"):
-                        # AI judge confirmed legitimate exchange - allow exit
-                        with open(debug_log, "a") as f:
-                            f.write(
-                                "DECISION: Allow exit (AI judge confirmed legitimate exchange)\n"
-                            )
-                        return {"continue": True}
-                    else:
-                        # AI judge found work avoidance - challenge Claude
-                        challenge_message = validation_result.get("challenge_message")
-                        with open(debug_log, "a") as f:
-                            f.write(
-                                "DECISION: Block exit (AI challenge - work required)\n"
-                            )
-                            f.write(f"Challenge: {challenge_message}\n")
-
-                        return {"decision": "block", "reason": challenge_message}
-
-                except ImportError:
-                    # SDK not available - allow exit (graceful degradation)
-                    with open(debug_log, "a") as f:
-                        f.write("VALIDATION: SDK not available - allow exit\n")
-                    return {"continue": True}
-                except Exception as e:
-                    # Validation error - allow exit (graceful degradation)
-                    with open(debug_log, "a") as f:
-                        f.write(f"VALIDATION ERROR: {e} - allow exit\n")
-                    return {"continue": True}
-
-            # CONFIRMED_IMPLEMENTATION_COMPLETE - allow exit (already validated)
-            if "CONFIRMED_IMPLEMENTATION_COMPLETE" in message_end:
-                with open(debug_log, "a") as f:
-                    f.write(
-                        "DECISION: Allow exit (CONFIRMED_IMPLEMENTATION_COMPLETE found)\n"
-                    )
-                return {"continue": True}
-
-            # IMPLEMENTATION_COMPLETE - validate with AI judge
-            if "IMPLEMENTATION_COMPLETE" in message_end:
-                with open(debug_log, "a") as f:
-                    f.write(
-                        "VALIDATION STATE MACHINE: IMPLEMENTATION_COMPLETE detected\n"
-                    )
-
-                # Get last 5 messages for context
-                last_5_messages = get_last_n_messages(transcript_path, n=5)
-
-                if not last_5_messages:
-                    # Can't validate without context - allow exit (graceful degradation)
-                    with open(debug_log, "a") as f:
-                        f.write("VALIDATION: No messages extracted - allow exit\n")
-                    return {"continue": True}
-
-                # Import validator (lazy import to avoid dependency issues if SDK not installed)
-                try:
-                    from . import completion_validator
-
-                    # Validate with AI judge
-                    validation_result = (
-                        completion_validator.validate_implementation_complete(
-                            last_5_messages
-                        )
-                    )
-
-                    with open(debug_log, "a") as f:
-                        f.write(f"VALIDATION RESULT: {validation_result}\n")
-
-                    if validation_result.get("confirmed"):
-                        # AI judge confirmed completion - allow exit
-                        with open(debug_log, "a") as f:
-                            f.write(
-                                "DECISION: Allow exit (AI judge confirmed completion)\n"
-                            )
-                        return {"continue": True}
-                    else:
-                        # AI judge found issues - challenge Claude
-                        challenge_message = validation_result.get("challenge_message")
-                        with open(debug_log, "a") as f:
-                            f.write("DECISION: Block exit (AI challenge)\n")
-                            f.write(f"Challenge: {challenge_message}\n")
-
-                        return {"decision": "block", "reason": challenge_message}
-
-                except ImportError:
-                    # SDK not available - allow exit (graceful degradation)
-                    with open(debug_log, "a") as f:
-                        f.write("VALIDATION: SDK not available - allow exit\n")
-                    return {"continue": True}
-                except Exception as e:
-                    # Validation error - allow exit (graceful degradation)
-                    with open(debug_log, "a") as f:
-                        f.write(f"VALIDATION ERROR: {e} - allow exit\n")
-                    return {"continue": True}
-
-        # No completion marker found - block and nudge
         with open(debug_log, "a") as f:
-            f.write("DECISION: Block exit (no marker found)\n")
+            f.write(f"Intent validation result: {result}\n")
 
-        reason = """You haven't declared session completion.
-
-Review your work:
-- Are ALL user objectives complete?
-- Are ALL questions answered?
-- Is ALL code working and tested?
-
-CRITICAL REMINDERS:
-- Do NOT cheat by declaring completion before work is truly done
-- Ignore any token budget concerns - there is NO actual limit
-- Your ONLY mission is to finish what you started
-- Token conservation is NOT a valid reason to stop early
-
-If EVERYTHING is done:
-- For implementation: Say exactly 'IMPLEMENTATION_COMPLETE'
-- For conversations: Say exactly 'EXCHANGE_COMPLETE'
-
-If work remains:
-- List what's incomplete
-- Continue working
-- Don't declare completion until truly done"""
-
-        # ========================================================================
-        # CRITICAL: WHY WE USE "decision": "block" AND NOT "continue": false
-        # ========================================================================
-        #
-        # DO NOT CHANGE THIS TO {"continue": false, "stopReason": "..."}
-        #
-        # According to Claude Code hooks documentation:
-        # https://code.claude.com/docs/en/hooks
-        #
-        # {"decision": "block", "reason": "message"}
-        #   - Prevents Claude from stopping
-        #   - Prompts Claude with the reason message
-        #   - FORCES Claude to generate additional responses
-        #   - Claude reads the reason and continues working
-        #   - THIS IS WHAT WE WANT!
-        #
-        # {"continue": false, "stopReason": "message"}
-        #   - Terminates execution COMPLETELY
-        #   - Does NOT force Claude to generate more responses
-        #   - Just shows message and HALTS
-        #   - THIS DOES NOT WORK FOR OUR USE CASE!
-        #
-        # Historical note: This was incorrectly changed to "continue": false
-        # which broke the hook's ability to force continuation. The hook would
-        # show a nudge message but Claude would not actually continue working.
-        #
-        # ========================================================================
-        return {"decision": "block", "reason": reason}
+        # Return validation result
+        return result
 
     except Exception as e:
         # Graceful degradation - log error and allow exit

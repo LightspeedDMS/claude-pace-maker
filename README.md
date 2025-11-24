@@ -78,77 +78,79 @@ pace-maker tempo off
 - When weekly limit is disabled, only the 5-hour window throttling remains active
 - The 7-day window is completely ignored in pacing decisions
 
-**Tempo Tracking:**
-- Tempo tracking prevents Claude from prematurely ending implementation sessions
-- When Claude says `IMPLEMENTATION_START`, the Stop hook requires Claude to declare `IMPLEMENTATION_COMPLETE` before allowing the session to end
+**Intent-Based Validation:**
+- Pace Maker prevents Claude from prematurely ending sessions by validating if the user's original request was actually completed
+- Uses AI-powered intent validation: an AI judge acts as your proxy to determine if Claude delivered what you asked for
+- When you submit a prompt (including slash commands), it's captured and stored
+- When Claude tries to stop, the system validates Claude's work against your original intent
 - Enabled by default - disable with `pace-maker tempo off` if you don't want this behavior
 
-### AI-Powered Completion Validation
+### AI-Powered Intent Validation
 
-Pace Maker includes AI-powered validation of completion markers to prevent Claude from avoiding implementation work or declaring work complete when it isn't. This anti-cheating mechanism uses the Claude Agent SDK to analyze conversation history.
+Pace Maker uses the Claude Agent SDK to act as your proxy and judge whether Claude actually completed your request. This prevents premature stoppages and work avoidance.
 
-#### EXCHANGE_COMPLETE Validation (Work Avoidance Detection)
+#### How It Works
 
-When Claude declares `EXCHANGE_COMPLETE`, an AI judge automatically:
-1. Analyzes the last 5 conversation messages for context
-2. Checks if the user requested implementation work that Claude didn't do
-3. Detects work avoidance patterns:
-   - Providing only analysis or suggestions instead of implementation
-   - Writing documentation but not code when code was requested
-   - Identifying what needs to be done without doing it
-   - Giving recommendations without executing them
-   - Using wrong completion marker (EXCHANGE_COMPLETE when IMPLEMENTATION_COMPLETE required)
-4. Either accepts the completion or challenges Claude with specific evidence
+**1. Prompt Capture (UserPromptSubmit Hook)**
+- Your prompt is captured when you submit it
+- Slash commands (like `/implement-epic`) are automatically expanded to their full definition
+- Stored in `~/.claude-pace-maker/prompts/[session_id].json`
 
-**The Challenge Format:**
+**2. Intent Validation (Stop Hook)**
+When Claude tries to stop the session:
+1. System reads your original prompt (expanded if it was a slash command)
+2. Extracts the last 10 messages from the conversation
+3. Calls Claude Agent SDK with this validation prompt:
+   ```
+   You are the USER who originally requested this work from Claude Code.
 
-If Claude avoided work, it receives this challenge:
+   YOUR ORIGINAL REQUEST: [your prompt]
+   CLAUDE'S WORK: [last 10 messages]
+
+   Judge if Claude delivered what YOU asked for.
+   - If complete → respond: APPROVED
+   - If incomplete → respond: BLOCKED: [specific feedback]
+   ```
+4. SDK acts as you and judges completion honestly
+
+**3. Decision**
+- **APPROVED**: Session ends, you're done
+- **BLOCKED**: Claude receives specific feedback about what's missing and must continue working
+
+#### Example: Complete Work
+
 ```
-❌ EXCHANGE_COMPLETE REJECTED - WORK REQUIRED
+User: implement a calculator with add and multiply functions
 
-The AI judge found evidence that you're avoiding implementation work:
-[Specific evidence with quotes from conversation]
+[Claude implements both functions with tests]
 
-You MUST do the work the user requested. Once implementation is complete, use:
-IMPLEMENTATION_COMPLETE
-```
-
-Claude must then perform the actual implementation and use `IMPLEMENTATION_COMPLETE` marker.
-
-#### IMPLEMENTATION_COMPLETE Validation (Incomplete Work Detection)
-
-When Claude declares `IMPLEMENTATION_COMPLETE`, an AI judge automatically:
-1. Analyzes the last 5 conversation messages for context
-2. Checks for signs of incomplete work:
-   - TODO markers or FIXME comments
-   - Failing tests or build errors
-   - Partial implementations or missing features
-   - Unresolved issues or error conditions
-3. Either confirms completion or challenges Claude with specific evidence
-
-**The Challenge Format:**
-
-If work appears incomplete, Claude receives this challenge:
-```
-❌ IMPLEMENTATION_COMPLETE REJECTED
-
-The AI judge analyzed your work and found evidence of incomplete implementation:
-[Specific issues listed here]
-
-You MUST address these issues. Once genuinely complete, use:
-CONFIRMED_IMPLEMENTATION_COMPLETE
+Stop Hook: SDK validates...
+Result: APPROVED - exit allowed
 ```
 
-Only after using `CONFIRMED_IMPLEMENTATION_COMPLETE` will the session be allowed to end.
+#### Example: Incomplete Work
+
+```
+User: add authentication with login, logout, and password reset
+
+[Claude only creates placeholder functions]
+
+Stop Hook: SDK validates...
+Result: BLOCKED: You only implemented login as a placeholder. You need to
+complete login implementation, add logout function, and implement password
+reset functionality.
+
+[Claude receives feedback and continues working]
+```
 
 #### Requirements and Fallbacks
 
 **Requirements:**
 - Python 3.10+ required for validation (installer auto-upgrades if needed)
 - Claude Agent SDK (automatically installed by installer)
-- Falls back gracefully if SDK unavailable (accepts completion markers without validation)
+- Falls back gracefully if SDK unavailable (allows session to end)
 
-**Note:** Both validations only trigger when tempo tracking is enabled (`pace-maker tempo on`).
+**Note:** Intent validation only triggers when tempo tracking is enabled (`pace-maker tempo on`).
 
 ### Configuration
 
@@ -185,10 +187,10 @@ Edit `~/.claude-pace-maker/config.json`:
 
 Pace Maker uses four Claude Code hooks:
 
-1. **SessionStart Hook**: When Claude Code starts, shows the IMPLEMENTATION LIFECYCLE PROTOCOL reminder (when tempo enabled)
-2. **UserPromptSubmit Hook**: Intercepts `pace-maker` user commands
+1. **SessionStart Hook**: When Claude Code starts, initializes pace-maker state
+2. **UserPromptSubmit Hook**: Captures user prompts (including slash command expansion) and intercepts `pace-maker` commands
 3. **PostToolUse Hook**: After each tool execution, checks current credit usage and applies throttling
-4. **Stop Hook**: Prevents premature session termination when IMPLEMENTATION_START marker is detected without IMPLEMENTATION_COMPLETE (when tempo enabled)
+4. **Stop Hook**: Validates if Claude completed the user's original request using AI-powered intent validation (when tempo enabled)
 
 ### Throttling Flow
 
@@ -230,7 +232,7 @@ Pacing Status:
 - jq (for JSON manipulation)
 - Bash shell
 
-**Note:** The implementation validation feature gracefully degrades if Python 3.10+ or Claude Agent SDK are unavailable, falling back to basic completion markers.
+**Note:** The intent validation feature gracefully degrades if Python 3.10+ or Claude Agent SDK are unavailable, allowing sessions to end without validation.
 
 ## License
 
