@@ -22,6 +22,47 @@ from .transcript_reader import (
 
 logger = logging.getLogger(__name__)
 
+
+# Liveliness check phrases (case insensitive)
+LIVELINESS_PHRASES = [
+    "tempo, are you alive",
+    "tempo, are you working?",
+    "tempo, are you there?",
+    "tempo status",
+    "tempo check",
+]
+
+
+def detect_liveliness_check(all_user_messages: List[str]) -> bool:
+    """
+    Detect if the user is performing a liveliness check.
+
+    Liveliness phrases:
+    - "tempo, are you alive"
+    - "tempo, are you working?"
+    - "tempo, are you there?"
+    - "tempo status"
+    - "tempo check"
+
+    Args:
+        all_user_messages: All user messages from conversation
+
+    Returns:
+        True if liveliness check detected in any message, False otherwise
+    """
+    if not all_user_messages:
+        return False
+
+    # Check each message for liveliness phrases (case insensitive)
+    for message in all_user_messages:
+        message_lower = message.lower()
+        for phrase in LIVELINESS_PHRASES:
+            if phrase in message_lower:
+                return True
+
+    return False
+
+
 # Try to import Claude Agent SDK
 try:
     from claude_agent_sdk import query
@@ -53,6 +94,14 @@ You are seeing:
 
 This gives you COMPLETE VISIBILITY into your full intent and requests, with recent context of what Claude has been doing.
 
+LIVELINESS CHECK DETECTION:
+{liveliness_check_detected}
+
+If liveliness check is detected (True):
+- This is NOT a real work request
+- The user is testing if the tempo system is operational
+- Respond with: BLOCKED: Liveliness check confirmed. Tempo system is active and monitoring your session. Claude, please acknowledge you received this system check.
+
 YOUR MISSION:
 Judge if Claude delivered what YOU asked for across ALL your messages. Did Claude meet YOUR objectives and complete the work to YOUR standards?
 
@@ -81,6 +130,7 @@ def build_validation_prompt(
     all_user_messages: List[str],
     last_assistant_messages: List[str],
     last_assistant: str,
+    liveliness_detected: bool = False,
 ) -> str:
     """
     Build SDK validation prompt from template.
@@ -89,6 +139,7 @@ def build_validation_prompt(
         all_user_messages: ALL user messages (complete user intent from start to finish)
         last_assistant_messages: Last N assistant messages (recent responses showing what Claude did)
         last_assistant: Last assistant message (what Claude just said, highlighted separately)
+        liveliness_detected: Whether a liveliness check was detected in user messages
 
     Returns:
         Complete validation prompt for SDK
@@ -121,6 +172,7 @@ def build_validation_prompt(
         all_user_messages=all_user_text,
         last_assistant_messages=assistant_messages_text,
         last_assistant=assistant_text,
+        liveliness_check_detected=liveliness_detected,
     )
 
 
@@ -157,6 +209,7 @@ async def call_sdk_validation_async(
     all_user_messages: List[str],
     last_assistant_messages: List[str],
     last_assistant: str,
+    liveliness_detected: bool = False,
 ) -> str:
     """
     Call Claude Agent SDK for intent validation.
@@ -165,6 +218,7 @@ async def call_sdk_validation_async(
         all_user_messages: ALL user messages (complete user intent)
         last_assistant_messages: Last N assistant messages (recent responses)
         last_assistant: Last assistant message (very last, highlighted separately)
+        liveliness_detected: Whether a liveliness check was detected
 
     Returns:
         SDK response text
@@ -177,7 +231,7 @@ async def call_sdk_validation_async(
 
     # Build validation prompt
     prompt = build_validation_prompt(
-        all_user_messages, last_assistant_messages, last_assistant
+        all_user_messages, last_assistant_messages, last_assistant, liveliness_detected
     )
 
     # Configure SDK options
@@ -212,6 +266,7 @@ def call_sdk_validation(
     all_user_messages: List[str],
     last_assistant_messages: List[str],
     last_assistant: str,
+    liveliness_detected: bool = False,
 ) -> str:
     """
     Synchronous wrapper for SDK validation call.
@@ -220,6 +275,7 @@ def call_sdk_validation(
         all_user_messages: ALL user messages (complete user intent)
         last_assistant_messages: Last N assistant messages
         last_assistant: Last assistant message
+        liveliness_detected: Whether a liveliness check was detected
 
     Returns:
         SDK response text
@@ -235,7 +291,10 @@ def call_sdk_validation(
 
     return loop.run_until_complete(
         call_sdk_validation_async(
-            all_user_messages, last_assistant_messages, last_assistant
+            all_user_messages,
+            last_assistant_messages,
+            last_assistant,
+            liveliness_detected,
         )
     )
 
@@ -252,8 +311,9 @@ def validate_intent(
     1. Extract ALL user messages from transcript (complete user intent)
     2. Extract last N assistant messages from transcript (what Claude did)
     3. Extract very last assistant message (highlighted separately)
-    4. Call SDK to validate completion
-    5. Parse response and return decision
+    4. Detect if user is performing a liveliness check
+    5. Call SDK to validate completion (with liveliness detection)
+    6. Parse response and return decision
 
     Args:
         session_id: Session ID (currently unused but kept for compatibility)
@@ -284,11 +344,15 @@ def validate_intent(
         if not all_user_messages and not last_assistant_messages and not last_assistant:
             return {"continue": True}
 
+        # Detect liveliness check
+        liveliness_detected = detect_liveliness_check(all_user_messages)
+
         # Call SDK for validation
         sdk_response = call_sdk_validation(
             all_user_messages=all_user_messages,
             last_assistant_messages=last_assistant_messages,
             last_assistant=last_assistant,
+            liveliness_detected=liveliness_detected,
         )
 
         # Parse response
