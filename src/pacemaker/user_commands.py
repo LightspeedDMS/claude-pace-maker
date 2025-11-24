@@ -155,9 +155,15 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         # Load config
         config = _load_config(config_path)
         enabled = config.get("enabled", False)
+        weekly_limit_enabled = config.get("weekly_limit_enabled", True)
+        tempo_enabled = config.get("tempo_enabled", True)
 
         # Build status message
         status_text = "Pace Maker: ACTIVE" if enabled else "Pace Maker: INACTIVE"
+        status_text += (
+            f"\nWeekly Limit: {'ENABLED' if weekly_limit_enabled else 'DISABLED'}"
+        )
+        status_text += f"\nTempo Tracking: {'ENABLED' if tempo_enabled else 'DISABLED'}"
 
         # Try to get usage data
         usage_data = None
