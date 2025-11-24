@@ -17,17 +17,16 @@ class TestBuildValidationPromptWithAssistantMessages(unittest.TestCase):
     """Test build_validation_prompt() with last_assistant_messages parameter."""
 
     def test_accepts_last_assistant_messages_parameter(self):
-        """Should accept last_assistant_messages as fourth parameter."""
+        """Should accept last_assistant_messages as second parameter."""
         from src.pacemaker.intent_validator import build_validation_prompt
 
-        first_messages = ["User message 1"]
-        last_messages = ["User message 2"]
+        all_user_messages = ["User message 1", "User message 2"]
         last_assistant_messages = ["Assistant response 1", "Assistant response 2"]
         last_assistant = "Very last response"
 
         # Should not raise
         prompt = build_validation_prompt(
-            first_messages, last_messages, last_assistant_messages, last_assistant
+            all_user_messages, last_assistant_messages, last_assistant
         )
 
         self.assertIsInstance(prompt, str)
@@ -44,7 +43,6 @@ class TestBuildValidationPromptWithAssistantMessages(unittest.TestCase):
 
         prompt = build_validation_prompt(
             ["User request"],
-            ["Recent user msg"],
             last_assistant_messages,
             "Final response",
         )
@@ -66,9 +64,7 @@ class TestBuildValidationPromptWithAssistantMessages(unittest.TestCase):
         last_assistant_messages = ["Response 1", "Response 2", "Response 3"]
         very_last = "This is the very last response"
 
-        prompt = build_validation_prompt(
-            ["User"], ["User"], last_assistant_messages, very_last
-        )
+        prompt = build_validation_prompt(["User"], last_assistant_messages, very_last)
 
         # Should have RECENT RESPONSES section
         self.assertIn("RECENT RESPONSES", prompt.upper())
@@ -83,7 +79,7 @@ class TestBuildValidationPromptWithAssistantMessages(unittest.TestCase):
         """Should handle empty list of assistant messages gracefully."""
         from src.pacemaker.intent_validator import build_validation_prompt
 
-        prompt = build_validation_prompt(["User"], ["User"], [], "Last response")
+        prompt = build_validation_prompt(["User"], [], "Last response")
 
         # Should still produce valid prompt
         self.assertIsInstance(prompt, str)
@@ -96,9 +92,7 @@ class TestBuildValidationPromptWithAssistantMessages(unittest.TestCase):
 
         last_assistant_messages = ["Response 1", "Response 2"]
 
-        prompt = build_validation_prompt(
-            ["User"], ["User"], last_assistant_messages, "Last"
-        )
+        prompt = build_validation_prompt(["User"], last_assistant_messages, "Last")
 
         # Should mention showing multiple responses
         self.assertIn("RECENT RESPONSES", prompt.upper())
@@ -116,8 +110,7 @@ class TestSDKValidationWithAssistantMessages(unittest.TestCase):
         params = list(sig.parameters.keys())
 
         # Verify signature includes all expected parameters
-        self.assertIn("first_messages", params)
-        self.assertIn("last_messages", params)
+        self.assertIn("all_user_messages", params)
         self.assertIn("last_assistant_messages", params)
         self.assertIn("last_assistant", params)
 
@@ -130,8 +123,7 @@ class TestSDKValidationWithAssistantMessages(unittest.TestCase):
         params = list(sig.parameters.keys())
 
         # Verify signature includes all expected parameters
-        self.assertIn("first_messages", params)
-        self.assertIn("last_messages", params)
+        self.assertIn("all_user_messages", params)
         self.assertIn("last_assistant_messages", params)
         self.assertIn("last_assistant", params)
 
@@ -150,8 +142,7 @@ class TestSDKValidationWithAssistantMessages(unittest.TestCase):
             with patch("src.pacemaker.intent_validator.SDK_AVAILABLE", False):
                 try:
                     call_sdk_validation(
-                        first_messages=["User"],
-                        last_messages=["User"],
+                        all_user_messages=["User"],
                         last_assistant_messages=last_assistant_messages,
                         last_assistant="Last",
                     )
@@ -186,22 +177,19 @@ class TestValidateIntentWithAssistantMessages(unittest.TestCase):
                 f.write(json.dumps(msg) + "\n")
 
     @patch("src.pacemaker.intent_validator.call_sdk_validation")
-    @patch("src.pacemaker.intent_validator.get_first_n_user_messages")
-    @patch("src.pacemaker.intent_validator.get_last_n_user_messages")
+    @patch("src.pacemaker.intent_validator.get_all_user_messages")
     @patch("src.pacemaker.intent_validator.get_last_n_assistant_messages")
     def test_validate_intent_extracts_last_n_assistant_messages(
         self,
         mock_last_assistant_msgs,
-        mock_last_user,
-        mock_first_user,
+        mock_all_user,
         mock_sdk,
     ):
         """Should extract last N assistant messages using get_last_n_assistant_messages()."""
         from src.pacemaker.intent_validator import validate_intent
 
         # Setup mocks
-        mock_first_user.return_value = ["User 1"]
-        mock_last_user.return_value = ["User 2"]
+        mock_all_user.return_value = ["User 1", "User 2"]
         mock_last_assistant_msgs.return_value = ["Assistant 1", "Assistant 2"]
         mock_sdk.return_value = "APPROVED"
 
@@ -227,22 +215,19 @@ class TestValidateIntentWithAssistantMessages(unittest.TestCase):
         )
 
     @patch("src.pacemaker.intent_validator.call_sdk_validation")
-    @patch("src.pacemaker.intent_validator.get_first_n_user_messages")
-    @patch("src.pacemaker.intent_validator.get_last_n_user_messages")
+    @patch("src.pacemaker.intent_validator.get_all_user_messages")
     @patch("src.pacemaker.intent_validator.get_last_n_assistant_messages")
     def test_validate_intent_uses_last_from_assistant_messages_list(
         self,
         mock_last_assistant_msgs,
-        mock_last_user,
-        mock_first_user,
+        mock_all_user,
         mock_sdk,
     ):
         """Should extract very last assistant message from the list."""
         from src.pacemaker.intent_validator import validate_intent
 
         # Setup mocks - last assistant message list with multiple responses
-        mock_first_user.return_value = ["User 1"]
-        mock_last_user.return_value = ["User 2"]
+        mock_all_user.return_value = ["User 1", "User 2"]
         mock_last_assistant_msgs.return_value = [
             "Response 1",
             "Response 2",
@@ -264,22 +249,19 @@ class TestValidateIntentWithAssistantMessages(unittest.TestCase):
         self.assertEqual(call_args.kwargs["last_assistant"], "Very last response")
 
     @patch("src.pacemaker.intent_validator.call_sdk_validation")
-    @patch("src.pacemaker.intent_validator.get_first_n_user_messages")
-    @patch("src.pacemaker.intent_validator.get_last_n_user_messages")
+    @patch("src.pacemaker.intent_validator.get_all_user_messages")
     @patch("src.pacemaker.intent_validator.get_last_n_assistant_messages")
     def test_validate_intent_handles_empty_assistant_messages_list(
         self,
         mock_last_assistant_msgs,
-        mock_last_user,
-        mock_first_user,
+        mock_all_user,
         mock_sdk,
     ):
         """Should handle empty list of assistant messages gracefully."""
         from src.pacemaker.intent_validator import validate_intent
 
         # Setup mocks - empty assistant messages list
-        mock_first_user.return_value = ["User 1"]
-        mock_last_user.return_value = ["User 2"]
+        mock_all_user.return_value = ["User 1", "User 2"]
         mock_last_assistant_msgs.return_value = []  # Empty list
         mock_sdk.return_value = "APPROVED"
 
@@ -299,22 +281,19 @@ class TestValidateIntentWithAssistantMessages(unittest.TestCase):
         self.assertEqual(call_args.kwargs["last_assistant"], "")
 
     @patch("src.pacemaker.intent_validator.call_sdk_validation")
-    @patch("src.pacemaker.intent_validator.get_first_n_user_messages")
-    @patch("src.pacemaker.intent_validator.get_last_n_user_messages")
+    @patch("src.pacemaker.intent_validator.get_all_user_messages")
     @patch("src.pacemaker.intent_validator.get_last_n_assistant_messages")
     def test_validate_intent_fails_open_if_only_assistant_messages_empty(
         self,
         mock_last_assistant_msgs,
-        mock_last_user,
-        mock_first_user,
+        mock_all_user,
         mock_sdk,
     ):
         """Should still validate if we have user messages but no assistant messages."""
         from src.pacemaker.intent_validator import validate_intent
 
         # Setup mocks - user messages exist, but no assistant messages
-        mock_first_user.return_value = ["User message 1"]
-        mock_last_user.return_value = ["User message 2"]
+        mock_all_user.return_value = ["User message 1", "User message 2"]
         mock_last_assistant_msgs.return_value = []  # No assistant messages
         mock_sdk.return_value = "APPROVED"
 

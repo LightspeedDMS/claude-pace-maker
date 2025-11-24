@@ -35,23 +35,25 @@ class TestRefactoredIntentValidator(unittest.TestCase):
                 f.write(json.dumps(msg) + "\n")
 
     def test_build_validation_prompt_with_transcript_context(self):
-        """Should build prompt with first N, last N user messages, and last assistant."""
+        """Should build prompt with ALL user messages and last N assistant messages."""
         from src.pacemaker.intent_validator import build_validation_prompt
 
-        first_messages = ["First user message", "Second user message"]
-        last_messages = ["Recent message 1", "Recent message 2"]
+        all_user_messages = [
+            "First user message",
+            "Second user message",
+            "Recent message 1",
+            "Recent message 2",
+        ]
         last_assistant_messages = ["Assistant response 1", "Assistant response 2"]
         last_assistant = "This is what Claude just said"
 
         prompt = build_validation_prompt(
-            first_messages, last_messages, last_assistant_messages, last_assistant
+            all_user_messages, last_assistant_messages, last_assistant
         )
 
-        # Should contain first messages (original mission context)
+        # Should contain all user messages
         self.assertIn("First user message", prompt)
         self.assertIn("Second user message", prompt)
-
-        # Should contain last messages (recent context)
         self.assertIn("Recent message 1", prompt)
         self.assertIn("Recent message 2", prompt)
 
@@ -62,15 +64,15 @@ class TestRefactoredIntentValidator(unittest.TestCase):
         # Should contain last assistant message
         self.assertIn("This is what Claude just said", prompt)
 
-        # Should explain what each section represents
-        self.assertIn("ORIGINAL", prompt.upper())
-        self.assertIn("RECENT", prompt.upper())
+        # Should explain what the section represents
+        self.assertIn("COMPLETE", prompt.upper())
+        self.assertIn("REQUEST", prompt.upper())
 
     def test_build_validation_prompt_handles_empty_lists(self):
         """Should handle empty message lists gracefully."""
         from src.pacemaker.intent_validator import build_validation_prompt
 
-        prompt = build_validation_prompt([], [], [], "")
+        prompt = build_validation_prompt([], [], "")
 
         # Should still produce valid prompt
         self.assertIsInstance(prompt, str)
@@ -81,7 +83,7 @@ class TestRefactoredIntentValidator(unittest.TestCase):
         from src.pacemaker.intent_validator import build_validation_prompt
 
         prompt = build_validation_prompt(
-            ["test message"], ["test message"], ["test assistant"], "test response"
+            ["test message"], ["test assistant"], "test response"
         )
 
         # Should contain response format instructions
@@ -89,22 +91,23 @@ class TestRefactoredIntentValidator(unittest.TestCase):
         self.assertIn("BLOCKED:", prompt)
 
     @patch("src.pacemaker.intent_validator.call_sdk_validation")
-    @patch("src.pacemaker.intent_validator.get_first_n_user_messages")
-    @patch("src.pacemaker.intent_validator.get_last_n_user_messages")
+    @patch("src.pacemaker.intent_validator.get_all_user_messages")
     @patch("src.pacemaker.intent_validator.get_last_n_assistant_messages")
     def test_validate_intent_extracts_context_from_transcript(
         self,
         mock_last_assistant_msgs,
-        mock_last_user,
-        mock_first_user,
+        mock_all_user,
         mock_sdk,
     ):
         """Should extract context directly from transcript, not from stored prompts."""
         from src.pacemaker.intent_validator import validate_intent
 
         # Setup mocks
-        mock_first_user.return_value = ["First user msg"]
-        mock_last_user.return_value = ["Last user msg"]
+        mock_all_user.return_value = [
+            "First user msg",
+            "Second user msg",
+            "Last user msg",
+        ]
         mock_last_assistant_msgs.return_value = [
             "Assistant msg 1",
             "Last assistant msg",
@@ -121,15 +124,16 @@ class TestRefactoredIntentValidator(unittest.TestCase):
         )
 
         # Verify extraction functions were called
-        mock_first_user.assert_called_once_with(self.transcript_path, n=5)
-        mock_last_user.assert_called_once_with(self.transcript_path, n=5)
+        mock_all_user.assert_called_once_with(self.transcript_path)
         mock_last_assistant_msgs.assert_called_once_with(self.transcript_path, n=5)
 
         # Verify SDK was called with extracted context
         self.assertTrue(mock_sdk.called)
         call_args = mock_sdk.call_args.kwargs
-        self.assertEqual(call_args["first_messages"], ["First user msg"])
-        self.assertEqual(call_args["last_messages"], ["Last user msg"])
+        self.assertEqual(
+            call_args["all_user_messages"],
+            ["First user msg", "Second user msg", "Last user msg"],
+        )
         self.assertEqual(
             call_args["last_assistant_messages"],
             ["Assistant msg 1", "Last assistant msg"],
@@ -140,22 +144,19 @@ class TestRefactoredIntentValidator(unittest.TestCase):
         self.assertEqual(result, {"continue": True})
 
     @patch("src.pacemaker.intent_validator.call_sdk_validation")
-    @patch("src.pacemaker.intent_validator.get_first_n_user_messages")
-    @patch("src.pacemaker.intent_validator.get_last_n_user_messages")
+    @patch("src.pacemaker.intent_validator.get_all_user_messages")
     @patch("src.pacemaker.intent_validator.get_last_n_assistant_messages")
     def test_validate_intent_uses_config_context_size(
         self,
         mock_last_assistant_msgs,
-        mock_last_user,
-        mock_first_user,
+        mock_all_user,
         mock_sdk,
     ):
-        """Should use conversation_context_size from config."""
+        """Should use conversation_context_size from config for assistant messages only."""
         from src.pacemaker.intent_validator import validate_intent
 
         # Setup mocks
-        mock_first_user.return_value = ["msg1"]
-        mock_last_user.return_value = ["msg2"]
+        mock_all_user.return_value = ["msg1", "msg2"]
         mock_last_assistant_msgs.return_value = ["response"]
         mock_sdk.return_value = "APPROVED"
 
@@ -169,9 +170,9 @@ class TestRefactoredIntentValidator(unittest.TestCase):
             conversation_context_size=10,
         )
 
-        # Verify extraction functions used correct N
-        mock_first_user.assert_called_once_with(self.transcript_path, n=10)
-        mock_last_user.assert_called_once_with(self.transcript_path, n=10)
+        # Verify extraction functions - all_user_messages doesn't take n parameter
+        mock_all_user.assert_called_once_with(self.transcript_path)
+        # Only assistant messages use context size
         mock_last_assistant_msgs.assert_called_once_with(self.transcript_path, n=10)
 
     def test_validate_intent_fails_open_on_missing_transcript(self):
@@ -190,22 +191,19 @@ class TestRefactoredIntentValidator(unittest.TestCase):
         self.assertEqual(result, {"continue": True})
 
     @patch("src.pacemaker.intent_validator.call_sdk_validation")
-    @patch("src.pacemaker.intent_validator.get_first_n_user_messages")
-    @patch("src.pacemaker.intent_validator.get_last_n_user_messages")
+    @patch("src.pacemaker.intent_validator.get_all_user_messages")
     @patch("src.pacemaker.intent_validator.get_last_n_assistant_messages")
     def test_validate_intent_fails_open_on_empty_context(
         self,
         mock_last_assistant_msgs,
-        mock_last_user,
-        mock_first_user,
+        mock_all_user,
         mock_sdk,
     ):
         """Should fail open if all context is empty."""
         from src.pacemaker.intent_validator import validate_intent
 
         # Setup mocks to return empty context
-        mock_first_user.return_value = []
-        mock_last_user.return_value = []
+        mock_all_user.return_value = []
         mock_last_assistant_msgs.return_value = []
 
         # Create empty transcript
@@ -222,22 +220,19 @@ class TestRefactoredIntentValidator(unittest.TestCase):
         self.assertEqual(result, {"continue": True})
 
     @patch("src.pacemaker.intent_validator.call_sdk_validation")
-    @patch("src.pacemaker.intent_validator.get_first_n_user_messages")
-    @patch("src.pacemaker.intent_validator.get_last_n_user_messages")
+    @patch("src.pacemaker.intent_validator.get_all_user_messages")
     @patch("src.pacemaker.intent_validator.get_last_n_assistant_messages")
     def test_validate_intent_handles_sdk_error(
         self,
         mock_last_assistant_msgs,
-        mock_last_user,
-        mock_first_user,
+        mock_all_user,
         mock_sdk,
     ):
         """Should fail open on SDK error."""
         from src.pacemaker.intent_validator import validate_intent
 
         # Setup mocks
-        mock_first_user.return_value = ["msg"]
-        mock_last_user.return_value = ["msg"]
+        mock_all_user.return_value = ["msg"]
         mock_last_assistant_msgs.return_value = ["response"]
         mock_sdk.side_effect = Exception("SDK error")
 
@@ -261,11 +256,13 @@ class TestValidationPromptTemplate(unittest.TestCase):
         """Template should clearly explain what each section represents."""
         from src.pacemaker.intent_validator import VALIDATION_PROMPT_TEMPLATE
 
-        # Should explain original mission context
-        self.assertIn("ORIGINAL", VALIDATION_PROMPT_TEMPLATE.upper())
+        # Should explain complete user requests
+        self.assertIn("COMPLETE", VALIDATION_PROMPT_TEMPLATE.upper())
+        self.assertIn("REQUEST", VALIDATION_PROMPT_TEMPLATE.upper())
 
-        # Should explain recent context
-        self.assertIn("RECENT", VALIDATION_PROMPT_TEMPLATE.upper())
+        # Should NOT have separate original/recent sections anymore
+        self.assertNotIn("YOUR ORIGINAL REQUEST", VALIDATION_PROMPT_TEMPLATE)
+        self.assertNotIn("YOUR RECENT CONTEXT", VALIDATION_PROMPT_TEMPLATE)
 
         # Should mention last assistant message
         self.assertIn("CLAUDE", VALIDATION_PROMPT_TEMPLATE.upper())
