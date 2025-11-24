@@ -10,9 +10,12 @@ This module handles UserPromptSubmit hook logic:
 
 import os
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 def is_slash_command(prompt: str) -> bool:
@@ -126,24 +129,61 @@ def expand_slash_command(
         return prompt
 
 
+def convert_old_format_to_new(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert old single-prompt format to new multi-prompt format.
+
+    Args:
+        data: Prompt data dict (may be old or new format)
+
+    Returns:
+        Data dict in new format with 'prompts' array
+    """
+    if "raw_prompt" in data and "prompts" not in data:
+        return {
+            "session_id": data.get("session_id"),
+            "prompts": [
+                {
+                    "raw_prompt": data.get("raw_prompt"),
+                    "expanded_prompt": data.get("expanded_prompt"),
+                    "timestamp": data.get("timestamp"),
+                    "sequence": 1,
+                }
+            ],
+        }
+    return data
+
+
 def store_user_prompt(
     session_id: str,
     raw_prompt: str,
     prompts_dir: str,
     project_commands_dir: Optional[str] = None,
     global_commands_dir: Optional[str] = None,
+    max_prompts: int = 5,
 ) -> bool:
     """
     Store user prompt with optional slash command expansion.
 
     Creates JSON file: ~/.claude-pace-maker/prompts/[session_id].json
 
-    JSON structure:
+    JSON structure (NEW - rolling window of last N prompts):
     {
         "session_id": "sess-12345",
-        "raw_prompt": "/implement-epic user-auth",
-        "expanded_prompt": "[full command definition]",
-        "timestamp": "2025-11-23T12:00:00"
+        "prompts": [
+            {
+                "raw_prompt": "build calculator",
+                "expanded_prompt": "build calculator",
+                "timestamp": "2025-11-23T12:00:00",
+                "sequence": 1
+            },
+            {
+                "raw_prompt": "add fractions support",
+                "expanded_prompt": "add fractions support",
+                "timestamp": "2025-11-23T12:01:30",
+                "sequence": 2
+            }
+        ]
     }
 
     Args:
@@ -152,6 +192,7 @@ def store_user_prompt(
         prompts_dir: Directory to store prompt files
         project_commands_dir: Project commands directory (optional)
         global_commands_dir: Global commands directory (optional)
+        max_prompts: Maximum number of prompts to keep (rolling window). 0 = unlimited.
 
     Returns:
         True if stored successfully, False otherwise
@@ -160,25 +201,50 @@ def store_user_prompt(
         # Ensure prompts directory exists
         Path(prompts_dir).mkdir(parents=True, exist_ok=True)
 
+        prompt_file = os.path.join(prompts_dir, f"{session_id}.json")
+
         # Expand slash command if applicable
         expanded_prompt = expand_slash_command(
             raw_prompt, project_commands_dir, global_commands_dir
         )
 
-        # Build prompt data
-        prompt_data = {
-            "session_id": session_id,
+        # Load existing prompts or initialize
+        if os.path.exists(prompt_file):
+            with open(prompt_file, "r") as f:
+                data = json.load(f)
+                # Handle old format (backwards compatibility)
+                data = convert_old_format_to_new(data)
+                existing_prompts = data.get("prompts", [])
+        else:
+            existing_prompts = []
+
+        # Create new prompt entry
+        # Sequence number is the highest existing sequence + 1 (tracks absolute session count)
+        max_sequence = max([p.get("sequence", 0) for p in existing_prompts], default=0)
+        new_prompt = {
             "raw_prompt": raw_prompt,
             "expanded_prompt": expanded_prompt,
             "timestamp": datetime.now().isoformat(),
+            "sequence": max_sequence + 1,
+        }
+
+        # Append and maintain rolling window
+        existing_prompts.append(new_prompt)
+        if max_prompts > 0 and len(existing_prompts) > max_prompts:
+            existing_prompts = existing_prompts[-max_prompts:]
+
+        # Build data structure
+        prompt_data = {
+            "session_id": session_id,
+            "prompts": existing_prompts,
         }
 
         # Write JSON file
-        prompt_file = os.path.join(prompts_dir, f"{session_id}.json")
         with open(prompt_file, "w") as f:
             json.dump(prompt_data, f, indent=2)
 
         return True
 
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Failed to store user prompt: {e}")
         return False

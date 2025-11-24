@@ -47,14 +47,21 @@ class TestUserPromptSubmitPlainText(unittest.TestCase):
         expected_path = os.path.join(self.prompts_dir, f"{session_id}.json")
         self.assertTrue(os.path.exists(expected_path))
 
-        # Verify content
+        # Verify content (NEW FORMAT)
         with open(expected_path) as f:
             data = json.load(f)
 
         self.assertEqual(data["session_id"], session_id)
-        self.assertEqual(data["raw_prompt"], prompt)
-        self.assertEqual(data["expanded_prompt"], prompt)  # Plain text: no expansion
-        self.assertIn("timestamp", data)
+        self.assertIn("prompts", data)
+        self.assertEqual(len(data["prompts"]), 1)
+
+        prompt_entry = data["prompts"][0]
+        self.assertEqual(prompt_entry["raw_prompt"], prompt)
+        self.assertEqual(
+            prompt_entry["expanded_prompt"], prompt
+        )  # Plain text: no expansion
+        self.assertIn("timestamp", prompt_entry)
+        self.assertEqual(prompt_entry["sequence"], 1)
         self.assertTrue(result)
 
     def test_plain_text_prompt_no_expansion(self):
@@ -68,14 +75,15 @@ class TestUserPromptSubmitPlainText(unittest.TestCase):
             session_id=session_id, raw_prompt=prompt, prompts_dir=self.prompts_dir
         )
 
-        # Read file
+        # Read file (NEW FORMAT)
         prompt_file = os.path.join(self.prompts_dir, f"{session_id}.json")
         with open(prompt_file) as f:
             data = json.load(f)
 
         # Both should be identical for plain text
-        self.assertEqual(data["raw_prompt"], data["expanded_prompt"])
-        self.assertEqual(data["expanded_prompt"], "add authentication system")
+        prompt_entry = data["prompts"][0]
+        self.assertEqual(prompt_entry["raw_prompt"], prompt_entry["expanded_prompt"])
+        self.assertEqual(prompt_entry["expanded_prompt"], "add authentication system")
 
 
 class TestUserPromptSubmitSlashCommands(unittest.TestCase):
@@ -148,13 +156,14 @@ This command implements an epic using story-by-story TDD workflow.
             global_commands_dir=self.global_commands_dir,
         )
 
-        # Verify expansion
+        # Verify expansion (NEW FORMAT)
         prompt_file = os.path.join(self.prompts_dir, f"{session_id}.json")
         with open(prompt_file) as f:
             data = json.load(f)
 
-        self.assertEqual(data["raw_prompt"], "/implement-epic user-auth")
-        self.assertEqual(data["expanded_prompt"], command_content)
+        prompt_entry = data["prompts"][0]
+        self.assertEqual(prompt_entry["raw_prompt"], "/implement-epic user-auth")
+        self.assertEqual(prompt_entry["expanded_prompt"], command_content)
 
     def test_project_command_precedence(self):
         """AC4: Project-level command should take precedence over global."""
@@ -182,12 +191,13 @@ This command implements an epic using story-by-story TDD workflow.
             global_commands_dir=self.global_commands_dir,
         )
 
-        # Verify project command was used
+        # Verify project command was used (NEW FORMAT)
         prompt_file = os.path.join(self.prompts_dir, f"{session_id}.json")
         with open(prompt_file) as f:
             data = json.load(f)
 
-        self.assertEqual(data["expanded_prompt"], "PROJECT LEVEL COMMAND")
+        prompt_entry = data["prompts"][0]
+        self.assertEqual(prompt_entry["expanded_prompt"], "PROJECT LEVEL COMMAND")
 
     def test_missing_command_fallback_to_plain_text(self):
         """AC5: Missing command should be treated as plain text."""
@@ -205,13 +215,18 @@ This command implements an epic using story-by-story TDD workflow.
             global_commands_dir=self.global_commands_dir,
         )
 
-        # Verify fallback to plain text (no expansion)
+        # Verify fallback to plain text (no expansion) (NEW FORMAT)
         prompt_file = os.path.join(self.prompts_dir, f"{session_id}.json")
         with open(prompt_file) as f:
             data = json.load(f)
 
-        self.assertEqual(data["raw_prompt"], "/nonexistent-command do something")
-        self.assertEqual(data["expanded_prompt"], "/nonexistent-command do something")
+        prompt_entry = data["prompts"][0]
+        self.assertEqual(
+            prompt_entry["raw_prompt"], "/nonexistent-command do something"
+        )
+        self.assertEqual(
+            prompt_entry["expanded_prompt"], "/nonexistent-command do something"
+        )
 
     def test_slash_command_name_extraction(self):
         """Should correctly extract command name from slash command."""

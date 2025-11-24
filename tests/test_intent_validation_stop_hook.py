@@ -259,8 +259,12 @@ class TestStopHookSDKIntegration(unittest.TestCase):
         prompt_data = read_stored_prompt(session_id, self.prompts_dir)
 
         self.assertEqual(prompt_data["session_id"], session_id)
+        # NEW FORMAT: prompts is an array
+        self.assertIn("prompts", prompt_data)
+        self.assertEqual(len(prompt_data["prompts"]), 1)
         self.assertEqual(
-            prompt_data["expanded_prompt"], "implement authentication system"
+            prompt_data["prompts"][0]["expanded_prompt"],
+            "implement authentication system",
         )
 
     def test_read_stored_prompt_missing_file(self):
@@ -294,8 +298,14 @@ class TestStopHookSDKIntegration(unittest.TestCase):
         # Get positional arguments
         call_args = mock_sdk.call_args[0]
 
-        # Should include expanded prompt (first arg)
-        self.assertIn("add authentication system", call_args[0])
+        # NEW: First arg is now list of prompts, not single string
+        user_prompts = call_args[0]
+        self.assertIsInstance(user_prompts, list)
+        self.assertGreater(len(user_prompts), 0)
+        # Should include expanded prompt in first prompt entry
+        self.assertEqual(
+            user_prompts[0]["expanded_prompt"], "add authentication system"
+        )
 
         # Should include last messages (second arg)
         self.assertIsInstance(call_args[1], list)
@@ -356,18 +366,28 @@ class TestSDKValidationPromptTemplate(unittest.TestCase):
         """Should build correct validation prompt for SDK."""
         from src.pacemaker.intent_validator import build_validation_prompt
 
-        user_prompt = "implement a calculator"
+        # NEW: user_prompts is now a list of prompt dicts
+        user_prompts = [
+            {
+                "raw_prompt": "implement a calculator",
+                "expanded_prompt": "implement a calculator",
+                "timestamp": "2025-11-23T12:00:00",
+                "sequence": 1,
+            }
+        ]
         messages = [
             "[USER]\nimplement a calculator",
             "[ASSISTANT]\nI will create a calculator",
             "[ASSISTANT]\nImplementation complete",
         ]
 
-        prompt = build_validation_prompt(user_prompt, messages)
+        prompt = build_validation_prompt(user_prompts, messages)
 
         # Should contain user's original request
         self.assertIn("implement a calculator", prompt)
-        self.assertIn("YOUR ORIGINAL REQUEST:", prompt)
+        self.assertIn(
+            "YOUR ORIGINAL REQUESTS", prompt
+        )  # Changed to plural (without colon)
 
         # Should contain last messages
         self.assertIn("CLAUDE'S WORK", prompt)
