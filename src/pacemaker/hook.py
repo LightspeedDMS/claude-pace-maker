@@ -224,14 +224,13 @@ def parse_user_prompt_input(raw_input: str) -> dict:
 
 
 def run_user_prompt_submit():
-    """Handle user prompt submit hook with intent-based validation support."""
+    """Handle user prompt submit hook - pace-maker command interception only."""
     try:
         # Read user input from stdin
         raw_input = sys.stdin.read().strip()
 
         # Parse input (JSON or plain text)
         parsed_data = parse_user_prompt_input(raw_input)
-        session_id = parsed_data["session_id"]
         user_input = parsed_data["prompt"]
 
         # Handle pace-maker commands
@@ -245,32 +244,7 @@ def run_user_prompt_submit():
             print(json.dumps(response), file=sys.stdout, flush=True)
             sys.exit(0)
 
-        # Store user prompt for intent validation by Stop hook
-        from . import prompt_storage
-
-        prompts_dir = os.path.join(os.path.dirname(DEFAULT_CONFIG_PATH), "prompts")
-
-        # Get command directories
-        project_commands_dir = None
-        if os.environ.get("CLAUDE_PROJECT_DIR"):
-            project_commands_dir = os.path.join(
-                os.environ["CLAUDE_PROJECT_DIR"], ".claude", "commands"
-            )
-
-        global_commands_dir = os.path.join(
-            os.path.expanduser("~"), ".claude", "commands"
-        )
-
-        # Store prompt with slash command expansion
-        prompt_storage.store_user_prompt(
-            session_id=session_id,
-            raw_prompt=user_input,
-            prompts_dir=prompts_dir,
-            project_commands_dir=project_commands_dir,
-            global_commands_dir=global_commands_dir,
-        )
-
-        # Pass through original input
+        # Pass through original input (no prompt storage needed)
         print(raw_input, file=sys.stdout, flush=True)
         sys.exit(0)
 
@@ -393,9 +367,10 @@ def run_stop_hook():
     """
     Handle Stop hook using intent-based validation.
 
-    New behavior (Story #9):
-    - Reads stored user prompt (expanded for slash commands)
-    - Extracts last 10 messages from transcript
+    Refactored behavior:
+    - Extracts first N user messages from transcript (original mission)
+    - Extracts last N user messages from transcript (recent context)
+    - Extracts last assistant message from transcript (what Claude just said)
     - Calls SDK to validate if Claude completed the user's original request
     - SDK acts as user proxy to judge completion
     - Returns APPROVED (allow exit) or BLOCKED with feedback
@@ -412,7 +387,7 @@ def run_stop_hook():
     )
 
     try:
-        # Load config to check if tempo is enabled
+        # Load config to check if tempo is enabled and get context size
         config = load_config(DEFAULT_CONFIG_PATH)
         if not config.get("tempo_enabled", True):
             with open(debug_log, "a") as f:
@@ -432,7 +407,7 @@ def run_stop_hook():
 
         # Debug log
         with open(debug_log, "a") as f:
-            f.write(f"\n[{datetime.now()}] === INTENT VALIDATION (Story #9) ===\n")
+            f.write(f"\n[{datetime.now()}] === INTENT VALIDATION (Refactored) ===\n")
             f.write(f"Session ID: {session_id}\n")
             f.write(f"Transcript path: {transcript_path}\n")
 
@@ -441,23 +416,20 @@ def run_stop_hook():
                 f.write("No transcript - allow exit\n")
             return {"continue": True}
 
-        if not session_id:
-            with open(debug_log, "a") as f:
-                f.write("No session ID - allow exit (fail open)\n")
-            return {"continue": True}
-
         # Use intent validator to check if work is complete
         from . import intent_validator
 
-        prompts_dir = os.path.join(os.path.dirname(DEFAULT_CONFIG_PATH), "prompts")
+        conversation_context_size = config.get("conversation_context_size", 5)
 
         with open(debug_log, "a") as f:
-            f.write("Calling intent validator...\n")
+            f.write(
+                f"Calling intent validator (context_size={conversation_context_size})...\n"
+            )
 
         result = intent_validator.validate_intent(
             session_id=session_id,
             transcript_path=transcript_path,
-            prompts_dir=prompts_dir,
+            conversation_context_size=conversation_context_size,
         )
 
         with open(debug_log, "a") as f:

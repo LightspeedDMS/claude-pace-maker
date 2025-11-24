@@ -23,6 +23,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "retention_days": 60,
     "weekly_limit_enabled": True,
     "tempo_enabled": True,
+    "conversation_context_size": 5,
 }
 
 # Default file paths

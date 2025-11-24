@@ -3,19 +3,23 @@
 Intent-based validation for Stop hook using Claude Agent SDK.
 
 This module validates if Claude completed the user's original request by:
-1. Reading stored user prompt (expanded for slash commands)
-2. Extracting last N messages from transcript
-3. Calling SDK to act as user proxy and judge completion
-4. Parsing SDK response (APPROVED or BLOCKED)
+1. Extracting first N user messages from transcript (original mission context)
+2. Extracting last N user messages from transcript (recent context)
+3. Extracting last assistant message from transcript (what Claude just said)
+4. Calling SDK to act as user proxy and judge completion
+5. Parsing SDK response (APPROVED or BLOCKED)
 """
 
 import os
-import json
 import logging
 import asyncio
-from typing import Optional, Dict, List, Any
+from typing import Any, Dict, List
 
-from . import prompt_storage
+from .transcript_reader import (
+    get_first_n_user_messages,
+    get_last_n_user_messages,
+    get_last_n_assistant_messages,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,23 +36,57 @@ except ImportError:
 # SDK validation prompt template
 VALIDATION_PROMPT_TEMPLATE = """You are the USER who originally requested this work from Claude Code.
 
-YOUR ORIGINAL REQUESTS (last 5 user prompts, showing the evolution of your request):
-{user_prompts}
+YOUR ORIGINAL REQUEST (first {n} user messages from the beginning of conversation):
+{first_messages}
 
-CLAUDE'S WORK (Last 10 messages from conversation):
-{conversation_messages}
+YOUR RECENT CONTEXT (last {n} user messages showing any refinements or clarifications):
+{last_messages}
 
-CONTEXT:
-You may have issued multiple prompts to steer the work:
-- The first prompt is your core request
-- Subsequent prompts (if any) are refinements, clarifications, or additional requirements
-- All prompts together represent your COMPLETE intent
+CLAUDE'S RECENT RESPONSES (last {n} assistant messages showing what Claude did):
+{last_assistant_messages}
+
+>>> CLAUDE'S VERY LAST RESPONSE (most recent, right before trying to exit): <<<
+{last_assistant}
+
+⚠️ CRITICAL: INCOMPLETE CONTEXT LIMITATION ⚠️
+
+You are seeing LIMITED CONTEXT from what may be a LONG conversation:
+- FIRST {n} user messages (original mission and early discussion)
+- LAST {n} user messages (recent steering and refinements)
+- LAST assistant response (Claude's final statement)
+
+⚠️ YOU ARE NOT SEEING THE MIDDLE PORTION where work may have been completed! ⚠️
+
+This means Claude may have:
+- Already completed the work in the missing middle conversation
+- Fixed issues, implemented features, ran tests
+- Committed and pushed changes
+- Answered questions and provided solutions
+
+BEFORE CONCLUDING THE MISSION IS INCOMPLETE:
+
+1. Check if Claude's last response references PAST work:
+   - "I already fixed that earlier"
+   - "That was completed in the previous steps"
+   - "As I did before..."
+   - "The changes were committed..."
+
+2. Check if Claude is responding to a NEW/DIFFERENT request in recent context that differs from the original
+
+3. If Claude's response suggests work was done in missing middle context, you should APPROVE rather than block
+
+4. Only BLOCK if there's clear evidence Claude:
+   - Explicitly refuses to do the work
+   - Admits the work is incomplete
+   - Shows confusion about what was requested
+   - Provides no indication of having done anything
 
 YOUR MISSION:
-Judge if Claude delivered what YOU asked for across ALL your prompts. Did Claude meet YOUR objectives and complete the work to YOUR standards?
+Judge if Claude delivered what YOU asked for across ALL your messages. Did Claude meet YOUR objectives and complete the work to YOUR standards?
 
 BE HONEST AND DIRECT:
 - If Claude completed ALL your requests (initial + any steering) → respond with exactly: APPROVED
+- If Claude explicitly references past completion in missing context → APPROVED
 - If Claude did NOT complete your requests, avoided work, or left things incomplete → respond with: BLOCKED: [tell Claude specifically what's missing or incomplete, as if you're the user giving feedback]
 
 RESPONSE FORMAT - Choose EXACTLY one:
@@ -60,125 +98,71 @@ OR
 BLOCKED: [Your direct feedback as the user - be specific about what's incomplete or what Claude failed to deliver]
 
 CRITICAL RULES:
-- Consider ALL user prompts, not just the first one
+- Consider the LIMITED CONTEXT issue - work may be in missing middle
+- Consider ALL user messages (original + recent context), not just the first one
+- Look for evidence of past completion in Claude's response
 - Output ONLY one of the two formats above
 - NO extra text before or after
 - Be honest about whether YOUR complete intent was fulfilled
-- If in doubt, examine what YOU asked for (across all prompts) vs what Claude delivered
+- When in doubt due to missing context, lean toward APPROVED if Claude references past work
 """
 
 
-def extract_last_n_messages(transcript_path: str, n: int = 10) -> List[str]:
-    """
-    Extract last N messages from JSONL transcript.
-
-    Formats messages as:
-    [USER]
-    {text}
-
-    [ASSISTANT]
-    {text}
-
-    Args:
-        transcript_path: Path to JSONL transcript file
-        n: Number of messages to extract (default: 10)
-
-    Returns:
-        List of formatted message strings (most recent last)
-    """
-    try:
-        all_messages = []
-
-        with open(transcript_path, "r") as f:
-            for line in f:
-                entry = json.loads(line)
-
-                # Extract message content
-                message = entry.get("message", {})
-                role = message.get("role")
-                content = message.get("content", [])
-
-                # Extract text from content blocks
-                text_parts = []
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text_parts.append(block.get("text", ""))
-                elif isinstance(content, str):
-                    text_parts.append(content)
-
-                if text_parts:
-                    # Format with role prefix
-                    formatted_message = f"[{role.upper()}]\n" + "\n".join(text_parts)
-                    all_messages.append(formatted_message)
-
-        # Return last N messages
-        if len(all_messages) >= n:
-            return all_messages[-n:]
-        else:
-            return all_messages
-
-    except Exception as e:
-        logger.debug(f"Failed to extract messages from transcript: {e}")
-        return []
-
-
-def read_stored_prompt(session_id: str, prompts_dir: str) -> Optional[Dict[str, Any]]:
-    """
-    Read stored prompt file for session.
-
-    Handles backwards compatibility: converts old format to new format.
-
-    Args:
-        session_id: Session ID
-        prompts_dir: Directory containing prompt files
-
-    Returns:
-        Prompt data dict (new format with 'prompts' array) or None if not found
-    """
-    try:
-        prompt_file = os.path.join(prompts_dir, f"{session_id}.json")
-        if not os.path.exists(prompt_file):
-            return None
-
-        with open(prompt_file, "r") as f:
-            data = json.load(f)
-
-            # Backwards compatibility: convert old format to new format
-            data = prompt_storage.convert_old_format_to_new(data)
-
-            return data
-    except Exception as e:
-        logger.debug(f"Failed to read stored prompt: {e}")
-        return None
-
-
 def build_validation_prompt(
-    user_prompts: List[Dict[str, Any]], conversation_messages: List[str]
+    first_messages: List[str],
+    last_messages: List[str],
+    last_assistant_messages: List[str],
+    last_assistant: str,
 ) -> str:
     """
     Build SDK validation prompt from template.
 
     Args:
-        user_prompts: List of user prompt dicts (with raw_prompt, expanded_prompt, timestamp, sequence)
-        conversation_messages: List of formatted conversation messages
+        first_messages: First N user messages (original mission context)
+        last_messages: Last N user messages (recent context)
+        last_assistant_messages: Last N assistant messages (recent responses showing what Claude did)
+        last_assistant: Last assistant message (what Claude just said, highlighted separately)
 
     Returns:
         Complete validation prompt for SDK
     """
-    # Format prompts chronologically
-    prompts_text = []
-    for i, prompt in enumerate(user_prompts, 1):
-        expanded = prompt.get("expanded_prompt", "")
-        timestamp = prompt.get("timestamp", "")
-        prompts_text.append(f"Prompt {i} ({timestamp}):\n{expanded}")
+    # Format first messages
+    if first_messages:
+        first_text = "\n\n".join(
+            [f"Message {i+1}:\n{msg}" for i, msg in enumerate(first_messages)]
+        )
+    else:
+        first_text = "(No messages available)"
 
-    prompts_formatted = "\n\n".join(prompts_text)
-    messages_text = "\n\n---\n\n".join(conversation_messages)
+    # Format last messages
+    if last_messages:
+        last_text = "\n\n".join(
+            [f"Message {i+1}:\n{msg}" for i, msg in enumerate(last_messages)]
+        )
+    else:
+        last_text = "(No messages available)"
+
+    # Format last assistant messages
+    if last_assistant_messages:
+        assistant_messages_text = "\n\n".join(
+            [f"Message {i+1}:\n{msg}" for i, msg in enumerate(last_assistant_messages)]
+        )
+    else:
+        assistant_messages_text = "(No messages available)"
+
+    # Format last assistant
+    assistant_text = last_assistant if last_assistant else "(No response available)"
+
+    # Determine N for template
+    n = max(len(first_messages), len(last_messages), len(last_assistant_messages), 5)
 
     # Fill template
     return VALIDATION_PROMPT_TEMPLATE.format(
-        user_prompts=prompts_formatted, conversation_messages=messages_text
+        n=n,
+        first_messages=first_text,
+        last_messages=last_text,
+        last_assistant_messages=assistant_messages_text,
+        last_assistant=assistant_text,
     )
 
 
@@ -212,14 +196,19 @@ def parse_sdk_response(response_text: str) -> Dict[str, Any]:
 
 
 async def call_sdk_validation_async(
-    user_prompts: List[Dict[str, Any]], conversation_messages: List[str]
+    first_messages: List[str],
+    last_messages: List[str],
+    last_assistant_messages: List[str],
+    last_assistant: str,
 ) -> str:
     """
     Call Claude Agent SDK for intent validation.
 
     Args:
-        user_prompts: List of user prompt dicts
-        conversation_messages: Last N conversation messages
+        first_messages: First N user messages (original mission)
+        last_messages: Last N user messages (recent context)
+        last_assistant_messages: Last N assistant messages (recent responses)
+        last_assistant: Last assistant message (very last, highlighted separately)
 
     Returns:
         SDK response text
@@ -231,7 +220,9 @@ async def call_sdk_validation_async(
         raise ImportError("Claude Agent SDK not available")
 
     # Build validation prompt
-    prompt = build_validation_prompt(user_prompts, conversation_messages)
+    prompt = build_validation_prompt(
+        first_messages, last_messages, last_assistant_messages, last_assistant
+    )
 
     # Configure SDK options
     options = ClaudeAgentOptions(
@@ -262,14 +253,19 @@ async def call_sdk_validation_async(
 
 
 def call_sdk_validation(
-    user_prompts: List[Dict[str, Any]], conversation_messages: List[str]
+    first_messages: List[str],
+    last_messages: List[str],
+    last_assistant_messages: List[str],
+    last_assistant: str,
 ) -> str:
     """
     Synchronous wrapper for SDK validation call.
 
     Args:
-        user_prompts: List of user prompt dicts
-        conversation_messages: Last N conversation messages
+        first_messages: First N user messages
+        last_messages: Last N user messages
+        last_assistant_messages: Last N assistant messages
+        last_assistant: Last assistant message
 
     Returns:
         SDK response text
@@ -284,26 +280,32 @@ def call_sdk_validation(
         asyncio.set_event_loop(loop)
 
     return loop.run_until_complete(
-        call_sdk_validation_async(user_prompts, conversation_messages)
+        call_sdk_validation_async(
+            first_messages, last_messages, last_assistant_messages, last_assistant
+        )
     )
 
 
 def validate_intent(
-    session_id: str, transcript_path: str, prompts_dir: str
+    session_id: str,
+    transcript_path: str,
+    conversation_context_size: int = 5,
 ) -> Dict[str, Any]:
     """
     Validate if Claude completed user's original intent.
 
     Main function for Stop hook intent validation:
-    1. Read stored prompts (last 5, expanded for slash commands)
-    2. Extract last 10 messages from transcript
-    3. Call SDK to validate completion
-    4. Parse response and return decision
+    1. Extract first N user messages from transcript (original mission)
+    2. Extract last N user messages from transcript (recent context)
+    3. Extract last N assistant messages from transcript (what Claude did)
+    4. Extract very last assistant message (highlighted separately)
+    5. Call SDK to validate completion
+    6. Parse response and return decision
 
     Args:
-        session_id: Session ID
+        session_id: Session ID (currently unused but kept for compatibility)
         transcript_path: Path to conversation transcript
-        prompts_dir: Directory containing stored prompts
+        conversation_context_size: Number of messages to extract (default: 5)
 
     Returns:
         Decision dict:
@@ -311,25 +313,40 @@ def validate_intent(
         - {"decision": "block", "reason": "feedback"} - Block with feedback
     """
     try:
-        # Read stored prompts (last 5)
-        prompt_data = read_stored_prompt(session_id, prompts_dir)
-        if prompt_data is None:
-            # No stored prompt - fail open
+        # Verify transcript exists
+        if not os.path.exists(transcript_path):
             return {"continue": True}
 
-        user_prompts = prompt_data.get("prompts", [])
-        if not user_prompts:
-            # Empty prompts list - fail open
+        # Extract context from transcript
+        first_messages = get_first_n_user_messages(
+            transcript_path, n=conversation_context_size
+        )
+        last_messages = get_last_n_user_messages(
+            transcript_path, n=conversation_context_size
+        )
+        last_assistant_messages = get_last_n_assistant_messages(
+            transcript_path, n=conversation_context_size
+        )
+
+        # Extract very last assistant message from the list
+        last_assistant = last_assistant_messages[-1] if last_assistant_messages else ""
+
+        # Fail open if no context available
+        if (
+            not first_messages
+            and not last_messages
+            and not last_assistant_messages
+            and not last_assistant
+        ):
             return {"continue": True}
 
-        # Extract last N messages from transcript
-        conversation_messages = extract_last_n_messages(transcript_path, n=10)
-        if not conversation_messages:
-            # No messages - fail open
-            return {"continue": True}
-
-        # Call SDK for validation with ALL prompts
-        sdk_response = call_sdk_validation(user_prompts, conversation_messages)
+        # Call SDK for validation
+        sdk_response = call_sdk_validation(
+            first_messages=first_messages,
+            last_messages=last_messages,
+            last_assistant_messages=last_assistant_messages,
+            last_assistant=last_assistant,
+        )
 
         # Parse response
         return parse_sdk_response(sdk_response)
