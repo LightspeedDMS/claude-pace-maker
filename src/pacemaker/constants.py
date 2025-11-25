@@ -24,6 +24,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "weekly_limit_enabled": True,
     "tempo_enabled": True,
     "conversation_context_size": 5,
+    "user_message_max_length": 4096,
 }
 
 # Default file paths

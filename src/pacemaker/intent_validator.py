@@ -19,8 +19,41 @@ from .transcript_reader import (
     get_all_user_messages,
     get_last_n_assistant_messages,
 )
+from .constants import DEFAULT_CONFIG
 
 logger = logging.getLogger(__name__)
+
+
+def get_config(key: str) -> Any:
+    """
+    Get configuration value for the given key.
+
+    Args:
+        key: Configuration key to retrieve
+
+    Returns:
+        Configuration value from DEFAULT_CONFIG
+    """
+    return DEFAULT_CONFIG.get(key)
+
+
+def truncate_user_message(message: str, max_length: int) -> str:
+    """
+    Truncate user message if it exceeds max_length.
+
+    Args:
+        message: User message to potentially truncate
+        max_length: Maximum allowed length for message
+
+    Returns:
+        Truncated message with suffix if over limit, otherwise original message
+    """
+    if not message or len(message) <= max_length:
+        return message
+
+    # Truncate and append suffix
+    truncated = message[:max_length]
+    return f"{truncated}[TRUNCATED>{max_length} CHARS]"
 
 
 # Try to import Claude Agent SDK
@@ -104,10 +137,16 @@ def build_validation_prompt(
     Returns:
         Complete validation prompt for SDK
     """
-    # Format all user messages
+    # Get max length from config
+    max_length = get_config("user_message_max_length")
+
+    # Format all user messages with truncation
     if all_user_messages:
+        truncated_messages = [
+            truncate_user_message(msg, max_length) for msg in all_user_messages
+        ]
         all_user_text = "\n\n".join(
-            [f"Message {i+1}:\n{msg}" for i, msg in enumerate(all_user_messages)]
+            [f"Message {i+1}:\n{msg}" for i, msg in enumerate(truncated_messages)]
         )
     else:
         all_user_text = "(No messages available)"
