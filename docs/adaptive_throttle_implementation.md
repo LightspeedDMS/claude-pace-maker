@@ -184,6 +184,30 @@ User's actual scenario: **56% utilization at 31% elapsed time**
 - Projected endpoint: **90.0%**
 - **SUCCESS**: Stays within budget with cushion
 
+## Continuous Throttling Architecture (v1.3.0+)
+
+**Major Change**: Pacing now throttles on EVERY tool execution, not just during API polls.
+
+### Problem with Original Approach
+- API polled every 60 seconds
+- Throttling only applied when API was polled
+- Between polls, Claude could execute many tools without throttling
+- Result: Burst usage between checks could exceed targets
+
+### Solution: Decision Caching
+1. API poll calculates pacing decision and stores in `pacing_decisions` table
+2. PostToolUse hook triggers on EVERY tool execution
+3. Hook checks for cached decision from most recent API poll
+4. If cached decision exists and is fresh (< 60s old), use cached delay
+5. If stale or missing, trigger new API poll
+6. Apply throttling delay on every tool use
+
+### Benefits
+- **Continuous throttling**: Every tool execution is paced, not just poll moments
+- **API efficiency**: Still only polls every 60 seconds
+- **Consistent pacing**: No burst usage between polls
+- **Smooth user experience**: Predictable delays throughout session
+
 ## Performance Characteristics
 
 - **Pure function**: No I/O, no external dependencies

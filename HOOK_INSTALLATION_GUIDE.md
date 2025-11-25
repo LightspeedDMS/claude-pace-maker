@@ -61,8 +61,10 @@ cd ~/Dev/claude-pace-maker
 **Installed hooks**:
 - `SessionStart` → session-start.sh
 - `UserPromptSubmit` → user-prompt-submit.sh
-- `PostToolUse` → post-tool-use.sh (**Don't do this!** See below)
+- `PostToolUse` → post-tool-use.sh (**Don't do this globally!** See below)
 - `Stop` → stop.sh
+- `SubagentStart` → subagent-start.sh
+- `SubagentStop` → subagent-stop.sh
 
 **WARNING**: **DO NOT install PostToolUse globally!** Pace-maker's throttling should be project-specific, not global.
 
@@ -102,6 +104,12 @@ cd ~/Dev/claude-pace-maker
        ],
        "UserPromptSubmit": [
          {"hooks": [{"type": "command", "command": "~/.claude/hooks/user-prompt-submit.sh"}]}
+       ],
+       "SubagentStart": [
+         {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-start.sh"}]}
+       ],
+       "SubagentStop": [
+         {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-stop.sh"}]}
        ]
      }
    }
@@ -139,6 +147,12 @@ cd ~/Dev/claude-pace-maker
        ],
        "Stop": [
          {"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh"}]}
+       ],
+       "SubagentStart": [
+         {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-start.sh"}]}
+       ],
+       "SubagentStop": [
+         {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-stop.sh"}]}
        ]
      }
    }

@@ -58,6 +58,9 @@ The installer is fully idempotent - safe to run multiple times.
 # Show help
 pace-maker help
 
+# Show version
+pace-maker version
+
 # Check status
 pace-maker status
 
@@ -69,21 +72,26 @@ pace-maker off
 pace-maker weekly-limit on
 pace-maker weekly-limit off
 
-# Enable/disable session lifecycle tracking (tempo)
+# Enable/disable session lifecycle tracking (tempo) - global setting
 pace-maker tempo on
 pace-maker tempo off
+
+# Enable/disable tempo for current session only (overrides global setting)
+pace-maker tempo session on
+pace-maker tempo session off
 ```
 
 **Throttling Notes:**
 - When weekly limit is disabled, only the 5-hour window throttling remains active
 - The 7-day window is completely ignored in pacing decisions
 
-**Intent-Based Validation:**
+**Intent-Based Validation (Tempo System):**
 - Pace Maker prevents Claude from prematurely ending sessions by validating if the user's original request was actually completed
 - Uses AI-powered intent validation: an AI judge acts as your proxy to determine if Claude delivered what you asked for
 - When you submit a prompt (including slash commands), it's captured and stored
 - When Claude tries to stop, the system validates Claude's work against your original intent
-- Enabled by default - disable with `pace-maker tempo off` if you don't want this behavior
+- Enabled by default globally - use `pace-maker tempo off` to disable for all sessions
+- Use `pace-maker tempo session on/off` to override the global setting for the current session only
 
 ### AI-Powered Intent Validation
 
@@ -173,32 +181,42 @@ Edit `~/.claude-pace-maker/config.json`:
 **Configuration Options:**
 - `enabled`: Master on/off switch for all throttling (default: `true`)
 - `weekly_limit_enabled`: Enable/disable 7-day window throttling only (default: `true`)
-- `tempo_enabled`: Enable/disable session lifecycle tracking (default: `true`)
+- `tempo_enabled`: Enable/disable session lifecycle tracking globally (default: `true`)
 - `base_delay`: Minimum throttle delay in seconds (default: `5`)
 - `max_delay`: Maximum throttle delay in seconds (default: `350`)
 - `threshold_percent`: Deviation threshold before throttling starts (default: `0` = zero tolerance)
 - `poll_interval`: Seconds between credit usage checks (default: `60`)
 - `safety_buffer_pct`: Target percentage of allowance to use (default: `95.0`)
 - `preload_hours`: Hours of preload allowance on weekdays (default: `12.0`)
+- `subagent_reminder_enabled`: Enable/disable subagent delegation reminders (default: `true`)
+- `subagent_reminder_frequency`: Tool executions between reminders (default: `5`)
 
 ## How It Works
 
 ### Hooks
 
-Pace Maker uses four Claude Code hooks:
+Pace Maker uses six Claude Code hooks:
 
 1. **SessionStart Hook**: When Claude Code starts, initializes pace-maker state
 2. **UserPromptSubmit Hook**: Captures user prompts (including slash command expansion) and intercepts `pace-maker` commands
-3. **PostToolUse Hook**: After each tool execution, checks current credit usage and applies throttling
+3. **PostToolUse Hook**: After EVERY tool execution, checks current credit usage and applies throttling (caches decisions to avoid API spam)
 4. **Stop Hook**: Validates if Claude completed the user's original request using AI-powered intent validation (when tempo enabled)
+5. **SubagentStart Hook**: Sets flag when entering subagent context (used by subagent reminder system)
+6. **SubagentStop Hook**: Clears flag when exiting subagent context (used by subagent reminder system)
 
 ### Throttling Flow
 
-1. **PostToolUse Hook**: After each tool execution, checks current credit usage
-2. **12-Hour Preload**: First 12 weekday hours get flat 10% allowance
-3. **Weekend-Aware Calculation**: Computes allowance based on weekday time only (Mon-Fri), frozen on weekends
-4. **Safety Buffer Check**: If usage > 95% of allowance, throttles by sleeping
-5. **Adaptive Delay**: Calculates exact delay needed to reach 95% by window end
+1. **PostToolUse Hook**: Triggers on EVERY tool execution (not just during API polls)
+2. **Decision Cache Check**: Checks if recent pacing decision exists in cache (avoids API spam)
+3. **API Poll**: If cache miss or stale, polls Claude API for current usage (every 60 seconds)
+4. **Decision Calculation**:
+   - 12-Hour Preload: First 12 weekday hours get flat 10% allowance
+   - Weekend-Aware Calculation: Computes allowance based on weekday time only (Mon-Fri), frozen on weekends
+   - Safety Buffer Check: If usage > 95% of allowance, throttles by sleeping
+   - Adaptive Delay: Calculates exact delay needed to reach 95% by window end
+5. **Cache Decision**: Stores decision in database for reuse until next API poll
+6. **Apply Throttle**: Executes sleep delay if needed
+7. **Subagent Reminder**: Every 5 tool executions in main context, reminds to use Task tool for delegation
 
 ## Status Example
 

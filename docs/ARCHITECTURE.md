@@ -206,17 +206,22 @@ Handles `pace-maker status/on/off` commands.
 
 ### PostToolUse Hook
 
-**Trigger**: After every tool execution in Claude Code
+**Trigger**: After EVERY tool execution in Claude Code (not just during API polls)
 **Script**: `~/.claude/hooks/post-tool-use.sh`
 **Timeout**: 360 seconds (allows up to 350s sleep)
 
 **Flow**:
 1. Check if pace-maker is enabled
-2. Run pacing check (sleeps if needed)
-3. Display steering message: `[Remember: Say 'Mission completed.' when ALL tasks are done]`
-4. Return JSON with `decision: "allow"` and steering message
+2. Increment global tool execution counter
+3. Check for cached pacing decision (avoids API spam)
+4. If no cached decision or stale, run pacing check and cache result
+5. Apply throttling delay if needed (sleeps if needed)
+6. Check if should inject subagent reminder (every 5 executions in main context)
+7. Return control to Claude Code
 
 **Python Handler**: `src/pacemaker/hook.py:run_hook()`
+
+**Key Change**: Pacing now throttles on EVERY tool use, not just when API is polled. Decisions are cached in database to avoid API spam while still throttling continuously.
 
 ### UserPromptSubmit Hook
 
@@ -248,54 +253,124 @@ Handles `pace-maker status/on/off` commands.
 
 **Trigger**: When Claude Code session attempts to stop/exit
 **Script**: `~/.claude/hooks/stop.sh`
-**Purpose**: Prevent premature session termination during implementations
+**Purpose**: Prevent premature session termination using AI-powered intent validation
 
 **Flow**:
-1. Check if tempo is enabled
+1. Check if tempo is enabled (global or session override)
 2. Read conversation transcript from JSONL file
-3. Scan for IMPLEMENTATION_START marker in conversation text
-4. If START found but no IMPLEMENTATION_COMPLETE:
-   - Check prompt count (prevent infinite loop)
-   - If first time: block exit and prompt Claude to finish or declare complete
-   - If already prompted once: allow exit (infinite loop prevention)
-5. If both markers found or no START marker: allow exit
+3. Extract user prompts and Claude's responses
+4. Call intent validator to check if work is complete
+5. SDK acts as user proxy and judges if Claude completed the original request
+6. Return APPROVED (allow exit) or BLOCKED with specific feedback
 
 **Python Handler**: `src/pacemaker/hook.py:run_stop_hook()`
+
+**Session Tempo Control**: Uses `should_run_tempo()` to check both global `tempo_enabled` and session override `tempo_session_enabled`. Session override takes precedence.
+
+### SubagentStart Hook
+
+**Trigger**: When entering subagent context (Task tool invoked)
+**Script**: `~/.claude/hooks/subagent-start.sh`
+**Purpose**: Track subagent context for reminder system
+
+**Flow**:
+1. Load current state
+2. Set `in_subagent` flag to True
+3. Increment `subagent_depth` counter
+4. Save state
+
+**Python Handler**: `src/pacemaker/hook.py:run_subagent_start_hook()`
+
+### SubagentStop Hook
+
+**Trigger**: When exiting subagent context (Task tool completes)
+**Script**: `~/.claude/hooks/subagent-stop.sh`
+**Purpose**: Track subagent context for reminder system
+
+**Flow**:
+1. Load current state
+2. Decrement `subagent_depth` counter
+3. Update `in_subagent` flag (False if depth reaches 0)
+4. Save state
+
+**Python Handler**: `src/pacemaker/hook.py:run_subagent_stop_hook()`
 
 ---
 
 ## Tempo System
 
-The tempo system prevents Claude from prematurely ending implementation sessions by enforcing a simple protocol using text markers.
+The tempo system prevents Claude from prematurely ending implementation sessions using AI-powered intent validation.
 
 ### How It Works
 
 **Protocol**:
-1. Claude says `IMPLEMENTATION_START` when beginning implementation work
-2. Claude says `IMPLEMENTATION_COMPLETE` when all tasks are fully done
-3. Stop hook scans conversation transcript for these markers
-4. If START found without COMPLETE, Stop hook blocks session exit
+1. User submits a request (captured by UserPromptSubmit hook)
+2. Claude does work
+3. When Claude tries to stop, Stop hook triggers
+4. Intent validator calls Claude Agent SDK with user's original request and Claude's work
+5. SDK acts as user proxy and judges if work is complete
+6. Returns APPROVED (allow exit) or BLOCKED with feedback
 
 **Key Features**:
-- **Pure marker detection**: No slash command dependency
-- **Conversation scanning**: Reads entire JSONL transcript
-- **Infinite loop prevention**: Only prompts once per session
-- **Configurable**: Can be disabled with `tempo_enabled: false`
+- **AI-powered validation**: Uses Claude Agent SDK as user proxy
+- **Intent-based**: Judges completion based on user's original intent
+- **Context-aware**: Analyzes conversation history for accurate assessment
+- **Session override**: Can be controlled per-session with `pace-maker tempo session on/off`
+- **Configurable**: Global setting with `tempo_enabled`, session override with `tempo_session_enabled`
 
-**Implementation** (`src/pacemaker/lifecycle.py`):
-- `IMPLEMENTATION_REMINDER_TEXT`: Reminder shown at session start
-- `get_stop_hook_prompt_count()`: Track how many times Stop hook has prompted
-- `increment_stop_hook_prompt_count()`: Increment counter to prevent loops
+**Implementation** (`src/pacemaker/intent_validator.py`):
+- `validate_intent()`: Main validation function that calls SDK
+- Extracts user messages and Claude's responses from transcript
+- Calls SDK with validation prompt
+- Parses SDK response (APPROVED or BLOCKED)
+
+**Configuration**:
+- Global setting: `tempo_enabled` in `config.json` (default: True)
+- Session override: `tempo_session_enabled` in `state.json` (optional, takes precedence)
+- Context size: `conversation_context_size` in `config.json` (default: 5 messages)
 
 **State Tracking**:
 The system uses `~/.claude-pace-maker/state.json` to track:
 ```json
 {
-  "stop_hook_prompt_count": 0
+  "tempo_session_enabled": true  // Optional session override
 }
 ```
 
-This counter is reset to 0 when a new session starts or when state is cleared.
+**Precedence Logic**: Session override → Global setting
+
+---
+
+## Subagent Reminder System
+
+The subagent reminder system encourages delegation to specialized subagents in main context.
+
+### How It Works
+
+**Trigger Conditions**:
+1. NOT in subagent context (`in_subagent == False`)
+2. Feature enabled (`subagent_reminder_enabled == True`)
+3. Tool execution count is multiple of frequency (every 5 executions by default)
+
+**Flow**:
+1. PostToolUse hook increments global `tool_execution_count`
+2. Every Nth execution in main context, reminder is injected
+3. Reminder appears as JSON block with "block" decision
+4. In subagent context, reminders are suppressed
+
+**Implementation** (`src/pacemaker/hook.py`):
+- `should_inject_reminder()`: Check if reminder should be shown
+- `inject_subagent_reminder()`: Output JSON reminder to stdout
+
+**Configuration**:
+- `subagent_reminder_enabled`: Enable/disable feature (default: True)
+- `subagent_reminder_frequency`: Executions between reminders (default: 5)
+- `subagent_reminder_message`: Custom reminder text
+
+**Context Tracking**:
+- SubagentStart/Stop hooks track `in_subagent` flag
+- `subagent_depth` counter handles nested subagents
+- Global `tool_execution_count` persists across all contexts
 
 ---
 
@@ -588,6 +663,10 @@ if current_util > safe_allowance:
 | `poll_interval` | integer | `60` | API polling interval in seconds |
 | `safety_buffer_pct` | float | `95.0` | Target percentage of allowance (95% = 5% safety buffer) |
 | `preload_hours` | float | `12.0` | Weekday hours to preload (12h = 10% of 120 weekday hours) |
+| `subagent_reminder_enabled` | boolean | `true` | Enable/disable subagent delegation reminders |
+| `subagent_reminder_frequency` | integer | `5` | Tool executions between reminders |
+| `subagent_reminder_message` | string | (default) | Custom reminder message text |
+| `conversation_context_size` | integer | `5` | Number of messages for intent validation context |
 
 ### State File
 
@@ -600,9 +679,22 @@ if current_util > safe_allowance:
 {
   "session_id": "session-1731607200",
   "last_poll_time": "2025-11-14T12:00:00.279746",
-  "last_cleanup_time": "2025-11-14T00:00:00.000000"
+  "last_cleanup_time": "2025-11-14T00:00:00.000000",
+  "tempo_session_enabled": true,
+  "in_subagent": false,
+  "subagent_depth": 0,
+  "tool_execution_count": 42
 }
 ```
+
+**Fields**:
+- `session_id`: Unique session identifier
+- `last_poll_time`: When API was last polled
+- `last_cleanup_time`: When database cleanup last ran
+- `tempo_session_enabled`: Session override for tempo (optional)
+- `in_subagent`: Boolean flag for subagent context
+- `subagent_depth`: Nested subagent level counter
+- `tool_execution_count`: Global tool execution counter
 
 ---
 
@@ -624,7 +716,33 @@ CREATE INDEX idx_timestamp ON usage_snapshots(timestamp);
 CREATE INDEX idx_session ON usage_snapshots(session_id);
 ```
 
-**Cleanup**: Daily cleanup removes snapshots older than 8 days
+**Cleanup**: Daily cleanup removes snapshots older than retention_days (default: 60)
+
+### Table: pacing_decisions
+
+```sql
+CREATE TABLE pacing_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp INTEGER NOT NULL,
+  should_throttle INTEGER NOT NULL,
+  delay_seconds INTEGER NOT NULL,
+  session_id TEXT NOT NULL
+);
+
+CREATE INDEX idx_pacing_timestamp ON pacing_decisions(timestamp DESC);
+CREATE INDEX idx_pacing_session ON pacing_decisions(session_id);
+```
+
+**Purpose**: Cache pacing decisions between API polls to enable continuous throttling without API spam.
+
+**Flow**:
+1. API poll happens every 60 seconds
+2. Pacing decision is calculated and stored
+3. PostToolUse hook checks for cached decision
+4. If fresh decision exists, use cached delay
+5. If stale or missing, trigger new API poll
+
+**Benefit**: Throttles on EVERY tool execution, not just during API polls, while avoiding excessive API calls.
 
 ---
 
@@ -760,7 +878,10 @@ python -m pytest tests/ --cov=src/pacemaker --cov-report=html
 
 ---
 
-**Document Version**: 1.1
-**Last Updated**: 2025-11-16
+**Document Version**: 1.3
+**Last Updated**: 2025-11-25
 **Maintainer**: Claude Code Pace Maker Team
-**Changes**: Added Tempo System section, documented SessionStart and Stop hooks, removed slash command references
+**Changes**:
+- v1.3: Added SubagentStart/Stop hooks, pacing_decisions table, subagent reminder system, session tempo control, continuous throttling architecture
+- v1.2: Updated intent validation from marker-based to AI-powered SDK approach
+- v1.1: Added Tempo System section, documented SessionStart and Stop hooks, removed slash command references
