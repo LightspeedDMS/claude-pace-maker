@@ -32,8 +32,8 @@ def parse_command(user_input: str) -> Dict[str, Any]:
     normalized = user_input.strip().lower()
     normalized = re.sub(r"\s+", " ", normalized)  # Collapse multiple spaces
 
-    # Pattern 1: pace-maker (on|off|status|help)
-    pattern_simple = r"^pace-maker\s+(on|off|status|help)$"
+    # Pattern 1: pace-maker (on|off|status|help|version)
+    pattern_simple = r"^pace-maker\s+(on|off|status|help|version)$"
     match_simple = re.match(pattern_simple, normalized)
 
     if match_simple:
@@ -54,8 +54,19 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_weekly.group(1),
         }
 
-    # Pattern 3: pace-maker tempo (on|off)
-    pattern_tempo = r"^pace-maker\s+tempo\s+(.+)$"
+    # Pattern 3: pace-maker tempo session (on|off)
+    pattern_tempo_session = r"^pace-maker\s+tempo\s+session\s+(on|off)$"
+    match_tempo_session = re.match(pattern_tempo_session, normalized)
+
+    if match_tempo_session:
+        return {
+            "is_pace_maker_command": True,
+            "command": "tempo",
+            "subcommand": f"session {match_tempo_session.group(1)}",
+        }
+
+    # Pattern 4: pace-maker tempo (on|off) - global tempo control
+    pattern_tempo = r"^pace-maker\s+tempo\s+(on|off)$"
     match_tempo = re.match(pattern_tempo, normalized)
 
     if match_tempo:
@@ -78,7 +89,7 @@ def execute_command(
     Execute a pace-maker command.
 
     Args:
-        command: Command to execute ('on'|'off'|'status'|'help'|'weekly-limit'|'tempo')
+        command: Command to execute ('on'|'off'|'status'|'help'|'version'|'weekly-limit'|'tempo')
         config_path: Path to configuration file
         db_path: Optional path to database (for status command)
         subcommand: Optional subcommand (for 'weekly-limit on/off' or 'tempo on/off')
@@ -98,6 +109,8 @@ def execute_command(
         return _execute_status(config_path, db_path)
     elif command == "help":
         return _execute_help(config_path)
+    elif command == "version":
+        return _execute_version()
     elif command == "weekly-limit":
         return _execute_weekly_limit(config_path, subcommand)
     elif command == "tempo":
@@ -259,6 +272,13 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         return {"success": False, "message": f"Error getting status: {str(e)}"}
 
 
+def _execute_version() -> Dict[str, Any]:
+    """Display version information."""
+    from . import __version__
+
+    return {"success": True, "message": f"Claude Pace Maker v{__version__}"}
+
+
 def _execute_help(config_path: str) -> Dict[str, Any]:
     """Display help text."""
     help_text = """Pace Maker - Credit-Aware Adaptive Throttling
@@ -267,11 +287,14 @@ COMMANDS:
   pace-maker on               Enable pace maker throttling
   pace-maker off              Disable pace maker throttling
   pace-maker status           Show current status and usage
+  pace-maker version          Show version information
   pace-maker help             Show this help message
   pace-maker weekly-limit on  Enable weekly (7-day) limit throttling
   pace-maker weekly-limit off Disable weekly limit throttling
-  pace-maker tempo on         Enable session lifecycle tracking
-  pace-maker tempo off        Disable session lifecycle tracking
+  pace-maker tempo on         Enable session lifecycle tracking (global)
+  pace-maker tempo off        Disable session lifecycle tracking (global)
+  pace-maker tempo session on Enable tempo for this session only
+  pace-maker tempo session off Disable tempo for this session only
 
 WEEKLY LIMIT:
   The weekly limiter uses weekend-aware throttling to pace your usage
@@ -283,6 +306,10 @@ TEMPO TRACKING:
   implementation sessions. When Claude says IMPLEMENTATION_START,
   the Stop hook will require Claude to declare IMPLEMENTATION_COMPLETE
   before allowing the session to end.
+
+  Global Control: 'pace-maker tempo on/off' sets the default for all sessions
+  Session Control: 'pace-maker tempo session on/off' overrides the global
+                   setting for the current session only
 
 CONFIGURATION:
   Config file: ~/.claude-pace-maker/config.json
@@ -334,6 +361,48 @@ def _execute_weekly_limit(
 
 def _execute_tempo(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
     """Enable or disable tempo (session lifecycle) tracking."""
+    from .constants import DEFAULT_STATE_PATH
+    from .hook import load_state, save_state
+
+    # Handle session-level commands
+    if subcommand and subcommand.startswith("session "):
+        session_cmd = subcommand.split(" ", 1)[1]  # Extract "on" or "off"
+
+        if session_cmd == "on":
+            try:
+                state = load_state(DEFAULT_STATE_PATH)
+                state["tempo_session_enabled"] = True
+                save_state(state, DEFAULT_STATE_PATH)
+                return {
+                    "success": True,
+                    "message": "✓ Tempo tracking ENABLED for this session\nSession lifecycle tracking will prevent premature exits in this session only.",
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "message": f"Error enabling tempo for session: {str(e)}",
+                }
+        elif session_cmd == "off":
+            try:
+                state = load_state(DEFAULT_STATE_PATH)
+                state["tempo_session_enabled"] = False
+                save_state(state, DEFAULT_STATE_PATH)
+                return {
+                    "success": True,
+                    "message": "✓ Tempo tracking DISABLED for this session\nSession lifecycle tracking will not prevent exits in this session.",
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "message": f"Error disabling tempo for session: {str(e)}",
+                }
+        else:
+            return {
+                "success": False,
+                "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker tempo session [on|off]",
+            }
+
+    # Handle global tempo commands
     if subcommand == "on":
         try:
             config = _load_config(config_path)
@@ -359,7 +428,7 @@ def _execute_tempo(config_path: str, subcommand: Optional[str]) -> Dict[str, Any
     else:
         return {
             "success": False,
-            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker tempo [on|off]",
+            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker tempo [on|off] or pace-maker tempo session [on|off]",
         }
 
 

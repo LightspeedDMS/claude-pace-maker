@@ -9,6 +9,7 @@ Orchestrates:
 - Hybrid delay strategy
 """
 
+import sys
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 from . import calculator, database, api_client, adaptive_throttle
@@ -318,11 +319,36 @@ def run_pacing_check(
     should_poll = should_poll_api(last_poll_time, interval=poll_interval)
 
     if not should_poll:
-        # Too soon - return no throttle decision
-        return {
-            "polled": False,
-            "decision": {"should_throttle": False, "delay_seconds": 0},
-        }
+        # Too soon to poll - retrieve cached decision
+        cached_decision = database.get_last_pacing_decision(db_path, session_id)
+
+        if cached_decision:
+            # Return cached decision to maintain throttling between polls
+            print(
+                f"[PACING] Using cached decision: throttle={cached_decision['should_throttle']}, delay={cached_decision['delay_seconds']}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            return {
+                "polled": False,
+                "decision": {
+                    "should_throttle": cached_decision["should_throttle"],
+                    "delay_seconds": cached_decision["delay_seconds"],
+                },
+                "cached": True,
+            }
+        else:
+            # No cached decision - graceful degradation (no throttling)
+            print(
+                "[PACING] No cached decision found - no throttling",
+                file=sys.stderr,
+                flush=True,
+            )
+            return {
+                "polled": False,
+                "decision": {"should_throttle": False, "delay_seconds": 0},
+                "cached": False,
+            }
 
     # Poll API
     access_token = api_client.load_access_token()
@@ -361,6 +387,15 @@ def run_pacing_check(
     if decision["should_throttle"]:
         strategy = determine_delay_strategy(decision["delay_seconds"])
         decision["strategy"] = strategy
+
+    # Store pacing decision in database for caching between polls
+    database.insert_pacing_decision(
+        db_path=db_path,
+        timestamp=datetime.utcnow(),
+        should_throttle=decision["should_throttle"],
+        delay_seconds=decision["delay_seconds"],
+        session_id=session_id,
+    )
 
     result = {"polled": True, "decision": decision, "poll_time": datetime.utcnow()}
 

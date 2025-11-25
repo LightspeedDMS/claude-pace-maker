@@ -110,6 +110,96 @@ def inject_prompt_delay(prompt: str):
     print(prompt, file=sys.stdout, flush=True)
 
 
+def run_subagent_start_hook():
+    """
+    Handle SubagentStart hook - entering subagent context.
+
+    Sets in_subagent flag to true and increments subagent_depth.
+    Does NOT reset tool_execution_count (global counter persists).
+    """
+    # Load state
+    state = load_state(DEFAULT_STATE_PATH)
+
+    # Enter subagent context
+    state["in_subagent"] = True
+    state["subagent_depth"] = state.get("subagent_depth", 0) + 1
+
+    # Save state
+    save_state(state, DEFAULT_STATE_PATH)
+
+
+def run_subagent_stop_hook():
+    """
+    Handle SubagentStop hook - exiting subagent context.
+
+    Decrements depth and updates in_subagent flag.
+    Does NOT reset tool_execution_count (global counter persists).
+    """
+    # Load state
+    state = load_state(DEFAULT_STATE_PATH)
+
+    # Exit subagent context
+    state["subagent_depth"] = max(0, state.get("subagent_depth", 1) - 1)
+    state["in_subagent"] = state["subagent_depth"] > 0
+
+    # Save state
+    save_state(state, DEFAULT_STATE_PATH)
+
+
+def should_inject_reminder(state: dict, config: dict) -> bool:
+    """
+    Determine if we should inject the subagent reminder.
+
+    Conditions:
+    - NOT in subagent (in_subagent == false)
+    - Feature enabled in config
+    - tool_execution_count is multiple of frequency (every 5 executions)
+
+    Args:
+        state: Current session state
+        config: Configuration dictionary
+
+    Returns:
+        True if should inject reminder, False otherwise
+    """
+    # Skip if in subagent
+    if state.get("in_subagent", False):
+        return False
+
+    # Skip if disabled
+    if not config.get("subagent_reminder_enabled", True):
+        return False
+
+    # Check frequency (every 5 executions by default)
+    count = state.get("tool_execution_count", 0)
+    frequency = config.get("subagent_reminder_frequency", 5)
+
+    # Only inject on multiples of frequency (and not on count 0)
+    return count > 0 and count % frequency == 0
+
+
+def inject_subagent_reminder(config: dict):
+    """
+    Inject reminder as JSON to stdout with block decision.
+
+    This ensures Claude sees the reminder by using Claude Code's
+    hook response format. The "block" decision doesn't prevent tool
+    execution (tool already ran), but makes the reminder visible.
+
+    Args:
+        config: Configuration dictionary
+    """
+    message = config.get(
+        "subagent_reminder_message",
+        "💡 Consider using the Task tool to delegate work to specialized subagents (per your guidelines)",
+    )
+
+    # Output JSON format that Claude Code will show to Claude
+    reminder_output = {"decision": "block", "reason": message}
+
+    print(json.dumps(reminder_output), file=sys.stdout, flush=True)
+
+
 def run_hook():
     """Main hook execution."""
 
@@ -122,6 +212,9 @@ def run_hook():
 
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
+
+    # Increment global tool execution counter
+    state["tool_execution_count"] = state.get("tool_execution_count", 0) + 1
 
     # Ensure database is initialized
     db_path = DEFAULT_DB_PATH
@@ -174,27 +267,45 @@ def run_hook():
             )
 
     if decision.get("should_throttle"):
+        # Handle both cached decisions (direct delay_seconds) and fresh decisions (strategy dict)
         strategy = decision.get("strategy", {})
-        delay = strategy.get("delay_seconds", 0)
+
+        # Check if this is a cached decision (has delay_seconds directly)
+        if "delay_seconds" in decision and not strategy:
+            delay = decision.get("delay_seconds", 0)
+            method = "direct"  # Cached decisions always use direct sleep
+        else:
+            # Fresh decision with strategy
+            delay = strategy.get("delay_seconds", 0)
+            method = strategy.get("method", "direct")
 
         print(
-            f"[PACING] Throttling for {delay}s (method={strategy.get('method')})",
+            f"[PACING] Throttling for {delay}s (method={method}, cached={result.get('cached', False)})",
             file=sys.stderr,
             flush=True,
         )
 
-        if strategy.get("method") == "direct":
-            # Direct execution - sleep
-            execute_delay(strategy["delay_seconds"])
-        elif strategy.get("method") == "prompt":
-            # Inject prompt
-            inject_prompt_delay(strategy["prompt"])
+        # Always execute delay if delay > 0
+        if delay > 0:
+            execute_delay(delay)
     else:
         print("[PACING] No throttling needed", file=sys.stderr, flush=True)
 
-    # Save state if changed
+    # Inject subagent reminder if conditions met
+    if should_inject_reminder(state, config):
+        # Debug logging
+        print(
+            f"[PACING] DEBUG: Injecting reminder at count {state['tool_execution_count']}",
+            file=sys.stderr,
+            flush=True,
+        )
+        inject_subagent_reminder(config)
+        print("[PACING] DEBUG: Reminder injected", file=sys.stderr, flush=True)
+
+    # Save state (always save to persist counter)
+    state_changed = True
     if state_changed:
-        save_state(state)
+        save_state(state, DEFAULT_STATE_PATH)
 
 
 def parse_user_prompt_input(raw_input: str) -> dict:
@@ -350,6 +461,33 @@ def get_last_n_messages(transcript_path: str, n: int = 5) -> list:
         return []
 
 
+def should_run_tempo(config: dict, state: dict) -> bool:
+    """
+    Determine if tempo tracking should run based on global and session settings.
+
+    Precedence logic:
+    1. Check if session override exists (tempo_session_enabled in state)
+    2. If session override exists, use that value
+    3. Otherwise, use global setting (tempo_enabled in config)
+
+    Args:
+        config: Configuration dictionary with tempo_enabled
+        state: State dictionary with tempo_session_enabled (optional)
+
+    Returns:
+        True if tempo should run, False otherwise
+    """
+    # Check for session override
+    tempo_session_enabled = state.get("tempo_session_enabled")
+
+    # If session override exists, use it
+    if tempo_session_enabled is not None:
+        return tempo_session_enabled
+
+    # Otherwise, use global setting
+    return config.get("tempo_enabled", True)
+
+
 def run_stop_hook():
     """
     Handle Stop hook using intent-based validation.
@@ -374,9 +512,11 @@ def run_stop_hook():
     )
 
     try:
-        # Load config to check if tempo is enabled and get context size
+        # Load config and state to check if tempo should run
         config = load_config(DEFAULT_CONFIG_PATH)
-        if not config.get("tempo_enabled", True):
+        state = load_state(DEFAULT_STATE_PATH)
+
+        if not should_run_tempo(config, state):
             with open(debug_log, "a") as f:
                 f.write(f"\n[{datetime.now()}] Tempo disabled - allow exit\n")
             return {"continue": True}  # Tempo disabled - allow exit
@@ -459,6 +599,22 @@ def main():
     # Check if this is user-prompt-submit hook
     if len(sys.argv) > 1 and sys.argv[1] == "user_prompt_submit":
         run_user_prompt_submit()
+        return
+
+    # Check if this is subagent-start hook
+    if len(sys.argv) > 1 and sys.argv[1] == "subagent_start":
+        try:
+            run_subagent_start_hook()
+        except Exception as e:
+            print(f"[PACE-MAKER ERROR] SubagentStart: {e}", file=sys.stderr)
+        return
+
+    # Check if this is subagent-stop hook
+    if len(sys.argv) > 1 and sys.argv[1] == "subagent_stop":
+        try:
+            run_subagent_stop_hook()
+        except Exception as e:
+            print(f"[PACE-MAKER ERROR] SubagentStop: {e}", file=sys.stderr)
         return
 
     # Check if this is post-tool-use hook (explicit handling for clarity)

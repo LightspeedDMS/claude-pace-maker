@@ -508,6 +508,12 @@ install_hooks() {
   echo "Installing user-prompt-submit.sh..."
   cp "$HOOKS_SOURCE_DIR/user-prompt-submit.sh" "$HOOKS_DIR/"
 
+  echo "Installing subagent-start.sh..."
+  cp "$HOOKS_SOURCE_DIR/subagent-start.sh" "$HOOKS_DIR/"
+
+  echo "Installing subagent-stop.sh..."
+  cp "$HOOKS_SOURCE_DIR/subagent-stop.sh" "$HOOKS_DIR/"
+
   # Remove session-start.sh if it exists (no longer used)
   if [ -f "$HOOKS_DIR/session-start.sh" ]; then
     echo "Removing obsolete session-start.sh..."
@@ -537,7 +543,10 @@ create_config() {
   "base_delay": 5,
   "max_delay": 120,
   "threshold_percent": 0,
-  "poll_interval": 60
+  "poll_interval": 60,
+  "subagent_reminder_enabled": true,
+  "subagent_reminder_frequency": 5,
+  "subagent_reminder_message": "💡 Consider using the Task tool to delegate work to specialized subagents (per your guidelines)"
 }
 EOF
     echo -e "${GREEN}✓ Configuration created${NC}"
@@ -702,6 +711,8 @@ register_hooks() {
   USER_PROMPT_HOOK="$HOOKS_DIR/user-prompt-submit.sh"
   POST_HOOK="$HOOKS_DIR/post-tool-use.sh"
   STOP_HOOK="$HOOKS_DIR/stop.sh"
+  SUBAGENT_START_HOOK="$HOOKS_DIR/subagent-start.sh"
+  SUBAGENT_STOP_HOOK="$HOOKS_DIR/subagent-stop.sh"
 
   echo "Reading current settings from $SETTINGS_FILE..."
 
@@ -726,6 +737,8 @@ register_hooks() {
   echo "Registering UserPromptSubmit hook..."
   echo "Registering PostToolUse hook..."
   echo "Registering Stop hook..."
+  echo "Registering SubagentStart hook..."
+  echo "Registering SubagentStop hook..."
 
   # Remove ALL pace-maker hooks, then add them back
   # This ensures no duplicates and preserves other hooks like tdd-guard
@@ -733,6 +746,8 @@ register_hooks() {
   jq --arg user_prompt "$USER_PROMPT_HOOK" \
      --arg post_hook "$POST_HOOK" \
      --arg stop_hook "$STOP_HOOK" \
+     --arg subagent_start_hook "$SUBAGENT_START_HOOK" \
+     --arg subagent_stop_hook "$SUBAGENT_STOP_HOOK" \
     '
      # Ensure .hooks exists as an object
      if .hooks == null then .hooks = {} else . end |
@@ -763,18 +778,30 @@ register_hooks() {
        (.hooks.Stop // [])[] |
        remove_pacemaker_commands("\\.claude/hooks/stop\\.sh")
      ] |
+     .hooks.SubagentStart = [
+       (.hooks.SubagentStart // [])[] |
+       remove_pacemaker_commands("\\.claude/hooks/subagent-start\\.sh")
+     ] |
+     .hooks.SubagentStop = [
+       (.hooks.SubagentStop // [])[] |
+       remove_pacemaker_commands("\\.claude/hooks/subagent-stop\\.sh")
+     ] |
 
      # Remove entries that have no hooks left after pace-maker removal
      .hooks.SessionStart = [.hooks.SessionStart[] | select(.hooks | length > 0)] |
      .hooks.UserPromptSubmit = [.hooks.UserPromptSubmit[] | select(.hooks | length > 0)] |
      .hooks.PostToolUse = [.hooks.PostToolUse[] | select(.hooks | length > 0)] |
      .hooks.Stop = [.hooks.Stop[] | select(.hooks | length > 0)] |
+     .hooks.SubagentStart = [.hooks.SubagentStart[] | select(.hooks | length > 0)] |
+     .hooks.SubagentStop = [.hooks.SubagentStop[] | select(.hooks | length > 0)] |
 
      # Add pace-maker hooks back as separate entries with full paths
      # Note: SessionStart is NOT added back (obsolete)
      .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $user_prompt}]}] |
      .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $post_hook, "timeout": 360}]}] |
-     .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_hook}]}]
+     .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_hook}]}] |
+     .hooks.SubagentStart += [{"hooks": [{"type": "command", "command": $subagent_start_hook, "timeout": 10}]}] |
+     .hooks.SubagentStop += [{"hooks": [{"type": "command", "command": $subagent_stop_hook, "timeout": 10}]}]
     ' "$SETTINGS_FILE" > "$TEMP_FILE"
 
   if [ $? -ne 0 ]; then

@@ -27,6 +27,18 @@ CREATE TABLE IF NOT EXISTS usage_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_snapshots(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_session ON usage_snapshots(session_id);
+
+CREATE TABLE IF NOT EXISTS pacing_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp INTEGER NOT NULL,
+    should_throttle INTEGER NOT NULL,
+    delay_seconds INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pacing_timestamp ON pacing_decisions(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_pacing_session ON pacing_decisions(session_id);
 """
 
 
@@ -204,3 +216,103 @@ def cleanup_old_snapshots(db_path: str, retention_days: int = 60) -> int:
     except Exception as e:
         print(f"Error cleaning up old snapshots: {e}")
         return -1
+
+
+def insert_pacing_decision(
+    db_path: str,
+    timestamp: datetime,
+    should_throttle: bool,
+    delay_seconds: int,
+    session_id: str,
+) -> bool:
+    """
+    Insert a pacing decision into the database.
+
+    Args:
+        db_path: Path to SQLite database file
+        timestamp: When this decision was made
+        should_throttle: Whether throttling should occur
+        delay_seconds: How many seconds to delay (0 if no throttle)
+        session_id: Unique identifier for this session
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO pacing_decisions (
+                timestamp,
+                should_throttle,
+                delay_seconds,
+                session_id
+            ) VALUES (?, ?, ?, ?)
+        """,
+            (
+                int(timestamp.timestamp()),
+                1 if should_throttle else 0,
+                delay_seconds,
+                session_id,
+            ),
+        )
+
+        conn.commit()
+        conn.close()
+
+        return True
+
+    except Exception as e:
+        print(f"Error inserting pacing decision: {e}")
+        return False
+
+
+def get_last_pacing_decision(db_path: str, session_id: str) -> Optional[Dict]:
+    """
+    Retrieve the most recent pacing decision for a session.
+
+    Args:
+        db_path: Path to SQLite database file
+        session_id: Unique identifier for this session
+
+    Returns:
+        Dict with decision details, or None if no decision found
+    """
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                timestamp,
+                should_throttle,
+                delay_seconds,
+                session_id
+            FROM pacing_decisions
+            WHERE session_id = ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """,
+            (session_id,),
+        )
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return {
+                "timestamp": row["timestamp"],
+                "should_throttle": bool(row["should_throttle"]),
+                "delay_seconds": row["delay_seconds"],
+                "session_id": row["session_id"],
+            }
+
+        return None
+
+    except Exception as e:
+        print(f"Error retrieving last pacing decision: {e}")
+        return None
