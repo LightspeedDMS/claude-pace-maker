@@ -57,7 +57,7 @@ class TestInstallScript:
         - Hook scripts copied and executable
         - Config file created with correct structure
         - Database created with correct schema
-        - Hooks registered in settings.json (5 active hooks: PostToolUse, Stop, UserPromptSubmit, SubagentStart, SubagentStop)
+        - Hooks registered in settings.json (6 active hooks: PostToolUse, Stop, UserPromptSubmit, SessionStart, SubagentStart, SubagentStop)
         - Installation succeeds
         """
         # Run installation
@@ -78,6 +78,7 @@ class TestInstallScript:
             "user-prompt-submit.sh",
             "post-tool-use.sh",
             "stop.sh",
+            "session-start.sh",
             "subagent-start.sh",
             "subagent-stop.sh",
         ]
@@ -122,11 +123,12 @@ class TestInstallScript:
 
         assert "hooks" in settings, "settings must have 'hooks' section"
 
-        # Verify 5 active hooks are registered (SessionStart is deprecated/empty)
+        # Verify 6 active hooks are registered
         active_hooks = [
             "PostToolUse",
             "Stop",
             "UserPromptSubmit",
+            "SessionStart",
             "SubagentStart",
             "SubagentStop",
         ]
@@ -138,11 +140,6 @@ class TestInstallScript:
             assert (
                 len(settings["hooks"][hook_name]) == 1
             ), f"{hook_name} must have 1 entry"
-
-        # SessionStart should be empty (deprecated)
-        assert (
-            settings["hooks"]["SessionStart"] == []
-        ), "SessionStart should be empty (deprecated)"
 
     def test_idempotent_reinstall_no_duplicates(self, install_env, temp_home):
         """
@@ -169,8 +166,8 @@ class TestInstallScript:
 
         # Each hook type should have exactly one pace-maker entry
         assert (
-            len(settings["hooks"]["SessionStart"]) == 0
-        ), "SessionStart should be empty"
+            len(settings["hooks"]["SessionStart"]) == 1
+        ), "Should have exactly 1 SessionStart hook"
         assert (
             len(settings["hooks"]["PostToolUse"]) == 1
         ), "Should have exactly 1 PostToolUse hook"
@@ -187,14 +184,14 @@ class TestInstallScript:
 
     def test_install_preserves_other_hooks(self, install_env, temp_home):
         """
-        COMPREHENSIVE TEST: Installing alongside other tools (e.g., tdd-guard).
+        COMPREHENSIVE TEST: Installing alongside other hook-based tools.
 
-        Pre-creates settings with tdd-guard hooks, runs installer, verifies:
-        - tdd-guard hooks preserved
+        Pre-creates settings with existing third-party hooks, runs installer, verifies:
+        - Existing hooks preserved
         - pace-maker hooks added
         - Both sets of hooks coexist
         """
-        # Pre-create settings.json with tdd-guard hooks
+        # Pre-create settings.json with existing hooks from another tool
         claude_dir = Path(install_env["CLAUDE_DIR"])
         claude_dir.mkdir(parents=True, exist_ok=True)
         settings_file = Path(install_env["SETTINGS_FILE"])
@@ -206,7 +203,7 @@ class TestInstallScript:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "~/.claude/hooks/tdd-guard-session-start.sh",
+                                "command": "~/.claude/hooks/other-tool-session-start.sh",
                             }
                         ]
                     }
@@ -216,7 +213,7 @@ class TestInstallScript:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "~/.claude/hooks/tdd-guard-post.sh",
+                                "command": "~/.claude/hooks/other-tool-post.sh",
                                 "timeout": 300,
                             }
                         ]
@@ -227,7 +224,7 @@ class TestInstallScript:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "~/.claude/hooks/tdd-guard-stop.sh",
+                                "command": "~/.claude/hooks/other-tool-stop.sh",
                             }
                         ]
                     }
@@ -246,31 +243,32 @@ class TestInstallScript:
         with open(settings_file) as f:
             settings = json.load(f)
 
-        # SessionStart: only tdd-guard (pace-maker doesn't use SessionStart)
+        # SessionStart: both existing tool and pace-maker
         assert (
-            len(settings["hooks"]["SessionStart"]) == 1
-        ), "Should have only tdd-guard SessionStart"
+            len(settings["hooks"]["SessionStart"]) == 2
+        ), "Should have both existing and pace-maker SessionStart"
         session_start_commands = [
             hook["hooks"][0]["command"] for hook in settings["hooks"]["SessionStart"]
         ]
-        assert "~/.claude/hooks/tdd-guard-session-start.sh" in session_start_commands
+        assert "~/.claude/hooks/other-tool-session-start.sh" in session_start_commands
+        assert any(".claude/hooks/session-start.sh" in cmd for cmd in session_start_commands)
 
-        # PostToolUse: both tdd-guard and pace-maker
+        # PostToolUse: both existing tool and pace-maker
         assert (
             len(settings["hooks"]["PostToolUse"]) == 2
         ), "Should have both PostToolUse hooks"
         post_commands = [
             hook["hooks"][0]["command"] for hook in settings["hooks"]["PostToolUse"]
         ]
-        assert "~/.claude/hooks/tdd-guard-post.sh" in post_commands
+        assert "~/.claude/hooks/other-tool-post.sh" in post_commands
         assert any(".claude/hooks/post-tool-use.sh" in cmd for cmd in post_commands)
 
-        # Stop: both tdd-guard and pace-maker
+        # Stop: both existing tool and pace-maker
         assert len(settings["hooks"]["Stop"]) == 2, "Should have both Stop hooks"
         stop_commands = [
             hook["hooks"][0]["command"] for hook in settings["hooks"]["Stop"]
         ]
-        assert "~/.claude/hooks/tdd-guard-stop.sh" in stop_commands
+        assert "~/.claude/hooks/other-tool-stop.sh" in stop_commands
         assert any(".claude/hooks/stop.sh" in cmd for cmd in stop_commands)
 
         # New hooks added by pace-maker
@@ -283,10 +281,10 @@ class TestInstallScript:
         """
         COMPREHENSIVE TEST: Handles merged hook entries (real-world Claude Code scenario).
 
-        Pre-creates combined entries where tdd-guard and pace-maker are in same hook,
+        Pre-creates combined entries where another tool and pace-maker are in same hook,
         runs installer, verifies:
         - Old pace-maker commands removed from combined entries
-        - tdd-guard preserved
+        - Other tool's hooks preserved
         - pace-maker re-added as separate entry
         """
         claude_dir = Path(install_env["CLAUDE_DIR"])
@@ -299,7 +297,7 @@ class TestInstallScript:
                     {
                         "matcher": "startup|resume|clear",
                         "hooks": [
-                            {"type": "command", "command": "tdd-guard"},
+                            {"type": "command", "command": "other-tool"},
                             {
                                 "type": "command",
                                 "command": "~/.claude/hooks/session-start.sh",  # Old pace-maker
@@ -310,7 +308,7 @@ class TestInstallScript:
                 "PostToolUse": [
                     {
                         "hooks": [
-                            {"type": "command", "command": "tdd-guard-post"},
+                            {"type": "command", "command": "other-tool-post"},
                             {
                                 "type": "command",
                                 "command": "~/.claude/hooks/post-tool-use.sh",  # Old pace-maker
@@ -333,26 +331,38 @@ class TestInstallScript:
         with open(settings_file) as f:
             settings = json.load(f)
 
-        # SessionStart: tdd-guard entry should have matcher preserved, pace-maker removed
-        assert len(settings["hooks"]["SessionStart"]) == 1
-        tdd_entry = settings["hooks"]["SessionStart"][0]
-        assert tdd_entry.get("matcher") == "startup|resume|clear"
-        assert len(tdd_entry["hooks"]) == 1
-        assert tdd_entry["hooks"][0]["command"] == "tdd-guard"
+        # SessionStart: should have TWO entries (other-tool and pace-maker separated)
+        assert len(settings["hooks"]["SessionStart"]) == 2
 
-        # PostToolUse: should have TWO entries (tdd-guard and pace-maker separated)
+        other_session_entry = None
+        pace_session_entry = None
+        for entry in settings["hooks"]["SessionStart"]:
+            commands = [h["command"] for h in entry["hooks"]]
+            if "other-tool" in commands:
+                other_session_entry = entry
+            elif any(".claude/hooks/session-start.sh" in cmd for cmd in commands):
+                pace_session_entry = entry
+
+        assert other_session_entry is not None
+        assert pace_session_entry is not None
+        assert other_session_entry.get("matcher") == "startup|resume|clear"
+        assert len(other_session_entry["hooks"]) == 1
+        assert other_session_entry["hooks"][0]["command"] == "other-tool"
+        assert len(pace_session_entry["hooks"]) == 1
+
+        # PostToolUse: should have TWO entries (other-tool and pace-maker separated)
         assert len(settings["hooks"]["PostToolUse"]) == 2
 
-        tdd_post_entry = None
+        other_post_entry = None
         pace_post_entry = None
         for entry in settings["hooks"]["PostToolUse"]:
             commands = [h["command"] for h in entry["hooks"]]
-            if "tdd-guard-post" in commands:
-                tdd_post_entry = entry
+            if "other-tool-post" in commands:
+                other_post_entry = entry
             elif any(".claude/hooks/post-tool-use.sh" in cmd for cmd in commands):
                 pace_post_entry = entry
 
-        assert tdd_post_entry is not None
+        assert other_post_entry is not None
         assert pace_post_entry is not None
-        assert len(tdd_post_entry["hooks"]) == 1
+        assert len(other_post_entry["hooks"]) == 1
         assert len(pace_post_entry["hooks"]) == 1
