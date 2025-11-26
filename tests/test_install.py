@@ -57,7 +57,7 @@ class TestInstallScript:
         - Hook scripts copied and executable
         - Config file created with correct structure
         - Database created with correct schema
-        - Hooks registered in settings.json (6 active hooks: PostToolUse, Stop, UserPromptSubmit, SessionStart, SubagentStart, SubagentStop)
+        - Hooks registered in settings.json (5 active hooks: PostToolUse, Stop, UserPromptSubmit, SubagentStart, SubagentStop)
         - Installation succeeds
         """
         # Run installation
@@ -78,7 +78,6 @@ class TestInstallScript:
             "user-prompt-submit.sh",
             "post-tool-use.sh",
             "stop.sh",
-            "session-start.sh",
             "subagent-start.sh",
             "subagent-stop.sh",
         ]
@@ -123,12 +122,11 @@ class TestInstallScript:
 
         assert "hooks" in settings, "settings must have 'hooks' section"
 
-        # Verify 6 active hooks are registered
+        # Verify 5 active hooks are registered (SessionStart is deprecated/empty)
         active_hooks = [
             "PostToolUse",
             "Stop",
             "UserPromptSubmit",
-            "SessionStart",
             "SubagentStart",
             "SubagentStop",
         ]
@@ -140,6 +138,11 @@ class TestInstallScript:
             assert (
                 len(settings["hooks"][hook_name]) == 1
             ), f"{hook_name} must have 1 entry"
+
+        # SessionStart should be empty (deprecated)
+        assert (
+            settings["hooks"]["SessionStart"] == []
+        ), "SessionStart should be empty (deprecated)"
 
     def test_idempotent_reinstall_no_duplicates(self, install_env, temp_home):
         """
@@ -166,8 +169,8 @@ class TestInstallScript:
 
         # Each hook type should have exactly one pace-maker entry
         assert (
-            len(settings["hooks"]["SessionStart"]) == 1
-        ), "Should have exactly 1 SessionStart hook"
+            len(settings["hooks"]["SessionStart"]) == 0
+        ), "SessionStart should be empty"
         assert (
             len(settings["hooks"]["PostToolUse"]) == 1
         ), "Should have exactly 1 PostToolUse hook"
@@ -243,15 +246,14 @@ class TestInstallScript:
         with open(settings_file) as f:
             settings = json.load(f)
 
-        # SessionStart: both tdd-guard and pace-maker
+        # SessionStart: only tdd-guard (pace-maker doesn't use SessionStart)
         assert (
-            len(settings["hooks"]["SessionStart"]) == 2
-        ), "Should have both tdd-guard and pace-maker SessionStart"
+            len(settings["hooks"]["SessionStart"]) == 1
+        ), "Should have only tdd-guard SessionStart"
         session_start_commands = [
             hook["hooks"][0]["command"] for hook in settings["hooks"]["SessionStart"]
         ]
         assert "~/.claude/hooks/tdd-guard-session-start.sh" in session_start_commands
-        assert any(".claude/hooks/session-start.sh" in cmd for cmd in session_start_commands)
 
         # PostToolUse: both tdd-guard and pace-maker
         assert (
@@ -331,24 +333,12 @@ class TestInstallScript:
         with open(settings_file) as f:
             settings = json.load(f)
 
-        # SessionStart: should have TWO entries (tdd-guard and pace-maker separated)
-        assert len(settings["hooks"]["SessionStart"]) == 2
-
-        tdd_session_entry = None
-        pace_session_entry = None
-        for entry in settings["hooks"]["SessionStart"]:
-            commands = [h["command"] for h in entry["hooks"]]
-            if "tdd-guard" in commands:
-                tdd_session_entry = entry
-            elif any(".claude/hooks/session-start.sh" in cmd for cmd in commands):
-                pace_session_entry = entry
-
-        assert tdd_session_entry is not None
-        assert pace_session_entry is not None
-        assert tdd_session_entry.get("matcher") == "startup|resume|clear"
-        assert len(tdd_session_entry["hooks"]) == 1
-        assert tdd_session_entry["hooks"][0]["command"] == "tdd-guard"
-        assert len(pace_session_entry["hooks"]) == 1
+        # SessionStart: tdd-guard entry should have matcher preserved, pace-maker removed
+        assert len(settings["hooks"]["SessionStart"]) == 1
+        tdd_entry = settings["hooks"]["SessionStart"][0]
+        assert tdd_entry.get("matcher") == "startup|resume|clear"
+        assert len(tdd_entry["hooks"]) == 1
+        assert tdd_entry["hooks"][0]["command"] == "tdd-guard"
 
         # PostToolUse: should have TWO entries (tdd-guard and pace-maker separated)
         assert len(settings["hooks"]["PostToolUse"]) == 2
