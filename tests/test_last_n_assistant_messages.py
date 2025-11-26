@@ -315,26 +315,32 @@ class TestTemplateUpdateForAssistantMessages(unittest.TestCase):
 
     def test_template_has_recent_responses_section(self):
         """Template should have section for CLAUDE'S RECENT RESPONSES."""
-        from src.pacemaker.intent_validator import VALIDATION_PROMPT_TEMPLATE
+        from src.pacemaker.intent_validator import get_prompt_template
+
+        template = get_prompt_template()
 
         # Should have section for recent assistant responses
-        self.assertIn("{last_assistant_messages}", VALIDATION_PROMPT_TEMPLATE)
-        self.assertIn("RECENT RESPONSES", VALIDATION_PROMPT_TEMPLATE.upper())
+        self.assertIn("{last_assistant_messages}", template)
+        self.assertIn("RECENT RESPONSES", template.upper())
 
     def test_template_has_very_last_response_section(self):
         """Template should clearly highlight the VERY LAST response."""
-        from src.pacemaker.intent_validator import VALIDATION_PROMPT_TEMPLATE
+        from src.pacemaker.intent_validator import get_prompt_template
+
+        template = get_prompt_template()
 
         # Should highlight very last response
-        self.assertIn("VERY LAST", VALIDATION_PROMPT_TEMPLATE.upper())
-        self.assertIn("{last_assistant}", VALIDATION_PROMPT_TEMPLATE)
+        self.assertIn("VERY LAST", template.upper())
+        self.assertIn("{last_assistant}", template)
 
     def test_template_explains_context_limitation_for_assistant_messages(self):
         """Template should explain we're showing last N assistant responses."""
-        from src.pacemaker.intent_validator import VALIDATION_PROMPT_TEMPLATE
+        from src.pacemaker.intent_validator import get_prompt_template
+
+        template = get_prompt_template()
 
         # Should explain the context includes recent responses
-        self.assertIn("LAST", VALIDATION_PROMPT_TEMPLATE.upper())
+        self.assertIn("LAST", template.upper())
 
 
 if __name__ == "__main__":

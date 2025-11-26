@@ -42,6 +42,9 @@ def load_state(state_path: str = DEFAULT_STATE_PATH) -> dict:
         "session_id": f"session-{int(time.time())}",
         "last_poll_time": None,
         "last_cleanup_time": None,
+        "in_subagent": False,
+        "subagent_counter": 0,
+        "tool_execution_count": 0,
     }
 
     try:
@@ -110,19 +113,41 @@ def inject_prompt_delay(prompt: str):
     print(prompt, file=sys.stdout, flush=True)
 
 
+def run_session_start_hook():
+    """
+    Handle SessionStart hook - beginning of new session.
+
+    Resets subagent_counter to 0 and in_subagent to false to ensure clean state.
+    This prevents state corruption from cancelled subagents.
+    """
+    # Load state
+    state = load_state(DEFAULT_STATE_PATH)
+
+    # Reset counter
+    state["subagent_counter"] = 0
+
+    # Ensure we start in main context
+    state["in_subagent"] = False
+
+    # Save state
+    save_state(state, DEFAULT_STATE_PATH)
+
+
 def run_subagent_start_hook():
     """
     Handle SubagentStart hook - entering subagent context.
 
-    Sets in_subagent flag to true and increments subagent_depth.
+    Increments subagent_counter and sets in_subagent flag based on counter.
     Does NOT reset tool_execution_count (global counter persists).
     """
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
 
-    # Enter subagent context
-    state["in_subagent"] = True
-    state["subagent_depth"] = state.get("subagent_depth", 0) + 1
+    # Increment counter
+    state["subagent_counter"] = state.get("subagent_counter", 0) + 1
+
+    # Set flag based on counter
+    state["in_subagent"] = state["subagent_counter"] > 0
 
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
@@ -132,32 +157,37 @@ def run_subagent_stop_hook():
     """
     Handle SubagentStop hook - exiting subagent context.
 
-    Decrements depth and updates in_subagent flag.
+    Decrements subagent_counter and sets in_subagent flag based on counter.
     Does NOT reset tool_execution_count (global counter persists).
     """
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
 
-    # Exit subagent context
-    state["subagent_depth"] = max(0, state.get("subagent_depth", 1) - 1)
-    state["in_subagent"] = state["subagent_depth"] > 0
+    # Decrement counter (never go below 0)
+    state["subagent_counter"] = max(0, state.get("subagent_counter", 0) - 1)
+
+    # Set flag based on counter
+    state["in_subagent"] = state["subagent_counter"] > 0
 
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
 
 
-def should_inject_reminder(state: dict, config: dict) -> bool:
+def should_inject_reminder(state: dict, config: dict, tool_name: str = None) -> bool:
     """
     Determine if we should inject the subagent reminder.
 
     Conditions:
     - NOT in subagent (in_subagent == false)
     - Feature enabled in config
-    - tool_execution_count is multiple of frequency (every 5 executions)
+    - EITHER:
+      a) Write tool used in main context (immediate nudge, bypasses counter)
+      b) tool_execution_count is multiple of frequency (every 5 executions)
 
     Args:
         state: Current session state
         config: Configuration dictionary
+        tool_name: Name of the tool that was just executed (optional)
 
     Returns:
         True if should inject reminder, False otherwise
@@ -170,7 +200,11 @@ def should_inject_reminder(state: dict, config: dict) -> bool:
     if not config.get("subagent_reminder_enabled", True):
         return False
 
-    # Check frequency (every 5 executions by default)
+    # IMMEDIATE NUDGE: Write tool used in main context
+    if tool_name == "Write":
+        return True
+
+    # COUNTER-BASED NUDGE: Check frequency (every 5 executions by default)
     count = state.get("tool_execution_count", 0)
     frequency = config.get("subagent_reminder_frequency", 5)
 
@@ -209,6 +243,17 @@ def run_hook():
     # Check if enabled
     if not config.get("enabled", True):
         return  # Disabled - do nothing
+
+    # Read hook data from stdin to get tool_name
+    tool_name = None
+    try:
+        raw_input = sys.stdin.read()
+        if raw_input:
+            hook_data = json.loads(raw_input)
+            tool_name = hook_data.get("tool_name")
+    except (json.JSONDecodeError, Exception):
+        # Graceful degradation - continue without tool_name
+        pass
 
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
@@ -292,10 +337,15 @@ def run_hook():
         print("[PACING] No throttling needed", file=sys.stderr, flush=True)
 
     # Inject subagent reminder if conditions met
-    if should_inject_reminder(state, config):
+    if should_inject_reminder(state, config, tool_name):
         # Debug logging
+        reason = (
+            "Write tool used"
+            if tool_name == "Write"
+            else f"count {state['tool_execution_count']}"
+        )
         print(
-            f"[PACING] DEBUG: Injecting reminder at count {state['tool_execution_count']}",
+            f"[PACING] DEBUG: Injecting reminder ({reason})",
             file=sys.stderr,
             flush=True,
         )
@@ -337,6 +387,13 @@ def parse_user_prompt_input(raw_input: str) -> dict:
 def run_user_prompt_submit():
     """Handle user prompt submit hook - pace-maker command interception only."""
     try:
+        # Reset subagent counter on every new user prompt
+        # This fixes orphaned state from ESC cancellations
+        state = load_state(DEFAULT_STATE_PATH)
+        state["subagent_counter"] = 0
+        state["in_subagent"] = False
+        save_state(state, DEFAULT_STATE_PATH)
+
         # Read user input from stdin
         raw_input = sys.stdin.read().strip()
 
@@ -599,6 +656,14 @@ def main():
     # Check if this is user-prompt-submit hook
     if len(sys.argv) > 1 and sys.argv[1] == "user_prompt_submit":
         run_user_prompt_submit()
+        return
+
+    # Check if this is session-start hook
+    if len(sys.argv) > 1 and sys.argv[1] == "session_start":
+        try:
+            run_session_start_hook()
+        except Exception as e:
+            print(f"[PACE-MAKER ERROR] SessionStart: {e}", file=sys.stderr)
         return
 
     # Check if this is subagent-start hook

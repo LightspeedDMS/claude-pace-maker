@@ -508,15 +508,19 @@ install_hooks() {
   echo "Installing user-prompt-submit.sh..."
   cp "$HOOKS_SOURCE_DIR/user-prompt-submit.sh" "$HOOKS_DIR/"
 
+  echo "Installing session-start.sh..."
+  cp "$HOOKS_SOURCE_DIR/session-start.sh" "$HOOKS_DIR/"
+
   echo "Installing subagent-start.sh..."
   cp "$HOOKS_SOURCE_DIR/subagent-start.sh" "$HOOKS_DIR/"
 
   echo "Installing subagent-stop.sh..."
   cp "$HOOKS_SOURCE_DIR/subagent-stop.sh" "$HOOKS_DIR/"
 
-  # Remove session-start.sh if it exists (no longer used)
-  if [ -f "$HOOKS_DIR/session-start.sh" ]; then
-    echo "Removing obsolete session-start.sh..."
+  # Session-start hook is now used again for resetting in_subagent flag
+  # This prevents state corruption from cancelled subagents
+  if [ -f "$HOOKS_DIR/session-start.sh.backup" ]; then
+    echo "Note: session-start.sh is now active again..."
     rm -f "$HOOKS_DIR/session-start.sh"
   fi
 
@@ -711,6 +715,7 @@ register_hooks() {
   USER_PROMPT_HOOK="$HOOKS_DIR/user-prompt-submit.sh"
   POST_HOOK="$HOOKS_DIR/post-tool-use.sh"
   STOP_HOOK="$HOOKS_DIR/stop.sh"
+  SESSION_START_HOOK="$HOOKS_DIR/session-start.sh"
   SUBAGENT_START_HOOK="$HOOKS_DIR/subagent-start.sh"
   SUBAGENT_STOP_HOOK="$HOOKS_DIR/subagent-stop.sh"
 
@@ -737,6 +742,7 @@ register_hooks() {
   echo "Registering UserPromptSubmit hook..."
   echo "Registering PostToolUse hook..."
   echo "Registering Stop hook..."
+  echo "Registering SessionStart hook..."
   echo "Registering SubagentStart hook..."
   echo "Registering SubagentStop hook..."
 
@@ -746,6 +752,7 @@ register_hooks() {
   jq --arg user_prompt "$USER_PROMPT_HOOK" \
      --arg post_hook "$POST_HOOK" \
      --arg stop_hook "$STOP_HOOK" \
+     --arg session_start_hook "$SESSION_START_HOOK" \
      --arg subagent_start_hook "$SUBAGENT_START_HOOK" \
      --arg subagent_stop_hook "$SUBAGENT_STOP_HOOK" \
     '
@@ -761,7 +768,6 @@ register_hooks() {
        end;
 
      # Remove pace-maker commands from within each hook entry
-     # Also remove obsolete session-start.sh hook (no longer used)
      .hooks.SessionStart = [
        (.hooks.SessionStart // [])[] |
        remove_pacemaker_commands("\\.claude/hooks/session-start\\.sh")
@@ -796,10 +802,10 @@ register_hooks() {
      .hooks.SubagentStop = [.hooks.SubagentStop[] | select(.hooks | length > 0)] |
 
      # Add pace-maker hooks back as separate entries with full paths
-     # Note: SessionStart is NOT added back (obsolete)
      .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $user_prompt}]}] |
      .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $post_hook, "timeout": 360}]}] |
      .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_hook}]}] |
+     .hooks.SessionStart += [{"hooks": [{"type": "command", "command": $session_start_hook, "timeout": 10}]}] |
      .hooks.SubagentStart += [{"hooks": [{"type": "command", "command": $subagent_start_hook, "timeout": 10}]}] |
      .hooks.SubagentStop += [{"hooks": [{"type": "command", "command": $subagent_stop_hook, "timeout": 10}]}]
     ' "$SETTINGS_FILE" > "$TEMP_FILE"

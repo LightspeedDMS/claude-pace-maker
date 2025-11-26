@@ -255,44 +255,50 @@ class TestValidationPromptTemplate(unittest.TestCase):
 
     def test_template_explains_context_sections(self):
         """Template should clearly explain what each section represents."""
-        from src.pacemaker.intent_validator import VALIDATION_PROMPT_TEMPLATE
+        from src.pacemaker.intent_validator import get_prompt_template
+
+        template = get_prompt_template()
 
         # Should explain complete user requests
-        self.assertIn("COMPLETE", VALIDATION_PROMPT_TEMPLATE.upper())
-        self.assertIn("REQUEST", VALIDATION_PROMPT_TEMPLATE.upper())
+        self.assertIn("COMPLETE", template.upper())
+        self.assertIn("REQUEST", template.upper())
 
         # Should NOT have separate original/recent sections anymore
-        self.assertNotIn("YOUR ORIGINAL REQUEST", VALIDATION_PROMPT_TEMPLATE)
-        self.assertNotIn("YOUR RECENT CONTEXT", VALIDATION_PROMPT_TEMPLATE)
+        self.assertNotIn("YOUR ORIGINAL REQUEST", template)
+        self.assertNotIn("YOUR RECENT CONTEXT", template)
 
         # Should mention last assistant message
-        self.assertIn("CLAUDE", VALIDATION_PROMPT_TEMPLATE.upper())
+        self.assertIn("CLAUDE", template.upper())
 
     def test_template_contains_tempo_liveliness_instructions(self):
         """Template should contain tempo liveliness check instructions for SDK."""
-        from src.pacemaker.intent_validator import VALIDATION_PROMPT_TEMPLATE
+        from src.pacemaker.intent_validator import get_prompt_template
+
+        template = get_prompt_template()
 
         # Should contain tempo liveliness detection section
-        self.assertIn("TEMPO", VALIDATION_PROMPT_TEMPLATE.upper())
-        self.assertIn("LIVELINESS", VALIDATION_PROMPT_TEMPLATE.upper())
+        self.assertIn("TEMPO", template.upper())
+        self.assertIn("LIVELINESS", template.upper())
 
         # Should contain example phrases
-        self.assertIn("tempo, are you alive", VALIDATION_PROMPT_TEMPLATE.lower())
-        self.assertIn("tempo status", VALIDATION_PROMPT_TEMPLATE.lower())
+        self.assertIn("tempo, are you alive", template.lower())
+        self.assertIn("tempo status", template.lower())
 
         # Should instruct SDK to detect and respond to liveliness checks
-        self.assertIn("SYSTEM CHECK", VALIDATION_PROMPT_TEMPLATE.upper())
-        self.assertIn("BLOCKED:", VALIDATION_PROMPT_TEMPLATE)
+        self.assertIn("SYSTEM CHECK", template.upper())
+        self.assertIn("BLOCKED:", template)
 
         # Should NOT have a {liveliness_check_detected} placeholder
-        self.assertNotIn("{liveliness_check_detected}", VALIDATION_PROMPT_TEMPLATE)
+        self.assertNotIn("{liveliness_check_detected}", template)
 
     def test_template_maintains_response_format(self):
         """Template should maintain APPROVED/BLOCKED format."""
-        from src.pacemaker.intent_validator import VALIDATION_PROMPT_TEMPLATE
+        from src.pacemaker.intent_validator import get_prompt_template
 
-        self.assertIn("APPROVED", VALIDATION_PROMPT_TEMPLATE)
-        self.assertIn("BLOCKED:", VALIDATION_PROMPT_TEMPLATE)
+        template = get_prompt_template()
+
+        self.assertIn("APPROVED", template)
+        self.assertIn("BLOCKED:", template)
 
 
 class TestParseSDKResponse(unittest.TestCase):
