@@ -498,35 +498,26 @@ install_hooks() {
     exit 1
   fi
 
-  # Copy hooks from source
-  echo "Installing stop.sh..."
-  cp "$HOOKS_SOURCE_DIR/stop.sh" "$HOOKS_DIR/"
-
-  echo "Installing post-tool-use.sh..."
-  cp "$HOOKS_SOURCE_DIR/post-tool-use.sh" "$HOOKS_DIR/"
-
-  echo "Installing user-prompt-submit.sh..."
-  cp "$HOOKS_SOURCE_DIR/user-prompt-submit.sh" "$HOOKS_DIR/"
-
-  echo "Installing session-start.sh..."
-  cp "$HOOKS_SOURCE_DIR/session-start.sh" "$HOOKS_DIR/"
-
-  echo "Installing subagent-start.sh..."
-  cp "$HOOKS_SOURCE_DIR/subagent-start.sh" "$HOOKS_DIR/"
-
-  echo "Installing subagent-stop.sh..."
-  cp "$HOOKS_SOURCE_DIR/subagent-stop.sh" "$HOOKS_DIR/"
+  # Copy required hooks from source
+  for hook in stop.sh post-tool-use.sh user-prompt-submit.sh session-start.sh subagent-start.sh subagent-stop.sh; do
+    if [ -f "$HOOKS_SOURCE_DIR/$hook" ]; then
+      echo "Installing $hook..."
+      cp "$HOOKS_SOURCE_DIR/$hook" "$HOOKS_DIR/"
+    else
+      echo -e "${YELLOW}⚠ Warning: $hook not found, skipping${NC}"
+    fi
+  done
 
   # Session-start hook is now used again for resetting in_subagent flag
   # This prevents state corruption from cancelled subagents
   if [ -f "$HOOKS_DIR/session-start.sh.backup" ]; then
     echo "Note: session-start.sh is now active again..."
-    rm -f "$HOOKS_DIR/session-start.sh"
+    rm -f "$HOOKS_DIR/session-start.sh.backup"
   fi
 
   # Set executable permissions
   echo "Setting executable permissions..."
-  chmod +x "$HOOKS_DIR"/*.sh
+  chmod +x "$HOOKS_DIR"/*.sh 2>/dev/null || true
 
   # Create install_source marker pointing to source directory
   echo "$SCRIPT_DIR" > "$PACEMAKER_DIR/install_source"
@@ -737,7 +728,9 @@ register_hooks() {
     echo "{}" > "$SETTINGS_FILE"
   fi
 
-  TEMP_FILE=$(mktemp)
+  # Use a temp file in a location accessible by snap-confined jq
+  # mktemp creates files in /tmp which snap apps cannot access
+  TEMP_FILE="$SETTINGS_DIR/.settings.tmp.$$"
 
   echo "Registering UserPromptSubmit hook..."
   echo "Registering PostToolUse hook..."
