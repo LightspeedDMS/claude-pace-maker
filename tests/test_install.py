@@ -251,7 +251,9 @@ class TestInstallScript:
             hook["hooks"][0]["command"] for hook in settings["hooks"]["SessionStart"]
         ]
         assert "~/.claude/hooks/other-tool-session-start.sh" in session_start_commands
-        assert any(".claude/hooks/session-start.sh" in cmd for cmd in session_start_commands)
+        assert any(
+            ".claude/hooks/session-start.sh" in cmd for cmd in session_start_commands
+        )
 
         # PostToolUse: both existing tool and pace-maker
         assert (

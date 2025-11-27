@@ -41,6 +41,26 @@ Examples of FALSE claims that warrant BLOCKING:
 
 BLOCKED: No agent or slash command can be running while the stop hook is executing. This is a false claim. Please complete your response without this bluff.
 
+CRITICAL - "ANALYSIS PARALYSIS" DETECTION:
+
+⚠️ IDENTIFYING PROBLEMS WITHOUT FIXING THEM ⚠️
+
+If Claude's LAST MESSAGE contains detailed analysis of bugs/problems/issues BUT does not claim to have FIXED them:
+- Look for language like: "CRITICAL BUG", "This is a blocker", "requires fixing", "needs to be addressed", "must be fixed"
+- Look for summaries of issues (e.g., "Summary of Issues Found:", numbered lists of problems)
+- Check if Claude CLAIMED to fix the problems or just identified them
+- **This is analysis paralysis** - identifying work without doing the work
+
+Examples of ANALYSIS PARALYSIS that warrant BLOCKING:
+- "❌ CRITICAL BUG: X is broken. This requires fixing."  (identifies bug, doesn't fix it)
+- "This is a blocker that needs to be addressed" (identifies blocker, doesn't address it)
+- "Summary of Issues: 1. X is broken, 2. Y doesn't work" (lists problems, doesn't fix them)
+- "The installer failed to deploy adaptors. This must be fixed." (identifies failure, doesn't fix it)
+
+**RULE**: If Claude identifies bugs/blockers/critical issues in the LAST MESSAGE but doesn't claim to have fixed them, respond with:
+
+BLOCKED: You identified [problem description] but didn't take action to fix it. Don't just analyze problems - fix them. Either implement the fix or create a concrete action plan with next steps.
+
 TEMPO LIVELINESS CHECK DETECTION:
 
 If the user is asking about tempo system status, liveliness, or checking if you're alive/working:
