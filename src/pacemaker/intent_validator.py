@@ -66,82 +66,6 @@ except ImportError:
     SDK_AVAILABLE = False
 
 
-# Embedded validation prompt template (fallback)
-EMBEDDED_PROMPT_TEMPLATE = """You are the USER who originally requested this work from Claude Code.
-
-YOUR COMPLETE REQUESTS (all user messages in chronological order):
-{all_user_messages}
-
-CLAUDE'S RECENT RESPONSES (ONLY last {n} assistant messages - NOT all messages):
-{last_assistant_messages}
-
->>> CLAUDE'S VERY LAST RESPONSE (most recent, right before trying to exit): <<<
-{last_assistant}
-
-⚠️ WHAT YOU HAVE ACCESS TO ⚠️
-
-You can see:
-- ALL of your user messages (complete request history from start to finish)
-- ONLY the last {n} assistant messages (recent claims about what Claude did)
-- Claude's very last response (highlighted above)
-
-You do NOT have access to:
-- All of Claude's messages (only last {n})
-- What Claude Code actually did (you only see Claude's claims)
-- The actual work output, code, or results
-
-TEMPO LIVELINESS CHECK DETECTION:
-
-If the user is asking about tempo system status, liveliness, or checking if you're alive/working:
-- Examples: "tempo, are you alive?", "tempo status", "tempo, are you working?", "are you there tempo?"
-- This is a SYSTEM CHECK, not real work
-- Respond with: BLOCKED: Tempo liveliness check confirmed. The tempo system is active and monitoring this session. Claude, please acknowledge this system check.
-- This allows the user to verify the tempo/Stop hook is functioning
-
-If you see such a request, treat it as a liveliness check regardless of other work status.
-
-YOUR ONLY JOB:
-Match Claude's CLAIMS in the last {n} messages against what YOU asked for. Does Claude CLAIM to have delivered what you requested?
-
-CRITICAL - WHAT YOU ARE MATCHING:
-- What Claude CLAIMED to do (in the last {n} messages)
-- Against what YOU requested (in your messages)
-
-CRITICAL - WHAT YOU ARE NOT DOING:
-- NOT verifying if the work actually works
-- NOT checking if code is correct
-- NOT reviewing implementation quality
-- NOT testing actual functionality
-- NOT inspecting actual results
-
-YOU ONLY MATCH CLAIMS VS REQUESTS - NOTHING MORE.
-
-BE HONEST AND DIRECT:
-- If Claude CLAIMED to complete ALL your requests → respond with exactly: APPROVED
-- If Claude did NOT claim to complete your requests, avoided work, or claims incomplete work → respond with: BLOCKED: [tell Claude specifically what claims are missing vs your requests]
-
-RESPONSE FORMAT - Choose EXACTLY one:
-
-APPROVED
-
-OR
-
-BLOCKED: [Your direct feedback as the user - be specific about what's incomplete or what Claude failed to deliver]
-
-CRITICAL RULES:
-- You have complete context of what the user said (all user messages)
-- You ONLY have the last {n} assistant messages (not all Claude messages)
-- You do NOT have what Claude Code actually did - only Claude's claims about what was done
-- You CANNOT verify if the work actually works - only match claims vs requests
-- Review Claude's claims in the last {n} messages against what the user asked for
-- It is NOT your job to do code reviews or verify implementation
-- Consider ALL user messages from start to finish
-- Output ONLY one of the two formats above
-- NO extra text before or after
-- Be honest about whether Claude CLAIMED to fulfill YOUR complete intent
-"""
-
-
 def load_prompt_template(file_path: str) -> str:
     """
     Load validation prompt template from external file.
@@ -161,27 +85,27 @@ def load_prompt_template(file_path: str) -> str:
 
 def get_prompt_template() -> str:
     """
-    Get validation prompt template from external file with fallback.
+    Get validation prompt template from external file.
 
-    First tries to load from external markdown file at:
-    src/pacemaker/prompts/stop_hook_validator_prompt.md
-
-    If file loading fails, falls back to embedded template.
+    Loads from: src/pacemaker/prompts/stop_hook_validator_prompt.md
 
     Returns:
         Validation prompt template string
+
+    Raises:
+        FileNotFoundError: If template file is missing (installation broken)
+        Exception: If template cannot be loaded
     """
-    try:
-        # Calculate path relative to this module
-        module_dir = os.path.dirname(__file__)
-        prompt_path = os.path.join(
-            module_dir, "prompts", "stop_hook_validator_prompt.md"
+    module_dir = os.path.dirname(__file__)
+    prompt_path = os.path.join(module_dir, "prompts", "stop_hook_validator_prompt.md")
+
+    if not os.path.exists(prompt_path):
+        raise FileNotFoundError(
+            f"Stop hook validator prompt template not found at {prompt_path}. "
+            "This indicates a broken installation. Run ./install.sh to fix."
         )
-        return load_prompt_template(prompt_path)
-    except Exception as e:
-        # Fall back to embedded template
-        logger.debug(f"Failed to load external prompt template, using embedded: {e}")
-        return EMBEDDED_PROMPT_TEMPLATE
+
+    return load_prompt_template(prompt_path)
 
 
 def build_validation_prompt(
@@ -228,7 +152,7 @@ def build_validation_prompt(
     # Determine N for template (number of assistant messages shown)
     n = len(last_assistant_messages) if last_assistant_messages else 5
 
-    # Get template from external file (with fallback to embedded)
+    # Get template from external file
     template = get_prompt_template()
 
     # Fill template

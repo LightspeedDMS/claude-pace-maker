@@ -21,6 +21,26 @@ You do NOT have access to:
 - What Claude Code actually did (you only see Claude's claims)
 - The actual work output, code, or tool results
 
+CRITICAL - "AGENT/SLASH COMMAND STILL RUNNING" FALLACY:
+
+⚠️ THIS IS ALWAYS A LIE ⚠️
+
+If Claude claims in its LAST MESSAGE that a subagent or slash command is "running" or "in progress":
+- **THIS IS IMPOSSIBLE** - You (the stop hook) cannot execute while an agent/command is running
+- The stop hook ONLY triggers when Claude has FINISHED its response
+- If an agent/command were truly running, the stop hook wouldn't have been called
+- **BLOCK THE STOPPAGE** - This is Claude bluffing to avoid the tempo check
+
+Examples of FALSE claims that warrant BLOCKING:
+- "The tdd-engineer agent is still running..."
+- "Waiting for the code-reviewer to finish..."
+- "/implement-story is in progress..."
+- "The subagent hasn't completed yet..."
+
+**RULE**: If the stop hook is executing, NO agent or slash command can be running. Period. When Claude claims otherwise, respond with:
+
+BLOCKED: No agent or slash command can be running while the stop hook is executing. This is a false claim. Please complete your response without this bluff.
+
 TEMPO LIVELINESS CHECK DETECTION:
 
 If the user is asking about tempo system status, liveliness, or checking if you're alive/working:

@@ -105,21 +105,21 @@ Template vars: {all_user_messages} {n}
         self.assertIn("APPROVED", template)
         self.assertIn("BLOCKED:", template)
 
-    def test_get_prompt_template_falls_back_on_error(self):
-        """Should fall back to embedded prompt if external file load fails."""
-        from src.pacemaker.intent_validator import (
-            get_prompt_template,
-            EMBEDDED_PROMPT_TEMPLATE,
-        )
+    def test_get_prompt_template_raises_on_missing_file(self):
+        """Should raise FileNotFoundError if external file is missing."""
+        from src.pacemaker.intent_validator import get_prompt_template
 
-        # Mock load_prompt_template to raise error
-        with patch("src.pacemaker.intent_validator.load_prompt_template") as mock_load:
-            mock_load.side_effect = FileNotFoundError("Test error")
+        # Mock os.path.exists to return False
+        with patch("src.pacemaker.intent_validator.os.path.exists") as mock_exists:
+            mock_exists.return_value = False
 
-            template = get_prompt_template()
+            # Should raise FileNotFoundError with helpful message
+            with self.assertRaises(FileNotFoundError) as ctx:
+                get_prompt_template()
 
-            # Should fall back to embedded template
-            self.assertEqual(template, EMBEDDED_PROMPT_TEMPLATE)
+            # Error message should mention broken installation
+            self.assertIn("broken installation", str(ctx.exception))
+            self.assertIn("./install.sh", str(ctx.exception))
 
     def test_build_validation_prompt_uses_externalized_template(self):
         """Should use externalized template in build_validation_prompt."""
@@ -144,18 +144,19 @@ Template vars: {all_user_messages} {n}
         self.assertIn("COMPLETE", prompt.upper())
         self.assertIn("REQUEST", prompt.upper())
 
-    def test_externalized_prompt_maintains_original_content(self):
-        """External prompt file should contain same content as original template."""
-        from src.pacemaker.intent_validator import (
-            get_prompt_template,
-            EMBEDDED_PROMPT_TEMPLATE,
-        )
+    def test_externalized_prompt_contains_required_sections(self):
+        """External prompt file should contain all required validation sections."""
+        from src.pacemaker.intent_validator import get_prompt_template
 
         # Load external template
         external_template = get_prompt_template()
 
-        # Should match embedded template (they should be identical)
-        self.assertEqual(external_template, EMBEDDED_PROMPT_TEMPLATE)
+        # Should contain critical sections
+        self.assertIn("APPROVED", external_template)
+        self.assertIn("BLOCKED:", external_template)
+        self.assertIn("YOUR COMPLETE REQUESTS", external_template)
+        self.assertIn("CLAUDE'S RECENT RESPONSES", external_template)
+        self.assertIn("CLAUDE'S VERY LAST RESPONSE", external_template)
 
     def test_prompt_file_location_is_correct(self):
         """Prompt file should be at src/pacemaker/prompts/stop_hook_validator_prompt.md"""
