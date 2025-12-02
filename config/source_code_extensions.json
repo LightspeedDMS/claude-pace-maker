@@ -1,0 +1,25 @@
+{
+  "extensions": [
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".go",
+    ".java",
+    ".cpp",
+    ".c",
+    ".h",
+    ".hpp",
+    ".rs",
+    ".rb",
+    ".php",
+    ".cs",
+    ".swift",
+    ".kt",
+    ".scala",
+    ".sh",
+    ".bash",
+    ".zsh"
+  ]
+}

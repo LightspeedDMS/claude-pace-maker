@@ -25,12 +25,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "tempo_enabled": True,
     "conversation_context_size": 5,
     "user_message_max_length": 4096,
+    "intent_validation_enabled": False,
 }
 
 # Default file paths
 DEFAULT_DB_PATH = str(Path.home() / ".claude-pace-maker" / "usage.db")
 DEFAULT_CONFIG_PATH = str(Path.home() / ".claude-pace-maker" / "config.json")
 DEFAULT_STATE_PATH = str(Path.home() / ".claude-pace-maker" / "state.json")
+DEFAULT_EXTENSION_REGISTRY_PATH = str(
+    Path.home() / ".claude-pace-maker" / "source_code_extensions.json"
+)
 
 # Throttling thresholds
 PROMPT_INJECTION_THRESHOLD_SECONDS = 30
