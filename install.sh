@@ -499,7 +499,7 @@ install_hooks() {
   fi
 
   # Copy required hooks from source
-  for hook in stop.sh post-tool-use.sh user-prompt-submit.sh session-start.sh subagent-start.sh subagent-stop.sh; do
+  for hook in stop.sh post-tool-use.sh pre-tool-use.sh user-prompt-submit.sh session-start.sh subagent-start.sh subagent-stop.sh; do
     if [ -f "$HOOKS_SOURCE_DIR/$hook" ]; then
       echo "Installing $hook..."
       cp "$HOOKS_SOURCE_DIR/$hook" "$HOOKS_DIR/"
@@ -548,6 +548,20 @@ EOF
   else
     echo "Configuration file exists at $PACEMAKER_DIR/config.json, preserving..."
     echo -e "${YELLOW}✓ Configuration already exists (preserved)${NC}"
+  fi
+
+  # Copy extension registry config if doesn't exist
+  if [ ! -f "$PACEMAKER_DIR/source_code_extensions.json" ]; then
+    if [ -f "$SCRIPT_DIR/config/source_code_extensions.json" ]; then
+      echo "Creating extension registry at $PACEMAKER_DIR/source_code_extensions.json..."
+      cp "$SCRIPT_DIR/config/source_code_extensions.json" "$PACEMAKER_DIR/source_code_extensions.json"
+      echo -e "${GREEN}✓ Extension registry created${NC}"
+    else
+      echo -e "${YELLOW}⚠ Warning: source_code_extensions.json not found in source, skipping${NC}"
+    fi
+  else
+    echo "Extension registry exists at $PACEMAKER_DIR/source_code_extensions.json, preserving..."
+    echo -e "${YELLOW}✓ Extension registry already exists (preserved)${NC}"
   fi
 }
 
@@ -705,6 +719,7 @@ register_hooks() {
   HOOKS_DIR="$HOME/.claude/hooks"
   USER_PROMPT_HOOK="$HOOKS_DIR/user-prompt-submit.sh"
   POST_HOOK="$HOOKS_DIR/post-tool-use.sh"
+  PRE_TOOL_HOOK="$HOOKS_DIR/pre-tool-use.sh"
   STOP_HOOK="$HOOKS_DIR/stop.sh"
   SESSION_START_HOOK="$HOOKS_DIR/session-start.sh"
   SUBAGENT_START_HOOK="$HOOKS_DIR/subagent-start.sh"
@@ -734,6 +749,7 @@ register_hooks() {
 
   echo "Registering UserPromptSubmit hook..."
   echo "Registering PostToolUse hook..."
+  echo "Registering PreToolUse hook..."
   echo "Registering Stop hook..."
   echo "Registering SessionStart hook..."
   echo "Registering SubagentStart hook..."
@@ -744,6 +760,7 @@ register_hooks() {
   # Strategy: Remove pace-maker commands from within hook entries (not entire entries)
   jq --arg user_prompt "$USER_PROMPT_HOOK" \
      --arg post_hook "$POST_HOOK" \
+     --arg pre_tool_hook "$PRE_TOOL_HOOK" \
      --arg stop_hook "$STOP_HOOK" \
      --arg session_start_hook "$SESSION_START_HOOK" \
      --arg subagent_start_hook "$SUBAGENT_START_HOOK" \
@@ -773,6 +790,10 @@ register_hooks() {
        (.hooks.PostToolUse // [])[] |
        remove_pacemaker_commands("\\.claude/hooks/post-tool-use\\.sh")
      ] |
+     .hooks.PreToolUse = [
+       (.hooks.PreToolUse // [])[] |
+       remove_pacemaker_commands("\\.claude/hooks/pre-tool-use\\.sh")
+     ] |
      .hooks.Stop = [
        (.hooks.Stop // [])[] |
        remove_pacemaker_commands("\\.claude/hooks/stop\\.sh")
@@ -790,6 +811,7 @@ register_hooks() {
      .hooks.SessionStart = [.hooks.SessionStart[] | select(.hooks | length > 0)] |
      .hooks.UserPromptSubmit = [.hooks.UserPromptSubmit[] | select(.hooks | length > 0)] |
      .hooks.PostToolUse = [.hooks.PostToolUse[] | select(.hooks | length > 0)] |
+     .hooks.PreToolUse = [.hooks.PreToolUse[] | select(.hooks | length > 0)] |
      .hooks.Stop = [.hooks.Stop[] | select(.hooks | length > 0)] |
      .hooks.SubagentStart = [.hooks.SubagentStart[] | select(.hooks | length > 0)] |
      .hooks.SubagentStop = [.hooks.SubagentStop[] | select(.hooks | length > 0)] |
@@ -797,6 +819,12 @@ register_hooks() {
      # Add pace-maker hooks back as separate entries with full paths
      .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $user_prompt}]}] |
      .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $post_hook, "timeout": 360}]}] |
+     .hooks.PreToolUse += [{
+       "hooks": [
+         {"type": "command", "command": $pre_tool_hook, "timeout": 15, "query": "Write"},
+         {"type": "command", "command": $pre_tool_hook, "timeout": 15, "query": "Edit"}
+       ]
+     }] |
      .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_hook}]}] |
      .hooks.SessionStart += [{"hooks": [{"type": "command", "command": $session_start_hook, "timeout": 10}]}] |
      .hooks.SubagentStart += [{"hooks": [{"type": "command", "command": $subagent_start_hook, "timeout": 10}]}] |
