@@ -367,3 +367,140 @@ def validate_intent(
         with open(debug_log, "a") as f:
             f.write(f"SDK ERROR (failing open): {e}\n")
         return {"continue": True}
+
+
+def _build_intent_declaration_prompt(
+    messages: List[str], file_path: str, tool_name: str
+) -> str:
+    """
+    Build SDK prompt for checking if intent was declared.
+
+    Args:
+        messages: Last N assistant messages
+        file_path: Target file path
+        tool_name: Tool being used (Write/Edit)
+
+    Returns:
+        Prompt string for SDK
+    """
+    filename = os.path.basename(file_path)
+    action = "create or modify" if tool_name == "Write" else "edit"
+
+    messages_text = "\n\n".join(
+        [f"Message {i+1}:\n{msg}" for i, msg in enumerate(messages)]
+    )
+
+    return f"""You are checking if Claude declared intent before attempting to {action} a file.
+
+File to be modified: {filename}
+Tool being used: {tool_name}
+
+Recent assistant messages:
+{messages_text}
+
+Question: Did Claude clearly declare intent to {action} {filename} in these messages?
+
+Intent declaration should include:
+1. What file is being modified
+2. What changes are being made
+3. Why/goal of the changes
+
+Respond with ONLY:
+- "YES" if intent was clearly declared
+- "NO" if intent was not declared or unclear"""
+
+
+async def _call_sdk_intent_validation_async(prompt: str) -> str:
+    """
+    Call SDK with Haiku for fast intent validation.
+
+    Args:
+        prompt: Validation prompt
+
+    Returns:
+        SDK response text (YES or NO)
+    """
+    if not SDK_AVAILABLE:
+        raise ImportError("Claude Agent SDK not available")
+
+    # Fresh import to avoid cached state
+    from claude_agent_sdk import query as fresh_query
+    from claude_agent_sdk.types import (  # type: ignore[import-not-found]
+        ClaudeAgentOptions as FreshOptions,
+        ResultMessage as FreshResult,
+    )
+
+    # Use Haiku for speed (no thinking tokens needed)
+    options = FreshOptions(
+        max_turns=1,
+        model="claude-haiku-4-20250514",
+        system_prompt="You are validating if intent was declared. Respond with YES or NO only.",
+        disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
+    )
+
+    response_text = ""
+    try:
+        async for message in fresh_query(prompt=prompt, options=options):
+            if isinstance(message, FreshResult):
+                if hasattr(message, "result") and message.result:
+                    response_text = message.result.strip()
+    except Exception:
+        # Exception after getting response is OK
+        pass
+
+    return response_text
+
+
+def _call_sdk_intent_validation(prompt: str) -> str:
+    """
+    Synchronous wrapper for SDK intent validation.
+
+    Args:
+        prompt: Validation prompt
+
+    Returns:
+        SDK response text (YES or NO)
+    """
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(_call_sdk_intent_validation_async(prompt))
+
+
+def validate_intent_declared(
+    messages: List[str], file_path: str, tool_name: str
+) -> Dict[str, Any]:
+    """
+    Validate if intent to modify file was declared in messages.
+
+    Args:
+        messages: Last N assistant messages from transcript
+        file_path: Target file path
+        tool_name: Tool being used (Write/Edit)
+
+    Returns:
+        {
+            "intent_found": True/False
+        }
+    """
+    try:
+        # Build prompt
+        prompt = _build_intent_declaration_prompt(messages, file_path, tool_name)
+
+        # Call SDK
+        response = _call_sdk_intent_validation(prompt)
+
+        # Parse YES/NO response (case-insensitive)
+        response_upper = response.strip().upper()
+
+        if response_upper == "YES":
+            return {"intent_found": True}
+        else:
+            # NO or any other response = no intent found
+            return {"intent_found": False}
+
+    except Exception:
+        # Fail open: return False on any error
+        return {"intent_found": False}
