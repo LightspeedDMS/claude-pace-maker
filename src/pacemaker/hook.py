@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 import json
+from typing import Optional
 
 from . import pacing_engine, database, user_commands
 from .constants import (
@@ -173,7 +174,9 @@ def run_subagent_stop_hook():
     save_state(state, DEFAULT_STATE_PATH)
 
 
-def should_inject_reminder(state: dict, config: dict, tool_name: str = None) -> bool:
+def should_inject_reminder(
+    state: dict, config: dict, tool_name: Optional[str] = None
+) -> bool:
     """
     Determine if we should inject the subagent reminder.
 

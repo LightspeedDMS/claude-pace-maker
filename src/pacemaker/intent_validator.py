@@ -58,7 +58,7 @@ def truncate_user_message(message: str, max_length: int) -> str:
 
 # Try to import Claude Agent SDK
 try:
-    import claude_agent_sdk  # noqa: F401 - used dynamically in _fresh_sdk_call
+    import claude_agent_sdk  # type: ignore[import-not-found]  # noqa: F401
 
     SDK_AVAILABLE = True
 except ImportError:
@@ -204,7 +204,7 @@ async def _fresh_sdk_call(prompt: str, model: str) -> str:
     """Call SDK with fresh imports and objects for each call."""
     # Fresh import to avoid any cached state
     from claude_agent_sdk import query as fresh_query
-    from claude_agent_sdk.types import (
+    from claude_agent_sdk.types import (  # type: ignore[import-not-found]
         ClaudeAgentOptions as FreshOptions,
         ResultMessage as FreshResult,
     )
