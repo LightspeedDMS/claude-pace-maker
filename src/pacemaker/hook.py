@@ -240,7 +240,7 @@ def inject_subagent_reminder(config: dict):
 
 
 def run_hook():
-    """Main hook execution."""
+    """Main hook execution with pacing AND code review."""
 
     # Load configuration
     config = load_config(DEFAULT_CONFIG_PATH)
@@ -251,6 +251,7 @@ def run_hook():
 
     # Read hook data from stdin to get tool_name
     tool_name = None
+    hook_data = None
     try:
         raw_input = sys.stdin.read()
         if raw_input:
@@ -356,6 +357,38 @@ def run_hook():
         )
         inject_subagent_reminder(config)
         print("[PACING] DEBUG: Reminder injected", file=sys.stderr, flush=True)
+
+    # =========================================================================
+    # NEW: Post-tool code review validation (Phase 5)
+    # =========================================================================
+    try:
+        if config.get("intent_validation_enabled", False) and hook_data:
+            if tool_name in ["Write", "Edit"]:
+                tool_input = hook_data.get("tool_input", {})
+                file_path = tool_input.get("file_path")
+                transcript_path = hook_data.get("transcript_path")
+
+                if file_path and transcript_path:
+                    # Check if source code file
+                    from . import extension_registry, code_reviewer
+
+                    extensions = extension_registry.load_extensions(
+                        DEFAULT_EXTENSION_REGISTRY_PATH
+                    )
+
+                    if extension_registry.is_source_code_file(file_path, extensions):
+                        # Validate code against intent
+                        messages = get_last_n_assistant_messages(transcript_path, n=3)
+                        feedback = code_reviewer.validate_code_against_intent(
+                            file_path, messages
+                        )
+
+                        if feedback:
+                            # Print feedback to stdout so Claude sees it
+                            print(feedback, file=sys.stdout, flush=True)
+    except Exception:
+        # Fail silently - don't break pacing functionality
+        pass
 
     # Save state (always save to persist counter)
     state_changed = True
