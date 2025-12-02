@@ -122,6 +122,8 @@ def run_session_start_hook():
 
     Resets subagent_counter to 0 and in_subagent to false to ensure clean state.
     This prevents state corruption from cancelled subagents.
+
+    Also displays intent validation mandate if feature is enabled.
     """
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
@@ -134,6 +136,23 @@ def run_session_start_hook():
 
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
+
+    # Display intent validation mandate if enabled
+    try:
+        config = load_config(DEFAULT_CONFIG_PATH)
+        if config.get("intent_validation_enabled", False):
+            print("\n" + "=" * 70)
+            print("⚠️  INTENT VALIDATION ENABLED")
+            print("=" * 70)
+            print("\nBefore modifying code files, you MUST declare your intent:")
+            print("  1. What file you're modifying")
+            print("  2. What changes you're making")
+            print("  3. Why/goal of the changes")
+            print("\nExample: 'I will modify src/auth.py to add JWT validation'")
+            print("=" * 70 + "\n")
+    except Exception:
+        # Fail silently - don't break session start
+        pass
 
 
 def run_subagent_start_hook():
