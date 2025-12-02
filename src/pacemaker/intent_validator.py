@@ -58,8 +58,7 @@ def truncate_user_message(message: str, max_length: int) -> str:
 
 # Try to import Claude Agent SDK
 try:
-    from claude_agent_sdk import query
-    from claude_agent_sdk.types import ClaudeAgentOptions, ResultMessage
+    import claude_agent_sdk  # noqa: F401 - used dynamically in _fresh_sdk_call
 
     SDK_AVAILABLE = True
 except ImportError:
@@ -193,6 +192,45 @@ def parse_sdk_response(response_text: str) -> Dict[str, Any]:
         return {"continue": True}
 
 
+def _is_limit_error(response: str) -> bool:
+    """Check if response indicates usage limit error."""
+    if not response:
+        return False
+    lower = response.lower()
+    return "usage limit" in lower or "limit reached" in lower or "resets" in lower
+
+
+async def _fresh_sdk_call(prompt: str, model: str) -> str:
+    """Call SDK with fresh imports and objects for each call."""
+    # Fresh import to avoid any cached state
+    from claude_agent_sdk import query as fresh_query
+    from claude_agent_sdk.types import (
+        ClaudeAgentOptions as FreshOptions,
+        ResultMessage as FreshResult,
+    )
+
+    # Create fresh options object
+    options = FreshOptions(
+        max_turns=1,
+        model=model,
+        system_prompt="You are acting as the user who originally made this request. Judge if Claude delivered what you asked for.",
+        disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
+    )
+
+    response_text = ""
+    # SDK may throw exception after returning result (e.g., on usage limit)
+    # Capture the response before any exception
+    try:
+        async for message in fresh_query(prompt=prompt, options=options):
+            if isinstance(message, FreshResult):
+                if hasattr(message, "result") and message.result:
+                    response_text = message.result.strip()
+    except Exception:
+        # Exception after getting response is OK - we have what we need
+        pass
+    return response_text
+
+
 async def call_sdk_validation_async(
     all_user_messages: List[str],
     last_assistant_messages: List[str],
@@ -200,52 +238,23 @@ async def call_sdk_validation_async(
 ) -> str:
     """
     Call Claude Agent SDK for intent validation.
-
-    Args:
-        all_user_messages: ALL user messages (complete user intent)
-        last_assistant_messages: Last N assistant messages (recent responses)
-        last_assistant: Last assistant message (very last, highlighted separately)
-
-    Returns:
-        SDK response text
-
-    Raises:
-        Exception if SDK call fails
+    Tries sonnet first, falls back to opus if sonnet hits usage limit.
     """
     if not SDK_AVAILABLE:
         raise ImportError("Claude Agent SDK not available")
 
-    # Build validation prompt
     prompt = build_validation_prompt(
         all_user_messages, last_assistant_messages, last_assistant
     )
 
-    # Configure SDK options
-    options = ClaudeAgentOptions(
-        max_turns=1,
-        model="claude-sonnet-4-5",
-        system_prompt="You are acting as the user who originally made this request. Judge if Claude delivered what you asked for.",
-        disallowed_tools=[
-            "Write",
-            "Edit",
-            "Bash",
-            "TodoWrite",
-            "Read",
-            "Grep",
-            "Glob",
-        ],
-        max_thinking_tokens=2000,
-    )
+    # Try sonnet first
+    response = await _fresh_sdk_call(prompt, "claude-sonnet-4-5-20250929")
 
-    # Call SDK
-    response_text = ""
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, ResultMessage):
-            if hasattr(message, "result") and message.result:
-                response_text = message.result.strip()
-                break
+    # If sonnet hit usage limit, fall back to opus
+    if _is_limit_error(response):
+        response = await _fresh_sdk_call(prompt, "claude-opus-4-5-20251101")
 
-    return response_text
+    return response
 
 
 def call_sdk_validation(
@@ -333,10 +342,27 @@ def validate_intent(
             last_assistant=last_assistant,
         )
 
+        # Log raw SDK response for debugging
+        from .constants import DEFAULT_CONFIG_PATH
+
+        debug_log = os.path.join(
+            os.path.dirname(DEFAULT_CONFIG_PATH), "stop_hook_debug.log"
+        )
+        with open(debug_log, "a") as f:
+            f.write(
+                f"SDK raw response: {sdk_response[:500] if sdk_response else 'EMPTY'}\n"
+            )
+
         # Parse response
         return parse_sdk_response(sdk_response)
 
     except Exception as e:
         # Any error - fail open (graceful degradation)
-        logger.debug(f"Intent validation error (failing open): {e}")
+        from .constants import DEFAULT_CONFIG_PATH
+
+        debug_log = os.path.join(
+            os.path.dirname(DEFAULT_CONFIG_PATH), "stop_hook_debug.log"
+        )
+        with open(debug_log, "a") as f:
+            f.write(f"SDK ERROR (failing open): {e}\n")
         return {"continue": True}
