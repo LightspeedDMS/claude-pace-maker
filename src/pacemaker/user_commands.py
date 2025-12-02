@@ -76,6 +76,17 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_tempo.group(1),
         }
 
+    # Pattern 5: pace-maker reminder (on|off) - subagent reminder control
+    pattern_reminder = r"^pace-maker\s+reminder\s+(on|off)$"
+    match_reminder = re.match(pattern_reminder, normalized)
+
+    if match_reminder:
+        return {
+            "is_pace_maker_command": True,
+            "command": "reminder",
+            "subcommand": match_reminder.group(1),
+        }
+
     return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
@@ -115,6 +126,8 @@ def execute_command(
         return _execute_weekly_limit(config_path, subcommand)
     elif command == "tempo":
         return _execute_tempo(config_path, subcommand)
+    elif command == "reminder":
+        return _execute_reminder(config_path, subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -170,6 +183,7 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         enabled = config.get("enabled", False)
         weekly_limit_enabled = config.get("weekly_limit_enabled", True)
         tempo_enabled = config.get("tempo_enabled", True)
+        subagent_reminder_enabled = config.get("subagent_reminder_enabled", True)
 
         # Build status message
         status_text = "Pace Maker: ACTIVE" if enabled else "Pace Maker: INACTIVE"
@@ -177,6 +191,7 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
             f"\nWeekly Limit: {'ENABLED' if weekly_limit_enabled else 'DISABLED'}"
         )
         status_text += f"\nTempo Tracking: {'ENABLED' if tempo_enabled else 'DISABLED'}"
+        status_text += f"\nSubagent Reminder: {'ENABLED' if subagent_reminder_enabled else 'DISABLED'}"
 
         # Try to get usage data
         usage_data = None
@@ -295,6 +310,8 @@ COMMANDS:
   pace-maker tempo off        Disable session lifecycle tracking (global)
   pace-maker tempo session on Enable tempo for this session only
   pace-maker tempo session off Disable tempo for this session only
+  pace-maker reminder on      Enable subagent reminder (Write/Edit nudge)
+  pace-maker reminder off     Disable subagent reminder
 
 WEEKLY LIMIT:
   The weekly limiter uses weekend-aware throttling to pace your usage
@@ -310,6 +327,11 @@ TEMPO TRACKING:
   Global Control: 'pace-maker tempo on/off' sets the default for all sessions
   Session Control: 'pace-maker tempo session on/off' overrides the global
                    setting for the current session only
+
+SUBAGENT REMINDER:
+  When enabled, using Write or Edit tools in main context will trigger
+  a reminder to delegate code changes to subagents (tdd-engineer,
+  code-surgeon, etc). Also triggers every N tool executions (default: 5).
 
 CONFIGURATION:
   Config file: ~/.claude-pace-maker/config.json
@@ -356,6 +378,37 @@ def _execute_weekly_limit(
         return {
             "success": False,
             "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker weekly-limit [on|off]",
+        }
+
+
+def _execute_reminder(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
+    """Enable or disable subagent reminder (Write/Edit nudge in main context)."""
+    if subcommand == "on":
+        try:
+            config = _load_config(config_path)
+            config["subagent_reminder_enabled"] = True
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": "✓ Subagent Reminder ENABLED\nWrite/Edit tool usage in main context will trigger a reminder to use subagents.",
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error enabling reminder: {str(e)}"}
+    elif subcommand == "off":
+        try:
+            config = _load_config(config_path)
+            config["subagent_reminder_enabled"] = False
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": "✓ Subagent Reminder DISABLED\nWrite/Edit tool usage will not trigger reminders.",
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error disabling reminder: {str(e)}"}
+    else:
+        return {
+            "success": False,
+            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker reminder [on|off]",
         }
 
 

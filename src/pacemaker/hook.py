@@ -200,8 +200,8 @@ def should_inject_reminder(state: dict, config: dict, tool_name: str = None) -> 
     if not config.get("subagent_reminder_enabled", True):
         return False
 
-    # IMMEDIATE NUDGE: Write tool used in main context
-    if tool_name == "Write":
+    # IMMEDIATE NUDGE: Write or Edit tool used in main context
+    if tool_name in ("Write", "Edit"):
         return True
 
     # COUNTER-BASED NUDGE: Check frequency (every 5 executions by default)
