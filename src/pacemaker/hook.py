@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 import json
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from . import pacing_engine, database, user_commands
 from .constants import (
@@ -20,8 +20,10 @@ from .constants import (
     DEFAULT_DB_PATH,
     DEFAULT_CONFIG_PATH,
     DEFAULT_STATE_PATH,
+    DEFAULT_EXTENSION_REGISTRY_PATH,
     MAX_DELAY_SECONDS,
 )
+from .transcript_reader import get_last_n_assistant_messages
 
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
@@ -631,8 +633,87 @@ def run_stop_hook():
         return {"continue": True}
 
 
+def run_pre_tool_hook() -> Dict[str, Any]:
+    """
+    Pre-tool hook: Validate intent before Write/Edit on source code files.
+
+    Reads stdin for hook data:
+    {
+      "session_id": "...",
+      "transcript_path": "/path/to/conversation.jsonl",
+      "tool_name": "Write",
+      "tool_input": {
+        "file_path": "/path/to/file.py",
+        "content": "..."
+      }
+    }
+
+    Returns:
+      {"continue": True} - Allow tool use
+      {"decision": "block", "reason": "..."} - Block tool use
+
+    Exit code 0: Allow, Exit code 2: Block
+    """
+    try:
+        # 1. Read JSON from stdin
+        raw_input = sys.stdin.read()
+        hook_data = json.loads(raw_input)
+
+        # 2. Extract fields
+        tool_name = hook_data.get("tool_name")
+        tool_input = hook_data.get("tool_input", {})
+        file_path = tool_input.get("file_path")
+        transcript_path = hook_data.get("transcript_path")
+
+        # 3. Load config
+        config = load_config(DEFAULT_CONFIG_PATH)
+
+        # 4. Check if feature enabled
+        if not config.get("intent_validation_enabled", False):
+            return {"continue": True}
+
+        # 5. Check if source code file
+        from . import extension_registry
+
+        extensions = extension_registry.load_extensions(DEFAULT_EXTENSION_REGISTRY_PATH)
+        if not extension_registry.is_source_code_file(file_path, extensions):
+            return {"continue": True}
+
+        # 6. Read last 3 assistant messages
+        messages = get_last_n_assistant_messages(transcript_path, n=3)
+
+        # 7. Validate intent declared
+        from .intent_validator import validate_intent_declared
+
+        result = validate_intent_declared(messages, file_path, tool_name)
+
+        # 8. Block if no intent
+        if not result["intent_found"]:
+            return {
+                "decision": "block",
+                "reason": "⛔ Intent declaration required: You must declare your intent before modifying code files. Specify: (1) what file you're modifying, (2) what changes you're making, (3) why/goal of changes.",
+            }
+
+        return {"continue": True}
+
+    except Exception as e:
+        # Fail open on any error - graceful degradation
+        print(f"[PACE-MAKER ERROR] Pre-tool hook: {e}", file=sys.stderr)
+        return {"continue": True}
+
+
 def main():
     """Entry point for hook script."""
+    # Check if this is pre_tool_use hook
+    if len(sys.argv) > 1 and sys.argv[1] == "pre_tool_use":
+        result = run_pre_tool_hook()
+        print(json.dumps(result), file=sys.stdout, flush=True)
+
+        if result.get("decision") == "block":
+            sys.exit(2)  # Block tool use
+        else:
+            sys.exit(0)  # Allow tool use
+
     # Check if this is stop hook
     if len(sys.argv) > 1 and sys.argv[1] == "stop":
         result = run_stop_hook()
