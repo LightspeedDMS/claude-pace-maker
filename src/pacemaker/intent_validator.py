@@ -213,6 +213,7 @@ async def _fresh_sdk_call(prompt: str, model: str) -> str:
     options = FreshOptions(
         max_turns=1,
         model=model,
+        max_thinking_tokens=4000,
         system_prompt="You are acting as the user who originally made this request. Judge if Claude delivered what you asked for.",
         disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
     )
