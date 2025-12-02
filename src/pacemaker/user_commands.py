@@ -87,6 +87,17 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_reminder.group(1),
         }
 
+    # Pattern 6: pace-maker intent-validation (on|off) - intent validation control
+    pattern_intent = r"^pace-maker\s+intent-validation\s+(on|off)$"
+    match_intent = re.match(pattern_intent, normalized)
+
+    if match_intent:
+        return {
+            "is_pace_maker_command": True,
+            "command": "intent-validation",
+            "subcommand": match_intent.group(1),
+        }
+
     return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
@@ -128,6 +139,8 @@ def execute_command(
         return _execute_tempo(config_path, subcommand)
     elif command == "reminder":
         return _execute_reminder(config_path, subcommand)
+    elif command == "intent-validation":
+        return _execute_intent_validation(config_path, subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -184,6 +197,7 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         weekly_limit_enabled = config.get("weekly_limit_enabled", True)
         tempo_enabled = config.get("tempo_enabled", True)
         subagent_reminder_enabled = config.get("subagent_reminder_enabled", True)
+        intent_validation_enabled = config.get("intent_validation_enabled", False)
 
         # Build status message
         status_text = "Pace Maker: ACTIVE" if enabled else "Pace Maker: INACTIVE"
@@ -192,6 +206,7 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         )
         status_text += f"\nTempo Tracking: {'ENABLED' if tempo_enabled else 'DISABLED'}"
         status_text += f"\nSubagent Reminder: {'ENABLED' if subagent_reminder_enabled else 'DISABLED'}"
+        status_text += f"\nIntent Validation: {'ENABLED' if intent_validation_enabled else 'DISABLED'}"
 
         # Try to get usage data
         usage_data = None
@@ -299,19 +314,21 @@ def _execute_help(config_path: str) -> Dict[str, Any]:
     help_text = """Pace Maker - Credit-Aware Adaptive Throttling
 
 COMMANDS:
-  pace-maker on               Enable pace maker throttling
-  pace-maker off              Disable pace maker throttling
-  pace-maker status           Show current status and usage
-  pace-maker version          Show version information
-  pace-maker help             Show this help message
-  pace-maker weekly-limit on  Enable weekly (7-day) limit throttling
-  pace-maker weekly-limit off Disable weekly limit throttling
-  pace-maker tempo on         Enable session lifecycle tracking (global)
-  pace-maker tempo off        Disable session lifecycle tracking (global)
-  pace-maker tempo session on Enable tempo for this session only
-  pace-maker tempo session off Disable tempo for this session only
-  pace-maker reminder on      Enable subagent reminder (Write/Edit nudge)
-  pace-maker reminder off     Disable subagent reminder
+  pace-maker on                   Enable pace maker throttling
+  pace-maker off                  Disable pace maker throttling
+  pace-maker status               Show current status and usage
+  pace-maker version              Show version information
+  pace-maker help                 Show this help message
+  pace-maker weekly-limit on      Enable weekly (7-day) limit throttling
+  pace-maker weekly-limit off     Disable weekly limit throttling
+  pace-maker tempo on             Enable session lifecycle tracking (global)
+  pace-maker tempo off            Disable session lifecycle tracking (global)
+  pace-maker tempo session on     Enable tempo for this session only
+  pace-maker tempo session off    Disable tempo for this session only
+  pace-maker reminder on          Enable subagent reminder (Write/Edit nudge)
+  pace-maker reminder off         Disable subagent reminder
+  pace-maker intent-validation on Enable intent validation before code changes
+  pace-maker intent-validation off Disable intent validation
 
 WEEKLY LIMIT:
   The weekly limiter uses weekend-aware throttling to pace your usage
@@ -332,6 +349,15 @@ SUBAGENT REMINDER:
   When enabled, using Write or Edit tools in main context will trigger
   a reminder to delegate code changes to subagents (tdd-engineer,
   code-surgeon, etc). Also triggers every N tool executions (default: 5).
+
+INTENT VALIDATION:
+  When enabled, Claude must declare intent before modifying source code files.
+  The pre-tool hook blocks Write/Edit operations on source files unless Claude
+  has clearly stated: (1) what file is being modified, (2) what changes are
+  being made, and (3) why/goal of the changes.
+
+  Source code extensions are configured in:
+  ~/.claude-pace-maker/source_code_extensions.json
 
 CONFIGURATION:
   Config file: ~/.claude-pace-maker/config.json
@@ -409,6 +435,45 @@ def _execute_reminder(config_path: str, subcommand: Optional[str]) -> Dict[str, 
         return {
             "success": False,
             "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker reminder [on|off]",
+        }
+
+
+def _execute_intent_validation(
+    config_path: str, subcommand: Optional[str]
+) -> Dict[str, Any]:
+    """Enable or disable intent validation before code changes."""
+    if subcommand == "on":
+        try:
+            config = _load_config(config_path)
+            config["intent_validation_enabled"] = True
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": "✓ Intent Validation ENABLED\nClaude must declare intent before modifying source code files.",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error enabling intent validation: {str(e)}",
+            }
+    elif subcommand == "off":
+        try:
+            config = _load_config(config_path)
+            config["intent_validation_enabled"] = False
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": "✓ Intent Validation DISABLED\nCode modifications will not require intent declarations.",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error disabling intent validation: {str(e)}",
+            }
+    else:
+        return {
+            "success": False,
+            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker intent-validation [on|off]",
         }
 
 
