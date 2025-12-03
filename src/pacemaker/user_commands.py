@@ -677,3 +677,75 @@ def _get_latest_usage(db_path: str) -> Optional[Dict[str, Any]]:
         return None
     except Exception:
         return None
+
+
+def main():
+    """CLI entry point for pace-maker command."""
+    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="pace-maker",
+        description="Claude Pace Maker - Credit-Aware Adaptive Throttling",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  pace-maker on                      Enable pace maker throttling
+  pace-maker off                     Disable pace maker throttling
+  pace-maker status                  Show current status and usage
+  pace-maker weekly-limit on         Enable weekly (7-day) limit throttling
+  pace-maker tempo session on        Enable tempo for current session only
+  pace-maker reminder off            Disable subagent reminder
+  pace-maker intent-validation on    Enable intent validation
+
+For more information, run: pace-maker help
+        """,
+    )
+
+    # Main commands
+    parser.add_argument(
+        "command",
+        choices=[
+            "on",
+            "off",
+            "status",
+            "help",
+            "version",
+            "weekly-limit",
+            "tempo",
+            "reminder",
+            "intent-validation",
+        ],
+        help="Command to execute",
+    )
+
+    # Optional subcommand (for weekly-limit, tempo, reminder, intent-validation)
+    parser.add_argument(
+        "subcommand",
+        nargs="?",
+        help="Subcommand (on|off|session) for weekly-limit, tempo, reminder, intent-validation",
+    )
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Import constants for default paths
+    from .constants import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH
+
+    # Execute command
+    result = execute_command(
+        command=args.command,
+        config_path=DEFAULT_CONFIG_PATH,
+        db_path=DEFAULT_DB_PATH,
+        subcommand=args.subcommand,
+    )
+
+    # Print message
+    print(result["message"])
+
+    # Exit with appropriate code
+    sys.exit(0 if result["success"] else 1)
+
+
+if __name__ == "__main__":
+    main()

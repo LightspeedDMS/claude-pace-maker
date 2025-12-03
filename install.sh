@@ -525,6 +525,76 @@ install_hooks() {
   echo -e "${GREEN}✓ Hook scripts installed${NC}"
 }
 
+# Install CLI command
+install_cli() {
+  echo "Installing pace-maker CLI..."
+
+  # Ensure ~/.local/bin exists
+  mkdir -p "$HOME/.local/bin"
+
+  # Detect CLI source (dev: bin/pace-maker, pipx: pace-maker)
+  if [ -f "$SCRIPT_DIR/bin/pace-maker" ]; then
+    CLI_SOURCE="$SCRIPT_DIR/bin/pace-maker"
+  elif [ -f "$SCRIPT_DIR/pace-maker" ]; then
+    CLI_SOURCE="$SCRIPT_DIR/pace-maker"
+  else
+    echo -e "${YELLOW}⚠ Warning: CLI script not found, skipping${NC}"
+    return 0
+  fi
+
+  # Copy CLI to ~/.local/bin
+  echo "Installing pace-maker command to ~/.local/bin/pace-maker..."
+  cp "$CLI_SOURCE" "$HOME/.local/bin/pace-maker"
+  chmod +x "$HOME/.local/bin/pace-maker"
+
+  # Copy Python modules to support CLI (dev mode only - pipx handles this)
+  if [ -d "$SCRIPT_DIR/src/pacemaker" ]; then
+    echo "Installing Python modules to $PACEMAKER_DIR/pacemaker..."
+    mkdir -p "$PACEMAKER_DIR/pacemaker"
+    cp -r "$SCRIPT_DIR/src/pacemaker"/* "$PACEMAKER_DIR/pacemaker/"
+
+    # Update CLI wrapper to use installed modules
+    cat > "$HOME/.local/bin/pace-maker" <<'EOF'
+#!/usr/bin/env python3
+"""
+pace-maker CLI wrapper.
+
+This script provides the user-facing CLI for Claude Pace Maker.
+It executes the main() function from the user_commands module.
+"""
+
+import sys
+import os
+
+# Add the installed pacemaker package to the Python path
+PACEMAKER_LIB = os.path.expanduser("~/.claude-pace-maker")
+if os.path.exists(PACEMAKER_LIB):
+    sys.path.insert(0, PACEMAKER_LIB)
+
+try:
+    from pacemaker.user_commands import main
+    main()
+except ImportError as e:
+    print(f"Error: Could not import pace-maker modules: {e}", file=sys.stderr)
+    print("Please ensure pace-maker is properly installed.", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
+    sys.exit(1)
+EOF
+    chmod +x "$HOME/.local/bin/pace-maker"
+  fi
+
+  # Check if ~/.local/bin is in PATH
+  if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+    echo -e "${YELLOW}⚠ Warning: ~/.local/bin is not in your PATH${NC}"
+    echo "  Add this line to your ~/.bashrc or ~/.zshrc:"
+    echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
+
+  echo -e "${GREEN}✓ CLI installed${NC}"
+}
+
 # Create default configuration
 create_config() {
   echo "Creating configuration..."
@@ -907,6 +977,7 @@ main() {
   install_python_deps
   create_directories
   install_hooks
+  install_cli
   create_config
   init_database
   register_hooks
@@ -924,9 +995,12 @@ main() {
     fi
     echo "Configuration: $PACEMAKER_DIR/config.json"
     echo "Database: $PACEMAKER_DIR/usage.db"
+    echo "CLI command: ~/.local/bin/pace-maker"
     echo ""
     echo "The pace maker will automatically monitor your usage and"
     echo "introduce delays when approaching rate limits."
+    echo ""
+    echo "Try running: pace-maker status"
   else
     echo ""
     echo -e "${RED}Installation completed with errors.${NC}"
