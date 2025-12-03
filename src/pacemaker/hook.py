@@ -717,6 +717,10 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         file_path = tool_input.get("file_path")
         transcript_path = hook_data.get("transcript_path")
 
+        # 2a. Only validate Write/Edit tools (defense against query filter bugs)
+        if tool_name not in ["Write", "Edit"]:
+            return {"continue": True}
+
         # 3. Load config
         config = load_config(DEFAULT_CONFIG_PATH)
 
