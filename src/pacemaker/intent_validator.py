@@ -430,10 +430,11 @@ async def _call_sdk_intent_validation_async(prompt: str) -> str:
         ResultMessage as FreshResult,
     )
 
-    # Use Haiku for speed (no thinking tokens needed)
+    # Use Sonnet for better natural language understanding
     options = FreshOptions(
         max_turns=1,
-        model="claude-haiku-4-20250514",
+        model="claude-sonnet-4-5-20250929",
+        max_thinking_tokens=2000,
         system_prompt="You are validating if intent was declared. Respond with YES or NO only.",
         disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
     )
