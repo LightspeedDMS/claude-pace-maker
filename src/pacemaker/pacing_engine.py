@@ -9,7 +9,6 @@ Orchestrates:
 - Hybrid delay strategy
 """
 
-import sys
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 from . import calculator, database, api_client, adaptive_throttle
@@ -331,11 +330,6 @@ def run_pacing_check(
 
         if cached_decision:
             # Return cached decision to maintain throttling between polls
-            print(
-                f"[PACING] Using cached decision: throttle={cached_decision['should_throttle']}, delay={cached_decision['delay_seconds']}s",
-                file=sys.stderr,
-                flush=True,
-            )
             return {
                 "polled": False,
                 "decision": {
@@ -346,11 +340,6 @@ def run_pacing_check(
             }
         else:
             # No cached decision - graceful degradation (no throttling)
-            print(
-                "[PACING] No cached decision found - no throttling",
-                file=sys.stderr,
-                flush=True,
-            )
             return {
                 "polled": False,
                 "decision": {"should_throttle": False, "delay_seconds": 0},

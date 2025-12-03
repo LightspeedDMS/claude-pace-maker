@@ -103,13 +103,7 @@ def execute_delay(delay_seconds: int):
     if delay_seconds > 0:
         # Cap at MAX_DELAY_SECONDS (360s timeout - 10s safety margin)
         actual_delay = min(delay_seconds, MAX_DELAY_SECONDS)
-        print(
-            f"[PACING] Sleeping for {actual_delay} seconds...",
-            file=sys.stderr,
-            flush=True,
-        )
         time.sleep(actual_delay)
-        print("[PACING] Sleep complete", file=sys.stderr, flush=True)
 
 
 def inject_prompt_delay(prompt: str):
@@ -393,23 +387,13 @@ def run_hook():
         # Check if this is a cached decision (has delay_seconds directly)
         if "delay_seconds" in decision and not strategy:
             delay = decision.get("delay_seconds", 0)
-            method = "direct"  # Cached decisions always use direct sleep
         else:
             # Fresh decision with strategy
             delay = strategy.get("delay_seconds", 0)
-            method = strategy.get("method", "direct")
-
-        print(
-            f"[PACING] Throttling for {delay}s (method={method}, cached={result.get('cached', False)})",
-            file=sys.stderr,
-            flush=True,
-        )
 
         # Always execute delay if delay > 0
         if delay > 0:
             execute_delay(delay)
-    else:
-        print("[PACING] No throttling needed", file=sys.stderr, flush=True)
 
     # Capture subagent reminder if conditions met (don't print yet)
     if should_inject_reminder(state, config, tool_name):
