@@ -26,6 +26,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "conversation_context_size": 5,
     "user_message_max_length": 4096,
     "intent_validation_enabled": False,
+    "stop_hook_token_budget": 16000,
+    "stop_hook_first_n_pairs": 10,
 }
 
 # Default file paths

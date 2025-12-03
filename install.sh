@@ -895,7 +895,7 @@ register_hooks() {
          {"type": "command", "command": $pre_tool_hook, "timeout": 60, "query": "Edit"}
        ]
      }] |
-     .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_hook}]}] |
+     .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_hook, "timeout": 120}]}] |
      .hooks.SessionStart += [{"hooks": [{"type": "command", "command": $session_start_hook, "timeout": 10}]}] |
      .hooks.SubagentStart += [{"hooks": [{"type": "command", "command": $subagent_start_hook, "timeout": 10}]}] |
      .hooks.SubagentStop += [{"hooks": [{"type": "command", "command": $subagent_stop_hook, "timeout": 10}]}]

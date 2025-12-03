@@ -17,8 +17,8 @@ import asyncio
 from typing import Any, Dict, List
 
 from .transcript_reader import (
-    get_all_user_messages,
-    get_last_n_assistant_messages,
+    build_stop_hook_context,
+    format_stop_hook_context,
 )
 from .constants import DEFAULT_CONFIG
 
@@ -133,60 +133,21 @@ def get_pre_tool_prompt_template() -> str:
     return load_prompt_template(prompt_path)
 
 
-def build_validation_prompt(
-    all_user_messages: List[str],
-    last_assistant_messages: List[str],
-    last_assistant: str,
-) -> str:
+def build_validation_prompt(conversation_context: str) -> str:
     """
     Build SDK validation prompt from template.
 
     Args:
-        all_user_messages: ALL user messages (complete user intent from start to finish)
-        last_assistant_messages: Last N assistant messages (recent responses showing what Claude did)
-        last_assistant: Last assistant message (what Claude just said, highlighted separately)
+        conversation_context: Formatted conversation context from format_stop_hook_context()
 
     Returns:
         Complete validation prompt for SDK
     """
-    # Get max length from config
-    max_length = get_config("user_message_max_length")
-
-    # Format all user messages with truncation
-    if all_user_messages:
-        truncated_messages = [
-            truncate_user_message(msg, max_length) for msg in all_user_messages
-        ]
-        all_user_text = "\n\n".join(
-            [f"Message {i+1}:\n{msg}" for i, msg in enumerate(truncated_messages)]
-        )
-    else:
-        all_user_text = "(No messages available)"
-
-    # Format last assistant messages
-    if last_assistant_messages:
-        assistant_messages_text = "\n\n".join(
-            [f"Message {i+1}:\n{msg}" for i, msg in enumerate(last_assistant_messages)]
-        )
-    else:
-        assistant_messages_text = "(No messages available)"
-
-    # Format last assistant
-    assistant_text = last_assistant if last_assistant else "(No response available)"
-
-    # Determine N for template (number of assistant messages shown)
-    n = len(last_assistant_messages) if last_assistant_messages else 5
-
     # Get template from external file
     template = get_prompt_template()
 
     # Fill template
-    return template.format(
-        n=n,
-        all_user_messages=all_user_text,
-        last_assistant_messages=assistant_messages_text,
-        last_assistant=assistant_text,
-    )
+    return template.format(conversation_context=conversation_context)
 
 
 def parse_sdk_response(response_text: str) -> Dict[str, Any]:
@@ -228,6 +189,18 @@ def _is_limit_error(response: str) -> bool:
 
 async def _fresh_sdk_call(prompt: str, model: str) -> str:
     """Call SDK with fresh imports and objects for each call."""
+    from datetime import datetime
+    from .constants import DEFAULT_CONFIG_PATH
+
+    debug_log = os.path.join(
+        os.path.dirname(DEFAULT_CONFIG_PATH), "stop_hook_debug.log"
+    )
+
+    with open(debug_log, "a") as f:
+        f.write(
+            f"[{datetime.now()}] _fresh_sdk_call: START model={model}, prompt_len={len(prompt)}\n"
+        )
+
     # Fresh import to avoid any cached state
     from claude_agent_sdk import query as fresh_query
     from claude_agent_sdk.types import (  # type: ignore[import-not-found]
@@ -244,35 +217,53 @@ async def _fresh_sdk_call(prompt: str, model: str) -> str:
         disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
     )
 
+    with open(debug_log, "a") as f:
+        f.write(f"[{datetime.now()}] _fresh_sdk_call: Starting async iteration\n")
+
     response_text = ""
     # SDK may throw exception after returning result (e.g., on usage limit)
     # Capture the response before any exception
     try:
         async for message in fresh_query(prompt=prompt, options=options):
+            with open(debug_log, "a") as f:
+                f.write(
+                    f"[{datetime.now()}] _fresh_sdk_call: Got message type={type(message).__name__}\n"
+                )
             if isinstance(message, FreshResult):
                 if hasattr(message, "result") and message.result:
                     response_text = message.result.strip()
     except Exception:
         # Exception after getting response is OK - we have what we need
-        pass
+        import traceback
+
+        with open(debug_log, "a") as f:
+            f.write(
+                f"[{datetime.now()}] _fresh_sdk_call: EXCEPTION: {traceback.format_exc()}\n"
+            )
+
+    with open(debug_log, "a") as f:
+        f.write(
+            f"[{datetime.now()}] _fresh_sdk_call: RETURN response_len={len(response_text)}, preview={response_text[:100] if response_text else 'EMPTY'}\n"
+        )
+
     return response_text
 
 
-async def call_sdk_validation_async(
-    all_user_messages: List[str],
-    last_assistant_messages: List[str],
-    last_assistant: str,
-) -> str:
+async def call_sdk_validation_async(conversation_context: str) -> str:
     """
     Call Claude Agent SDK for intent validation.
     Tries sonnet first, falls back to opus if sonnet hits usage limit.
+
+    Args:
+        conversation_context: Formatted conversation context from format_stop_hook_context()
+
+    Returns:
+        SDK response text
     """
     if not SDK_AVAILABLE:
         raise ImportError("Claude Agent SDK not available")
 
-    prompt = build_validation_prompt(
-        all_user_messages, last_assistant_messages, last_assistant
-    )
+    prompt = build_validation_prompt(conversation_context)
 
     # Try sonnet first
     response = await _fresh_sdk_call(prompt, "claude-sonnet-4-5-20250929")
@@ -284,18 +275,12 @@ async def call_sdk_validation_async(
     return response
 
 
-def call_sdk_validation(
-    all_user_messages: List[str],
-    last_assistant_messages: List[str],
-    last_assistant: str,
-) -> str:
+def call_sdk_validation(conversation_context: str) -> str:
     """
     Synchronous wrapper for SDK validation call.
 
     Args:
-        all_user_messages: ALL user messages (complete user intent)
-        last_assistant_messages: Last N assistant messages
-        last_assistant: Last assistant message
+        conversation_context: Formatted conversation context from format_stop_hook_context()
 
     Returns:
         SDK response text
@@ -309,13 +294,7 @@ def call_sdk_validation(
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    return loop.run_until_complete(
-        call_sdk_validation_async(
-            all_user_messages,
-            last_assistant_messages,
-            last_assistant,
-        )
-    )
+    return loop.run_until_complete(call_sdk_validation_async(conversation_context))
 
 
 def validate_intent(
@@ -326,18 +305,17 @@ def validate_intent(
     """
     Validate if Claude completed user's original intent.
 
-    Main function for Stop hook intent validation:
-    1. Extract ALL user messages from transcript (complete user intent)
-    2. Extract last N assistant messages from transcript (what Claude did)
-    3. Extract very last assistant message (highlighted separately)
+    Uses first-pairs + backwards-walk algorithm:
+    1. Extract first N user/assistant pairs (session goals)
+    2. Walk backwards from end to fill remaining token budget
+    3. Format context with truncation marker
     4. Call SDK to validate completion
     5. Parse response and return decision
 
     Args:
         session_id: Session ID (currently unused but kept for compatibility)
         transcript_path: Path to conversation transcript
-        conversation_context_size: Number of assistant messages to extract (default: 5)
-                                   Note: ALL user messages are always extracted
+        conversation_context_size: Deprecated - now uses config settings
 
     Returns:
         Decision dict:
@@ -349,25 +327,28 @@ def validate_intent(
         if not os.path.exists(transcript_path):
             return {"continue": True}
 
-        # Extract context from transcript
-        all_user_messages = get_all_user_messages(transcript_path)
-        last_assistant_messages = get_last_n_assistant_messages(
-            transcript_path, n=conversation_context_size
-        )
+        # Get config values
+        from .constants import DEFAULT_CONFIG
 
-        # Extract very last assistant message from the list
-        last_assistant = last_assistant_messages[-1] if last_assistant_messages else ""
+        token_budget = DEFAULT_CONFIG.get("stop_hook_token_budget", 48000)
+        first_n_pairs = DEFAULT_CONFIG.get("stop_hook_first_n_pairs", 10)
+
+        # Build context using new algorithm
+        context = build_stop_hook_context(
+            transcript_path=transcript_path,
+            first_n_pairs=first_n_pairs,
+            token_budget=token_budget,
+        )
 
         # Fail open if no context available
-        if not all_user_messages and not last_assistant_messages and not last_assistant:
+        if not context["first_pairs"] and not context["backwards_messages"]:
             return {"continue": True}
 
+        # Format context for prompt
+        formatted_context = format_stop_hook_context(context)
+
         # Call SDK for validation
-        sdk_response = call_sdk_validation(
-            all_user_messages=all_user_messages,
-            last_assistant_messages=last_assistant_messages,
-            last_assistant=last_assistant,
-        )
+        sdk_response = call_sdk_validation(formatted_context)
 
         # Log raw SDK response for debugging
         from .constants import DEFAULT_CONFIG_PATH
