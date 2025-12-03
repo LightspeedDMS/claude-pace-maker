@@ -5,20 +5,24 @@
 1. [System Overview](#system-overview)
 2. [Core Components](#core-components)
 3. [Hook Integration](#hook-integration)
-4. [Tempo System](#tempo-system)
-5. [Throttling Algorithms](#throttling-algorithms)
-6. [Weekend-Aware Logic](#weekend-aware-logic)
-7. [Safety Buffer System](#safety-buffer-system)
-8. [Data Flow](#data-flow)
-9. [Configuration](#configuration)
-10. [Database Schema](#database-schema)
-11. [Error Handling](#error-handling)
+4. [Pre-Tool Validation System](#pre-tool-validation-system)
+5. [Tempo System](#tempo-system)
+6. [Throttling Algorithms](#throttling-algorithms)
+7. [Weekend-Aware Logic](#weekend-aware-logic)
+8. [Safety Buffer System](#safety-buffer-system)
+9. [Data Flow](#data-flow)
+10. [Configuration](#configuration)
+11. [Database Schema](#database-schema)
+12. [Error Handling](#error-handling)
 
 ---
 
 ## System Overview
 
-Claude Pace Maker is a hook-based credit throttling system for Claude Code that prevents hitting API rate limits by intelligently pacing tool executions.
+Claude Pace Maker is a hook-based system for Claude Code that provides:
+- **Credit throttling**: Prevents hitting API rate limits by intelligently pacing tool executions
+- **Pre-tool validation**: Enforces intent declaration, TDD for core code, and clean code standards
+- **Session lifecycle**: Prevents premature session endings via AI-powered completion validation
 
 ### Architecture Diagram
 
@@ -294,6 +298,177 @@ Handles `pace-maker status/on/off` commands.
 4. Save state
 
 **Python Handler**: `src/pacemaker/hook.py:run_subagent_stop_hook()`
+
+### PreToolUse Hook
+
+**Trigger**: Before Write/Edit tool executes on source code files
+**Script**: `~/.claude/hooks/pre-tool-use.sh`
+**Purpose**: Validate intent declaration, TDD requirements, and clean code standards
+
+**Flow**:
+1. Check if pace-maker master switch is enabled
+2. Check if intent validation feature is enabled
+3. Check if target file is a source code file (by extension)
+4. Extract last 5 assistant messages from transcript
+5. Call Claude SDK to validate:
+   - Intent declaration present (FILE, CHANGES, GOAL)
+   - TDD declaration for core code paths
+   - Code matches declared intent
+   - No clean code violations
+6. Return empty (allow) or error message (block)
+
+**Python Handler**: `src/pacemaker/hook.py:run_pre_tool_use_hook()`
+
+**Validation Module**: `src/pacemaker/intent_validator.py:validate_intent_and_code()`
+
+---
+
+## Pre-Tool Validation System
+
+The pre-tool validation system enforces disciplined development practices by requiring intent declaration before code modifications.
+
+### Intent Declaration Requirement
+
+Every code modification must be preceded by a clear declaration containing:
+1. **FILE**: Which file is being modified
+2. **CHANGES**: What specific changes are being made
+3. **GOAL**: Why the changes are being made
+
+**Example**:
+```
+I will modify src/auth.py to add a validate_password() function
+that checks password strength, to improve security.
+```
+
+### Light-TDD Enforcement
+
+Files in core code paths require either a test declaration or explicit user permission to skip TDD.
+
+**Core Code Paths**:
+- `src/`
+- `lib/`
+- `core/`
+- `source/`
+- `libraries/`
+- `kernel/`
+
+**Option A - Declare test coverage**:
+```
+I will modify src/auth.py to add validate_password().
+Test coverage: tests/test_auth.py - test_validate_password_rejects_weak()
+```
+
+**Option B - Quote user permission**:
+```
+I will modify src/auth.py to add validate_password().
+User permission to skip TDD: User said "skip tests for this" in message 3.
+```
+
+**Critical Rules**:
+- The quoted permission must exist in the last 5 messages
+- Fabricated or paraphrased permissions are rejected
+- The validator verifies the quote against actual message content
+
+### Clean Code Validation
+
+The validator blocks code containing these violations:
+
+| Category | Violations |
+|----------|------------|
+| Security | Hardcoded secrets, SQL injection vulnerabilities |
+| Error Handling | Bare except clauses, silently swallowed exceptions |
+| Code Quality | Magic numbers, mutable default arguments, commented-out code |
+| Structure | Deeply nested conditionals (6+), large methods (>50 lines) |
+| Logic | Off-by-one bugs, missing boundary checks |
+| Testing | Over-mocked tests (mocking code under test) |
+| Intent Match | Scope creep, missing functionality, unauthorized deletions |
+| Anti-patterns | Undeclared fallback behaviors |
+
+### Code-Intent Alignment
+
+The validator ensures code exactly matches the declared intent:
+- **No scope creep**: Cannot add functions/features not declared
+- **No missing functionality**: Must implement everything declared
+- **No unauthorized deletions**: Cannot remove code not mentioned
+
+### Validation Flow
+
+```
+Write/Edit Tool Attempted
+        │
+        ▼
+┌───────────────────────┐
+│ Master switch enabled?│──── NO ──────► ALLOW (bypass all)
+└───────────────────────┘
+        │ YES
+        ▼
+┌───────────────────────┐
+│ Intent validation on? │──── NO ──────► ALLOW (feature disabled)
+└───────────────────────┘
+        │ YES
+        ▼
+┌───────────────────────┐
+│ Source code file?     │──── NO ──────► ALLOW (non-source file)
+└───────────────────────┘
+        │ YES
+        ▼
+┌───────────────────────┐
+│ Intent declared?      │──── NO ──────► BLOCK + teach format
+└───────────────────────┘
+        │ YES
+        ▼
+┌───────────────────────┐
+│ Core code path?       │──── YES ────► Check TDD declaration
+└───────────────────────┘                      │
+        │ NO                                   ▼
+        │                    ┌─────────────────────────┐
+        │                    │ TDD or user permission? │
+        │                    └─────────────────────────┘
+        │                         │ NO         │ YES
+        │                         ▼            │
+        │                   BLOCK + request    │
+        │                   TDD declaration    │
+        │                                      │
+        ▼◄─────────────────────────────────────┘
+┌───────────────────────┐
+│ Code matches intent?  │──── NO ──────► BLOCK + explain mismatch
+└───────────────────────┘
+        │ YES
+        ▼
+┌───────────────────────┐
+│ Clean code checks     │──── FAIL ────► BLOCK + explain violation
+└───────────────────────┘
+        │ PASS
+        ▼
+    ✓ ALLOW EDIT
+```
+
+### Message Context Packaging
+
+The validator uses the last 5 assistant messages with special formatting:
+- **Messages 1-4**: Text only (tool parameters stripped)
+- **Message 5 (current)**: Full content including tool parameters
+
+This provides sufficient context for intent detection without bloating the prompt.
+
+### Validation Prompt
+
+The external prompt template is located at:
+`src/pacemaker/prompts/pre_tool_validator_prompt.md`
+
+**Template Variables**:
+- `{tool_name}`: Write or Edit
+- `{file_path}`: Target file path
+- `{messages}`: Last 5 messages
+- `{code}`: Proposed code changes
+
+### SDK Integration
+
+The validator uses Claude Agent SDK with model fallback:
+- **Primary**: `claude-opus-4-5-20251101`
+- **Fallback**: `claude-sonnet-4-5-20250929` (on rate limit)
+
+**Configuration**: `src/pacemaker/intent_validator.py`
 
 ---
 
@@ -667,6 +842,7 @@ if current_util > safe_allowance:
 | `subagent_reminder_frequency` | integer | `5` | Tool executions between reminders |
 | `subagent_reminder_message` | string | (default) | Custom reminder message text |
 | `conversation_context_size` | integer | `5` | Number of messages for intent validation context |
+| `intent_validation_enabled` | boolean | `false` | Enable pre-tool validation (intent, TDD, clean code) |
 
 ### State File
 
@@ -851,6 +1027,10 @@ claude-pace-maker/
 │   │   ├── database.py          # SQLite operations
 │   │   ├── api_client.py        # Claude API client
 │   │   ├── user_commands.py     # Status/on/off commands
+│   │   ├── intent_validator.py  # Pre-tool validation via SDK
+│   │   ├── transcript_reader.py # Message extraction from JSONL
+│   │   ├── prompts/
+│   │   │   └── pre_tool_validator_prompt.md  # Validation prompt template
 │   │   └── hooks/
 │   │       └── post_tool.py     # Steering message
 │   └── hooks/
@@ -878,10 +1058,11 @@ python -m pytest tests/ --cov=src/pacemaker --cov-report=html
 
 ---
 
-**Document Version**: 1.3
-**Last Updated**: 2025-11-25
+**Document Version**: 1.4
+**Last Updated**: 2025-12-03
 **Maintainer**: Claude Code Pace Maker Team
 **Changes**:
+- v1.4: Added Pre-Tool Validation System (intent declaration, Light-TDD enforcement, clean code validation), PreToolUse hook, transcript_reader module, external prompt template
 - v1.3: Added SubagentStart/Stop hooks, pacing_decisions table, subagent reminder system, session tempo control, continuous throttling architecture
 - v1.2: Updated intent validation from marker-based to AI-powered SDK approach
 - v1.1: Added Tempo System section, documented SessionStart and Stop hooks, removed slash command references
