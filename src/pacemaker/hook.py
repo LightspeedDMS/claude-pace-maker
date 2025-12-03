@@ -448,7 +448,7 @@ def run_hook():
 
                     if is_source:
                         # Validate code against intent
-                        messages = get_last_n_assistant_messages(transcript_path, n=10)
+                        messages = get_last_n_assistant_messages(transcript_path, n=2)
 
                         print(
                             f"[REVIEW] Retrieved {len(messages)} messages",
@@ -829,8 +829,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         if not extension_registry.is_source_code_file(file_path, extensions):
             return {"continue": True}
 
-        # 6. Read last 10 assistant messages (include context + message with tool usage)
-        messages = get_last_n_assistant_messages(transcript_path, n=10)
+        # 6. Read last 2 assistant messages (current + 1 before)
+        messages = get_last_n_assistant_messages(transcript_path, n=2)
 
         # 7. Validate intent declared
         from .intent_validator import validate_intent_declared
