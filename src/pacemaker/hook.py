@@ -144,11 +144,20 @@ def run_session_start_hook():
             print("\n" + "=" * 70)
             print("⚠️  INTENT VALIDATION ENABLED")
             print("=" * 70)
-            print("\nBefore modifying code files, you MUST declare your intent:")
-            print("  1. What file you're modifying")
-            print("  2. What changes you're making")
-            print("  3. Why/goal of the changes")
-            print("\nExample: 'I will modify src/auth.py to add JWT validation'")
+            print(
+                "\nBefore modifying code files, you MUST declare your intent explicitly:"
+            )
+            print("\nDeclare EXACTLY these 3 components:")
+            print("  1. FILE: Which file you're modifying")
+            print("  2. CHANGES: What specific changes you're making")
+            print("  3. GOAL: Why you're making these changes")
+            print("\nGOOD Example:")
+            print("  'I will modify src/auth.py to add a validate_token() function")
+            print("   that checks JWT expiration, to fix the security vulnerability.'")
+            print("\nBAD Examples:")
+            print("  ✗ 'Fixing auth bug' - Missing file and specifics")
+            print("  ✗ 'Updating code' - Too vague")
+            print("\nDeclare intent in the SAME message as the Write/Edit tool call.")
             print("=" * 70 + "\n")
     except Exception:
         # Fail silently - don't break session start
@@ -788,7 +797,20 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         if not result["intent_found"]:
             return {
                 "decision": "block",
-                "reason": "⛔ Intent declaration required: You must declare your intent before modifying code files. Specify: (1) what file you're modifying, (2) what changes you're making, (3) why/goal of changes.",
+                "reason": """⛔ Intent declaration required
+
+You must declare your intent IN THIS SAME MESSAGE before using Write/Edit tools.
+
+Required format - include ALL 3 components:
+  1. FILE: Which file you're modifying
+  2. CHANGES: What specific changes you're making
+  3. GOAL: Why you're making these changes
+
+Example:
+  "I will modify src/database.py to add a connect_to_db() function
+   that handles connection pooling, to improve performance."
+
+Then use your Write/Edit tool in the same message.""",
             }
 
         return {"continue": True}
