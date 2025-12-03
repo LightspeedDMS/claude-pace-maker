@@ -221,3 +221,41 @@ class TestSessionStartHookEnhancement:
         assert "1." in captured.out
         assert "2." in captured.out
         assert "3." in captured.out
+
+    def test_mandate_includes_tdd_enforcement_section(
+        self, temp_dirs, mock_config_enabled, mock_state, capsys
+    ):
+        """
+        Test that mandate includes TDD enforcement section when enabled.
+
+        Should display core paths, test declaration format, and user permission format.
+        """
+        with patch("pacemaker.hook.DEFAULT_CONFIG_PATH", mock_config_enabled):
+            with patch("pacemaker.hook.DEFAULT_STATE_PATH", mock_state):
+                hook.run_session_start_hook()
+
+        # Capture output
+        captured = capsys.readouterr()
+
+        # Should contain TDD enforcement header
+        assert "TDD ENFORCEMENT FOR CORE CODE" in captured.out
+
+        # Should contain core paths list
+        assert "src/" in captured.out
+        assert "lib/" in captured.out
+        assert "core/" in captured.out
+        assert "source/" in captured.out
+        assert "libraries/" in captured.out
+        assert "kernel/" in captured.out
+
+        # Should contain Option A (test declaration)
+        assert "Option A" in captured.out
+        assert "Test coverage:" in captured.out
+
+        # Should contain Option B (user permission)
+        assert "Option B" in captured.out
+        assert "User permission to skip TDD:" in captured.out
+
+        # Should contain warning about fabricated quotes
+        assert "quoted permission MUST exist" in captured.out
+        assert "Fabricated quotes are rejected" in captured.out

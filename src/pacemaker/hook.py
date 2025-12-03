@@ -166,6 +166,28 @@ def run_session_start_hook():
             print("\nBAD Examples:")
             print("  ✗ 'Fixing auth bug' - Missing file and specifics")
             print("  ✗ 'Updating code' - Too vague")
+            print("\n" + "-" * 70)
+            print("TDD ENFORCEMENT FOR CORE CODE")
+            print("-" * 70)
+            print(
+                "\nFiles in core paths (src/, lib/, core/, source/, libraries/, kernel/)"
+            )
+            print("require test declarations.")
+            print("\n**Option A - Declare test coverage:**")
+            print("  'I will modify src/auth.py to add a validate_password() function")
+            print("   that checks password strength, to improve security.")
+            print(
+                "   Test coverage: tests/test_auth.py - test_validate_password_rejects_weak()'"
+            )
+            print("\n**Option B - Quote user permission to skip TDD:**")
+            print("  'I will modify src/auth.py to add a validate_password() function")
+            print("   that checks password strength, to improve security.")
+            print(
+                '   User permission to skip TDD: User said "skip tests for this" in message 3.\''
+            )
+            print(
+                "\nThe quoted permission must exist in the last 5 messages. Fabricated quotes are rejected."
+            )
             print("\nDeclare intent in the SAME message as the Write/Edit tool call.")
             print("=" * 70 + "\n")
     except Exception:
