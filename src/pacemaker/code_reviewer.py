@@ -60,6 +60,19 @@ Compare the code against the declared intent and check for violations:
    - Refactoring or renaming of unrelated code
    - Style changes to code outside the declared scope
 
+5. CLEAN CODE VIOLATIONS (Always check regardless of intent):
+   - Hardcoded secrets (API keys, passwords, tokens, credentials)
+   - SQL injection vulnerabilities (string concatenation in queries instead of parameters)
+   - Bare except clauses (catch specific exceptions, not `except:`)
+   - Silently swallowed exceptions (logging or re-raising required, not just `pass`)
+   - Commented-out code blocks (delete or document WHY kept)
+   - Magic numbers (use named constants for clarity)
+   - Mutable default arguments (Python: `def func(items=[]):` is dangerous)
+   - Overnested if statements (excessive indentation levels)
+   - Blatant logic bugs not aligned with intent
+   - Missing boundary condition checks (null/None checks before dereferencing, math overflows, array bounds)
+   - Lack of comments in complicated or brittle code sections
+
 RESPONSE FORMAT:
 - If code EXACTLY matches intent with NO violations: Return empty response (no text at all)
 - If ANY violations found: Return specific feedback explaining EACH violation
