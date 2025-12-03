@@ -245,37 +245,46 @@ def should_inject_reminder(
     return count > 0 and count % frequency == 0
 
 
-def inject_subagent_reminder(config: dict):
+def inject_subagent_reminder(config: dict) -> Optional[str]:
     """
-    Inject reminder as JSON to stdout with block decision.
+    Get subagent reminder message.
 
-    This ensures Claude sees the reminder by using Claude Code's
-    hook response format. The "block" decision doesn't prevent tool
-    execution (tool already ran), but makes the reminder visible.
+    Returns the reminder message that should be shown to Claude.
+    Does NOT print to stdout - caller is responsible for output.
 
     Args:
         config: Configuration dictionary
+
+    Returns:
+        Reminder message string, or None if not applicable
     """
     message = config.get(
         "subagent_reminder_message",
         "💡 Consider using the Task tool to delegate work to specialized subagents (per your guidelines)",
     )
 
-    # Output JSON format that Claude Code will show to Claude
-    reminder_output = {"decision": "block", "reason": message}
-
-    print(json.dumps(reminder_output), file=sys.stdout, flush=True)
+    return message
 
 
 def run_hook():
-    """Main hook execution with pacing AND code review."""
+    """Main hook execution with pacing AND code review.
+
+    Returns:
+        bool: True if code review feedback was provided, False otherwise
+    """
+
+    # Track pending message (code review takes priority over subagent nudge)
+    pending_message = None
+
+    # Track if feedback was provided (for exit code decision)
+    feedback_provided = False
 
     # Load configuration
     config = load_config(DEFAULT_CONFIG_PATH)
 
     # Check if enabled
     if not config.get("enabled", True):
-        return  # Disabled - do nothing
+        return feedback_provided  # Disabled - do nothing
 
     # Read hook data from stdin to get tool_name
     tool_name = None
@@ -370,7 +379,7 @@ def run_hook():
     else:
         print("[PACING] No throttling needed", file=sys.stderr, flush=True)
 
-    # Inject subagent reminder if conditions met
+    # Capture subagent reminder if conditions met (don't print yet)
     if should_inject_reminder(state, config, tool_name):
         # Debug logging
         reason = (
@@ -379,27 +388,33 @@ def run_hook():
             else f"count {state['tool_execution_count']}"
         )
         print(
-            f"[PACING] DEBUG: Injecting reminder ({reason})",
+            f"[PACING] DEBUG: Capturing reminder ({reason})",
             file=sys.stderr,
             flush=True,
         )
-        inject_subagent_reminder(config)
-        print("[PACING] DEBUG: Reminder injected", file=sys.stderr, flush=True)
+        pending_message = inject_subagent_reminder(config)
+        print("[PACING] DEBUG: Reminder captured", file=sys.stderr, flush=True)
 
     # =========================================================================
     # NEW: Post-tool code review validation (Phase 5)
     # =========================================================================
-    debug_log_path = os.path.join(
-        os.path.dirname(DEFAULT_CONFIG_PATH), "post_tool_debug.log"
-    )
     try:
-        with open(debug_log_path, "a") as debug_f:
-            debug_f.write(f"\n[{datetime.now()}] Post-tool hook called\n")
-            debug_f.write(
-                f"  intent_validation_enabled: {config.get('intent_validation_enabled', False)}\n"
-            )
-            debug_f.write(f"  hook_data exists: {hook_data is not None}\n")
-            debug_f.write(f"  tool_name: {tool_name}\n")
+        print(
+            "[REVIEW] Post-tool code review check starting",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            f"[REVIEW] intent_validation_enabled: {config.get('intent_validation_enabled', False)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            f"[REVIEW] hook_data exists: {hook_data is not None}",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(f"[REVIEW] tool_name: {tool_name}", file=sys.stderr, flush=True)
 
         if config.get("intent_validation_enabled", False) and hook_data:
             if tool_name in ["Write", "Edit"]:
@@ -407,9 +422,12 @@ def run_hook():
                 file_path = tool_input.get("file_path")
                 transcript_path = hook_data.get("transcript_path")
 
-                with open(debug_log_path, "a") as debug_f:
-                    debug_f.write(f"  file_path: {file_path}\n")
-                    debug_f.write(f"  transcript_path: {transcript_path}\n")
+                print(f"[REVIEW] file_path: {file_path}", file=sys.stderr, flush=True)
+                print(
+                    f"[REVIEW] transcript_path: {transcript_path}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
                 if file_path and transcript_path:
                     # Check if source code file
@@ -422,43 +440,69 @@ def run_hook():
                     is_source = extension_registry.is_source_code_file(
                         file_path, extensions
                     )
-                    with open(debug_log_path, "a") as debug_f:
-                        debug_f.write(f"  is_source_code_file: {is_source}\n")
+                    print(
+                        f"[REVIEW] is_source_code_file: {is_source}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
                     if is_source:
                         # Validate code against intent
                         messages = get_last_n_assistant_messages(transcript_path, n=10)
 
-                        with open(debug_log_path, "a") as debug_f:
-                            debug_f.write(f"  Retrieved {len(messages)} messages\n")
-                            debug_f.write(
-                                "  Calling code_reviewer.validate_code_against_intent()...\n"
-                            )
+                        print(
+                            f"[REVIEW] Retrieved {len(messages)} messages",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        print(
+                            "[REVIEW] Calling code_reviewer.validate_code_against_intent()...",
+                            file=sys.stderr,
+                            flush=True,
+                        )
 
                         feedback = code_reviewer.validate_code_against_intent(
                             file_path, messages
                         )
 
-                        with open(debug_log_path, "a") as debug_f:
-                            debug_f.write(f"  Feedback: {feedback}\n")
+                        print(
+                            f"[REVIEW] Feedback: {feedback[:100] if feedback else 'None'}...",
+                            file=sys.stderr,
+                            flush=True,
+                        )
 
                         if feedback:
-                            # Print feedback to stdout so Claude sees it
-                            print(feedback, file=sys.stdout, flush=True)
-                            with open(debug_log_path, "a") as debug_f:
-                                debug_f.write("  Feedback printed to stdout\n")
+                            # Code review feedback takes priority over subagent nudge
+                            pending_message = feedback
+                            print(
+                                "[REVIEW] Feedback captured (overrides subagent nudge)",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                            # Mark that feedback was provided
+                            feedback_provided = True
     except Exception as e:
         # Log error but don't break pacing functionality
-        with open(debug_log_path, "a") as debug_f:
-            debug_f.write(f"  ERROR: {e}\n")
-            import traceback
+        print(f"[REVIEW] ERROR: {e}", file=sys.stderr, flush=True)
+        import traceback
 
-            debug_f.write(f"  Traceback: {traceback.format_exc()}\n")
+        print(
+            f"[REVIEW] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True
+        )
 
     # Save state (always save to persist counter)
     state_changed = True
     if state_changed:
         save_state(state, DEFAULT_STATE_PATH)
+
+    # Print final message if any (code review takes priority over subagent nudge)
+    if pending_message:
+        output = {"decision": "block", "reason": pending_message}
+        print(json.dumps(output), file=sys.stdout, flush=True)
+        return True
+
+    # Return whether feedback was provided
+    return feedback_provided
 
 
 def parse_user_prompt_input(raw_input: str) -> dict:
@@ -888,7 +932,9 @@ def main():
     # Check if this is post-tool-use hook (explicit handling for clarity)
     if len(sys.argv) > 1 and sys.argv[1] == "post_tool_use":
         try:
-            run_hook()
+            feedback_provided = run_hook()
+            if feedback_provided:
+                sys.exit(2)  # Show feedback to Claude
         except Exception as e:
             # Graceful degradation - log error but don't crash
             print(f"[PACE-MAKER ERROR] {e}", file=sys.stderr)
