@@ -98,6 +98,17 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_intent.group(1),
         }
 
+    # Pattern 7: pace-maker 5-hour-limit (on|off) - 5-hour limit control
+    pattern_5hour = r"^pace-maker\s+5-hour-limit\s+(on|off)$"
+    match_5hour = re.match(pattern_5hour, normalized)
+
+    if match_5hour:
+        return {
+            "is_pace_maker_command": True,
+            "command": "5-hour-limit",
+            "subcommand": match_5hour.group(1),
+        }
+
     return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
@@ -141,6 +152,8 @@ def execute_command(
         return _execute_reminder(config_path, subcommand)
     elif command == "intent-validation":
         return _execute_intent_validation(config_path, subcommand)
+    elif command == "5-hour-limit":
+        return _execute_5_hour_limit(config_path, subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -195,6 +208,7 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         config = _load_config(config_path)
         enabled = config.get("enabled", False)
         weekly_limit_enabled = config.get("weekly_limit_enabled", True)
+        five_hour_limit_enabled = config.get("five_hour_limit_enabled", True)
         tempo_enabled = config.get("tempo_enabled", True)
         subagent_reminder_enabled = config.get("subagent_reminder_enabled", True)
         intent_validation_enabled = config.get("intent_validation_enabled", False)
@@ -203,6 +217,9 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         status_text = "Pace Maker: ACTIVE" if enabled else "Pace Maker: INACTIVE"
         status_text += (
             f"\nWeekly Limit: {'ENABLED' if weekly_limit_enabled else 'DISABLED'}"
+        )
+        status_text += (
+            f"\n5-Hour Limit: {'ENABLED' if five_hour_limit_enabled else 'DISABLED'}"
         )
         status_text += f"\nTempo Tracking: {'ENABLED' if tempo_enabled else 'DISABLED'}"
         status_text += f"\nSubagent Reminder: {'ENABLED' if subagent_reminder_enabled else 'DISABLED'}"
@@ -321,6 +338,8 @@ COMMANDS:
   pace-maker help                 Show this help message
   pace-maker weekly-limit on      Enable weekly (7-day) limit throttling
   pace-maker weekly-limit off     Disable weekly limit throttling
+  pace-maker 5-hour-limit on      Enable 5-hour limit throttling
+  pace-maker 5-hour-limit off     Disable 5-hour limit throttling
   pace-maker tempo on             Enable session lifecycle tracking (global)
   pace-maker tempo off            Disable session lifecycle tracking (global)
   pace-maker tempo session on     Enable tempo for this session only
@@ -334,6 +353,11 @@ WEEKLY LIMIT:
   The weekly limiter uses weekend-aware throttling to pace your usage
   over 7-day windows. When enabled, it will slow down tool usage on
   weekends if you're ahead of the target pace.
+
+5-HOUR LIMIT:
+  The 5-hour limiter paces your usage within the rolling 5-hour window.
+  When enabled, it will slow down tool usage if you're ahead of the
+  target pace. When disabled, only the 7-day limit applies (if enabled).
 
 TEMPO TRACKING:
   Session lifecycle tracking prevents Claude from prematurely ending
@@ -404,6 +428,45 @@ def _execute_weekly_limit(
         return {
             "success": False,
             "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker weekly-limit [on|off]",
+        }
+
+
+def _execute_5_hour_limit(
+    config_path: str, subcommand: Optional[str]
+) -> Dict[str, Any]:
+    """Enable or disable 5-hour limit throttling."""
+    if subcommand == "on":
+        try:
+            config = _load_config(config_path)
+            config["five_hour_limit_enabled"] = True
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": "✓ 5-Hour limit ENABLED\n5-hour throttling will be applied based on usage pace.",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error enabling 5-hour limit: {str(e)}",
+            }
+    elif subcommand == "off":
+        try:
+            config = _load_config(config_path)
+            config["five_hour_limit_enabled"] = False
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": "✓ 5-Hour limit DISABLED\n5-hour throttling will be skipped.",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error disabling 5-hour limit: {str(e)}",
+            }
+    else:
+        return {
+            "success": False,
+            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker 5-hour-limit [on|off]",
         }
 
 
@@ -712,6 +775,7 @@ For more information, run: pace-maker help
             "help",
             "version",
             "weekly-limit",
+            "5-hour-limit",
             "tempo",
             "reminder",
             "intent-validation",

@@ -11,6 +11,7 @@ This module validates if Claude completed the user's original request by:
 """
 
 import os
+import sys
 import logging
 import asyncio
 from typing import Any, Dict, List
@@ -101,6 +102,31 @@ def get_prompt_template() -> str:
     if not os.path.exists(prompt_path):
         raise FileNotFoundError(
             f"Stop hook validator prompt template not found at {prompt_path}. "
+            "This indicates a broken installation. Run ./install.sh to fix."
+        )
+
+    return load_prompt_template(prompt_path)
+
+
+def get_pre_tool_prompt_template() -> str:
+    """
+    Get pre-tool validation prompt template from external file.
+
+    Loads from: src/pacemaker/prompts/pre_tool_validator_prompt.md
+
+    Returns:
+        Pre-tool validation prompt template string
+
+    Raises:
+        FileNotFoundError: If template file is missing (installation broken)
+        Exception: If template cannot be loaded
+    """
+    module_dir = os.path.dirname(__file__)
+    prompt_path = os.path.join(module_dir, "prompts", "pre_tool_validator_prompt.md")
+
+    if not os.path.exists(prompt_path):
+        raise FileNotFoundError(
+            f"Pre-tool validator prompt template not found at {prompt_path}. "
             "This indicates a broken installation. Run ./install.sh to fix."
         )
 
@@ -527,95 +553,21 @@ def validate_intent_and_code(
         # Fail open if SDK unavailable
         return {"approved": True}
 
-    # Build unified validation prompt
-    prompt = f"""You are validating a code change BEFORE it executes.
+    # Format messages for template
+    messages_text = "\n".join(f"Message {i+1}: {msg}" for i, msg in enumerate(messages))
 
-CONTEXT:
-The assistant is attempting to use the {tool_name} tool on file: {file_path}
-
-LAST 2 MESSAGES (must contain intent declaration):
-{chr(10).join(f"Message {i+1}: {msg}" for i, msg in enumerate(messages))}
-
-PROPOSED CODE (what will be written if approved):
-{code}
-
-YOUR TASK - THREE POSSIBLE OUTCOMES:
-
-════════════════════════════════════════════════════════════════
-OUTCOME 1: NO INTENT DECLARED → BLOCK + TEACH
-════════════════════════════════════════════════════════════════
-
-If the last 2 messages do NOT contain a clear intent declaration, return:
-
-⛔ Intent declaration required
-
-You must declare your intent BEFORE using {tool_name} tools.
-
-Required format - include ALL 3 components:
-  1. FILE: Which file you're modifying ({file_path})
-  2. CHANGES: What specific changes you're making
-  3. GOAL: Why you're making these changes
-
-Example:
-  "I will modify {file_path} to add a validate_input() function
-   that checks user input for XSS attacks, to improve security."
-
-Then use your {tool_name} tool in the same message or next message.
-
-════════════════════════════════════════════════════════════════
-OUTCOME 2: INTENT DECLARED BUT VIOLATIONS FOUND → BLOCK + EXPLAIN
-════════════════════════════════════════════════════════════════
-
-If intent WAS declared, validate the PROPOSED CODE against:
-
-A) CODE MATCH VIOLATIONS:
-   - EXACT MATCH: Does code implement EXACTLY what was declared?
-   - SCOPE CREEP: Extra functions, features, refactoring not mentioned?
-   - MISSING FUNCTIONALITY: Declared functionality absent from code?
-   - UNAUTHORIZED CHANGES: Modifications beyond declared scope?
-
-B) CLEAN CODE VIOLATIONS:
-   - Hardcoded secrets (API keys, passwords, tokens)
-   - SQL injection vulnerabilities (string concatenation in queries)
-   - Bare except clauses (must catch specific exceptions)
-   - Silently swallowed exceptions (must log or re-raise)
-   - Commented-out code blocks (delete or document WHY)
-   - Magic numbers (use named constants)
-   - Mutable default arguments (Python: def func(items=[]):)
-   - Overnested if statements (excessive indentation)
-   - Blatant logic bugs not aligned with intent
-   - Missing boundary checks (null/None, overflows, bounds)
-   - Lack of comments in complicated/brittle code
-
-If violations found, return detailed feedback:
-  - List each violation with specifics
-  - Explain what should be fixed
-  - Show expected code if helpful
-
-════════════════════════════════════════════════════════════════
-OUTCOME 3: INTENT DECLARED + NO VIOLATIONS → ALLOW
-════════════════════════════════════════════════════════════════
-
-If ALL of these are true:
-  ✓ Intent clearly declared in last 2 messages
-  ✓ Code implements EXACTLY what was declared (no more, no less)
-  ✓ No clean code violations
-
-Then return: EMPTY RESPONSE (no text at all)
-
-════════════════════════════════════════════════════════════════
-
-Be strict: Code executes ONLY if you return empty response.
-Block anything missing intent, not matching intent, or violating clean code."""
+    # Load template and fill with parameters
+    template = get_pre_tool_prompt_template()
+    prompt = template.format(
+        tool_name=tool_name,
+        file_path=file_path,
+        messages=messages_text,
+        code=code,
+    )
 
     # Call SDK with Sonnet
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        feedback = loop.run_until_complete(_call_unified_validation_async(prompt))
+        feedback = asyncio.run(_call_unified_validation_async(prompt))
 
         if feedback.strip() == "":
             # Empty response = approved
@@ -625,7 +577,13 @@ Block anything missing intent, not matching intent, or violating clean code."""
             return {"approved": False, "feedback": feedback}
 
     except Exception as e:
-        # Fail open on errors
+        # Fail open on errors - log to stderr so we can see it
+        print(
+            f"[SDK ERROR] Unified validation failed: {e}", file=sys.stderr, flush=True
+        )
+        import traceback
+
+        traceback.print_exc(file=sys.stderr)
         logger.debug(f"Unified validation error: {e}")
         return {"approved": True}
 
@@ -652,10 +610,37 @@ async def _call_unified_validation_async(prompt: str) -> str:
     response_text = ""
     try:
         async for message in fresh_query(prompt=prompt, options=options):
+            print(
+                f"[SDK DEBUG] Got message type: {type(message)}",
+                file=sys.stderr,
+                flush=True,
+            )
+            print(f"[SDK DEBUG] Message: {message}", file=sys.stderr, flush=True)
             if isinstance(message, FreshResult):
+                print(
+                    f"[SDK DEBUG] FreshResult.result = {message.result!r}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 if hasattr(message, "result") and message.result:
                     response_text = message.result.strip()
-    except Exception:
+                    print(
+                        f"[SDK DEBUG] Extracted response_text = {response_text!r}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+    except Exception as e:
+        print(
+            f"[SDK ERROR] Unified validation failed: {e}", file=sys.stderr, flush=True
+        )
+        import traceback
+
+        traceback.print_exc(file=sys.stderr)
         pass  # Fail open
 
+    print(
+        f"[SDK DEBUG] Returning response_text = {response_text!r}",
+        file=sys.stderr,
+        flush=True,
+    )
     return response_text

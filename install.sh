@@ -891,8 +891,8 @@ register_hooks() {
      .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $post_hook, "timeout": 360}]}] |
      .hooks.PreToolUse += [{
        "hooks": [
-         {"type": "command", "command": $pre_tool_hook, "timeout": 15, "query": "Write"},
-         {"type": "command", "command": $pre_tool_hook, "timeout": 15, "query": "Edit"}
+         {"type": "command", "command": $pre_tool_hook, "timeout": 60, "query": "Write"},
+         {"type": "command", "command": $pre_tool_hook, "timeout": 60, "query": "Edit"}
        ]
      }] |
      .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_hook}]}] |

@@ -125,6 +125,13 @@ def run_session_start_hook():
 
     Also displays intent validation mandate if feature is enabled.
     """
+    # Load config to check master switch
+    config = load_config(DEFAULT_CONFIG_PATH)
+
+    # Master switch - all features disabled
+    if not config.get("enabled", True):
+        return
+
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
 
@@ -321,6 +328,7 @@ def run_hook():
         cleanup_interval_hours=config.get("cleanup_interval_hours", 24),
         retention_days=config.get("retention_days", 60),
         weekly_limit_enabled=config.get("weekly_limit_enabled", True),
+        five_hour_limit_enabled=config.get("five_hour_limit_enabled", True),
     )
 
     # Update state if polled or cleaned up
@@ -623,6 +631,11 @@ def run_stop_hook():
     try:
         # Load config and state to check if tempo should run
         config = load_config(DEFAULT_CONFIG_PATH)
+
+        # Master switch - all features disabled
+        if not config.get("enabled", True):
+            return {"continue": True}
+
         state = load_state(DEFAULT_STATE_PATH)
 
         if not should_run_tempo(config, state):
@@ -741,6 +754,10 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # 3. Load config
         config = load_config(DEFAULT_CONFIG_PATH)
 
+        # Master switch - all features disabled
+        if not config.get("enabled", True):
+            return {"continue": True}
+
         # Check if feature enabled
         if not config.get("intent_validation_enabled", False):
             print(
@@ -785,6 +802,26 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             file=sys.stderr,
             flush=True,
         )
+        print("[DEBUG A] After messages print", file=sys.stderr, flush=True)
+        print(
+            f"[DEBUG B] proposed_code type: {type(proposed_code)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            code_len = len(proposed_code)
+            print(
+                f"[DEBUG C] proposed_code length: {code_len}",
+                file=sys.stderr,
+                flush=True,
+            )
+        except Exception as e:
+            print(f"[DEBUG ERROR] len() failed: {e}", file=sys.stderr, flush=True)
+        print(
+            f"[PRE-TOOL DEBUG] About to call SDK validation with {len(proposed_code)} chars of code",
+            file=sys.stderr,
+            flush=True,
+        )
 
         # 7. Call unified validation via SDK
         from . import intent_validator
@@ -795,7 +832,11 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             file_path=file_path,
             tool_name=tool_name,
         )
-        print(f"[PRE-TOOL DEBUG] SDK result: {result}", file=sys.stderr, flush=True)
+        print(
+            f"[PRE-TOOL DEBUG] SDK returned: {result}",
+            file=sys.stderr,
+            flush=True,
+        )
 
         # 8. Return result
         if result.get("approved", False):

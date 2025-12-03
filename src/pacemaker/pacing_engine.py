@@ -45,6 +45,7 @@ def calculate_pacing_decision(
     safety_buffer_pct: float = 95.0,
     preload_hours: float = 0.0,
     weekly_limit_enabled: bool = True,
+    five_hour_limit_enabled: bool = True,
 ) -> Dict:
     """
     Calculate pacing decision based on current usage.
@@ -114,9 +115,14 @@ def calculate_pacing_decision(
         seven_day_target = calculator.calculate_linear_target(seven_day_time_pct)
 
     # Determine most constrained window
+    # Only include 5-hour window if five_hour_limit_enabled is True
     # Only include 7-day window if weekly_limit_enabled is True
     constrained = calculator.determine_most_constrained_window(
-        five_hour_util=five_hour_util if five_hour_resets_at else None,
+        five_hour_util=(
+            five_hour_util
+            if (five_hour_resets_at and five_hour_limit_enabled)
+            else None
+        ),
         five_hour_target=five_hour_target,
         seven_day_util=(
             seven_day_util if (seven_day_resets_at and weekly_limit_enabled) else None
@@ -270,6 +276,7 @@ def run_pacing_check(
     cleanup_interval_hours: int = 24,
     retention_days: int = 60,
     weekly_limit_enabled: bool = True,
+    five_hour_limit_enabled: bool = True,
 ) -> Dict:
     """
     Run complete pacing check cycle.
@@ -381,6 +388,7 @@ def run_pacing_check(
         safety_buffer_pct=safety_buffer_pct,
         preload_hours=preload_hours,
         weekly_limit_enabled=weekly_limit_enabled,
+        five_hour_limit_enabled=five_hour_limit_enabled,
     )
 
     # Determine strategy
