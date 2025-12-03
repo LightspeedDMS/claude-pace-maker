@@ -32,26 +32,40 @@ def build_review_prompt(intent: str, code: str) -> str:
     Returns:
         Prompt string for SDK code review
     """
-    return f"""You are a code reviewer validating that code changes match declared intent.
+    return f"""You are a strict code reviewer enforcing intent-to-code alignment.
 
 DECLARED INTENT:
 {intent}
 
-CODE CHANGES:
+ACTUAL CODE IN FILE:
 {code}
 
-TASK:
-Review if the code changes accurately implement the declared intent.
+YOUR TASK:
+Compare the code against the declared intent and check for violations:
 
-If the code matches the intent:
-- Return an empty response (no text)
+1. EXACT MATCH: Does the code implement EXACTLY what was declared? No more, no less.
 
-If there are issues (code doesn't match intent, missing functionality, incorrect implementation):
-- Return specific feedback explaining the mismatch
+2. SCOPE CREEP: Is there ANY code added that was NOT part of the declared intent?
+   - Extra functions, classes, or methods not mentioned in intent
+   - Additional features or functionality beyond what was declared
+   - Refactoring or cleanup of unrelated code
+   - Comments, docstrings, or type hints not mentioned in intent
 
-Respond with either:
-1. Empty response (if code matches intent)
-2. Specific feedback (if issues found)"""
+3. UNAUTHORIZED REMOVALS: Was ANY code removed that was NOT declared to be removed?
+   - Deleted functions, classes, or code blocks
+   - Removed functionality not mentioned in intent
+
+4. UNAUTHORIZED MODIFICATIONS: Was ANY code modified outside the declared scope?
+   - Changes to existing code not mentioned in intent
+   - Refactoring or renaming of unrelated code
+   - Style changes to code outside the declared scope
+
+RESPONSE FORMAT:
+- If code EXACTLY matches intent with NO violations: Return empty response (no text at all)
+- If ANY violations found: Return specific feedback explaining EACH violation
+
+Be strict: Even small additions or modifications outside the declared intent are violations.
+Only return empty response if the code implements EXACTLY what was declared, nothing more."""
 
 
 async def _call_sdk_review_async(prompt: str) -> str:
