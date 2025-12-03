@@ -19,6 +19,7 @@ voyage-code-3/
 build/
 dist/
 *.egg-info/
+bin/
 
 # Code indexer
 .code-indexer/
