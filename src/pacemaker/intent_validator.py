@@ -610,37 +610,16 @@ async def _call_unified_validation_async(prompt: str) -> str:
     response_text = ""
     try:
         async for message in fresh_query(prompt=prompt, options=options):
-            print(
-                f"[SDK DEBUG] Got message type: {type(message)}",
-                file=sys.stderr,
-                flush=True,
-            )
-            print(f"[SDK DEBUG] Message: {message}", file=sys.stderr, flush=True)
             if isinstance(message, FreshResult):
-                print(
-                    f"[SDK DEBUG] FreshResult.result = {message.result!r}",
-                    file=sys.stderr,
-                    flush=True,
-                )
                 if hasattr(message, "result") and message.result:
                     response_text = message.result.strip()
-                    print(
-                        f"[SDK DEBUG] Extracted response_text = {response_text!r}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
     except Exception as e:
+        # Fail open - validation errors don't block execution
         print(
             f"[SDK ERROR] Unified validation failed: {e}", file=sys.stderr, flush=True
         )
         import traceback
 
         traceback.print_exc(file=sys.stderr)
-        pass  # Fail open
 
-    print(
-        f"[SDK DEBUG] Returning response_text = {response_text!r}",
-        file=sys.stderr,
-        flush=True,
-    )
     return response_text

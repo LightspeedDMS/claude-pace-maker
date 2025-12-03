@@ -389,19 +389,7 @@ def run_hook():
 
     # Capture subagent reminder if conditions met (don't print yet)
     if should_inject_reminder(state, config, tool_name):
-        # Debug logging
-        reason = (
-            "Write tool used"
-            if tool_name == "Write"
-            else f"count {state['tool_execution_count']}"
-        )
-        print(
-            f"[PACING] DEBUG: Capturing reminder ({reason})",
-            file=sys.stderr,
-            flush=True,
-        )
         pending_message = inject_subagent_reminder(config)
-        print("[PACING] DEBUG: Reminder captured", file=sys.stderr, flush=True)
 
     # Save state (always save to persist counter)
     state_changed = True
@@ -709,17 +697,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
     try:
         # 1. Read hook data from stdin
         raw_input = sys.stdin.read()
-        print(
-            f"[PRE-TOOL DEBUG] Got raw_input: {len(raw_input) if raw_input else 0} chars",
-            file=sys.stderr,
-            flush=True,
-        )
         if not raw_input:
-            print(
-                "[PRE-TOOL DEBUG] No input, returning continue",
-                file=sys.stderr,
-                flush=True,
-            )
             return {"continue": True}
 
         hook_data = json.loads(raw_input)
@@ -729,26 +707,13 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         tool_input = hook_data.get("tool_input", {})
         file_path = tool_input.get("file_path")
         transcript_path = hook_data.get("transcript_path")
-        print(
-            f"[PRE-TOOL DEBUG] Parsed hook_data: tool={tool_name}, file={file_path}",
-            file=sys.stderr,
-            flush=True,
-        )
 
         # 2a. Only validate Write/Edit tools
         if tool_name not in ["Write", "Edit"]:
-            print(
-                f"[PRE-TOOL DEBUG] Tool {tool_name} not Write/Edit, bypassing",
-                file=sys.stderr,
-                flush=True,
-            )
             return {"continue": True}
 
         # Skip if no file_path (e.g., some edge cases)
         if not file_path:
-            print(
-                "[PRE-TOOL DEBUG] No file_path, bypassing", file=sys.stderr, flush=True
-            )
             return {"continue": True}
 
         # 3. Load config
@@ -760,11 +725,6 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
         # Check if feature enabled
         if not config.get("intent_validation_enabled", False):
-            print(
-                "[PRE-TOOL DEBUG] Feature disabled, bypassing",
-                file=sys.stderr,
-                flush=True,
-            )
             return {"continue": True}
 
         # 4. Check if source code file
@@ -772,18 +732,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
         extensions = extension_registry.load_extensions(DEFAULT_EXTENSION_REGISTRY_PATH)
         is_source = extension_registry.is_source_code_file(file_path, extensions)
-        print(
-            f"[PRE-TOOL DEBUG] File {file_path} is_source={is_source}",
-            file=sys.stderr,
-            flush=True,
-        )
 
         if not is_source:
-            print(
-                "[PRE-TOOL DEBUG] Not source code file, bypassing",
-                file=sys.stderr,
-                flush=True,
-            )
             return {"continue": True}  # Bypass non-source files
 
         # 5. Extract proposed code from tool_input
@@ -797,31 +747,6 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
         # 6. Read last 2 assistant messages (current + 1 before)
         messages = get_last_n_assistant_messages(transcript_path, n=2)
-        print(
-            f"[PRE-TOOL DEBUG] Got {len(messages)} messages from transcript",
-            file=sys.stderr,
-            flush=True,
-        )
-        print("[DEBUG A] After messages print", file=sys.stderr, flush=True)
-        print(
-            f"[DEBUG B] proposed_code type: {type(proposed_code)}",
-            file=sys.stderr,
-            flush=True,
-        )
-        try:
-            code_len = len(proposed_code)
-            print(
-                f"[DEBUG C] proposed_code length: {code_len}",
-                file=sys.stderr,
-                flush=True,
-            )
-        except Exception as e:
-            print(f"[DEBUG ERROR] len() failed: {e}", file=sys.stderr, flush=True)
-        print(
-            f"[PRE-TOOL DEBUG] About to call SDK validation with {len(proposed_code)} chars of code",
-            file=sys.stderr,
-            flush=True,
-        )
 
         # 7. Call unified validation via SDK
         from . import intent_validator
@@ -831,11 +756,6 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             code=proposed_code,
             file_path=file_path,
             tool_name=tool_name,
-        )
-        print(
-            f"[PRE-TOOL DEBUG] SDK returned: {result}",
-            file=sys.stderr,
-            flush=True,
         )
 
         # 8. Return result
