@@ -380,12 +380,27 @@ def run_hook():
     # =========================================================================
     # NEW: Post-tool code review validation (Phase 5)
     # =========================================================================
+    debug_log_path = os.path.join(
+        os.path.dirname(DEFAULT_CONFIG_PATH), "post_tool_debug.log"
+    )
     try:
+        with open(debug_log_path, "a") as debug_f:
+            debug_f.write(f"\n[{datetime.now()}] Post-tool hook called\n")
+            debug_f.write(
+                f"  intent_validation_enabled: {config.get('intent_validation_enabled', False)}\n"
+            )
+            debug_f.write(f"  hook_data exists: {hook_data is not None}\n")
+            debug_f.write(f"  tool_name: {tool_name}\n")
+
         if config.get("intent_validation_enabled", False) and hook_data:
             if tool_name in ["Write", "Edit"]:
                 tool_input = hook_data.get("tool_input", {})
                 file_path = tool_input.get("file_path")
                 transcript_path = hook_data.get("transcript_path")
+
+                with open(debug_log_path, "a") as debug_f:
+                    debug_f.write(f"  file_path: {file_path}\n")
+                    debug_f.write(f"  transcript_path: {transcript_path}\n")
 
                 if file_path and transcript_path:
                     # Check if source code file
@@ -395,19 +410,41 @@ def run_hook():
                         DEFAULT_EXTENSION_REGISTRY_PATH
                     )
 
-                    if extension_registry.is_source_code_file(file_path, extensions):
+                    is_source = extension_registry.is_source_code_file(
+                        file_path, extensions
+                    )
+                    with open(debug_log_path, "a") as debug_f:
+                        debug_f.write(f"  is_source_code_file: {is_source}\n")
+
+                    if is_source:
                         # Validate code against intent
-                        messages = get_last_n_assistant_messages(transcript_path, n=3)
+                        messages = get_last_n_assistant_messages(transcript_path, n=10)
+
+                        with open(debug_log_path, "a") as debug_f:
+                            debug_f.write(f"  Retrieved {len(messages)} messages\n")
+                            debug_f.write(
+                                "  Calling code_reviewer.validate_code_against_intent()...\n"
+                            )
+
                         feedback = code_reviewer.validate_code_against_intent(
                             file_path, messages
                         )
 
+                        with open(debug_log_path, "a") as debug_f:
+                            debug_f.write(f"  Feedback: {feedback}\n")
+
                         if feedback:
                             # Print feedback to stdout so Claude sees it
                             print(feedback, file=sys.stdout, flush=True)
-    except Exception:
-        # Fail silently - don't break pacing functionality
-        pass
+                            with open(debug_log_path, "a") as debug_f:
+                                debug_f.write("  Feedback printed to stdout\n")
+    except Exception as e:
+        # Log error but don't break pacing functionality
+        with open(debug_log_path, "a") as debug_f:
+            debug_f.write(f"  ERROR: {e}\n")
+            import traceback
+
+            debug_f.write(f"  Traceback: {traceback.format_exc()}\n")
 
     # Save state (always save to persist counter)
     state_changed = True
@@ -730,6 +767,10 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
         # 5. Check if source code file
         from . import extension_registry
+
+        # Skip if no file_path (e.g., Bash tool)
+        if not file_path:
+            return {"continue": True}
 
         extensions = extension_registry.load_extensions(DEFAULT_EXTENSION_REGISTRY_PATH)
         if not extension_registry.is_source_code_file(file_path, extensions):
