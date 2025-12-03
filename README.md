@@ -31,7 +31,7 @@ cd claude-pace-maker
 
 ```bash
 pace-maker status                  # Show current status
-pace-maker on|off                  # Enable/disable all throttling
+pace-maker on|off                  # Master switch - enable/disable ALL hooks
 pace-maker weekly-limit on|off    # Enable/disable 7-day limit
 pace-maker 5-hour-limit on|off    # Enable/disable 5-hour limit
 pace-maker tempo on|off           # Enable/disable session lifecycle (global)
