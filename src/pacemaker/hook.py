@@ -395,101 +395,6 @@ def run_hook():
         pending_message = inject_subagent_reminder(config)
         print("[PACING] DEBUG: Reminder captured", file=sys.stderr, flush=True)
 
-    # =========================================================================
-    # NEW: Post-tool code review validation (Phase 5)
-    # =========================================================================
-    try:
-        print(
-            "[REVIEW] Post-tool code review check starting",
-            file=sys.stderr,
-            flush=True,
-        )
-        print(
-            f"[REVIEW] intent_validation_enabled: {config.get('intent_validation_enabled', False)}",
-            file=sys.stderr,
-            flush=True,
-        )
-        print(
-            f"[REVIEW] hook_data exists: {hook_data is not None}",
-            file=sys.stderr,
-            flush=True,
-        )
-        print(f"[REVIEW] tool_name: {tool_name}", file=sys.stderr, flush=True)
-
-        if config.get("intent_validation_enabled", False) and hook_data:
-            if tool_name in ["Write", "Edit"]:
-                tool_input = hook_data.get("tool_input", {})
-                file_path = tool_input.get("file_path")
-                transcript_path = hook_data.get("transcript_path")
-
-                print(f"[REVIEW] file_path: {file_path}", file=sys.stderr, flush=True)
-                print(
-                    f"[REVIEW] transcript_path: {transcript_path}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-
-                if file_path and transcript_path:
-                    # Check if source code file
-                    from . import extension_registry, code_reviewer
-
-                    extensions = extension_registry.load_extensions(
-                        DEFAULT_EXTENSION_REGISTRY_PATH
-                    )
-
-                    is_source = extension_registry.is_source_code_file(
-                        file_path, extensions
-                    )
-                    print(
-                        f"[REVIEW] is_source_code_file: {is_source}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-
-                    if is_source:
-                        # Validate code against intent
-                        messages = get_last_n_assistant_messages(transcript_path, n=2)
-
-                        print(
-                            f"[REVIEW] Retrieved {len(messages)} messages",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-                        print(
-                            "[REVIEW] Calling code_reviewer.validate_code_against_intent()...",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-
-                        feedback = code_reviewer.validate_code_against_intent(
-                            file_path, messages
-                        )
-
-                        print(
-                            f"[REVIEW] Feedback: {feedback[:100] if feedback else 'None'}...",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-
-                        if feedback:
-                            # Code review feedback takes priority over subagent nudge
-                            pending_message = feedback
-                            print(
-                                "[REVIEW] Feedback captured (overrides subagent nudge)",
-                                file=sys.stderr,
-                                flush=True,
-                            )
-                            # Mark that feedback was provided
-                            feedback_provided = True
-    except Exception as e:
-        # Log error but don't break pacing functionality
-        print(f"[REVIEW] ERROR: {e}", file=sys.stderr, flush=True)
-        import traceback
-
-        print(
-            f"[REVIEW] Traceback: {traceback.format_exc()}", file=sys.stderr, flush=True
-        )
-
     # Save state (always save to persist counter)
     state_changed = True
     if state_changed:
@@ -777,28 +682,33 @@ def run_stop_hook():
 
 def run_pre_tool_hook() -> Dict[str, Any]:
     """
-    Pre-tool hook: Validate intent before Write/Edit on source code files.
+    Pre-tool hook: Unified validation (intent + code review).
 
-    Reads stdin for hook data:
-    {
-      "session_id": "...",
-      "transcript_path": "/path/to/conversation.jsonl",
-      "tool_name": "Write",
-      "tool_input": {
-        "file_path": "/path/to/file.py",
-        "content": "..."
-      }
-    }
+    Validates BEFORE tool execution:
+    1. Intent was declared in last 2 messages
+    2. Proposed code matches declared intent exactly
+    3. No clean code violations
 
     Returns:
-      {"continue": True} - Allow tool use
-      {"decision": "block", "reason": "..."} - Block tool use
-
-    Exit code 0: Allow, Exit code 2: Block
+        {"continue": True} to allow, or
+        {"decision": "block", "reason": "..."} to block
     """
     try:
-        # 1. Read JSON from stdin
+        # 1. Read hook data from stdin
         raw_input = sys.stdin.read()
+        print(
+            f"[PRE-TOOL DEBUG] Got raw_input: {len(raw_input) if raw_input else 0} chars",
+            file=sys.stderr,
+            flush=True,
+        )
+        if not raw_input:
+            print(
+                "[PRE-TOOL DEBUG] No input, returning continue",
+                file=sys.stderr,
+                flush=True,
+            )
+            return {"continue": True}
+
         hook_data = json.loads(raw_input)
 
         # 2. Extract fields
@@ -806,61 +716,98 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         tool_input = hook_data.get("tool_input", {})
         file_path = tool_input.get("file_path")
         transcript_path = hook_data.get("transcript_path")
+        print(
+            f"[PRE-TOOL DEBUG] Parsed hook_data: tool={tool_name}, file={file_path}",
+            file=sys.stderr,
+            flush=True,
+        )
 
-        # 2a. Only validate Write/Edit tools (defense against query filter bugs)
+        # 2a. Only validate Write/Edit tools
         if tool_name not in ["Write", "Edit"]:
+            print(
+                f"[PRE-TOOL DEBUG] Tool {tool_name} not Write/Edit, bypassing",
+                file=sys.stderr,
+                flush=True,
+            )
+            return {"continue": True}
+
+        # Skip if no file_path (e.g., some edge cases)
+        if not file_path:
+            print(
+                "[PRE-TOOL DEBUG] No file_path, bypassing", file=sys.stderr, flush=True
+            )
             return {"continue": True}
 
         # 3. Load config
         config = load_config(DEFAULT_CONFIG_PATH)
 
-        # 4. Check if feature enabled
+        # Check if feature enabled
         if not config.get("intent_validation_enabled", False):
+            print(
+                "[PRE-TOOL DEBUG] Feature disabled, bypassing",
+                file=sys.stderr,
+                flush=True,
+            )
             return {"continue": True}
 
-        # 5. Check if source code file
+        # 4. Check if source code file
         from . import extension_registry
 
-        # Skip if no file_path (e.g., Bash tool)
-        if not file_path:
-            return {"continue": True}
-
         extensions = extension_registry.load_extensions(DEFAULT_EXTENSION_REGISTRY_PATH)
-        if not extension_registry.is_source_code_file(file_path, extensions):
+        is_source = extension_registry.is_source_code_file(file_path, extensions)
+        print(
+            f"[PRE-TOOL DEBUG] File {file_path} is_source={is_source}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        if not is_source:
+            print(
+                "[PRE-TOOL DEBUG] Not source code file, bypassing",
+                file=sys.stderr,
+                flush=True,
+            )
+            return {"continue": True}  # Bypass non-source files
+
+        # 5. Extract proposed code from tool_input
+        if tool_name == "Write":
+            proposed_code = tool_input.get("content", "")
+        elif tool_name == "Edit":
+            # For Edit, use new_string as the proposed code
+            proposed_code = tool_input.get("new_string", "")
+        else:
             return {"continue": True}
 
         # 6. Read last 2 assistant messages (current + 1 before)
         messages = get_last_n_assistant_messages(transcript_path, n=2)
+        print(
+            f"[PRE-TOOL DEBUG] Got {len(messages)} messages from transcript",
+            file=sys.stderr,
+            flush=True,
+        )
 
-        # 7. Validate intent declared
-        from .intent_validator import validate_intent_declared
+        # 7. Call unified validation via SDK
+        from . import intent_validator
 
-        result = validate_intent_declared(messages, file_path, tool_name)
+        result = intent_validator.validate_intent_and_code(
+            messages=messages,
+            code=proposed_code,
+            file_path=file_path,
+            tool_name=tool_name,
+        )
+        print(f"[PRE-TOOL DEBUG] SDK result: {result}", file=sys.stderr, flush=True)
 
-        # 8. Block if no intent
-        if not result["intent_found"]:
+        # 8. Return result
+        if result.get("approved", False):
+            return {"continue": True}
+        else:
             return {
                 "decision": "block",
-                "reason": """⛔ Intent declaration required
-
-You must declare your intent IN THIS SAME MESSAGE before using Write/Edit tools.
-
-Required format - include ALL 3 components:
-  1. FILE: Which file you're modifying
-  2. CHANGES: What specific changes you're making
-  3. GOAL: Why you're making these changes
-
-Example:
-  "I will modify src/database.py to add a connect_to_db() function
-   that handles connection pooling, to improve performance."
-
-Then use your Write/Edit tool in the same message.""",
+                "reason": result.get("feedback", "Validation failed"),
             }
 
-        return {"continue": True}
-
     except Exception as e:
-        # Fail open on any error - graceful degradation
+        # Graceful degradation - log error and allow
         print(f"[PACE-MAKER ERROR] Pre-tool hook: {e}", file=sys.stderr)
         return {"continue": True}
 

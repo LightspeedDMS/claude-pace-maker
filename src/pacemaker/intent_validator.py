@@ -505,3 +505,157 @@ def validate_intent_declared(
     except Exception:
         # Fail open: return False on any error
         return {"intent_found": False}
+
+
+def validate_intent_and_code(
+    messages: List[str], code: str, file_path: str, tool_name: str
+) -> dict:
+    """
+    Unified pre-tool validation: intent declaration + code review.
+
+    Args:
+        messages: Last 2 assistant messages (current + 1 before)
+        code: Proposed code that will be written
+        file_path: Target file path
+        tool_name: Write or Edit
+
+    Returns:
+        {"approved": True} if all checks pass
+        {"approved": False, "feedback": "..."} if violations found
+    """
+    if not SDK_AVAILABLE:
+        # Fail open if SDK unavailable
+        return {"approved": True}
+
+    # Build unified validation prompt
+    prompt = f"""You are validating a code change BEFORE it executes.
+
+CONTEXT:
+The assistant is attempting to use the {tool_name} tool on file: {file_path}
+
+LAST 2 MESSAGES (must contain intent declaration):
+{chr(10).join(f"Message {i+1}: {msg}" for i, msg in enumerate(messages))}
+
+PROPOSED CODE (what will be written if approved):
+{code}
+
+YOUR TASK - THREE POSSIBLE OUTCOMES:
+
+════════════════════════════════════════════════════════════════
+OUTCOME 1: NO INTENT DECLARED → BLOCK + TEACH
+════════════════════════════════════════════════════════════════
+
+If the last 2 messages do NOT contain a clear intent declaration, return:
+
+⛔ Intent declaration required
+
+You must declare your intent BEFORE using {tool_name} tools.
+
+Required format - include ALL 3 components:
+  1. FILE: Which file you're modifying ({file_path})
+  2. CHANGES: What specific changes you're making
+  3. GOAL: Why you're making these changes
+
+Example:
+  "I will modify {file_path} to add a validate_input() function
+   that checks user input for XSS attacks, to improve security."
+
+Then use your {tool_name} tool in the same message or next message.
+
+════════════════════════════════════════════════════════════════
+OUTCOME 2: INTENT DECLARED BUT VIOLATIONS FOUND → BLOCK + EXPLAIN
+════════════════════════════════════════════════════════════════
+
+If intent WAS declared, validate the PROPOSED CODE against:
+
+A) CODE MATCH VIOLATIONS:
+   - EXACT MATCH: Does code implement EXACTLY what was declared?
+   - SCOPE CREEP: Extra functions, features, refactoring not mentioned?
+   - MISSING FUNCTIONALITY: Declared functionality absent from code?
+   - UNAUTHORIZED CHANGES: Modifications beyond declared scope?
+
+B) CLEAN CODE VIOLATIONS:
+   - Hardcoded secrets (API keys, passwords, tokens)
+   - SQL injection vulnerabilities (string concatenation in queries)
+   - Bare except clauses (must catch specific exceptions)
+   - Silently swallowed exceptions (must log or re-raise)
+   - Commented-out code blocks (delete or document WHY)
+   - Magic numbers (use named constants)
+   - Mutable default arguments (Python: def func(items=[]):)
+   - Overnested if statements (excessive indentation)
+   - Blatant logic bugs not aligned with intent
+   - Missing boundary checks (null/None, overflows, bounds)
+   - Lack of comments in complicated/brittle code
+
+If violations found, return detailed feedback:
+  - List each violation with specifics
+  - Explain what should be fixed
+  - Show expected code if helpful
+
+════════════════════════════════════════════════════════════════
+OUTCOME 3: INTENT DECLARED + NO VIOLATIONS → ALLOW
+════════════════════════════════════════════════════════════════
+
+If ALL of these are true:
+  ✓ Intent clearly declared in last 2 messages
+  ✓ Code implements EXACTLY what was declared (no more, no less)
+  ✓ No clean code violations
+
+Then return: EMPTY RESPONSE (no text at all)
+
+════════════════════════════════════════════════════════════════
+
+Be strict: Code executes ONLY if you return empty response.
+Block anything missing intent, not matching intent, or violating clean code."""
+
+    # Call SDK with Sonnet
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        feedback = loop.run_until_complete(_call_unified_validation_async(prompt))
+
+        if feedback.strip() == "":
+            # Empty response = approved
+            return {"approved": True}
+        else:
+            # Feedback = blocked
+            return {"approved": False, "feedback": feedback}
+
+    except Exception as e:
+        # Fail open on errors
+        logger.debug(f"Unified validation error: {e}")
+        return {"approved": True}
+
+
+async def _call_unified_validation_async(prompt: str) -> str:
+    """Call SDK for unified validation with Sonnet."""
+    if not SDK_AVAILABLE:
+        return ""
+
+    from claude_agent_sdk import query as fresh_query
+    from claude_agent_sdk.types import (
+        ClaudeAgentOptions as FreshOptions,
+        ResultMessage as FreshResult,
+    )
+
+    options = FreshOptions(
+        max_turns=1,
+        model="claude-sonnet-4-5-20250929",
+        max_thinking_tokens=4000,
+        system_prompt="You are a strict code validator. Return empty response ONLY if all checks pass. Otherwise return detailed feedback.",
+        disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
+    )
+
+    response_text = ""
+    try:
+        async for message in fresh_query(prompt=prompt, options=options):
+            if isinstance(message, FreshResult):
+                if hasattr(message, "result") and message.result:
+                    response_text = message.result.strip()
+    except Exception:
+        pass  # Fail open
+
+    return response_text
