@@ -23,7 +23,9 @@ from .constants import (
     DEFAULT_EXTENSION_REGISTRY_PATH,
     MAX_DELAY_SECONDS,
 )
-from .transcript_reader import get_last_n_assistant_messages
+from .transcript_reader import (
+    get_last_n_messages_for_validation,
+)
 
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
@@ -745,8 +747,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         else:
             return {"continue": True}
 
-        # 6. Read last 2 assistant messages (current + 1 before)
-        messages = get_last_n_assistant_messages(transcript_path, n=2)
+        # 6. Read last 5 messages for validation (includes user and assistant)
+        messages = get_last_n_messages_for_validation(transcript_path, n=5)
 
         # 7. Call unified validation via SDK
         from . import intent_validator

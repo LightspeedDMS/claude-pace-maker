@@ -589,7 +589,7 @@ def validate_intent_and_code(
 
 
 async def _call_unified_validation_async(prompt: str) -> str:
-    """Call SDK for unified validation with Sonnet."""
+    """Call SDK for unified validation with Opus (fallback to Sonnet on usage limits)."""
     if not SDK_AVAILABLE:
         return ""
 
@@ -599,9 +599,10 @@ async def _call_unified_validation_async(prompt: str) -> str:
         ResultMessage as FreshResult,
     )
 
+    # Try Opus first for better validation quality
     options = FreshOptions(
         max_turns=1,
-        model="claude-sonnet-4-5-20250929",
+        model="claude-opus-4-5-20251101",
         max_thinking_tokens=4000,
         system_prompt="You are a strict code validator. Return empty response ONLY if all checks pass. Otherwise return detailed feedback.",
         disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
@@ -621,5 +622,40 @@ async def _call_unified_validation_async(prompt: str) -> str:
         import traceback
 
         traceback.print_exc(file=sys.stderr)
+
+    # If Opus hit usage limit, fall back to Sonnet
+    if _is_limit_error(response_text):
+        options_sonnet = FreshOptions(
+            max_turns=1,
+            model="claude-sonnet-4-5-20250929",
+            max_thinking_tokens=4000,
+            system_prompt="You are a strict code validator. Return empty response ONLY if all checks pass. Otherwise return detailed feedback.",
+            disallowed_tools=[
+                "Write",
+                "Edit",
+                "Bash",
+                "TodoWrite",
+                "Read",
+                "Grep",
+                "Glob",
+            ],
+        )
+
+        response_text = ""
+        try:
+            async for message in fresh_query(prompt=prompt, options=options_sonnet):
+                if isinstance(message, FreshResult):
+                    if hasattr(message, "result") and message.result:
+                        response_text = message.result.strip()
+        except Exception as e:
+            # Fail open on Sonnet fallback errors too
+            print(
+                f"[SDK ERROR] Unified validation fallback failed: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            import traceback
+
+            traceback.print_exc(file=sys.stderr)
 
     return response_text
