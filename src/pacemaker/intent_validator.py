@@ -430,7 +430,7 @@ async def _call_sdk_intent_validation_async(prompt: str) -> str:
         ResultMessage as FreshResult,
     )
 
-    # Use Sonnet for better natural language understanding
+    # Use Sonnet for better natural language understanding (Haiku failed tests)
     options = FreshOptions(
         max_turns=1,
         model="claude-sonnet-4-5-20250929",
