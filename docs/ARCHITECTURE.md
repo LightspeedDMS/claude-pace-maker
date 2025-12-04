@@ -465,8 +465,8 @@ The external prompt template is located at:
 ### SDK Integration
 
 The validator uses Claude Agent SDK with model fallback:
-- **Primary**: `claude-opus-4-5-20251101`
-- **Fallback**: `claude-sonnet-4-5-20250929` (on rate limit)
+- **Primary**: `claude-sonnet-4-5` (fast, cost-effective)
+- **Fallback**: `claude-opus-4-5` (on rate limit)
 
 **Configuration**: `src/pacemaker/intent_validator.py`
 
@@ -1058,10 +1058,11 @@ python -m pytest tests/ --cov=src/pacemaker --cov-report=html
 
 ---
 
-**Document Version**: 1.4
-**Last Updated**: 2025-12-03
+**Document Version**: 1.5
+**Last Updated**: 2025-12-04
 **Maintainer**: Claude Code Pace Maker Team
 **Changes**:
+- v1.5: Updated model names to versionless (claude-sonnet-4-5, claude-opus-4-5), added hookEventName to PostToolUse additionalContext
 - v1.4: Added Pre-Tool Validation System (intent declaration, Light-TDD enforcement, clean code validation), PreToolUse hook, transcript_reader module, external prompt template
 - v1.3: Added SubagentStart/Stop hooks, pacing_decisions table, subagent reminder system, session tempo control, continuous throttling architecture
 - v1.2: Updated intent validation from marker-based to AI-powered SDK approach

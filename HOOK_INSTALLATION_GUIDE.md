@@ -45,11 +45,11 @@ When you have both:
 
 ---
 
-## Correct Installation Pattern
+## Installation Modes
 
-### Global Installation (Rare)
+### Global Installation (Primary - Recommended)
 
-**Use case**: Hooks you want active in ALL Claude Code sessions (even non-project work)
+**Use case**: Enable pace-maker for ALL Claude Code sessions across all projects
 
 ```bash
 cd ~/Dev/claude-pace-maker
@@ -59,18 +59,19 @@ cd ~/Dev/claude-pace-maker
 **Registers hooks in**: `~/.claude/settings.json`
 
 **Installed hooks**:
-- `SessionStart` → session-start.sh
-- `UserPromptSubmit` → user-prompt-submit.sh
-- `PostToolUse` → post-tool-use.sh (**Don't do this globally!** See below)
-- `Stop` → stop.sh
-- `SubagentStart` → subagent-start.sh
-- `SubagentStop` → subagent-stop.sh
+- `SessionStart` → session-start.sh (intent validation guidance)
+- `UserPromptSubmit` → user-prompt-submit.sh (CLI commands)
+- `PreToolUse` → pre-tool-use.sh (intent validation, TDD enforcement)
+- `PostToolUse` → post-tool-use.sh (credit throttling, subagent reminders)
+- `Stop` → stop.sh (session completion validation)
+- `SubagentStart` → subagent-start.sh (context tracking)
+- `SubagentStop` → subagent-stop.sh (context tracking)
 
-**WARNING**: **DO NOT install PostToolUse globally!** Pace-maker's throttling should be project-specific, not global.
+**This is the recommended installation mode.** All pace-maker features work globally.
 
-### Project Installation (Recommended)
+### Project Installation (For Project-Specific Overrides)
 
-**Use case**: Enable pace-maker for a specific project
+**Use case**: Override or extend global hooks for a specific project
 
 ```bash
 cd ~/Dev/claude-pace-maker
@@ -85,78 +86,61 @@ cd ~/Dev/claude-pace-maker
 3. Adds pace-maker hooks back
 4. **Result**: Your project has BOTH pace-maker AND other tools' hooks
 
-### Mixed Installation (Most Common)
+### When to Use Project Installation
 
-**Recommended setup**:
+Use project installation when:
+- You need to combine pace-maker with project-specific tools (tdd-guard, etc.)
+- You want different hook behavior in a specific project
+- The project already has hooks that would be overridden by global settings
 
-1. **Global settings** (`~/.claude/settings.json`):
-   - Lightweight hooks you want everywhere
-   - Do NOT include PostToolUse (too slow for all projects)
+**Important**: Due to Claude Code's override behavior, project settings must include ALL hooks you want for that project, not just the project-specific ones.
 
-   ```json
-   {
-     "hooks": {
-       "SessionStart": [
-         {"hooks": [{"type": "command", "command": "~/.claude/hooks/session-start.sh"}]}
-       ],
-       "Stop": [
-         {"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh"}]}
-       ],
-       "UserPromptSubmit": [
-         {"hooks": [{"type": "command", "command": "~/.claude/hooks/user-prompt-submit.sh"}]}
-       ],
-       "SubagentStart": [
-         {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-start.sh"}]}
-       ],
-       "SubagentStop": [
-         {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-stop.sh"}]}
-       ]
-     }
-   }
-   ```
+---
 
-2. **Project settings** (`<project>/.claude/settings.json`):
-   - Include ALL hooks (global + project-specific)
-   - This is required due to Claude Code's override behavior
+## Combining Pace-Maker with Other Hook Tools
 
-   ```json
-   {
-     "hooks": {
-       "PreToolUse": [
-         {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "tdd-guard"}]}
-       ],
-       "PostToolUse": [
-         {"hooks": [{"type": "command", "command": "~/.claude/hooks/post-tool-use.sh", "timeout": 360}]}
-       ],
-       "UserPromptSubmit": [
-         {
-           "hooks": [
-             {"type": "command", "command": "tdd-guard"},
-             {"type": "command", "command": "~/.claude/hooks/user-prompt-submit.sh"}
-           ]
-         }
-       ],
-       "SessionStart": [
-         {
-           "matcher": "startup|resume|clear",
-           "hooks": [
-             {"type": "command", "command": "tdd-guard"},
-             {"type": "command", "command": "~/.claude/hooks/session-start.sh"}
-           ]
-         }
-       ],
-       "Stop": [
-         {"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh"}]}
-       ],
-       "SubagentStart": [
-         {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-start.sh"}]}
-       ],
-       "SubagentStop": [
-         {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-stop.sh"}]}
-       ]
-     }
-   }
-   ```
+If a project has its own hooks (like tdd-guard), you need to include BOTH in the project's settings.json:
+
+**Project settings** (`<project>/.claude/settings.json`):
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "tdd-guard"}]},
+      {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "~/.claude/hooks/pre-tool-use.sh", "timeout": 120}]}
+    ],
+    "PostToolUse": [
+      {"hooks": [{"type": "command", "command": "~/.claude/hooks/post-tool-use.sh", "timeout": 360}]}
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {"type": "command", "command": "tdd-guard"},
+          {"type": "command", "command": "~/.claude/hooks/user-prompt-submit.sh"}
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {"type": "command", "command": "tdd-guard"},
+          {"type": "command", "command": "~/.claude/hooks/session-start.sh"}
+        ]
+      }
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh", "timeout": 120}]}
+    ],
+    "SubagentStart": [
+      {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-start.sh"}]}
+    ],
+    "SubagentStop": [
+      {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-stop.sh"}]}
+    ]
+  }
+}
+```
 
 ---
 
@@ -181,23 +165,15 @@ If BOTH show the hook, you have a conflict.
 
 ### Fix
 
-**Option 1: Remove from global** (Recommended)
-```bash
-# Edit global settings
-nano ~/.claude/settings.json
-
-# Remove PostToolUse entirely from global (it should be project-specific)
-```
-
-**Option 2: Remove from project**
+**Option 1: Remove from project** (if global installation is sufficient)
 ```bash
 # Edit project settings
 nano <project>/.claude/settings.json
 
-# Remove PostToolUse hook - but you'll lose pace-maker throttling for this project
+# Remove the duplicate hook entry
 ```
 
-**Option 3: Use pace-maker's install script** (Automatic fix)
+**Option 2: Use pace-maker's install script** (Automatic fix)
 ```bash
 cd ~/Dev/claude-pace-maker
 
@@ -215,18 +191,17 @@ After installation, verify hooks are registered correctly:
 # Global hooks
 cat ~/.claude/settings.json | jq '.hooks'
 
-# Project hooks
+# Project hooks (if applicable)
 cat <project>/.claude/settings.json | jq '.hooks'
 ```
 
 **Expected**:
 - Each hook appears EXACTLY ONCE per settings file
-- Project settings include ALL hooks (global + project-specific) for hook types you want to override
-- No duplicate pace-maker hooks across global and project
+- If using project settings, they include ALL hooks (global + project-specific) for hook types you want to override
 
 ---
 
-## Advanced: How install.sh Handles Merging
+## How install.sh Handles Merging
 
 The `install.sh` script uses a sophisticated three-step jq filter:
 
@@ -241,3 +216,20 @@ This ensures:
 - ✅ Matchers and other configurations are maintained
 
 See `install.sh:register_hooks()` for implementation details.
+
+---
+
+## Feature Control
+
+All pace-maker features can be toggled without changing hook registration:
+
+```bash
+pace-maker on|off                    # Master switch - enable/disable ALL hooks
+pace-maker intent-validation on|off  # Enable/disable pre-tool validation
+pace-maker tempo on|off              # Enable/disable session lifecycle
+pace-maker reminder on|off           # Enable/disable subagent reminders
+pace-maker 5-hour-limit on|off       # Enable/disable 5-hour throttling
+pace-maker weekly-limit on|off       # Enable/disable 7-day throttling
+```
+
+This allows you to install hooks globally but selectively disable features as needed.
