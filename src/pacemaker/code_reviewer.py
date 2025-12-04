@@ -104,7 +104,7 @@ async def _call_sdk_review_async(prompt: str) -> str:
     # Try Sonnet first with thinking tokens for better review
     options = FreshOptions(
         max_turns=1,
-        model="claude-sonnet-4-5-20250929",
+        model="claude-sonnet-4-5",
         max_thinking_tokens=4000,
         system_prompt="You are a code reviewer. Provide feedback only if code doesn't match intent. Return empty response if code is correct.",
         disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
@@ -120,7 +120,7 @@ async def _call_sdk_review_async(prompt: str) -> str:
         # If Sonnet hit usage limit, try Opus
         error_str = str(e).lower()
         if "usage limit" in error_str or "limit reached" in error_str:
-            options.model = "claude-opus-4-5-20251101"
+            options.model = "claude-opus-4-5"
             try:
                 async for message in fresh_query(prompt=prompt, options=options):
                     if isinstance(message, FreshResult):

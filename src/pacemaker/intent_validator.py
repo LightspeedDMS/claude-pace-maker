@@ -266,11 +266,11 @@ async def call_sdk_validation_async(conversation_context: str) -> str:
     prompt = build_validation_prompt(conversation_context)
 
     # Try sonnet first
-    response = await _fresh_sdk_call(prompt, "claude-sonnet-4-5-20250929")
+    response = await _fresh_sdk_call(prompt, "claude-sonnet-4-5")
 
     # If sonnet hit usage limit, fall back to opus
     if _is_limit_error(response):
-        response = await _fresh_sdk_call(prompt, "claude-opus-4-5-20251101")
+        response = await _fresh_sdk_call(prompt, "claude-opus-4-5")
 
     return response
 
@@ -440,7 +440,7 @@ async def _call_sdk_intent_validation_async(prompt: str) -> str:
     # Use Sonnet for better natural language understanding (Haiku failed tests)
     options = FreshOptions(
         max_turns=1,
-        model="claude-sonnet-4-5-20250929",
+        model="claude-sonnet-4-5",
         max_thinking_tokens=2000,
         system_prompt="You are validating if intent was declared. Respond with YES or NO only.",
         disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
@@ -583,7 +583,7 @@ async def _call_unified_validation_async(prompt: str) -> str:
     # Try Opus first for better validation quality
     options = FreshOptions(
         max_turns=1,
-        model="claude-opus-4-5-20251101",
+        model="claude-opus-4-5",
         max_thinking_tokens=4000,
         system_prompt="You are a strict code validator. Return empty response ONLY if all checks pass. Otherwise return detailed feedback.",
         disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
@@ -608,7 +608,7 @@ async def _call_unified_validation_async(prompt: str) -> str:
     if _is_limit_error(response_text):
         options_sonnet = FreshOptions(
             max_turns=1,
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-5",
             max_thinking_tokens=4000,
             system_prompt="You are a strict code validator. Return empty response ONLY if all checks pass. Otherwise return detailed feedback.",
             disallowed_tools=[
