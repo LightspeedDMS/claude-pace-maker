@@ -451,9 +451,14 @@ def run_hook():
 
     # Print final message if any (code review takes priority over subagent nudge)
     if pending_message:
-        output = {"decision": "block", "reason": pending_message}
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": pending_message,
+            }
+        }
         print(json.dumps(output), file=sys.stdout, flush=True)
-        return True
+        return False  # Not blocking feedback, just injecting context
 
     # Return whether feedback was provided
     return feedback_provided

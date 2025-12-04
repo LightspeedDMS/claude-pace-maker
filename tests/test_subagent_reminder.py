@@ -329,10 +329,11 @@ class TestReminderInjection:
         assert result is True, "Write tool should trigger at count 1"
 
     def test_should_inject_reminder_other_tools_no_immediate(self, tmp_path):
-        """Other tools (not Write) don't trigger immediate reminder."""
+        """Other tools (not Write/Edit) don't trigger immediate reminder."""
         config = {"subagent_reminder_enabled": True, "subagent_reminder_frequency": 5}
 
-        other_tools = ["Read", "Edit", "Bash", "Glob", "Grep"]
+        # Edit now triggers immediate (same as Write), so exclude from this test
+        other_tools = ["Read", "Bash", "Glob", "Grep"]
 
         for tool_name in other_tools:
             # At count 3 (not a multiple of 5)
@@ -348,6 +349,20 @@ class TestReminderInjection:
             assert (
                 result is True
             ), f"{tool_name} at count 5 should trigger due to counter"
+
+    def test_should_inject_reminder_edit_triggers_immediate(self, tmp_path):
+        """Edit tool triggers immediate reminder (same as Write)."""
+        config = {"subagent_reminder_enabled": True, "subagent_reminder_frequency": 5}
+
+        # Edit at count 3 (not a multiple of 5) should still trigger
+        state = {"in_subagent": False, "tool_execution_count": 3}
+        result = hook.should_inject_reminder(state, config, tool_name="Edit")
+        assert result is True, "Edit tool should trigger immediate reminder"
+
+        # Even at count 1, Edit tool should trigger
+        state = {"in_subagent": False, "tool_execution_count": 1}
+        result = hook.should_inject_reminder(state, config, tool_name="Edit")
+        assert result is True, "Edit tool should trigger at count 1"
 
     def test_should_inject_reminder_disabled_in_subagent(self, tmp_path):
         """should_inject_reminder returns False when in subagent context."""
@@ -379,46 +394,23 @@ class TestReminderInjection:
         result = hook.should_inject_reminder(state, config, tool_name="Write")
         assert result is False
 
-    @patch("builtins.print")
-    def test_inject_subagent_reminder_prints_message(self, mock_print):
-        """inject_subagent_reminder prints JSON with block decision to stdout."""
+    def test_inject_subagent_reminder_returns_message(self):
+        """inject_subagent_reminder returns reminder message (no longer prints)."""
         config = {"subagent_reminder_message": "TEST REMINDER MESSAGE"}
 
-        hook.inject_subagent_reminder(config)
+        result = hook.inject_subagent_reminder(config)
 
-        # Verify print called with JSON output to stdout
-        import sys
-        import json
+        # Verify message returned
+        assert result == "TEST REMINDER MESSAGE"
 
-        mock_print.assert_called_once()
-        call_args = mock_print.call_args
-
-        # Parse the JSON output
-        json_output = json.loads(call_args[0][0])
-        assert json_output["decision"] == "block"
-        assert json_output["reason"] == "TEST REMINDER MESSAGE"
-        assert call_args[1]["file"] == sys.stdout
-        assert call_args[1]["flush"] is True
-
-    @patch("builtins.print")
-    def test_inject_subagent_reminder_default_message(self, mock_print):
+    def test_inject_subagent_reminder_default_message(self):
         """inject_subagent_reminder uses default message if not configured."""
         config = {}
 
-        hook.inject_subagent_reminder(config)
+        result = hook.inject_subagent_reminder(config)
 
         # Verify default message used
-        import sys
-        import json
-
-        mock_print.assert_called_once()
-        call_args = mock_print.call_args
-
-        # Parse JSON output
-        json_output = json.loads(call_args[0][0])
-        assert json_output["decision"] == "block"
-        assert "Task tool" in json_output["reason"]
-        assert call_args[1]["file"] == sys.stdout
+        assert "Task tool" in result
 
 
 class TestIntegration:
@@ -477,7 +469,7 @@ class TestIntegration:
             mock_print.reset_mock()
             hook.run_hook()
 
-            # Verify reminder was printed as JSON with block decision
+            # Verify reminder was printed as JSON with additionalContext
             import sys
 
             reminder_printed = False
@@ -485,11 +477,8 @@ class TestIntegration:
                 if call[0] and call[1].get("file") == sys.stdout:
                     try:
                         json_output = json.loads(call[0][0])
-                        if json_output.get(
-                            "decision"
-                        ) == "block" and "TEST REMINDER" in json_output.get(
-                            "reason", ""
-                        ):
+                        hook_output = json_output.get("hookSpecificOutput", {})
+                        if "TEST REMINDER" in hook_output.get("additionalContext", ""):
                             reminder_printed = True
                             break
                     except (json.JSONDecodeError, AttributeError):
@@ -607,11 +596,8 @@ class TestIntegration:
                 if call[0] and call[1].get("file") == sys.stdout:
                     try:
                         json_output = json.loads(call[0][0])
-                        if json_output.get(
-                            "decision"
-                        ) == "block" and "TEST REMINDER" in json_output.get(
-                            "reason", ""
-                        ):
+                        hook_output = json_output.get("hookSpecificOutput", {})
+                        if "TEST REMINDER" in hook_output.get("additionalContext", ""):
                             reminder_printed = True
                             break
                     except (json.JSONDecodeError, AttributeError):

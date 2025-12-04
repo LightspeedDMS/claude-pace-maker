@@ -54,10 +54,10 @@ class TestPreToolHook:
     @patch("pacemaker.hook.load_config")
     @patch("pacemaker.extension_registry.load_extensions")
     @patch("pacemaker.extension_registry.is_source_code_file")
-    @patch("pacemaker.hook.get_last_n_assistant_messages")
-    @patch("pacemaker.intent_validator.validate_intent_declared")
+    @patch("pacemaker.hook.get_last_n_messages_for_validation")
+    @patch("pacemaker.intent_validator.validate_intent_and_code")
     @patch("sys.stdin")
-    def test_blocks_when_no_intent_found(
+    def test_blocks_when_validation_fails(
         self,
         mock_stdin,
         mock_validate,
@@ -66,7 +66,7 @@ class TestPreToolHook:
         mock_load_ext,
         mock_load_config,
     ):
-        """Should block tool use when intent was not declared."""
+        """Should block tool use when validation fails."""
         hook_data = {
             "session_id": "test",
             "transcript_path": "/path/to/transcript.jsonl",
@@ -78,7 +78,10 @@ class TestPreToolHook:
         mock_load_ext.return_value = [".py"]
         mock_is_source.return_value = True
         mock_get_messages.return_value = ["Some message"]
-        mock_validate.return_value = {"intent_found": False}
+        mock_validate.return_value = {
+            "approved": False,
+            "feedback": "Intent declaration required",
+        }
 
         result = run_pre_tool_hook()
 
@@ -89,10 +92,10 @@ class TestPreToolHook:
     @patch("pacemaker.hook.load_config")
     @patch("pacemaker.extension_registry.load_extensions")
     @patch("pacemaker.extension_registry.is_source_code_file")
-    @patch("pacemaker.hook.get_last_n_assistant_messages")
-    @patch("pacemaker.intent_validator.validate_intent_declared")
+    @patch("pacemaker.hook.get_last_n_messages_for_validation")
+    @patch("pacemaker.intent_validator.validate_intent_and_code")
     @patch("sys.stdin")
-    def test_allows_when_intent_found(
+    def test_allows_when_validation_passes(
         self,
         mock_stdin,
         mock_validate,
@@ -101,7 +104,7 @@ class TestPreToolHook:
         mock_load_ext,
         mock_load_config,
     ):
-        """Should allow tool use when intent was declared."""
+        """Should allow tool use when validation passes."""
         hook_data = {
             "session_id": "test",
             "transcript_path": "/path/to/transcript.jsonl",
@@ -113,7 +116,7 @@ class TestPreToolHook:
         mock_load_ext.return_value = [".py"]
         mock_is_source.return_value = True
         mock_get_messages.return_value = ["I will modify test.py to add logging"]
-        mock_validate.return_value = {"intent_found": True}
+        mock_validate.return_value = {"approved": True}
 
         result = run_pre_tool_hook()
 
@@ -122,10 +125,10 @@ class TestPreToolHook:
     @patch("pacemaker.hook.load_config")
     @patch("pacemaker.extension_registry.load_extensions")
     @patch("pacemaker.extension_registry.is_source_code_file")
-    @patch("pacemaker.hook.get_last_n_assistant_messages")
-    @patch("pacemaker.intent_validator.validate_intent_declared")
+    @patch("pacemaker.hook.get_last_n_messages_for_validation")
+    @patch("pacemaker.intent_validator.validate_intent_and_code")
     @patch("sys.stdin")
-    def test_reads_last_3_assistant_messages(
+    def test_reads_last_5_messages(
         self,
         mock_stdin,
         mock_validate,
@@ -134,7 +137,7 @@ class TestPreToolHook:
         mock_load_ext,
         mock_load_config,
     ):
-        """Should read last 3 assistant messages from transcript."""
+        """Should read last 5 messages from transcript for validation."""
         hook_data = {
             "session_id": "test",
             "transcript_path": "/tmp/transcript.jsonl",
@@ -145,21 +148,21 @@ class TestPreToolHook:
         mock_load_config.return_value = {"intent_validation_enabled": True}
         mock_load_ext.return_value = [".py"]
         mock_is_source.return_value = True
-        mock_get_messages.return_value = ["msg1", "msg2", "msg3"]
-        mock_validate.return_value = {"intent_found": True}
+        mock_get_messages.return_value = ["msg1", "msg2", "msg3", "msg4", "msg5"]
+        mock_validate.return_value = {"approved": True}
 
         run_pre_tool_hook()
 
-        # Verify get_last_n_assistant_messages was called with n=3
-        mock_get_messages.assert_called_once_with("/tmp/transcript.jsonl", n=3)
+        # Verify get_last_n_messages_for_validation was called with n=5
+        mock_get_messages.assert_called_once_with("/tmp/transcript.jsonl", n=5)
 
     @patch("pacemaker.hook.load_config")
     @patch("pacemaker.extension_registry.load_extensions")
     @patch("pacemaker.extension_registry.is_source_code_file")
-    @patch("pacemaker.hook.get_last_n_assistant_messages")
-    @patch("pacemaker.intent_validator.validate_intent_declared")
+    @patch("pacemaker.hook.get_last_n_messages_for_validation")
+    @patch("pacemaker.intent_validator.validate_intent_and_code")
     @patch("sys.stdin")
-    def test_passes_correct_args_to_validate_intent_declared(
+    def test_passes_correct_args_to_validate_intent_and_code(
         self,
         mock_stdin,
         mock_validate,
@@ -168,12 +171,12 @@ class TestPreToolHook:
         mock_load_ext,
         mock_load_config,
     ):
-        """Should pass messages, file_path, and tool_name to validate_intent_declared."""
+        """Should pass messages, code, file_path, and tool_name to validate_intent_and_code."""
         hook_data = {
             "session_id": "test",
             "transcript_path": "/tmp/transcript.jsonl",
             "tool_name": "Edit",
-            "tool_input": {"file_path": "/path/to/config.py", "content": "code"},
+            "tool_input": {"file_path": "/path/to/config.py", "new_string": "new code"},
         }
         mock_stdin.read.return_value = json.dumps(hook_data)
         mock_load_config.return_value = {"intent_validation_enabled": True}
@@ -181,9 +184,14 @@ class TestPreToolHook:
         mock_is_source.return_value = True
         messages = ["I will edit config.py"]
         mock_get_messages.return_value = messages
-        mock_validate.return_value = {"intent_found": True}
+        mock_validate.return_value = {"approved": True}
 
         run_pre_tool_hook()
 
-        # Verify validate_intent_declared received correct args
-        mock_validate.assert_called_once_with(messages, "/path/to/config.py", "Edit")
+        # Verify validate_intent_and_code received correct args
+        mock_validate.assert_called_once_with(
+            messages=messages,
+            code="new code",
+            file_path="/path/to/config.py",
+            tool_name="Edit",
+        )
