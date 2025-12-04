@@ -112,6 +112,63 @@ def inject_prompt_delay(prompt: str):
     print(prompt, file=sys.stdout, flush=True)
 
 
+def display_intent_validation_guidance() -> str:
+    """
+    Generate intent validation guidance to Claude.
+
+    Shared helper used by both SessionStart and SubagentStart hooks.
+    Shows requirements for intent declaration and TDD enforcement.
+
+    Returns:
+        String containing the guidance text
+    """
+    lines = []
+    lines.append("\n" + "=" * 70)
+    lines.append("⚠️  INTENT VALIDATION ENABLED")
+    lines.append("=" * 70)
+    lines.append(
+        "\nBefore modifying code files, you MUST declare your intent explicitly:"
+    )
+    lines.append("\nDeclare EXACTLY these 3 components:")
+    lines.append("  1. What file you're modifying")
+    lines.append("  2. What changes you're making")
+    lines.append("  3. Why/goal of the changes")
+    lines.append("\nGOOD Example:")
+    lines.append("  'I will modify src/auth.py to add a validate_token() function")
+    lines.append("   that checks JWT expiration, to fix the security vulnerability.'")
+    lines.append("\nBAD Examples:")
+    lines.append("  ✗ 'Fixing auth bug' - Missing file and specifics")
+    lines.append("  ✗ 'Updating code' - Too vague")
+    lines.append("\n" + "-" * 70)
+    lines.append("TDD ENFORCEMENT FOR CORE CODE")
+    lines.append("-" * 70)
+    lines.append(
+        "\nFiles in core paths (src/, lib/, core/, source/, libraries/, kernel/)"
+    )
+    lines.append("require test declarations.")
+    lines.append("\n**Option A - Declare test coverage:**")
+    lines.append("  'I will modify src/auth.py to add a validate_password() function")
+    lines.append("   that checks password strength, to improve security.")
+    lines.append(
+        "   Test coverage: tests/test_auth.py - test_validate_password_rejects_weak()'"
+    )
+    lines.append("\n**Option B - Quote user permission to skip TDD:**")
+    lines.append("  'I will modify src/auth.py to add a validate_password() function")
+    lines.append("   that checks password strength, to improve security.")
+    lines.append(
+        '   User permission to skip TDD: User said "skip tests for this" in message 3.\''
+    )
+    lines.append(
+        "\nThe quoted permission MUST exist in the last 5 messages. Fabricated quotes are rejected."
+    )
+    lines.append(
+        "\n⚠️  MANDATORY: Declare intent in the SAME message as the Write/Edit tool call."
+    )
+    lines.append("=" * 70 + "\n")
+
+    return "\n".join(lines)
+
+
 def run_session_start_hook():
     """
     Handle SessionStart hook - beginning of new session.
@@ -142,51 +199,15 @@ def run_session_start_hook():
 
     # Display intent validation mandate if enabled
     try:
-        config = load_config(DEFAULT_CONFIG_PATH)
         if config.get("intent_validation_enabled", False):
-            print("\n" + "=" * 70)
-            print("⚠️  INTENT VALIDATION ENABLED")
-            print("=" * 70)
-            print(
-                "\nBefore modifying code files, you MUST declare your intent explicitly:"
-            )
-            print("\nDeclare EXACTLY these 3 components:")
-            print("  1. FILE: Which file you're modifying")
-            print("  2. CHANGES: What specific changes you're making")
-            print("  3. GOAL: Why you're making these changes")
-            print("\nGOOD Example:")
-            print("  'I will modify src/auth.py to add a validate_token() function")
-            print("   that checks JWT expiration, to fix the security vulnerability.'")
-            print("\nBAD Examples:")
-            print("  ✗ 'Fixing auth bug' - Missing file and specifics")
-            print("  ✗ 'Updating code' - Too vague")
-            print("\n" + "-" * 70)
-            print("TDD ENFORCEMENT FOR CORE CODE")
-            print("-" * 70)
-            print(
-                "\nFiles in core paths (src/, lib/, core/, source/, libraries/, kernel/)"
-            )
-            print("require test declarations.")
-            print("\n**Option A - Declare test coverage:**")
-            print("  'I will modify src/auth.py to add a validate_password() function")
-            print("   that checks password strength, to improve security.")
-            print(
-                "   Test coverage: tests/test_auth.py - test_validate_password_rejects_weak()'"
-            )
-            print("\n**Option B - Quote user permission to skip TDD:**")
-            print("  'I will modify src/auth.py to add a validate_password() function")
-            print("   that checks password strength, to improve security.")
-            print(
-                '   User permission to skip TDD: User said "skip tests for this" in message 3.\''
-            )
-            print(
-                "\nThe quoted permission must exist in the last 5 messages. Fabricated quotes are rejected."
-            )
-            print("\nDeclare intent in the SAME message as the Write/Edit tool call.")
-            print("=" * 70 + "\n")
-    except Exception:
-        # Fail silently - don't break session start
-        pass
+            guidance = display_intent_validation_guidance()
+            print(guidance, file=sys.stdout, flush=True)
+    except Exception as e:
+        # Log error but don't break session start
+        print(
+            f"[PACE-MAKER WARNING] Failed to display intent guidance: {e}",
+            file=sys.stderr,
+        )
 
 
 def run_subagent_start_hook():
@@ -195,7 +216,12 @@ def run_subagent_start_hook():
 
     Increments subagent_counter and sets in_subagent flag based on counter.
     Does NOT reset tool_execution_count (global counter persists).
+
+    Also displays intent validation mandate if feature is enabled.
     """
+    # Load config to check if intent validation enabled
+    config = load_config(DEFAULT_CONFIG_PATH)
+
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
 
@@ -207,6 +233,25 @@ def run_subagent_start_hook():
 
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
+
+    # Display intent validation mandate if enabled
+    try:
+        if config.get("intent_validation_enabled", False):
+            guidance = display_intent_validation_guidance()
+            # Output JSON with additionalContext for subagent injection
+            output = {
+                "hookSpecificOutput": {
+                    "hookEventName": "SubagentStart",
+                    "additionalContext": guidance,
+                }
+            }
+            print(json.dumps(output), file=sys.stdout, flush=True)
+    except Exception as e:
+        # Log error but don't break subagent start
+        print(
+            f"[PACE-MAKER WARNING] Failed to display intent guidance: {e}",
+            file=sys.stderr,
+        )
 
 
 def run_subagent_stop_hook():
