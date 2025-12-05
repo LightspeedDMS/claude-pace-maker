@@ -890,9 +890,9 @@ register_hooks() {
      .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $user_prompt}]}] |
      .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $post_hook, "timeout": 360}]}] |
      .hooks.PreToolUse += [{
+       "matcher": "Write|Edit",
        "hooks": [
-         {"type": "command", "command": $pre_tool_hook, "timeout": 60, "query": "Write"},
-         {"type": "command", "command": $pre_tool_hook, "timeout": 60, "query": "Edit"}
+         {"type": "command", "command": $pre_tool_hook, "timeout": 60}
        ]
      }] |
      .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_hook, "timeout": 120}]}] |
