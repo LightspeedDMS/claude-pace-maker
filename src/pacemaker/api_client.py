@@ -15,6 +15,8 @@ from datetime import datetime
 from typing import Optional, Dict
 from pathlib import Path
 
+from .logger import log_warning
+
 
 API_URL = "https://api.anthropic.com/api/oauth/usage"
 API_HEADERS = {
@@ -45,8 +47,8 @@ def load_access_token() -> Optional[str]:
 
         return token
 
-    except Exception:
-        # Graceful degradation - don't crash on credential issues
+    except Exception as e:
+        log_warning("api_client", "Failed to load access token", e)
         return None
 
 
@@ -97,8 +99,8 @@ def parse_usage_response(response_data: Dict) -> Optional[Dict]:
 
         return result
 
-    except Exception:
-        # Graceful degradation - don't crash on parse errors
+    except Exception as e:
+        log_warning("api_client", "Failed to parse usage response", e)
         return None
 
 
@@ -133,7 +135,6 @@ def fetch_usage(access_token: str, timeout: int = 10) -> Optional[Dict]:
         # Parse into normalized format
         return parse_usage_response(data)
 
-    except Exception:
-        # Graceful degradation - all errors return None
-        # This allows the system to continue without throttling
+    except Exception as e:
+        log_warning("api_client", "Failed to fetch usage from API", e)
         return None

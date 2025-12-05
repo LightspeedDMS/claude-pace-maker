@@ -13,6 +13,8 @@ import os
 from typing import List
 from pathlib import Path
 
+from .logger import log_warning
+
 
 def get_default_extensions() -> List[str]:
     """
@@ -81,8 +83,10 @@ def load_extensions(config_path: str) -> List[str]:
 
         return extensions
 
-    except (json.JSONDecodeError, OSError, Exception):
-        # Any error loading config - fall back to defaults
+    except (json.JSONDecodeError, OSError, Exception) as e:
+        log_warning(
+            "extension_registry", "Failed to load extensions config, using defaults", e
+        )
         return get_default_extensions()
 
 

@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from pathlib import Path
 
+from .logger import log_error, log_warning
+
 
 # Database schema
 SCHEMA = """
@@ -68,7 +70,7 @@ def initialize_database(db_path: str) -> bool:
         return True
 
     except Exception as e:
-        print(f"Error initializing database: {e}")
+        log_error("database", f"Failed to initialize database: {db_path}", e)
         return False
 
 
@@ -127,7 +129,7 @@ def insert_usage_snapshot(
         return True
 
     except Exception as e:
-        print(f"Error inserting usage snapshot: {e}")
+        log_error("database", "Failed to insert usage snapshot", e)
         return False
 
 
@@ -176,7 +178,7 @@ def query_recent_snapshots(db_path: str, minutes: int = 60) -> List[Dict]:
         return snapshots
 
     except Exception as e:
-        print(f"Error querying recent snapshots: {e}")
+        log_warning("database", "Failed to query recent snapshots", e)
         return []
 
 
@@ -214,7 +216,7 @@ def cleanup_old_snapshots(db_path: str, retention_days: int = 60) -> int:
         return deleted_count
 
     except Exception as e:
-        print(f"Error cleaning up old snapshots: {e}")
+        log_error("database", "Failed to cleanup old snapshots", e)
         return -1
 
 
@@ -265,7 +267,7 @@ def insert_pacing_decision(
         return True
 
     except Exception as e:
-        print(f"Error inserting pacing decision: {e}")
+        log_error("database", "Failed to insert pacing decision", e)
         return False
 
 
@@ -314,5 +316,5 @@ def get_last_pacing_decision(db_path: str, session_id: str) -> Optional[Dict]:
         return None
 
     except Exception as e:
-        print(f"Error retrieving last pacing decision: {e}")
+        log_warning("database", "Failed to get last pacing decision", e)
         return None

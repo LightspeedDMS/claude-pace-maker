@@ -28,6 +28,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "intent_validation_enabled": False,
     "stop_hook_token_budget": 16000,
     "stop_hook_first_n_pairs": 10,
+    "log_level": 2,  # Default: WARNING level
 }
 
 # Default file paths
@@ -37,6 +38,14 @@ DEFAULT_STATE_PATH = str(Path.home() / ".claude-pace-maker" / "state.json")
 DEFAULT_EXTENSION_REGISTRY_PATH = str(
     Path.home() / ".claude-pace-maker" / "source_code_extensions.json"
 )
+DEFAULT_LOG_PATH = str(Path.home() / ".claude-pace-maker" / "pace-maker.log")
+
+# Log level constants
+LOG_LEVEL_OFF = 0
+LOG_LEVEL_ERROR = 1
+LOG_LEVEL_WARNING = 2
+LOG_LEVEL_INFO = 3
+LOG_LEVEL_DEBUG = 4
 
 # Throttling thresholds
 PROMPT_INJECTION_THRESHOLD_SECONDS = 30

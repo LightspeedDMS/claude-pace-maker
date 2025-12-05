@@ -26,6 +26,7 @@ from .constants import (
 from .transcript_reader import (
     get_last_n_messages_for_validation,
 )
+from .logger import log_warning, log_debug
 
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
@@ -34,8 +35,8 @@ def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
         if os.path.exists(config_path):
             with open(config_path) as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as e:
+        log_warning("hook", "Failed to load config, using defaults", e)
 
     return DEFAULT_CONFIG.copy()
 
@@ -70,8 +71,8 @@ def load_state(state_path: str = DEFAULT_STATE_PATH) -> dict:
                 # Merge with defaults to ensure all required fields exist
                 # Loaded data takes precedence, defaults fill in missing fields
                 return {**default_state, **data}
-    except Exception:
-        pass
+    except Exception as e:
+        log_warning("hook", "Failed to load state, using defaults", e)
 
     # File doesn't exist or failed to load - return defaults
     return default_state
@@ -94,8 +95,8 @@ def save_state(state: dict, state_path: str = DEFAULT_STATE_PATH):
 
         with open(state_path, "w") as f:
             json.dump(state_copy, f)
-    except Exception:
-        pass  # Graceful degradation
+    except Exception as e:
+        log_warning("hook", "Failed to save state", e)
 
 
 def execute_delay(delay_seconds: int):
@@ -364,9 +365,8 @@ def run_hook():
         if raw_input:
             hook_data = json.loads(raw_input)
             tool_name = hook_data.get("tool_name")
-    except (json.JSONDecodeError, Exception):
-        # Graceful degradation - continue without tool_name
-        pass
+    except (json.JSONDecodeError, Exception) as e:
+        log_warning("hook", "Failed to parse hook data from stdin", e)
 
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
@@ -573,7 +573,8 @@ def get_last_assistant_message(transcript_path: str) -> str:
 
         return last_assistant_text
 
-    except Exception:
+    except Exception as e:
+        log_warning("hook", "Failed to read last assistant message", e)
         return ""
 
 
@@ -620,7 +621,8 @@ def get_last_n_messages(transcript_path: str, n: int = 5) -> list:
         # Return last N messages
         return all_messages[-n:] if len(all_messages) >= n else all_messages
 
-    except Exception:
+    except Exception as e:
+        log_warning("hook", "Failed to read messages from transcript", e)
         return []
 
 
@@ -669,11 +671,6 @@ def run_stop_hook():
         - {"decision": "block", "reason": "feedback"} - Block with feedback
     """
 
-    # Debug log path
-    debug_log = os.path.join(
-        os.path.dirname(DEFAULT_CONFIG_PATH), "stop_hook_debug.log"
-    )
-
     try:
         # Load config and state to check if tempo should run
         config = load_config(DEFAULT_CONFIG_PATH)
@@ -685,15 +682,13 @@ def run_stop_hook():
         state = load_state(DEFAULT_STATE_PATH)
 
         if not should_run_tempo(config, state):
-            with open(debug_log, "a") as f:
-                f.write(f"\n[{datetime.now()}] Tempo disabled - allow exit\n")
+            log_debug("hook", "Tempo disabled - allow exit")
             return {"continue": True}  # Tempo disabled - allow exit
 
         # Read hook data from stdin
         raw_input = sys.stdin.read()
         if not raw_input:
-            with open(debug_log, "a") as f:
-                f.write(f"\n[{datetime.now()}] No raw input from stdin\n")
+            log_debug("hook", "No raw input from stdin")
             return {"continue": True}
 
         hook_data = json.loads(raw_input)
@@ -701,14 +696,12 @@ def run_stop_hook():
         transcript_path = hook_data.get("transcript_path")
 
         # Debug log
-        with open(debug_log, "a") as f:
-            f.write(f"\n[{datetime.now()}] === INTENT VALIDATION (Refactored) ===\n")
-            f.write(f"Session ID: {session_id}\n")
-            f.write(f"Transcript path: {transcript_path}\n")
+        log_debug("hook", "=== INTENT VALIDATION (Refactored) ===")
+        log_debug("hook", f"Session ID: {session_id}")
+        log_debug("hook", f"Transcript path: {transcript_path}")
 
         if not transcript_path or not os.path.exists(transcript_path):
-            with open(debug_log, "a") as f:
-                f.write("No transcript - allow exit\n")
+            log_debug("hook", "No transcript - allow exit")
             return {"continue": True}
 
         # Use intent validator to check if work is complete
@@ -716,10 +709,10 @@ def run_stop_hook():
 
         conversation_context_size = config.get("conversation_context_size", 5)
 
-        with open(debug_log, "a") as f:
-            f.write(
-                f"Calling intent validator (context_size={conversation_context_size})...\n"
-            )
+        log_debug(
+            "hook",
+            f"Calling intent validator (context_size={conversation_context_size})...",
+        )
 
         result = intent_validator.validate_intent(
             session_id=session_id,
@@ -727,8 +720,7 @@ def run_stop_hook():
             conversation_context_size=conversation_context_size,
         )
 
-        with open(debug_log, "a") as f:
-            f.write(f"Intent validation result: {result}\n")
+        log_debug("hook", f"Intent validation result: {result}")
 
         # Return validation result
         return result

@@ -7,10 +7,9 @@ for use in intent validation context building.
 """
 
 import json
-import logging
 from typing import List, Union
 
-logger = logging.getLogger(__name__)
+from .logger import log_warning
 
 MAX_MESSAGE_LENGTH = 10000
 
@@ -61,7 +60,7 @@ def get_all_user_messages(transcript_path: str) -> List[str]:
         return all_user_messages
 
     except Exception as e:
-        logger.debug(f"Failed to extract all user messages from transcript: {e}")
+        log_warning("transcript_reader", "Failed to extract user messages", e)
         return []
 
 
@@ -116,9 +115,7 @@ def get_last_n_assistant_messages(transcript_path: str, n: int = 5) -> List[str]
             return all_assistant_messages
 
     except Exception as e:
-        logger.debug(
-            f"Failed to extract last N assistant messages from transcript: {e}"
-        )
+        log_warning("transcript_reader", "Failed to extract assistant messages", e)
         return []
 
 
@@ -204,7 +201,7 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
         return result
 
     except Exception as e:
-        logger.debug(f"Failed to extract messages for validation: {e}")
+        log_warning("transcript_reader", "Failed to extract messages for validation", e)
         return []
 
 
@@ -354,7 +351,7 @@ def build_stop_hook_context(
         }
 
     except Exception as e:
-        logger.debug(f"Failed to build stop hook context: {e}")
+        log_warning("transcript_reader", "Failed to build stop hook context", e)
         return {
             "first_pairs": [],
             "backwards_messages": [],

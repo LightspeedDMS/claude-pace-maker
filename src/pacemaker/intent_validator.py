@@ -11,8 +11,6 @@ This module validates if Claude completed the user's original request by:
 """
 
 import os
-import sys
-import logging
 import asyncio
 from typing import Any, Dict, List
 
@@ -21,8 +19,7 @@ from .transcript_reader import (
     format_stop_hook_context,
 )
 from .constants import DEFAULT_CONFIG
-
-logger = logging.getLogger(__name__)
+from .logger import log_warning, log_debug
 
 
 def get_config(key: str) -> Any:
@@ -189,17 +186,10 @@ def _is_limit_error(response: str) -> bool:
 
 async def _fresh_sdk_call(prompt: str, model: str) -> str:
     """Call SDK with fresh imports and objects for each call."""
-    from datetime import datetime
-    from .constants import DEFAULT_CONFIG_PATH
-
-    debug_log = os.path.join(
-        os.path.dirname(DEFAULT_CONFIG_PATH), "stop_hook_debug.log"
+    log_debug(
+        "intent_validator",
+        f"_fresh_sdk_call: START model={model}, prompt_len={len(prompt)}",
     )
-
-    with open(debug_log, "a") as f:
-        f.write(
-            f"[{datetime.now()}] _fresh_sdk_call: START model={model}, prompt_len={len(prompt)}\n"
-        )
 
     # Fresh import to avoid any cached state
     from claude_agent_sdk import query as fresh_query
@@ -217,18 +207,17 @@ async def _fresh_sdk_call(prompt: str, model: str) -> str:
         disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
     )
 
-    with open(debug_log, "a") as f:
-        f.write(f"[{datetime.now()}] _fresh_sdk_call: Starting async iteration\n")
+    log_debug("intent_validator", "_fresh_sdk_call: Starting async iteration")
 
     response_text = ""
     # SDK may throw exception after returning result (e.g., on usage limit)
     # Capture the response before any exception
     try:
         async for message in fresh_query(prompt=prompt, options=options):
-            with open(debug_log, "a") as f:
-                f.write(
-                    f"[{datetime.now()}] _fresh_sdk_call: Got message type={type(message).__name__}\n"
-                )
+            log_debug(
+                "intent_validator",
+                f"_fresh_sdk_call: Got message type={type(message).__name__}",
+            )
             if isinstance(message, FreshResult):
                 if hasattr(message, "result") and message.result:
                     response_text = message.result.strip()
@@ -236,15 +225,14 @@ async def _fresh_sdk_call(prompt: str, model: str) -> str:
         # Exception after getting response is OK - we have what we need
         import traceback
 
-        with open(debug_log, "a") as f:
-            f.write(
-                f"[{datetime.now()}] _fresh_sdk_call: EXCEPTION: {traceback.format_exc()}\n"
-            )
-
-    with open(debug_log, "a") as f:
-        f.write(
-            f"[{datetime.now()}] _fresh_sdk_call: RETURN response_len={len(response_text)}, preview={response_text[:100] if response_text else 'EMPTY'}\n"
+        log_debug(
+            "intent_validator", f"_fresh_sdk_call: EXCEPTION: {traceback.format_exc()}"
         )
+
+    log_debug(
+        "intent_validator",
+        f"_fresh_sdk_call: RETURN response_len={len(response_text)}, preview={response_text[:100] if response_text else 'EMPTY'}",
+    )
 
     return response_text
 
@@ -351,28 +339,17 @@ def validate_intent(
         sdk_response = call_sdk_validation(formatted_context)
 
         # Log raw SDK response for debugging
-        from .constants import DEFAULT_CONFIG_PATH
-
-        debug_log = os.path.join(
-            os.path.dirname(DEFAULT_CONFIG_PATH), "stop_hook_debug.log"
+        log_debug(
+            "intent_validator",
+            f"SDK raw response: {sdk_response[:500] if sdk_response else 'EMPTY'}",
         )
-        with open(debug_log, "a") as f:
-            f.write(
-                f"SDK raw response: {sdk_response[:500] if sdk_response else 'EMPTY'}\n"
-            )
 
         # Parse response
         return parse_sdk_response(sdk_response)
 
     except Exception as e:
         # Any error - fail open (graceful degradation)
-        from .constants import DEFAULT_CONFIG_PATH
-
-        debug_log = os.path.join(
-            os.path.dirname(DEFAULT_CONFIG_PATH), "stop_hook_debug.log"
-        )
-        with open(debug_log, "a") as f:
-            f.write(f"SDK ERROR (failing open): {e}\n")
+        log_debug("intent_validator", f"SDK ERROR (failing open): {e}")
         return {"continue": True}
 
 
@@ -452,9 +429,8 @@ async def _call_sdk_intent_validation_async(prompt: str) -> str:
             if isinstance(message, FreshResult):
                 if hasattr(message, "result") and message.result:
                     response_text = message.result.strip()
-    except Exception:
-        # Exception after getting response is OK
-        pass
+    except Exception as e:
+        log_warning("intent_validator", "SDK intent validation call failed", e)
 
     return response_text
 
@@ -509,8 +485,8 @@ def validate_intent_declared(
             # NO or any other response = no intent found
             return {"intent_found": False}
 
-    except Exception:
-        # Fail open: return False on any error
+    except Exception as e:
+        log_warning("intent_validator", "Intent declaration validation failed", e)
         return {"intent_found": False}
 
 
@@ -558,14 +534,7 @@ def validate_intent_and_code(
             return {"approved": False, "feedback": feedback}
 
     except Exception as e:
-        # Fail open on errors - log to stderr so we can see it
-        print(
-            f"[SDK ERROR] Unified validation failed: {e}", file=sys.stderr, flush=True
-        )
-        import traceback
-
-        traceback.print_exc(file=sys.stderr)
-        logger.debug(f"Unified validation error: {e}")
+        log_warning("intent_validator", "Unified validation failed", e)
         return {"approved": True}
 
 
@@ -596,13 +565,7 @@ async def _call_unified_validation_async(prompt: str) -> str:
                 if hasattr(message, "result") and message.result:
                     response_text = message.result.strip()
     except Exception as e:
-        # Fail open - validation errors don't block execution
-        print(
-            f"[SDK ERROR] Unified validation failed: {e}", file=sys.stderr, flush=True
-        )
-        import traceback
-
-        traceback.print_exc(file=sys.stderr)
+        log_warning("intent_validator", "Unified validation SDK call failed", e)
 
     # If Opus hit usage limit, fall back to Sonnet
     if _is_limit_error(response_text):
@@ -629,14 +592,8 @@ async def _call_unified_validation_async(prompt: str) -> str:
                     if hasattr(message, "result") and message.result:
                         response_text = message.result.strip()
         except Exception as e:
-            # Fail open on Sonnet fallback errors too
-            print(
-                f"[SDK ERROR] Unified validation fallback failed: {e}",
-                file=sys.stderr,
-                flush=True,
+            log_warning(
+                "intent_validator", "Unified validation fallback to Sonnet failed", e
             )
-            import traceback
-
-            traceback.print_exc(file=sys.stderr)
 
     return response_text

@@ -7,10 +7,9 @@ review if modified code matches the intent Claude declared before making changes
 """
 
 import asyncio
-import logging
 from typing import List
 
-logger = logging.getLogger(__name__)
+from .logger import log_warning, log_info
 
 # Try to import Claude Agent SDK
 try:
@@ -120,18 +119,17 @@ async def _call_sdk_review_async(prompt: str) -> str:
         # If Sonnet hit usage limit, try Opus
         error_str = str(e).lower()
         if "usage limit" in error_str or "limit reached" in error_str:
+            log_info("code_reviewer", "Sonnet hit usage limit, trying Opus")
             options.model = "claude-opus-4-5"
             try:
                 async for message in fresh_query(prompt=prompt, options=options):
                     if isinstance(message, FreshResult):
                         if hasattr(message, "result") and message.result:
                             response_text = message.result.strip()
-            except Exception:
-                # Fail open: return empty feedback
-                pass
+            except Exception as opus_e:
+                log_warning("code_reviewer", "SDK review call failed", opus_e)
         else:
-            # Other errors: fail open
-            pass
+            log_warning("code_reviewer", "SDK review call failed", e)
 
     return response_text
 
@@ -191,10 +189,10 @@ def validate_code_against_intent(file_path: str, messages: List[str]) -> str:
             with open(file_path, "r", encoding="utf-8") as f:
                 code = f.read()
         except FileNotFoundError:
-            # File doesn't exist - fail open (no feedback)
+            log_info("code_reviewer", f"File not found: {file_path}")
             return ""
-        except Exception:
-            # Other read errors - fail open
+        except Exception as e:
+            log_warning("code_reviewer", "Failed to read file for validation", e)
             return ""
 
         # 2. Extract intent from messages
@@ -209,6 +207,6 @@ def validate_code_against_intent(file_path: str, messages: List[str]) -> str:
         # 5. Return feedback (empty if OK, text if issues)
         return feedback
 
-    except Exception:
-        # Any error - fail open (graceful degradation)
+    except Exception as e:
+        log_warning("code_reviewer", "Code validation failed", e)
         return ""

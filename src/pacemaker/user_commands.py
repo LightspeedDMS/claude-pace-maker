@@ -13,6 +13,7 @@ import tempfile
 from typing import Dict, Optional, Any
 
 from .constants import DEFAULT_CONFIG
+from .logger import log_warning
 
 
 def parse_command(user_input: str) -> Dict[str, Any]:
@@ -109,6 +110,17 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_5hour.group(1),
         }
 
+    # Pattern 8: pace-maker loglevel (0|1|2|3|4) - log level control
+    pattern_loglevel = r"^pace-maker\s+loglevel\s+([0-4])$"
+    match_loglevel = re.match(pattern_loglevel, normalized)
+
+    if match_loglevel:
+        return {
+            "is_pace_maker_command": True,
+            "command": "loglevel",
+            "subcommand": match_loglevel.group(1),
+        }
+
     return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
@@ -154,6 +166,8 @@ def execute_command(
         return _execute_intent_validation(config_path, subcommand)
     elif command == "5-hour-limit":
         return _execute_5_hour_limit(config_path, subcommand)
+    elif command == "loglevel":
+        return _execute_loglevel(config_path, subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -212,6 +226,8 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         tempo_enabled = config.get("tempo_enabled", True)
         subagent_reminder_enabled = config.get("subagent_reminder_enabled", True)
         intent_validation_enabled = config.get("intent_validation_enabled", False)
+        log_level = config.get("log_level", 2)
+        level_names = {0: "OFF", 1: "ERROR", 2: "WARNING", 3: "INFO", 4: "DEBUG"}
 
         # Build status message
         status_text = "Pace Maker: ACTIVE" if enabled else "Pace Maker: INACTIVE"
@@ -224,6 +240,9 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         status_text += f"\nTempo Tracking: {'ENABLED' if tempo_enabled else 'DISABLED'}"
         status_text += f"\nSubagent Reminder: {'ENABLED' if subagent_reminder_enabled else 'DISABLED'}"
         status_text += f"\nIntent Validation: {'ENABLED' if intent_validation_enabled else 'DISABLED'}"
+        status_text += (
+            f"\nLog Level: {log_level} ({level_names.get(log_level, 'UNKNOWN')})"
+        )
 
         # Try to get usage data
         usage_data = None
@@ -348,6 +367,16 @@ COMMANDS:
   pace-maker reminder off         Disable subagent reminder
   pace-maker intent-validation on Enable intent validation before code changes
   pace-maker intent-validation off Disable intent validation
+  pace-maker loglevel [0-4]      Set log level (0=OFF to 4=DEBUG)
+
+LOG LEVELS:
+  0 = OFF      - No logging
+  1 = ERROR    - Errors only
+  2 = WARNING  - Warnings + Errors (default)
+  3 = INFO     - Info + Warnings + Errors
+  4 = DEBUG    - All messages including SDK calls
+
+  Logs: ~/.claude-pace-maker/pace-maker.log
 
 WEEKLY LIMIT:
   The weekly limiter uses weekend-aware throttling to pace your usage
@@ -468,6 +497,35 @@ def _execute_5_hour_limit(
             "success": False,
             "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker 5-hour-limit [on|off]",
         }
+
+
+def _execute_loglevel(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
+    """Set log level (0-4)."""
+    if subcommand is None:
+        return {
+            "success": False,
+            "message": "Usage: pace-maker loglevel [0-4]\n  0=OFF, 1=ERROR, 2=WARNING, 3=INFO, 4=DEBUG",
+        }
+
+    try:
+        level = int(subcommand)
+        if level < 0 or level > 4:
+            return {
+                "success": False,
+                "message": f"Invalid log level: {level}. Must be 0-4.",
+            }
+
+        config = _load_config(config_path)
+        config["log_level"] = level
+        _write_config_atomic(config, config_path)
+
+        level_names = {0: "OFF", 1: "ERROR", 2: "WARNING", 3: "INFO", 4: "DEBUG"}
+        return {
+            "success": True,
+            "message": f"✓ Log level set to {level} ({level_names[level]})\nLogs: ~/.claude-pace-maker/pace-maker.log",
+        }
+    except Exception as e:
+        return {"success": False, "message": f"Error setting log level: {str(e)}"}
 
 
 def _execute_reminder(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
@@ -738,7 +796,8 @@ def _get_latest_usage(db_path: str) -> Optional[Dict[str, Any]]:
                 "seven_day_resets_at": seven_day_resets,
             }
         return None
-    except Exception:
+    except Exception as e:
+        log_warning("user_commands", "Failed to get latest usage from database", e)
         return None
 
 
@@ -779,15 +838,16 @@ For more information, run: pace-maker help
             "tempo",
             "reminder",
             "intent-validation",
+            "loglevel",
         ],
         help="Command to execute",
     )
 
-    # Optional subcommand (for weekly-limit, tempo, reminder, intent-validation)
+    # Optional subcommand (for weekly-limit, tempo, reminder, intent-validation, loglevel)
     parser.add_argument(
         "subcommand",
         nargs="?",
-        help="Subcommand (on|off|session) for weekly-limit, tempo, reminder, intent-validation",
+        help="Subcommand (on|off|session) for weekly-limit, tempo, reminder, intent-validation or log level (0-4) for loglevel",
     )
 
     # Parse arguments
