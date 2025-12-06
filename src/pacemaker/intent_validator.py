@@ -497,7 +497,7 @@ def validate_intent_and_code(
     Unified pre-tool validation: intent declaration + code review.
 
     Args:
-        messages: Last 2 assistant messages (current + 1 before)
+        messages: Last 4 assistant messages (current + 3 before)
         code: Proposed code that will be written
         file_path: Target file path
         tool_name: Write or Edit

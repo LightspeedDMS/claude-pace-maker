@@ -795,8 +795,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         else:
             return {"continue": True}
 
-        # 6. Read last 5 messages for validation (includes user and assistant)
-        messages = get_last_n_messages_for_validation(transcript_path, n=5)
+        # 6. Read last 4 messages for validation (includes user and assistant)
+        messages = get_last_n_messages_for_validation(transcript_path, n=4)
 
         # 7. Call unified validation via SDK
         from . import intent_validator
