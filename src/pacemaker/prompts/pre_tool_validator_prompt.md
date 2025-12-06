@@ -56,7 +56,7 @@ No test declaration found in recent context. Before modifying core code, you mus
    - TEST FILE: Which test file covers this change
    - TEST SCOPE: What behavior the test validates
 
-2. OR quote the user's explicit permission to skip TDD
+2. OR quote the user's explicit permission to skip TDD OR the user specifically asked for a surgical change to be performed
 
 Example with test declaration:
   "I will modify src/auth.py to add password validation.
