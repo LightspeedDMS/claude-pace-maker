@@ -44,7 +44,7 @@ If the file being modified is in a CORE CODE PATH:
   - libraries/
   - kernel/
 
-AND no test declaration is found in the 5 messages context, return:
+AND no test declaration is found in the 4 messages context, return:
 
 ⛔ TDD Required for Core Code
 
@@ -109,6 +109,7 @@ B) CLEAN CODE VIOLATIONS:
    - Large files. No more than ~500 lines per source code file.
    - Large-blobs of code written at once.
    - Large methods. An individual method should never exceed the size about ~50 lines.
+   - Too many units/pieces of code written at a time (more than three methods, more than one class)
 
 If violations found, return detailed feedback:
   - List each violation with specifics
@@ -120,7 +121,7 @@ OUTCOME 3: INTENT DECLARED + NO VIOLATIONS → ALLOW
 ════════════════════════════════════════════════════════════════
 
 If ALL of these are true:
-  ✓ Intent clearly declared in last 5 messages
+  ✓ Intent clearly declared in last 4 messages
   ✓ Code implements EXACTLY what was declared (no more, no less)
   ✓ No clean code violations
 
