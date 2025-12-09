@@ -290,12 +290,20 @@ def inject_subagent_reminder(config: dict) -> Optional[str]:
     Returns:
         Reminder message string, or None if not applicable
     """
-    message = config.get(
-        "subagent_reminder_message",
-        "💡 Consider using the Task tool to delegate work to specialized subagents (per your guidelines)",
-    )
+    from .prompt_loader import PromptLoader
 
-    return message
+    # Try loading from external prompt file first
+    try:
+        loader = PromptLoader()
+        message = loader.load_prompt("subagent_reminder.md", subfolder="post_tool_use")
+        return message.strip()
+    except FileNotFoundError:
+        # Fallback to config or hardcoded message
+        message = config.get(
+            "subagent_reminder_message",
+            "💡 Consider using the Task tool to delegate work to specialized subagents (per your guidelines)",
+        )
+        return message
 
 
 def run_hook():

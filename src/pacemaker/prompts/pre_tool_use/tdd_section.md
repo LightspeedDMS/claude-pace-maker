@@ -5,7 +5,7 @@ OUTCOME 1.5: CORE CODE WITHOUT TEST DECLARATION → BLOCK + REQUEST TDD
 If the file being modified is in a CORE CODE PATH:
 {{core_paths}}
 
-AND no test declaration is found in the 4 messages context, return:
+AND no test declaration is found in the context, return:
 
 ⛔ TDD Required for Core Code
 

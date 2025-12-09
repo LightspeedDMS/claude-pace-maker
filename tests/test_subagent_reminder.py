@@ -394,13 +394,25 @@ class TestReminderInjection:
         result = hook.should_inject_reminder(state, config, tool_name="Write")
         assert result is False
 
-    def test_inject_subagent_reminder_returns_message(self):
-        """inject_subagent_reminder returns reminder message (no longer prints)."""
+    def test_inject_subagent_reminder_returns_message(self, tmp_path):
+        """inject_subagent_reminder returns config message when file not found."""
         config = {"subagent_reminder_message": "TEST REMINDER MESSAGE"}
 
-        result = hook.inject_subagent_reminder(config)
+        # Create empty prompts directory (no prompt file)
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir(parents=True)
 
-        # Verify message returned
+        # Patch PromptLoader to use empty test directory
+        from pacemaker.prompt_loader import PromptLoader
+
+        with patch.object(
+            PromptLoader,
+            "__init__",
+            lambda self: setattr(self, "prompts_dir", prompts_dir),
+        ):
+            result = hook.inject_subagent_reminder(config)
+
+        # Verify config message used (file not found)
         assert result == "TEST REMINDER MESSAGE"
 
     def test_inject_subagent_reminder_default_message(self):
@@ -411,6 +423,53 @@ class TestReminderInjection:
 
         # Verify default message used
         assert "Task tool" in result
+
+    def test_inject_subagent_reminder_loads_from_external_file(self, tmp_path):
+        """inject_subagent_reminder loads message from external prompt file first."""
+        # Create a mock prompts directory structure
+        prompts_dir = tmp_path / "prompts"
+        post_tool_dir = prompts_dir / "post_tool_use"
+        post_tool_dir.mkdir(parents=True)
+
+        # Create external prompt file with custom message
+        prompt_file = post_tool_dir / "subagent_reminder.md"
+        prompt_file.write_text("🎯 EXTERNAL PROMPT MESSAGE")
+
+        config = {"subagent_reminder_message": "CONFIG MESSAGE"}
+
+        # Patch PromptLoader to use our test directory
+        from pacemaker.prompt_loader import PromptLoader
+
+        with patch.object(
+            PromptLoader,
+            "__init__",
+            lambda self: setattr(self, "prompts_dir", prompts_dir),
+        ):
+            result = hook.inject_subagent_reminder(config)
+
+        # Verify external prompt file was used (not config)
+        assert result == "🎯 EXTERNAL PROMPT MESSAGE"
+
+    def test_inject_subagent_reminder_fallback_to_config(self, tmp_path):
+        """inject_subagent_reminder falls back to config if prompt file not found."""
+        # Create empty prompts directory (no prompt file)
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir(parents=True)
+
+        config = {"subagent_reminder_message": "CONFIG FALLBACK MESSAGE"}
+
+        # Patch PromptLoader to use our test directory
+        from pacemaker.prompt_loader import PromptLoader
+
+        with patch.object(
+            PromptLoader,
+            "__init__",
+            lambda self: setattr(self, "prompts_dir", prompts_dir),
+        ):
+            result = hook.inject_subagent_reminder(config)
+
+        # Verify config fallback was used
+        assert result == "CONFIG FALLBACK MESSAGE"
 
 
 class TestIntegration:
@@ -447,10 +506,23 @@ class TestIntegration:
             "decision": {"should_throttle": False, "delay_seconds": 0},
         }
 
+        # Create test prompts directory with test message
+        prompts_dir = tmp_path / "prompts"
+        post_tool_dir = prompts_dir / "post_tool_use"
+        post_tool_dir.mkdir(parents=True)
+        (post_tool_dir / "subagent_reminder.md").write_text("[TEST REMINDER]")
+
+        from pacemaker.prompt_loader import PromptLoader
+
         with (
             patch("pacemaker.hook.DEFAULT_STATE_PATH", str(state_path)),
             patch("pacemaker.hook.DEFAULT_CONFIG_PATH", str(config_path)),
             patch("pacemaker.hook.DEFAULT_DB_PATH", str(tmp_path / "db.sqlite")),
+            patch.object(
+                PromptLoader,
+                "__init__",
+                lambda self: setattr(self, "prompts_dir", prompts_dir),
+            ),
         ):
 
             # Execute 4 tools - no reminder
@@ -575,10 +647,23 @@ class TestIntegration:
             "decision": {"should_throttle": False, "delay_seconds": 0},
         }
 
+        # Create test prompts directory with test message
+        prompts_dir = tmp_path / "prompts"
+        post_tool_dir = prompts_dir / "post_tool_use"
+        post_tool_dir.mkdir(parents=True)
+        (post_tool_dir / "subagent_reminder.md").write_text("[TEST REMINDER]")
+
+        from pacemaker.prompt_loader import PromptLoader
+
         with (
             patch("pacemaker.hook.DEFAULT_STATE_PATH", str(state_path)),
             patch("pacemaker.hook.DEFAULT_CONFIG_PATH", str(config_path)),
             patch("pacemaker.hook.DEFAULT_DB_PATH", str(tmp_path / "db.sqlite")),
+            patch.object(
+                PromptLoader,
+                "__init__",
+                lambda self: setattr(self, "prompts_dir", prompts_dir),
+            ),
         ):
 
             # Exit subagent
