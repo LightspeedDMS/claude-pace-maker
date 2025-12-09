@@ -8,6 +8,15 @@ Before modifying code files, you MUST declare your intent explicitly.
 ⚠️  CRITICAL CHANGE: Intent must be in the CURRENT message (same message as Write/Edit).
 ⚠️  Validation checks ONLY your CURRENT message, not previous messages.
 
+⚠️  CRITICAL: EACH Write/Edit requires its OWN intent declaration!
+⚠️  You CANNOT batch multiple Write/Edit operations with one intent declaration.
+⚠️  You CANNOT reuse a prior intent declaration for subsequent Write/Edit operations.
+⚠️  If you need to modify 5 files, you need 5 separate intent declarations.
+
+⚠️  Intent validation applies ONLY to Write/Edit tools, NOT to Read operations.
+⚠️  You can Read files freely without declaring intent.
+⚠️  Intent is required IMMEDIATELY BEFORE each Write/Edit tool use.
+
 Declare EXACTLY these 3 components IN THE SAME MESSAGE as your Write/Edit tool:
   1. What file you're modifying
   2. What changes you're making
