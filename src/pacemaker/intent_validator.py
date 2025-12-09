@@ -84,7 +84,7 @@ def get_prompt_template() -> str:
     """
     Get validation prompt template from external file.
 
-    Loads from: src/pacemaker/prompts/stop_hook_validator_prompt.md
+    Loads from: src/pacemaker/prompts/stop/stop_hook_validator_prompt.md
 
     Returns:
         Validation prompt template string
@@ -94,7 +94,9 @@ def get_prompt_template() -> str:
         Exception: If template cannot be loaded
     """
     module_dir = os.path.dirname(__file__)
-    prompt_path = os.path.join(module_dir, "prompts", "stop_hook_validator_prompt.md")
+    prompt_path = os.path.join(
+        module_dir, "prompts", "stop", "stop_hook_validator_prompt.md"
+    )
 
     if not os.path.exists(prompt_path):
         raise FileNotFoundError(
@@ -109,7 +111,7 @@ def get_pre_tool_prompt_template() -> str:
     """
     Get pre-tool validation prompt template from external file.
 
-    Loads from: src/pacemaker/prompts/pre_tool_validator_prompt.md
+    Loads from: src/pacemaker/prompts/pre_tool_use/pre_tool_validator_prompt.md
 
     Returns:
         Pre-tool validation prompt template string
@@ -119,7 +121,9 @@ def get_pre_tool_prompt_template() -> str:
         Exception: If template cannot be loaded
     """
     module_dir = os.path.dirname(__file__)
-    prompt_path = os.path.join(module_dir, "prompts", "pre_tool_validator_prompt.md")
+    prompt_path = os.path.join(
+        module_dir, "prompts", "pre_tool_use", "pre_tool_validator_prompt.md"
+    )
 
     if not os.path.exists(prompt_path):
         raise FileNotFoundError(
@@ -357,7 +361,7 @@ def _build_intent_declaration_prompt(
     messages: List[str], file_path: str, tool_name: str
 ) -> str:
     """
-    Build SDK prompt for checking if intent was declared.
+    Build SDK prompt for checking if intent was declared using external template.
 
     Args:
         messages: Last N assistant messages
@@ -365,8 +369,10 @@ def _build_intent_declaration_prompt(
         tool_name: Tool being used (Write/Edit)
 
     Returns:
-        Prompt string for SDK
+        Prompt string for SDK with variables replaced
     """
+    from .prompt_loader import PromptLoader
+
     filename = os.path.basename(file_path)
     action = "create or modify" if tool_name == "Write" else "edit"
 
@@ -374,24 +380,18 @@ def _build_intent_declaration_prompt(
         [f"Message {i+1}:\n{msg}" for i, msg in enumerate(messages)]
     )
 
-    return f"""You are checking if Claude declared intent before attempting to {action} a file.
-
-File to be modified: {filename}
-Tool being used: {tool_name}
-
-Recent assistant messages:
-{messages_text}
-
-Question: Did Claude clearly declare intent to {action} {filename} in these messages?
-
-Intent declaration should include:
-1. What file is being modified
-2. What changes are being made
-3. Why/goal of the changes
-
-Respond with ONLY:
-- "YES" if intent was clearly declared
-- "NO" if intent was not declared or unclear"""
+    # Load template and replace variables
+    loader = PromptLoader()
+    return loader.load_prompt(
+        "intent_declaration_prompt.md",
+        subfolder="common",
+        variables={
+            "action": action,
+            "filename": filename,
+            "tool_name": tool_name,
+            "messages_text": messages_text,
+        },
+    )
 
 
 async def _call_sdk_intent_validation_async(prompt: str) -> str:
@@ -490,11 +490,265 @@ def validate_intent_declared(
         return {"intent_found": False}
 
 
+def extract_current_assistant_message(messages: List[str]) -> str:
+    """
+    Extract the CURRENT assistant message, combining last 2 messages if needed.
+
+    Claude Code splits text and tool calls into separate transcript entries.
+    We need to combine the last text message with the tool call message.
+
+    Args:
+        messages: List of messages (most recent last)
+
+    Returns:
+        Combined text from last 2 messages (intent + tool call)
+    """
+    if not messages:
+        return ""
+
+    if len(messages) == 1:
+        return messages[-1]
+
+    # Combine last 2 messages: intent text (N-1) + tool call (N)
+    return f"{messages[-2]}\n\n{messages[-1]}"
+
+
+def _build_stage1_prompt(current_message: str, file_path: str, tool_name: str) -> str:
+    """
+    Build Stage 1 validation prompt from external template.
+
+    Args:
+        current_message: Current assistant message
+        file_path: Target file path
+        tool_name: Write or Edit
+
+    Returns:
+        Stage 1 prompt string with variables replaced
+    """
+    module_dir = os.path.dirname(__file__)
+    prompt_path = os.path.join(
+        module_dir, "prompts", "pre_tool_use", "stage1_declaration_check.md"
+    )
+
+    if not os.path.exists(prompt_path):
+        raise FileNotFoundError(
+            f"Stage 1 prompt template not found at {prompt_path}. "
+            "This indicates a broken installation. Run ./install.sh to fix."
+        )
+
+    template = load_prompt_template(prompt_path)
+
+    return template.format(
+        current_message=current_message, file_path=file_path, tool_name=tool_name
+    )
+
+
+async def _call_stage1_validation_async(prompt: str) -> str:
+    """
+    Call SDK with Haiku for Stage 1 fast validation.
+
+    Args:
+        prompt: Stage 1 validation prompt
+
+    Returns:
+        SDK response text (YES, NO, or NO_TDD)
+    """
+    if not SDK_AVAILABLE:
+        raise ImportError("Claude Agent SDK not available")
+
+    # Fresh import to avoid cached state
+    from claude_agent_sdk import query as fresh_query
+    from claude_agent_sdk.types import (  # type: ignore[import-not-found]
+        ClaudeAgentOptions as FreshOptions,
+        ResultMessage as FreshResult,
+    )
+
+    # Use Sonnet for better intent detection (Stage 1)
+    options = FreshOptions(
+        max_turns=1,
+        model="claude-sonnet-4-5",
+        max_thinking_tokens=1024,  # API minimum is 1024
+        system_prompt="You are validating intent declarations. Respond with YES, NO, or NO_TDD only.",
+        disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
+    )
+
+    response_text = ""
+    try:
+        async for message in fresh_query(prompt=prompt, options=options):
+            if isinstance(message, FreshResult):
+                if hasattr(message, "result") and message.result:
+                    response_text = message.result.strip()
+    except Exception as e:
+        log_warning("intent_validator", "Stage 1 validation call failed", e)
+
+    return response_text
+
+
+def _call_stage1_validation(prompt: str) -> str:
+    """
+    Synchronous wrapper for Stage 1 validation.
+
+    Args:
+        prompt: Stage 1 validation prompt
+
+    Returns:
+        SDK response text (YES, NO, or NO_TDD)
+    """
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(_call_stage1_validation_async(prompt))
+
+
+def _build_stage2_prompt(
+    messages: List[str], code: str, file_path: str, tool_name: str
+) -> str:
+    """
+    Build Stage 2 validation prompt from external template.
+
+    Args:
+        messages: Last 4 messages for context
+        code: Proposed code
+        file_path: Target file path
+        tool_name: Write or Edit
+
+    Returns:
+        Stage 2 prompt string with variables replaced
+    """
+    module_dir = os.path.dirname(__file__)
+    prompt_path = os.path.join(
+        module_dir, "prompts", "pre_tool_use", "stage2_code_review.md"
+    )
+
+    if not os.path.exists(prompt_path):
+        raise FileNotFoundError(
+            f"Stage 2 prompt template not found at {prompt_path}. "
+            "This indicates a broken installation. Run ./install.sh to fix."
+        )
+
+    template = load_prompt_template(prompt_path)
+
+    # Format messages for template
+    messages_text = "\n".join(f"Message {i+1}: {msg}" for i, msg in enumerate(messages))
+
+    # Load clean code rules
+    from .constants import DEFAULT_CLEAN_CODE_RULES_PATH
+    from . import clean_code_rules
+
+    rules = clean_code_rules.load_rules(DEFAULT_CLEAN_CODE_RULES_PATH)
+    clean_code_rules_text = clean_code_rules.format_rules_for_validation(rules)
+
+    return template.format(
+        messages=messages_text,
+        code=code,
+        file_path=file_path,
+        clean_code_rules=clean_code_rules_text,
+    )
+
+
+def generate_validation_prompt(
+    messages: List[str],
+    code: str,
+    file_path: str,
+    tool_name: str,
+    config: Dict[str, Any] = None,
+) -> str:
+    """
+    Generate validation prompt for pre-tool validation.
+
+    Extracted for testability - generates prompt without calling SDK.
+
+    Args:
+        messages: Last 4 assistant messages (current + 3 before)
+        code: Proposed code that will be written
+        file_path: Target file path
+        tool_name: Write or Edit
+        config: Optional config dict (for testing). If None, loads from file.
+
+    Returns:
+        Formatted validation prompt string
+    """
+    # Format messages for template
+    messages_text = "\n".join(f"Message {i+1}: {msg}" for i, msg in enumerate(messages))
+
+    # Load clean code rules
+    from .constants import DEFAULT_CLEAN_CODE_RULES_PATH
+    from . import clean_code_rules
+
+    rules = clean_code_rules.load_rules(DEFAULT_CLEAN_CODE_RULES_PATH)
+    clean_code_rules_text = clean_code_rules.format_rules_for_validation(rules)
+
+    # Load config to check TDD state
+    if config is None:
+        from .hook import load_config
+
+        config = load_config()
+    intent_validation_enabled = config.get("intent_validation_enabled", False)
+    tdd_enabled = config.get("tdd_enabled", True)
+
+    # Determine TDD section content
+    # TDD active only when BOTH intent_validation AND tdd_enabled are true
+    tdd_section = ""
+    if intent_validation_enabled and tdd_enabled:
+        # Load TDD section from external file
+        module_dir = os.path.dirname(__file__)
+        tdd_section_path = os.path.join(
+            module_dir, "prompts", "pre_tool_use", "tdd_section.md"
+        )
+        if os.path.exists(tdd_section_path):
+            with open(tdd_section_path, "r", encoding="utf-8") as f:
+                tdd_section_template = f.read()
+
+            # Load core paths and format for prompt
+            from .constants import DEFAULT_CORE_PATHS_PATH
+            from . import core_paths
+
+            paths = core_paths.load_paths(DEFAULT_CORE_PATHS_PATH)
+            core_paths_text = core_paths.format_paths_for_prompt(paths)
+
+            # Replace placeholder
+            tdd_section = tdd_section_template.replace(
+                "{{core_paths}}", core_paths_text
+            )
+        else:
+            # File missing - log warning and continue without TDD section
+            log_warning(
+                "intent_validator",
+                f"TDD section file not found: {tdd_section_path}. TDD enforcement disabled.",
+                None,
+            )
+
+    # Load template and fill with parameters
+    template = get_pre_tool_prompt_template()
+    prompt = template.format(
+        tool_name=tool_name,
+        file_path=file_path,
+        messages=messages_text,
+        code=code,
+        clean_code_rules=clean_code_rules_text,
+        tdd_section=tdd_section,
+    )
+
+    return prompt
+
+
 def validate_intent_and_code(
     messages: List[str], code: str, file_path: str, tool_name: str
 ) -> dict:
     """
-    Unified pre-tool validation: intent declaration + code review.
+    Two-stage pre-tool validation with short-circuit logic.
+
+    Stage 1: Fast declaration check (CURRENT message only)
+      - Checks intent declaration exists in CURRENT message
+      - Checks TDD declaration exists for core paths
+      - Uses Haiku for speed (<500ms)
+
+    Stage 2: Comprehensive code review (only if Stage 1 passes)
+      - Validates code matches declared intent
+      - Checks for clean code violations
+      - Uses Opus for quality
 
     Args:
         messages: Last 4 assistant messages (current + 3 before)
@@ -507,35 +761,137 @@ def validate_intent_and_code(
         {"approved": False, "feedback": "..."} if violations found
     """
     if not SDK_AVAILABLE:
-        # Fail open if SDK unavailable
-        return {"approved": True}
+        # Fail closed when SDK unavailable - no fallback validation
+        return {
+            "approved": False,
+            "feedback": """⛔ Intent Validation Unavailable
 
-    # Format messages for template
-    messages_text = "\n".join(f"Message {i+1}: {msg}" for i, msg in enumerate(messages))
+Claude Agent SDK is not available for intent validation.
 
-    # Load template and fill with parameters
-    template = get_pre_tool_prompt_template()
-    prompt = template.format(
-        tool_name=tool_name,
-        file_path=file_path,
-        messages=messages_text,
-        code=code,
-    )
+This is a REQUIRED dependency for intent validation to function.
+Please install the SDK or disable intent validation in config:
 
-    # Call SDK with Sonnet
+  pace-maker tdd off
+
+System failing closed to prevent bypassing intent declaration requirements.""",
+        }
+
     try:
-        feedback = asyncio.run(_call_unified_validation_async(prompt))
+        # STAGE 1: Fast declaration check (CURRENT message only)
+        current_message = extract_current_assistant_message(messages)
+        log_debug("intent_validator", "=== STAGE 1 VALIDATION START ===")
+        log_debug("intent_validator", f"File path: {file_path}")
+        log_debug("intent_validator", f"Tool name: {tool_name}")
+        log_debug(
+            "intent_validator", f"Current message length: {len(current_message)} chars"
+        )
+        log_debug(
+            "intent_validator", f"Current message preview: {current_message[:200]}..."
+        )
 
-        if feedback.strip() == "":
-            # Empty response = approved
+        stage1_prompt = _build_stage1_prompt(current_message, file_path, tool_name)
+        log_debug(
+            "intent_validator", f"Stage 1 prompt length: {len(stage1_prompt)} chars"
+        )
+        log_debug("intent_validator", f"Stage 1 FULL PROMPT:\n{stage1_prompt}")
+
+        stage1_response = _call_stage1_validation(stage1_prompt)
+        log_debug("intent_validator", f"Stage 1 SDK response: '{stage1_response}'")
+
+        # Parse Stage 1 response
+        stage1_response_upper = stage1_response.strip().upper()
+        log_debug(
+            "intent_validator", f"Stage 1 parsed response: '{stage1_response_upper}'"
+        )
+
+        if stage1_response_upper == "NO":
+            # Intent declaration missing
+            return {
+                "approved": False,
+                "feedback": """⛔ Intent declaration required
+
+You must declare your intent BEFORE using Write/Edit tools.
+
+Required format - include ALL 3 components IN YOUR CURRENT MESSAGE:
+  1. FILE: Which file you're modifying
+  2. CHANGES: What specific changes you're making
+  3. GOAL: Why you're making these changes
+
+Example (all in same message as Write/Edit):
+  "I will modify src/auth.py to add a validate_input() function
+   that checks user input for XSS attacks, to improve security."
+
+Then use your Write/Edit tool in the same message.""",
+            }
+
+        elif stage1_response_upper == "NO_TDD":
+            # TDD declaration missing for core path
+            return {
+                "approved": False,
+                "feedback": f"""⛔ TDD Required for Core Code
+
+You're modifying core code: {file_path}
+
+No test declaration found in your CURRENT message. Before modifying core code, you must either:
+
+1. Declare the corresponding test IN YOUR CURRENT MESSAGE:
+   - TEST FILE: Which test file covers this change
+   - TEST SCOPE: What behavior the test validates
+
+2. OR quote the user's explicit permission to skip TDD
+
+Example with test declaration (in same message as Write/Edit):
+  "I will modify src/auth.py to add password validation.
+   Test coverage: tests/test_auth.py - test_password_validation_rejects_weak_passwords()"
+
+Example citing user permission (in same message as Write/Edit):
+  "I will modify src/auth.py to add password validation.
+   User permission to skip TDD: User said 'skip tests for this' in message 3."
+
+CRITICAL: Quote must reference actual user words from recent context.""",
+            }
+
+        # Stage 1 passed - proceed to Stage 2
+        log_debug("intent_validator", "=== STAGE 1 PASSED - PROCEEDING TO STAGE 2 ===")
+
+        # STAGE 2: Comprehensive code review
+        stage2_prompt = _build_stage2_prompt(messages, code, file_path, tool_name)
+        log_debug(
+            "intent_validator", f"Stage 2 prompt length: {len(stage2_prompt)} chars"
+        )
+
+        stage2_feedback = asyncio.run(_call_unified_validation_async(stage2_prompt))
+        log_debug(
+            "intent_validator",
+            f"Stage 2 SDK response length: {len(stage2_feedback)} chars",
+        )
+        log_debug(
+            "intent_validator",
+            f"Stage 2 feedback preview: {stage2_feedback[:200] if stage2_feedback else '(empty)'}...",
+        )
+
+        if stage2_feedback.strip().upper() == "APPROVED":
+            # APPROVED response = approved
+            log_debug("intent_validator", "=== STAGE 2 APPROVED ===")
             return {"approved": True}
         else:
-            # Feedback = blocked
-            return {"approved": False, "feedback": feedback}
+            # Any other response = blocked with feedback
+            log_debug("intent_validator", "=== STAGE 2 BLOCKED (has feedback) ===")
+            return {"approved": False, "feedback": stage2_feedback}
 
     except Exception as e:
-        log_warning("intent_validator", "Unified validation failed", e)
-        return {"approved": True}
+        log_warning("intent_validator", "Two-stage validation failed", e)
+        log_debug("intent_validator", f"=== VALIDATION EXCEPTION: {str(e)} ===")
+        # Fail closed on unexpected errors
+        return {
+            "approved": False,
+            "feedback": f"""⛔ Intent Validation System Error
+
+An unexpected error occurred during intent validation: {str(e)}
+
+Failing closed to prevent bypassing validation requirements.
+Please retry your operation or report this issue.""",
+        }
 
 
 async def _call_unified_validation_async(prompt: str) -> str:

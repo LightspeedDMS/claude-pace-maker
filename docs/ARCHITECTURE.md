@@ -325,11 +325,32 @@ Handles `pace-maker status/on/off` commands.
 
 ## Pre-Tool Validation System
 
-The pre-tool validation system enforces disciplined development practices by requiring intent declaration before code modifications.
+Two-stage AI-powered validation system that enforces code quality, intent transparency, and TDD practices.
+
+### Two-Stage Validation Architecture
+
+**Stage 1: Fast Declaration Check** (~2-4 seconds)
+- **Model**: `claude-sonnet-4-5` (generic alias, auto-updates to latest)
+- **Purpose**: Lightweight validation of intent declaration
+- **Validates**:
+  - Intent declaration exists with all 3 required components
+  - TDD declarations for core code paths
+- **Returns**: `YES`, `NO`, or `NO_TDD`
+- **Prompt**: `src/pacemaker/prompts/pre_tool_use/stage1_declaration_check.md`
+
+**Stage 2: Comprehensive Code Review** (~10-15 seconds)
+- **Model**: `claude-opus-4-5` (primary), `claude-sonnet-4-5` (fallback on rate limits)
+- **Purpose**: Deep validation of code quality
+- **Validates**:
+  - Code matches declared intent exactly
+  - No scope creep or unauthorized changes
+  - Clean code violations (security, anti-patterns, bugs)
+- **Returns**: `APPROVED` (empty string means block) or detailed feedback
+- **Prompt**: `src/pacemaker/prompts/pre_tool_use/stage2_code_review.md`
 
 ### Intent Declaration Requirement
 
-Every code modification must be preceded by a clear declaration containing:
+Every code modification must declare intent **in the same message** as the Write/Edit tool:
 1. **FILE**: Which file is being modified
 2. **CHANGES**: What specific changes are being made
 3. **GOAL**: Why the changes are being made
@@ -338,6 +359,8 @@ Every code modification must be preceded by a clear declaration containing:
 ```
 I will modify src/auth.py to add a validate_password() function
 that checks password strength, to improve security.
+
+[then use Write/Edit tool in same message]
 ```
 
 ### Light-TDD Enforcement
@@ -412,61 +435,92 @@ Write/Edit Tool Attempted
 └───────────────────────┘
         │ YES
         ▼
-┌───────────────────────┐
-│ Intent declared?      │──── NO ──────► BLOCK + teach format
-└───────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│ STAGE 1: Fast Declaration Check (Sonnet, ~2-4 seconds) │
+│  - Extract last 2 messages (text + tool call)           │
+│  - Check intent declaration exists                      │
+│  - Check TDD declaration for core paths                 │
+└────────────────────────────────────────────────────────┘
+        │
+        ├──── NO ──────► BLOCK + teach format
+        │
+        ├──── NO_TDD ─► BLOCK + request TDD declaration
+        │
         │ YES
         ▼
-┌───────────────────────┐
-│ Core code path?       │──── YES ────► Check TDD declaration
-└───────────────────────┘                      │
-        │ NO                                   ▼
-        │                    ┌─────────────────────────┐
-        │                    │ TDD or user permission? │
-        │                    └─────────────────────────┘
-        │                         │ NO         │ YES
-        │                         ▼            │
-        │                   BLOCK + request    │
-        │                   TDD declaration    │
-        │                                      │
-        ▼◄─────────────────────────────────────┘
-┌───────────────────────┐
-│ Code matches intent?  │──── NO ──────► BLOCK + explain mismatch
-└───────────────────────┘
-        │ YES
-        ▼
-┌───────────────────────┐
-│ Clean code checks     │──── FAIL ────► BLOCK + explain violation
-└───────────────────────┘
-        │ PASS
+┌────────────────────────────────────────────────────────┐
+│ STAGE 2: Comprehensive Code Review (Opus, ~10-15s)     │
+│  - Extract last 5 messages for full context            │
+│  - Validate code matches intent exactly                │
+│  - Check for scope creep                               │
+│  - Check for missing functionality                     │
+│  - Check for unauthorized deletions                    │
+│  - Validate clean code standards                       │
+└────────────────────────────────────────────────────────┘
+        │
+        ├──── Violations ──► BLOCK + detailed feedback
+        │
+        │ APPROVED
         ▼
     ✓ ALLOW EDIT
 ```
 
 ### Message Context Packaging
 
-The validator uses the last 5 assistant messages with special formatting:
-- **Messages 1-4**: Text only (tool parameters stripped)
-- **Message 5 (current)**: Full content including tool parameters
+The two-stage system uses different message extraction strategies:
 
-This provides sufficient context for intent detection without bloating the prompt.
+**Stage 1 (Fast Declaration Check)**:
+- Extracts last 2 messages and combines them
+- Addresses Claude Code's behavior of splitting text and tool calls into separate transcript entries
+- Message N-1: Intent declaration text
+- Message N: Tool call parameters
+- Combined into single string for validation
 
-### Validation Prompt
+**Stage 2 (Comprehensive Code Review)**:
+- Extracts last 5 messages for full context
+- Messages 1-4: Text only (tool parameters stripped)
+- Message 5 (current): Full content including tool parameters
+- Provides complete context for detecting scope creep, missing functionality, and code quality issues
 
-The external prompt template is located at:
-`src/pacemaker/prompts/pre_tool_validator_prompt.md`
+This dual approach optimizes for speed (Stage 1) while maintaining thoroughness (Stage 2).
 
-**Template Variables**:
-- `{tool_name}`: Write or Edit
-- `{file_path}`: Target file path
-- `{messages}`: Last 5 messages
-- `{code}`: Proposed code changes
+### Validation Prompts
+
+The system uses two separate external prompt templates:
+
+**Stage 1 Prompt**: `src/pacemaker/prompts/pre_tool_use/stage1_declaration_check.md`
+- Validates intent declaration format
+- Checks TDD requirements for core paths
+- Fast, focused validation
+- Returns: `YES`, `NO`, or `NO_TDD`
+
+**Stage 2 Prompt**: `src/pacemaker/prompts/pre_tool_use/stage2_code_review.md`
+- Comprehensive code review
+- Validates code matches intent
+- Checks clean code violations
+- Returns: `APPROVED` or detailed feedback text
+
+**Common Includes**: Both prompts reference:
+- `src/pacemaker/prompts/common/intent_declaration_prompt.md` - Intent format specification
+- `src/pacemaker/prompts/common/tdd_declaration_prompt.md` - TDD requirements
 
 ### SDK Integration
 
-The validator uses Claude Agent SDK with model fallback:
-- **Primary**: `claude-sonnet-4-5` (fast, cost-effective)
-- **Fallback**: `claude-opus-4-5` (on rate limit)
+The two-stage validator uses Claude Agent SDK with different models for each stage:
+
+**Stage 1 (Declaration Check)**:
+- **Model**: `claude-sonnet-4-5` (generic alias, auto-updates)
+- **Thinking tokens**: 1024 (API minimum)
+- **Purpose**: Fast intent detection with capable model
+- **No fallback**: Single model for speed
+
+**Stage 2 (Code Review)**:
+- **Primary**: `claude-opus-4-5` (highest quality analysis)
+- **Fallback**: `claude-sonnet-4-5` (on rate limit)
+- **Thinking tokens**: 1024 (API minimum)
+- **Purpose**: Deep code quality validation
+
+**Model Naming**: All models use generic aliases (e.g., `claude-sonnet-4-5`) that automatically resolve to the latest version of each model family.
 
 **Configuration**: `src/pacemaker/intent_validator.py`
 
@@ -1030,7 +1084,18 @@ claude-pace-maker/
 │   │   ├── intent_validator.py  # Pre-tool validation via SDK
 │   │   ├── transcript_reader.py # Message extraction from JSONL
 │   │   ├── prompts/
-│   │   │   └── pre_tool_validator_prompt.md  # Validation prompt template
+│   │   │   ├── pre_tool_use/
+│   │   │   │   ├── stage1_declaration_check.md  # Stage 1 prompt
+│   │   │   │   └── stage2_code_review.md        # Stage 2 prompt
+│   │   │   ├── common/
+│   │   │   │   ├── intent_declaration_prompt.md # Intent format spec
+│   │   │   │   └── tdd_declaration_prompt.md    # TDD requirements
+│   │   │   ├── stop/
+│   │   │   │   └── stop_hook_validator_prompt.md # Tempo validation
+│   │   │   ├── session_start/
+│   │   │   │   └── session_start_message.md     # Session startup text
+│   │   │   └── user_commands/
+│   │   │       └── status_message.md            # Status command output
 │   │   └── hooks/
 │   │       └── post_tool.py     # Steering message
 │   └── hooks/
@@ -1058,10 +1123,11 @@ python -m pytest tests/ --cov=src/pacemaker --cov-report=html
 
 ---
 
-**Document Version**: 1.5
-**Last Updated**: 2025-12-04
+**Document Version**: 1.6
+**Last Updated**: 2025-12-09
 **Maintainer**: Claude Code Pace Maker Team
 **Changes**:
+- v1.6: Updated Pre-Tool Validation to two-stage architecture (Stage 1: declaration check with Sonnet, Stage 2: code review with Opus/Sonnet), updated message extraction to combine last 2 messages, updated validation flow diagram, updated prompt file structure to reflect pre_tool_use/, common/, stop/, session_start/, user_commands/ organization
 - v1.5: Updated model names to versionless (claude-sonnet-4-5, claude-opus-4-5), added hookEventName to PostToolUse additionalContext
 - v1.4: Added Pre-Tool Validation System (intent declaration, Light-TDD enforcement, clean code validation), PreToolUse hook, transcript_reader module, external prompt template
 - v1.3: Added SubagentStart/Stop hooks, pacing_decisions table, subagent reminder system, session tempo control, continuous throttling architecture

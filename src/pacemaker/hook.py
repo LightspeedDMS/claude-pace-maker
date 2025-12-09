@@ -115,59 +115,20 @@ def inject_prompt_delay(prompt: str):
 
 def display_intent_validation_guidance() -> str:
     """
-    Generate intent validation guidance to Claude.
+    Load intent validation guidance from external file.
 
     Shared helper used by both SessionStart and SubagentStart hooks.
     Shows requirements for intent declaration and TDD enforcement.
 
     Returns:
-        String containing the guidance text
+        String containing the guidance text loaded from external file
     """
-    lines = []
-    lines.append("\n" + "=" * 70)
-    lines.append("⚠️  INTENT VALIDATION ENABLED")
-    lines.append("=" * 70)
-    lines.append(
-        "\nBefore modifying code files, you MUST declare your intent explicitly:"
-    )
-    lines.append("\nDeclare EXACTLY these 3 components:")
-    lines.append("  1. What file you're modifying")
-    lines.append("  2. What changes you're making")
-    lines.append("  3. Why/goal of the changes")
-    lines.append("\nGOOD Example:")
-    lines.append("  'I will modify src/auth.py to add a validate_token() function")
-    lines.append("   that checks JWT expiration, to fix the security vulnerability.'")
-    lines.append("\nBAD Examples:")
-    lines.append("  ✗ 'Fixing auth bug' - Missing file and specifics")
-    lines.append("  ✗ 'Updating code' - Too vague")
-    lines.append("\n" + "-" * 70)
-    lines.append("TDD ENFORCEMENT FOR CORE CODE")
-    lines.append("-" * 70)
-    lines.append(
-        "\nFiles in core paths (src/, lib/, core/, source/, libraries/, kernel/)"
-    )
-    lines.append("require test declarations.")
-    lines.append("\n**Option A - Declare test coverage:**")
-    lines.append("  'I will modify src/auth.py to add a validate_password() function")
-    lines.append("   that checks password strength, to improve security.")
-    lines.append(
-        "   Test coverage: tests/test_auth.py - test_validate_password_rejects_weak()'"
-    )
-    lines.append("\n**Option B - Quote user permission to skip TDD:**")
-    lines.append("  'I will modify src/auth.py to add a validate_password() function")
-    lines.append("   that checks password strength, to improve security.")
-    lines.append(
-        '   User permission to skip TDD: User said "skip tests for this" in message 3.\''
-    )
-    lines.append(
-        "\nThe quoted permission MUST exist in the last 5 messages. Fabricated quotes are rejected."
-    )
-    lines.append(
-        "\n⚠️  MANDATORY: Declare intent in the SAME message as the Write/Edit tool call."
-    )
-    lines.append("=" * 70 + "\n")
+    from .prompt_loader import PromptLoader
 
-    return "\n".join(lines)
+    loader = PromptLoader()
+    return loader.load_prompt(
+        "intent_validation_guidance.md", subfolder="session_start"
+    )
 
 
 def run_session_start_hook():
@@ -751,6 +712,19 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             return {"continue": True}
 
         hook_data = json.loads(raw_input)
+
+        # DEBUG: Log all available hook_data fields
+        log_debug("hook", f"Pre-tool hook_data keys: {list(hook_data.keys())}")
+        if "message" in hook_data:
+            log_debug(
+                "hook",
+                f"hook_data has 'message' field: {str(hook_data['message'])[:300]}",
+            )
+        if "content" in hook_data:
+            log_debug(
+                "hook",
+                f"hook_data has 'content' field: {str(hook_data['content'])[:300]}",
+            )
 
         # 2. Extract fields
         tool_name = hook_data.get("tool_name")

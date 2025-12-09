@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.5.0] - 2025-12-09
+
+### Added
+- **Two-stage validation system**: Separates fast declaration checking (Stage 1, ~2-4s) from comprehensive code review (Stage 2, ~10-15s)
+- **Stage 1 (Fast Declaration Check)**: Uses Sonnet to validate intent declaration exists with all required components
+- **Stage 2 (Comprehensive Code Review)**: Uses Opus (with Sonnet fallback) for deep code quality validation
+- **TDD enforcement CLI**: `pace-maker tdd on|off` command
+- **Clean code rules CLI**: `pace-maker clean-code list|add|remove` commands
+- **Core paths CLI**: `pace-maker core-paths list|add|remove` commands
+- **Log level control**: `pace-maker loglevel 0-4` command (0=OFF, 1=ERROR, 2=WARNING, 3=INFO, 4=DEBUG)
+- **Externalized clean code rules**: `~/.claude-pace-maker/clean_code_rules.yaml`
+- **Externalized core paths**: `~/.claude-pace-maker/core_paths.yaml`
+- **Centralized logging system**: Configurable log levels across all modules
+
+### Changed
+- **Message extraction**: Combines last 2 messages to handle Claude Code's text/tool call splitting
+- **Stage 1 model**: Changed from Haiku to Sonnet for better intent detection
+- **Stage 2 response format**: Returns "APPROVED" text instead of empty string for pass
+- **Model naming**: All models use generic aliases (claude-sonnet-4-5, claude-opus-4-5, claude-haiku-4-5) that auto-update
+- **Prompt organization**: Reorganized into pre_tool_use/, common/, stop/, session_start/, user_commands/ directories
+- **Exception handling**: Validation now fails closed (blocks) on errors instead of failing open
+- **Intent declaration requirement**: Must be in SAME message as Write/Edit tool (not in prior messages)
+
+### Fixed
+- **Installer**: Now correctly copies Python modules to `~/.claude/hooks/pacemaker/`
+- **Model names**: Fixed non-existent claude-haiku-4 model name
+- **Thinking budget**: Increased from 1000 to 1024 (API minimum requirement)
+- **PyYAML dependency**: Added for python3.11 compatibility
+
 ## [1.4.0] - 2025-12-03
 
 ### Added

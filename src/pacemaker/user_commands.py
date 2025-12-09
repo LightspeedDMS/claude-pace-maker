@@ -14,6 +14,19 @@ from typing import Dict, Optional, Any
 
 from .constants import DEFAULT_CONFIG
 from .logger import log_warning
+from .prompt_loader import PromptLoader
+
+
+# Load messages on module import
+_prompt_loader = PromptLoader()
+try:
+    MESSAGES = _prompt_loader.load_json_messages("messages.json", "user_commands")
+except FileNotFoundError:
+    # Fallback to empty dict if messages not found
+    log_warning(
+        "user_commands", "messages.json not found, using fallback messages", None
+    )
+    MESSAGES = {}
 
 
 def parse_command(user_input: str) -> Dict[str, Any]:
@@ -121,6 +134,94 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_loglevel.group(1),
         }
 
+    # Pattern 8.5: pace-maker tdd (on|off) - TDD enforcement control
+    pattern_tdd = r"^pace-maker\s+tdd\s+(on|off)$"
+    match_tdd = re.match(pattern_tdd, normalized)
+
+    if match_tdd:
+        return {
+            "is_pace_maker_command": True,
+            "command": "tdd",
+            "subcommand": match_tdd.group(1),
+        }
+
+    # Pattern 9: pace-maker clean-code list - list clean code rules
+    pattern_clean_code_list = r"^pace-maker\s+clean-code\s+list$"
+    match_clean_code_list = re.match(pattern_clean_code_list, normalized)
+
+    if match_clean_code_list:
+        return {
+            "is_pace_maker_command": True,
+            "command": "clean-code",
+            "subcommand": "list",
+        }
+
+    # Pattern 10: pace-maker clean-code add --id X --name Y --description Z
+    pattern_clean_code_add = r"^pace-maker\s+clean-code\s+add\s+(.+)$"
+    match_clean_code_add = re.match(pattern_clean_code_add, normalized)
+
+    if match_clean_code_add:
+        return {
+            "is_pace_maker_command": True,
+            "command": "clean-code",
+            "subcommand": f"add {match_clean_code_add.group(1)}",
+        }
+
+    # Pattern 11: pace-maker clean-code modify --id X ...
+    pattern_clean_code_modify = r"^pace-maker\s+clean-code\s+modify\s+(.+)$"
+    match_clean_code_modify = re.match(pattern_clean_code_modify, normalized)
+
+    if match_clean_code_modify:
+        return {
+            "is_pace_maker_command": True,
+            "command": "clean-code",
+            "subcommand": f"modify {match_clean_code_modify.group(1)}",
+        }
+
+    # Pattern 12: pace-maker clean-code remove --id X
+    pattern_clean_code_remove = r"^pace-maker\s+clean-code\s+remove\s+(.+)$"
+    match_clean_code_remove = re.match(pattern_clean_code_remove, normalized)
+
+    if match_clean_code_remove:
+        return {
+            "is_pace_maker_command": True,
+            "command": "clean-code",
+            "subcommand": f"remove {match_clean_code_remove.group(1)}",
+        }
+
+    # Pattern 13: pace-maker core-paths list
+    pattern_core_paths_list = r"^pace-maker\s+core-paths\s+list$"
+    match_core_paths_list = re.match(pattern_core_paths_list, normalized)
+
+    if match_core_paths_list:
+        return {
+            "is_pace_maker_command": True,
+            "command": "core-paths",
+            "subcommand": "list",
+        }
+
+    # Pattern 14: pace-maker core-paths add PATH
+    pattern_core_paths_add = r"^pace-maker\s+core-paths\s+add\s+(.+)$"
+    match_core_paths_add = re.match(pattern_core_paths_add, normalized)
+
+    if match_core_paths_add:
+        return {
+            "is_pace_maker_command": True,
+            "command": "core-paths",
+            "subcommand": f"add {match_core_paths_add.group(1)}",
+        }
+
+    # Pattern 15: pace-maker core-paths remove PATH
+    pattern_core_paths_remove = r"^pace-maker\s+core-paths\s+remove\s+(.+)$"
+    match_core_paths_remove = re.match(pattern_core_paths_remove, normalized)
+
+    if match_core_paths_remove:
+        return {
+            "is_pace_maker_command": True,
+            "command": "core-paths",
+            "subcommand": f"remove {match_core_paths_remove.group(1)}",
+        }
+
     return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
@@ -168,6 +269,12 @@ def execute_command(
         return _execute_5_hour_limit(config_path, subcommand)
     elif command == "loglevel":
         return _execute_loglevel(config_path, subcommand)
+    elif command == "tdd":
+        return _execute_tdd(config_path, subcommand)
+    elif command == "clean-code":
+        return _execute_clean_code(subcommand)
+    elif command == "core-paths":
+        return _execute_core_paths(subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -184,12 +291,19 @@ def _execute_on(config_path: str) -> Dict[str, Any]:
         # Write atomically
         _write_config_atomic(config, config_path)
 
+        message = MESSAGES.get("pace_maker", {}).get(
+            "enabled",
+            "✓ Pace Maker ENABLED\nCredit consumption will be throttled to extend usage windows.",
+        )
         return {
             "success": True,
-            "message": "✓ Pace Maker ENABLED\nCredit consumption will be throttled to extend usage windows.",
+            "message": message,
         }
     except Exception as e:
-        return {"success": False, "message": f"Error enabling pace maker: {str(e)}"}
+        error_template = MESSAGES.get("pace_maker", {}).get(
+            "error_enabling", "Error enabling pace maker: {error}"
+        )
+        return {"success": False, "message": error_template.replace("{error}", str(e))}
 
 
 def _execute_off(config_path: str) -> Dict[str, Any]:
@@ -204,12 +318,19 @@ def _execute_off(config_path: str) -> Dict[str, Any]:
         # Write atomically
         _write_config_atomic(config, config_path)
 
+        message = MESSAGES.get("pace_maker", {}).get(
+            "disabled",
+            "✓ Pace Maker DISABLED\nClaude will run at full speed without throttling.",
+        )
         return {
             "success": True,
-            "message": "✓ Pace Maker DISABLED\nClaude will run at full speed without throttling.",
+            "message": message,
         }
     except Exception as e:
-        return {"success": False, "message": f"Error disabling pace maker: {str(e)}"}
+        error_template = MESSAGES.get("pace_maker", {}).get(
+            "error_disabling", "Error disabling pace maker: {error}"
+        )
+        return {"success": False, "message": error_template.replace("{error}", str(e))}
 
 
 def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str, Any]:
@@ -217,6 +338,8 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
     try:
         # Import here to avoid circular dependency
         from . import pacing_engine
+        from .constants import DEFAULT_STATE_PATH
+        from .hook import load_state
 
         # Load config
         config = _load_config(config_path)
@@ -226,8 +349,18 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         tempo_enabled = config.get("tempo_enabled", True)
         subagent_reminder_enabled = config.get("subagent_reminder_enabled", True)
         intent_validation_enabled = config.get("intent_validation_enabled", False)
+        tdd_enabled = config.get("tdd_enabled", True)
         log_level = config.get("log_level", 2)
         level_names = {0: "OFF", 1: "ERROR", 2: "WARNING", 3: "INFO", 4: "DEBUG"}
+
+        # Check for tempo session override in state
+        tempo_session_override = None
+        try:
+            state = load_state(DEFAULT_STATE_PATH)
+            if "tempo_session_enabled" in state:
+                tempo_session_override = state["tempo_session_enabled"]
+        except Exception:
+            pass
 
         # Build status message
         status_text = "Pace Maker: ACTIVE" if enabled else "Pace Maker: INACTIVE"
@@ -237,9 +370,21 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         status_text += (
             f"\n5-Hour Limit: {'ENABLED' if five_hour_limit_enabled else 'DISABLED'}"
         )
-        status_text += f"\nTempo Tracking: {'ENABLED' if tempo_enabled else 'DISABLED'}"
+
+        # Show tempo status with override if present
+        if tempo_session_override is not None:
+            tempo_status = "ENABLED" if tempo_session_override else "DISABLED"
+            override_text = "ON" if tempo_session_override else "OFF"
+            global_text = "ENABLED" if tempo_enabled else "DISABLED"
+            status_text += f"\nTempo Tracking: {tempo_status} (session override: {override_text}, global: {global_text})"
+        else:
+            status_text += (
+                f"\nTempo Tracking: {'ENABLED' if tempo_enabled else 'DISABLED'}"
+            )
+
         status_text += f"\nSubagent Reminder: {'ENABLED' if subagent_reminder_enabled else 'DISABLED'}"
         status_text += f"\nIntent Validation: {'ENABLED' if intent_validation_enabled else 'DISABLED'}"
+        status_text += f"\nTDD Enforcement: {'ENABLED' if tdd_enabled else 'DISABLED'}"
         status_text += (
             f"\nLog Level: {log_level} ({level_names.get(log_level, 'UNKNOWN')})"
         )
@@ -342,7 +487,13 @@ def _execute_version() -> Dict[str, Any]:
     """Display version information."""
     from . import __version__
 
-    return {"success": True, "message": f"Claude Pace Maker v{__version__}"}
+    message_template = MESSAGES.get("version", {}).get(
+        "message", "Claude Pace Maker v{version}"
+    )
+    return {
+        "success": True,
+        "message": message_template.replace("{version}", __version__),
+    }
 
 
 def _execute_help(config_path: str) -> Dict[str, Any]:
@@ -367,7 +518,18 @@ COMMANDS:
   pace-maker reminder off         Disable subagent reminder
   pace-maker intent-validation on Enable intent validation before code changes
   pace-maker intent-validation off Disable intent validation
+  pace-maker tdd on               Enable TDD enforcement for core code changes
+  pace-maker tdd off              Disable TDD enforcement
   pace-maker loglevel [0-4]      Set log level (0=OFF to 4=DEBUG)
+  pace-maker clean-code list                    List all clean code validation rules
+  pace-maker clean-code add --id ID --name NAME --description DESC
+                                                Add a new validation rule
+  pace-maker clean-code modify --id ID [--name NAME] [--description DESC]
+                                                Modify an existing rule
+  pace-maker clean-code remove --id ID         Remove a validation rule
+  pace-maker core-paths list                   List all TDD-enforced core paths
+  pace-maker core-paths add PATH               Add a new core path
+  pace-maker core-paths remove PATH            Remove a core path
 
 LOG LEVELS:
   0 = OFF      - No logging
@@ -412,6 +574,36 @@ INTENT VALIDATION:
   Source code extensions are configured in:
   ~/.claude-pace-maker/source_code_extensions.json
 
+TDD ENFORCEMENT:
+  TDD enforcement is a sub-feature of intent validation. When both intent
+  validation AND TDD are enabled, Claude must declare test coverage before
+  modifying core code files (src/, core/, lib/, etc).
+
+  TDD can be toggled independently from intent validation using:
+  - 'pace-maker tdd on' to enable
+  - 'pace-maker tdd off' to disable
+
+  Note: TDD enforcement only works when intent validation is also enabled.
+
+CLEAN CODE RULES:
+  Manage validation rules that Claude checks before modifying source code.
+  Rules are stored in: ~/.claude-pace-maker/clean_code_rules.yaml
+  When intent validation is enabled, these rules are checked against all
+  code changes to ensure quality standards are met.
+
+CORE PATHS:
+  Manage paths that require TDD enforcement. When both intent validation
+  and TDD enforcement are enabled, files under these paths require test
+  declarations before modification.
+
+  Default paths: src/, lib/, core/, source/, libraries/, kernel/
+  Config file: ~/.claude-pace-maker/core_paths.yaml
+
+  Users can customize which paths trigger TDD requirements using:
+  - 'pace-maker core-paths list' to see current paths
+  - 'pace-maker core-paths add custom/' to add a new path
+  - 'pace-maker core-paths remove lib/' to remove a path
+
 CONFIGURATION:
   Config file: ~/.claude-pace-maker/config.json
   Database: ~/.claude-pace-maker/usage.db
@@ -430,33 +622,51 @@ def _execute_weekly_limit(
             config = _load_config(config_path)
             config["weekly_limit_enabled"] = True
             _write_config_atomic(config, config_path)
+            message = MESSAGES.get("weekly_limit", {}).get(
+                "enabled",
+                "✓ Weekly limit ENABLED\n7-day throttling will be applied based on weekday usage pace.",
+            )
             return {
                 "success": True,
-                "message": "✓ Weekly limit ENABLED\n7-day throttling will be applied based on weekday usage pace.",
+                "message": message,
             }
         except Exception as e:
+            error_template = MESSAGES.get("weekly_limit", {}).get(
+                "error_enabling", "Error enabling weekly limit: {error}"
+            )
             return {
                 "success": False,
-                "message": f"Error enabling weekly limit: {str(e)}",
+                "message": error_template.replace("{error}", str(e)),
             }
     elif subcommand == "off":
         try:
             config = _load_config(config_path)
             config["weekly_limit_enabled"] = False
             _write_config_atomic(config, config_path)
+            message = MESSAGES.get("weekly_limit", {}).get(
+                "disabled",
+                "✓ Weekly limit DISABLED\n7-day throttling will be skipped (5-hour limit still applies).",
+            )
             return {
                 "success": True,
-                "message": "✓ Weekly limit DISABLED\n7-day throttling will be skipped (5-hour limit still applies).",
+                "message": message,
             }
         except Exception as e:
+            error_template = MESSAGES.get("weekly_limit", {}).get(
+                "error_disabling", "Error disabling weekly limit: {error}"
+            )
             return {
                 "success": False,
-                "message": f"Error disabling weekly limit: {str(e)}",
+                "message": error_template.replace("{error}", str(e)),
             }
     else:
+        error_template = MESSAGES.get("weekly_limit", {}).get(
+            "unknown_subcommand",
+            "Unknown subcommand: {subcommand}\nUsage: pace-maker weekly-limit [on|off]",
+        )
         return {
             "success": False,
-            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker weekly-limit [on|off]",
+            "message": error_template.replace("{subcommand}", str(subcommand)),
         }
 
 
@@ -469,50 +679,75 @@ def _execute_5_hour_limit(
             config = _load_config(config_path)
             config["five_hour_limit_enabled"] = True
             _write_config_atomic(config, config_path)
+            message = MESSAGES.get("five_hour_limit", {}).get(
+                "enabled",
+                "✓ 5-Hour limit ENABLED\n5-hour throttling will be applied based on usage pace.",
+            )
             return {
                 "success": True,
-                "message": "✓ 5-Hour limit ENABLED\n5-hour throttling will be applied based on usage pace.",
+                "message": message,
             }
         except Exception as e:
+            error_template = MESSAGES.get("five_hour_limit", {}).get(
+                "error_enabling", "Error enabling 5-hour limit: {error}"
+            )
             return {
                 "success": False,
-                "message": f"Error enabling 5-hour limit: {str(e)}",
+                "message": error_template.replace("{error}", str(e)),
             }
     elif subcommand == "off":
         try:
             config = _load_config(config_path)
             config["five_hour_limit_enabled"] = False
             _write_config_atomic(config, config_path)
+            message = MESSAGES.get("five_hour_limit", {}).get(
+                "disabled",
+                "✓ 5-Hour limit DISABLED\n5-hour throttling will be skipped.",
+            )
             return {
                 "success": True,
-                "message": "✓ 5-Hour limit DISABLED\n5-hour throttling will be skipped.",
+                "message": message,
             }
         except Exception as e:
+            error_template = MESSAGES.get("five_hour_limit", {}).get(
+                "error_disabling", "Error disabling 5-hour limit: {error}"
+            )
             return {
                 "success": False,
-                "message": f"Error disabling 5-hour limit: {str(e)}",
+                "message": error_template.replace("{error}", str(e)),
             }
     else:
+        error_template = MESSAGES.get("five_hour_limit", {}).get(
+            "unknown_subcommand",
+            "Unknown subcommand: {subcommand}\nUsage: pace-maker 5-hour-limit [on|off]",
+        )
         return {
             "success": False,
-            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker 5-hour-limit [on|off]",
+            "message": error_template.replace("{subcommand}", str(subcommand)),
         }
 
 
 def _execute_loglevel(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
     """Set log level (0-4)."""
     if subcommand is None:
+        message = MESSAGES.get("loglevel", {}).get(
+            "usage",
+            "Usage: pace-maker loglevel [0-4]\n  0=OFF, 1=ERROR, 2=WARNING, 3=INFO, 4=DEBUG",
+        )
         return {
             "success": False,
-            "message": "Usage: pace-maker loglevel [0-4]\n  0=OFF, 1=ERROR, 2=WARNING, 3=INFO, 4=DEBUG",
+            "message": message,
         }
 
     try:
         level = int(subcommand)
         if level < 0 or level > 4:
+            error_template = MESSAGES.get("loglevel", {}).get(
+                "invalid_level", "Invalid log level: {level}. Must be 0-4."
+            )
             return {
                 "success": False,
-                "message": f"Invalid log level: {level}. Must be 0-4.",
+                "message": error_template.replace("{level}", str(level)),
             }
 
         config = _load_config(config_path)
@@ -520,12 +755,22 @@ def _execute_loglevel(config_path: str, subcommand: Optional[str]) -> Dict[str, 
         _write_config_atomic(config, config_path)
 
         level_names = {0: "OFF", 1: "ERROR", 2: "WARNING", 3: "INFO", 4: "DEBUG"}
+        message_template = MESSAGES.get("loglevel", {}).get(
+            "set_success",
+            "✓ Log level set to {level} ({level_name})\nLogs: ~/.claude-pace-maker/pace-maker.log",
+        )
+        message = message_template.replace("{level}", str(level)).replace(
+            "{level_name}", level_names[level]
+        )
         return {
             "success": True,
-            "message": f"✓ Log level set to {level} ({level_names[level]})\nLogs: ~/.claude-pace-maker/pace-maker.log",
+            "message": message,
         }
     except Exception as e:
-        return {"success": False, "message": f"Error setting log level: {str(e)}"}
+        error_template = MESSAGES.get("loglevel", {}).get(
+            "error", "Error setting log level: {error}"
+        )
+        return {"success": False, "message": error_template.replace("{error}", str(e))}
 
 
 def _execute_reminder(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
@@ -535,27 +780,51 @@ def _execute_reminder(config_path: str, subcommand: Optional[str]) -> Dict[str, 
             config = _load_config(config_path)
             config["subagent_reminder_enabled"] = True
             _write_config_atomic(config, config_path)
+            message = MESSAGES.get("reminder", {}).get(
+                "enabled",
+                "✓ Subagent Reminder ENABLED\nWrite/Edit tool usage in main context will trigger a reminder to use subagents.",
+            )
             return {
                 "success": True,
-                "message": "✓ Subagent Reminder ENABLED\nWrite/Edit tool usage in main context will trigger a reminder to use subagents.",
+                "message": message,
             }
         except Exception as e:
-            return {"success": False, "message": f"Error enabling reminder: {str(e)}"}
+            error_template = MESSAGES.get("reminder", {}).get(
+                "error_enabling", "Error enabling reminder: {error}"
+            )
+            return {
+                "success": False,
+                "message": error_template.replace("{error}", str(e)),
+            }
     elif subcommand == "off":
         try:
             config = _load_config(config_path)
             config["subagent_reminder_enabled"] = False
             _write_config_atomic(config, config_path)
+            message = MESSAGES.get("reminder", {}).get(
+                "disabled",
+                "✓ Subagent Reminder DISABLED\nWrite/Edit tool usage will not trigger reminders.",
+            )
             return {
                 "success": True,
-                "message": "✓ Subagent Reminder DISABLED\nWrite/Edit tool usage will not trigger reminders.",
+                "message": message,
             }
         except Exception as e:
-            return {"success": False, "message": f"Error disabling reminder: {str(e)}"}
+            error_template = MESSAGES.get("reminder", {}).get(
+                "error_disabling", "Error disabling reminder: {error}"
+            )
+            return {
+                "success": False,
+                "message": error_template.replace("{error}", str(e)),
+            }
     else:
+        error_template = MESSAGES.get("reminder", {}).get(
+            "unknown_subcommand",
+            "Unknown subcommand: {subcommand}\nUsage: pace-maker reminder [on|off]",
+        )
         return {
             "success": False,
-            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker reminder [on|off]",
+            "message": error_template.replace("{subcommand}", str(subcommand)),
         }
 
 
@@ -568,33 +837,106 @@ def _execute_intent_validation(
             config = _load_config(config_path)
             config["intent_validation_enabled"] = True
             _write_config_atomic(config, config_path)
+            message = MESSAGES.get("intent_validation", {}).get(
+                "enabled",
+                "✓ Intent Validation ENABLED\nClaude must declare intent before modifying source code files.",
+            )
             return {
                 "success": True,
-                "message": "✓ Intent Validation ENABLED\nClaude must declare intent before modifying source code files.",
+                "message": message,
             }
         except Exception as e:
+            error_template = MESSAGES.get("intent_validation", {}).get(
+                "error_enabling", "Error enabling intent validation: {error}"
+            )
             return {
                 "success": False,
-                "message": f"Error enabling intent validation: {str(e)}",
+                "message": error_template.replace("{error}", str(e)),
             }
     elif subcommand == "off":
         try:
             config = _load_config(config_path)
             config["intent_validation_enabled"] = False
             _write_config_atomic(config, config_path)
+            message = MESSAGES.get("intent_validation", {}).get(
+                "disabled",
+                "✓ Intent Validation DISABLED\nCode modifications will not require intent declarations.",
+            )
             return {
                 "success": True,
-                "message": "✓ Intent Validation DISABLED\nCode modifications will not require intent declarations.",
+                "message": message,
             }
         except Exception as e:
+            error_template = MESSAGES.get("intent_validation", {}).get(
+                "error_disabling", "Error disabling intent validation: {error}"
+            )
             return {
                 "success": False,
-                "message": f"Error disabling intent validation: {str(e)}",
+                "message": error_template.replace("{error}", str(e)),
             }
     else:
+        error_template = MESSAGES.get("intent_validation", {}).get(
+            "unknown_subcommand",
+            "Unknown subcommand: {subcommand}\nUsage: pace-maker intent-validation [on|off]",
+        )
         return {
             "success": False,
-            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker intent-validation [on|off]",
+            "message": error_template.replace("{subcommand}", str(subcommand)),
+        }
+
+
+def _execute_tdd(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
+    """Enable or disable TDD enforcement."""
+    if subcommand == "on":
+        try:
+            config = _load_config(config_path)
+            config["tdd_enabled"] = True
+            _write_config_atomic(config, config_path)
+            message = MESSAGES.get("tdd", {}).get(
+                "enabled",
+                "✓ TDD Enforcement ENABLED\nIntent validation will require test declarations for core code changes.",
+            )
+            return {
+                "success": True,
+                "message": message,
+            }
+        except Exception as e:
+            error_template = MESSAGES.get("tdd", {}).get(
+                "error_enabling", "Error enabling TDD enforcement: {error}"
+            )
+            return {
+                "success": False,
+                "message": error_template.replace("{error}", str(e)),
+            }
+    elif subcommand == "off":
+        try:
+            config = _load_config(config_path)
+            config["tdd_enabled"] = False
+            _write_config_atomic(config, config_path)
+            message = MESSAGES.get("tdd", {}).get(
+                "disabled",
+                "✓ TDD Enforcement DISABLED\nIntent validation will not require test declarations.",
+            )
+            return {
+                "success": True,
+                "message": message,
+            }
+        except Exception as e:
+            error_template = MESSAGES.get("tdd", {}).get(
+                "error_disabling", "Error disabling TDD enforcement: {error}"
+            )
+            return {
+                "success": False,
+                "message": error_template.replace("{error}", str(e)),
+            }
+    else:
+        error_template = MESSAGES.get("tdd", {}).get(
+            "unknown_subcommand",
+            "Unknown subcommand: {subcommand}\nUsage: pace-maker tdd [on|off]",
+        )
+        return {
+            "success": False,
+            "message": error_template.replace("{subcommand}", str(subcommand)),
         }
 
 
@@ -612,33 +954,53 @@ def _execute_tempo(config_path: str, subcommand: Optional[str]) -> Dict[str, Any
                 state = load_state(DEFAULT_STATE_PATH)
                 state["tempo_session_enabled"] = True
                 save_state(state, DEFAULT_STATE_PATH)
+                message = MESSAGES.get("tempo", {}).get(
+                    "session_enabled",
+                    "✓ Tempo tracking ENABLED for this session\nSession lifecycle tracking will prevent premature exits in this session only.",
+                )
                 return {
                     "success": True,
-                    "message": "✓ Tempo tracking ENABLED for this session\nSession lifecycle tracking will prevent premature exits in this session only.",
+                    "message": message,
                 }
             except Exception as e:
+                error_template = MESSAGES.get("tempo", {}).get(
+                    "error_session_enabling",
+                    "Error enabling tempo for session: {error}",
+                )
                 return {
                     "success": False,
-                    "message": f"Error enabling tempo for session: {str(e)}",
+                    "message": error_template.replace("{error}", str(e)),
                 }
         elif session_cmd == "off":
             try:
                 state = load_state(DEFAULT_STATE_PATH)
                 state["tempo_session_enabled"] = False
                 save_state(state, DEFAULT_STATE_PATH)
+                message = MESSAGES.get("tempo", {}).get(
+                    "session_disabled",
+                    "✓ Tempo tracking DISABLED for this session\nSession lifecycle tracking will not prevent exits in this session.",
+                )
                 return {
                     "success": True,
-                    "message": "✓ Tempo tracking DISABLED for this session\nSession lifecycle tracking will not prevent exits in this session.",
+                    "message": message,
                 }
             except Exception as e:
+                error_template = MESSAGES.get("tempo", {}).get(
+                    "error_session_disabling",
+                    "Error disabling tempo for session: {error}",
+                )
                 return {
                     "success": False,
-                    "message": f"Error disabling tempo for session: {str(e)}",
+                    "message": error_template.replace("{error}", str(e)),
                 }
         else:
+            error_template = MESSAGES.get("tempo", {}).get(
+                "unknown_subcommand",
+                "Unknown subcommand: {subcommand}\nUsage: pace-maker tempo [on|off] or pace-maker tempo session [on|off]",
+            )
             return {
                 "success": False,
-                "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker tempo session [on|off]",
+                "message": error_template.replace("{subcommand}", str(subcommand)),
             }
 
     # Handle global tempo commands
@@ -647,27 +1009,51 @@ def _execute_tempo(config_path: str, subcommand: Optional[str]) -> Dict[str, Any
             config = _load_config(config_path)
             config["tempo_enabled"] = True
             _write_config_atomic(config, config_path)
+            message = MESSAGES.get("tempo", {}).get(
+                "enabled",
+                "✓ Tempo tracking ENABLED\nSession lifecycle tracking will prevent premature session exits during implementations.",
+            )
             return {
                 "success": True,
-                "message": "✓ Tempo tracking ENABLED\nSession lifecycle tracking will prevent premature session exits during implementations.",
+                "message": message,
             }
         except Exception as e:
-            return {"success": False, "message": f"Error enabling tempo: {str(e)}"}
+            error_template = MESSAGES.get("tempo", {}).get(
+                "error_enabling", "Error enabling tempo: {error}"
+            )
+            return {
+                "success": False,
+                "message": error_template.replace("{error}", str(e)),
+            }
     elif subcommand == "off":
         try:
             config = _load_config(config_path)
             config["tempo_enabled"] = False
             _write_config_atomic(config, config_path)
+            message = MESSAGES.get("tempo", {}).get(
+                "disabled",
+                "✓ Tempo tracking DISABLED\nSession lifecycle tracking will not prevent session exits.",
+            )
             return {
                 "success": True,
-                "message": "✓ Tempo tracking DISABLED\nSession lifecycle tracking will not prevent session exits.",
+                "message": message,
             }
         except Exception as e:
-            return {"success": False, "message": f"Error disabling tempo: {str(e)}"}
+            error_template = MESSAGES.get("tempo", {}).get(
+                "error_disabling", "Error disabling tempo: {error}"
+            )
+            return {
+                "success": False,
+                "message": error_template.replace("{error}", str(e)),
+            }
     else:
+        error_template = MESSAGES.get("tempo", {}).get(
+            "unknown_subcommand",
+            "Unknown subcommand: {subcommand}\nUsage: pace-maker tempo [on|off] or pace-maker tempo session [on|off]",
+        )
         return {
             "success": False,
-            "message": f"Unknown subcommand: {subcommand}\nUsage: pace-maker tempo [on|off] or pace-maker tempo session [on|off]",
+            "message": error_template.replace("{subcommand}", str(subcommand)),
         }
 
 
@@ -801,6 +1187,251 @@ def _get_latest_usage(db_path: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _execute_clean_code(subcommand: Optional[str]) -> Dict[str, Any]:
+    """Execute clean-code subcommands."""
+    from .constants import DEFAULT_CLEAN_CODE_RULES_PATH
+    from . import clean_code_rules
+
+    if not subcommand:
+        return {
+            "success": False,
+            "message": "clean-code requires a subcommand: list, add, modify, remove",
+        }
+
+    # Parse subcommand
+    parts = subcommand.split(None, 1)
+    action = parts[0]
+
+    if action == "list":
+        try:
+            rules = clean_code_rules.load_rules(
+                DEFAULT_CLEAN_CODE_RULES_PATH, strict=True
+            )
+            formatted = clean_code_rules.format_rules_for_display(rules)
+            return {"success": True, "message": formatted}
+        except ValueError as e:
+            return {
+                "success": False,
+                "message": f"Error loading clean code rules config:\n{str(e)}\n\nPlease check: {DEFAULT_CLEAN_CODE_RULES_PATH}",
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error listing rules: {str(e)}"}
+
+    elif action == "add":
+        # Parse --id, --name, --description from command
+        if len(parts) < 2:
+            return {
+                "success": False,
+                "message": "Usage: pace-maker clean-code add --id ID --name NAME --description DESC",
+            }
+
+        args_str = parts[1]
+        rule_data = _parse_rule_args(args_str)
+
+        if "error" in rule_data:
+            return {"success": False, "message": rule_data["error"]}
+
+        try:
+            clean_code_rules.add_rule(DEFAULT_CLEAN_CODE_RULES_PATH, rule_data)
+            return {
+                "success": True,
+                "message": f"✓ Rule '{rule_data['id']}' added successfully",
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error adding rule: {str(e)}"}
+
+    elif action == "modify":
+        # Parse --id and other fields
+        if len(parts) < 2:
+            return {
+                "success": False,
+                "message": "Usage: pace-maker clean-code modify --id ID [--name NAME] [--description DESC]",
+            }
+
+        args_str = parts[1]
+        parsed = _parse_rule_args(args_str, require_all=False)
+
+        if "error" in parsed:
+            return {"success": False, "message": parsed["error"]}
+
+        if "id" not in parsed:
+            return {
+                "success": False,
+                "message": "Error: --id is required for modify command",
+            }
+
+        rule_id = parsed.pop("id")
+        updates = parsed
+
+        try:
+            clean_code_rules.modify_rule(
+                DEFAULT_CLEAN_CODE_RULES_PATH, rule_id, updates
+            )
+            return {
+                "success": True,
+                "message": f"✓ Rule '{rule_id}' modified successfully",
+            }
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        except Exception as e:
+            return {"success": False, "message": f"Error modifying rule: {str(e)}"}
+
+    elif action == "remove":
+        # Parse --id
+        if len(parts) < 2:
+            return {
+                "success": False,
+                "message": "Usage: pace-maker clean-code remove --id ID",
+            }
+
+        args_str = parts[1]
+        parsed = _parse_rule_args(args_str, require_all=False)
+
+        if "error" in parsed:
+            return {"success": False, "message": parsed["error"]}
+
+        if "id" not in parsed:
+            return {
+                "success": False,
+                "message": "Error: --id is required for remove command",
+            }
+
+        rule_id = parsed["id"]
+
+        try:
+            clean_code_rules.remove_rule(DEFAULT_CLEAN_CODE_RULES_PATH, rule_id)
+            return {
+                "success": True,
+                "message": f"✓ Rule '{rule_id}' removed successfully",
+            }
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        except Exception as e:
+            return {"success": False, "message": f"Error removing rule: {str(e)}"}
+
+    else:
+        return {"success": False, "message": f"Unknown clean-code subcommand: {action}"}
+
+
+def _execute_core_paths(subcommand: Optional[str]) -> Dict[str, Any]:
+    """Execute core-paths subcommands."""
+    from .constants import DEFAULT_CORE_PATHS_PATH
+    from . import core_paths
+
+    if not subcommand:
+        return {
+            "success": False,
+            "message": "core-paths requires a subcommand: list, add, remove",
+        }
+
+    # Parse subcommand
+    parts = subcommand.split(None, 1)
+    action = parts[0]
+
+    if action == "list":
+        try:
+            paths = core_paths.load_paths(DEFAULT_CORE_PATHS_PATH, strict=True)
+            formatted = core_paths.format_paths_for_display(paths)
+            return {"success": True, "message": formatted}
+        except ValueError as e:
+            return {
+                "success": False,
+                "message": f"Error loading core paths config:\n{str(e)}\n\nPlease check: {DEFAULT_CORE_PATHS_PATH}",
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error listing paths: {str(e)}"}
+
+    elif action == "add":
+        # Parse path from command
+        if len(parts) < 2:
+            return {
+                "success": False,
+                "message": "Usage: pace-maker core-paths add PATH",
+            }
+
+        path = parts[1].strip()
+
+        try:
+            core_paths.add_path(DEFAULT_CORE_PATHS_PATH, path)
+            normalized = path if path.endswith("/") else path + "/"
+            return {
+                "success": True,
+                "message": f"✓ Core path '{normalized}' added successfully",
+            }
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        except Exception as e:
+            return {"success": False, "message": f"Error adding path: {str(e)}"}
+
+    elif action == "remove":
+        # Parse path from command
+        if len(parts) < 2:
+            return {
+                "success": False,
+                "message": "Usage: pace-maker core-paths remove PATH",
+            }
+
+        path = parts[1].strip()
+
+        try:
+            core_paths.remove_path(DEFAULT_CORE_PATHS_PATH, path)
+            return {
+                "success": True,
+                "message": f"✓ Core path '{path}' removed successfully",
+            }
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        except Exception as e:
+            return {"success": False, "message": f"Error removing path: {str(e)}"}
+
+    else:
+        return {"success": False, "message": f"Unknown core-paths subcommand: {action}"}
+
+
+def _parse_rule_args(args_str: str, require_all: bool = True) -> Dict[str, str]:
+    """
+    Parse --id, --name, --description from argument string.
+
+    Args:
+        args_str: Argument string like "--id test --name Test --description Desc"
+        require_all: If True, require all three fields; if False, accept partial
+
+    Returns:
+        Dictionary with parsed fields or {"error": "message"}
+    """
+    result = {}
+
+    # Simple regex-based parsing
+    import re
+
+    # Extract --id VALUE
+    id_match = re.search(r'--id\s+"([^"]+)"', args_str) or re.search(
+        r"--id\s+(\S+)", args_str
+    )
+    if id_match:
+        result["id"] = id_match.group(1)
+
+    # Extract --name VALUE
+    name_match = re.search(r'--name\s+"([^"]+)"', args_str) or re.search(
+        r"--name\s+([^-]+)", args_str
+    )
+    if name_match:
+        result["name"] = name_match.group(1).strip()
+
+    # Extract --description VALUE
+    desc_match = re.search(r'--description\s+"([^"]+)"', args_str) or re.search(
+        r"--description\s+(.+)$", args_str
+    )
+    if desc_match:
+        result["description"] = desc_match.group(1).strip()
+
+    if require_all:
+        if "id" not in result or "name" not in result or "description" not in result:
+            return {"error": "Error: --id, --name, and --description are all required"}
+
+    return result
+
+
 def main():
     """CLI entry point for pace-maker command."""
     import sys
@@ -838,7 +1469,10 @@ For more information, run: pace-maker help
             "tempo",
             "reminder",
             "intent-validation",
+            "tdd",
             "loglevel",
+            "clean-code",
+            "core-paths",
         ],
         help="Command to execute",
     )
@@ -846,7 +1480,7 @@ For more information, run: pace-maker help
     # Optional subcommand (for weekly-limit, tempo, reminder, intent-validation, loglevel)
     parser.add_argument(
         "subcommand",
-        nargs="?",
+        nargs="*",
         help="Subcommand (on|off|session) for weekly-limit, tempo, reminder, intent-validation or log level (0-4) for loglevel",
     )
 
@@ -856,12 +1490,15 @@ For more information, run: pace-maker help
     # Import constants for default paths
     from .constants import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH
 
+    # Join subcommand args into a single string (for "tempo session on")
+    subcommand_str = " ".join(args.subcommand) if args.subcommand else None
+
     # Execute command
     result = execute_command(
         command=args.command,
         config_path=DEFAULT_CONFIG_PATH,
         db_path=DEFAULT_DB_PATH,
-        subcommand=args.subcommand,
+        subcommand=subcommand_str,
     )
 
     # Print message

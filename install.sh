@@ -525,6 +525,52 @@ install_hooks() {
   echo -e "${GREEN}✓ Hook scripts installed${NC}"
 }
 
+# Install Python modules for hooks
+install_hook_modules() {
+  echo "Installing Python modules for hooks..."
+
+  # Detect Python modules source directory (dev: src/pacemaker/, pipx: pacemaker/)
+  if [ -d "$SCRIPT_DIR/src/pacemaker" ]; then
+    PACEMAKER_SOURCE_DIR="$SCRIPT_DIR/src/pacemaker"
+  elif [ -d "$SCRIPT_DIR/pacemaker" ]; then
+    PACEMAKER_SOURCE_DIR="$SCRIPT_DIR/pacemaker"
+  else
+    echo -e "${RED}Error: Python modules not found${NC}"
+    exit 1
+  fi
+
+  # Create pacemaker module directory in hooks
+  HOOKS_PACEMAKER_DIR="$HOOKS_DIR/pacemaker"
+  echo "Creating $HOOKS_PACEMAKER_DIR..."
+  mkdir -p "$HOOKS_PACEMAKER_DIR"
+
+  # Copy all Python files to hooks/pacemaker/
+  echo "Copying Python modules from $PACEMAKER_SOURCE_DIR..."
+  for pyfile in "$PACEMAKER_SOURCE_DIR"/*.py; do
+    if [ -f "$pyfile" ]; then
+      filename=$(basename "$pyfile")
+      echo "  Copying $filename..."
+      cp "$pyfile" "$HOOKS_PACEMAKER_DIR/"
+    fi
+  done
+
+  # Copy prompts directory
+  if [ -d "$PACEMAKER_SOURCE_DIR/prompts" ]; then
+    echo "Copying prompts directory..."
+    cp -r "$PACEMAKER_SOURCE_DIR/prompts" "$HOOKS_PACEMAKER_DIR/"
+  else
+    echo -e "${YELLOW}⚠ Warning: prompts directory not found, skipping${NC}"
+  fi
+
+  # Copy __init__.py if exists
+  if [ -f "$PACEMAKER_SOURCE_DIR/__init__.py" ]; then
+    echo "Copying __init__.py..."
+    cp "$PACEMAKER_SOURCE_DIR/__init__.py" "$HOOKS_PACEMAKER_DIR/"
+  fi
+
+  echo -e "${GREEN}✓ Python modules installed to $HOOKS_PACEMAKER_DIR${NC}"
+}
+
 # Install CLI command
 install_cli() {
   echo "Installing pace-maker CLI..."
@@ -977,6 +1023,7 @@ main() {
   install_python_deps
   create_directories
   install_hooks
+  install_hook_modules
   install_cli
   create_config
   init_database

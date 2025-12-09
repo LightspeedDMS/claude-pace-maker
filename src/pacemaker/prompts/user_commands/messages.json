@@ -1,0 +1,58 @@
+{
+  "pace_maker": {
+    "enabled": "✓ Pace Maker ENABLED\nCredit consumption will be throttled to extend usage windows.",
+    "disabled": "✓ Pace Maker DISABLED\nClaude will run at full speed without throttling.",
+    "error_enabling": "Error enabling pace maker: {error}",
+    "error_disabling": "Error disabling pace maker: {error}",
+    "error_status": "Error getting status: {error}",
+    "unknown_command": "Unknown command: {command}"
+  },
+  "version": {
+    "message": "Claude Pace Maker v{version}"
+  },
+  "weekly_limit": {
+    "enabled": "✓ Weekly limit ENABLED\n7-day throttling will be applied based on weekday usage pace.",
+    "disabled": "✓ Weekly limit DISABLED\n7-day throttling will be skipped (5-hour limit still applies).",
+    "error_enabling": "Error enabling weekly limit: {error}",
+    "error_disabling": "Error disabling weekly limit: {error}",
+    "unknown_subcommand": "Unknown subcommand: {subcommand}\nUsage: pace-maker weekly-limit [on|off]"
+  },
+  "five_hour_limit": {
+    "enabled": "✓ 5-Hour limit ENABLED\n5-hour throttling will be applied based on usage pace.",
+    "disabled": "✓ 5-Hour limit DISABLED\n5-hour throttling will be skipped.",
+    "error_enabling": "Error enabling 5-hour limit: {error}",
+    "error_disabling": "Error disabling 5-hour limit: {error}",
+    "unknown_subcommand": "Unknown subcommand: {subcommand}\nUsage: pace-maker 5-hour-limit [on|off]"
+  },
+  "loglevel": {
+    "usage": "Usage: pace-maker loglevel [0-4]\n  0=OFF, 1=ERROR, 2=WARNING, 3=INFO, 4=DEBUG",
+    "invalid_level": "Invalid log level: {level}. Must be 0-4.",
+    "set_success": "✓ Log level set to {level} ({level_name})\nLogs: ~/.claude-pace-maker/pace-maker.log",
+    "error": "Error setting log level: {error}"
+  },
+  "reminder": {
+    "enabled": "✓ Subagent Reminder ENABLED\nWrite/Edit tool usage in main context will trigger a reminder to use subagents.",
+    "disabled": "✓ Subagent Reminder DISABLED\nWrite/Edit tool usage will not trigger reminders.",
+    "error_enabling": "Error enabling reminder: {error}",
+    "error_disabling": "Error disabling reminder: {error}",
+    "unknown_subcommand": "Unknown subcommand: {subcommand}\nUsage: pace-maker reminder [on|off]"
+  },
+  "intent_validation": {
+    "enabled": "✓ Intent Validation ENABLED\nClaude must declare intent before modifying source code files.",
+    "disabled": "✓ Intent Validation DISABLED\nCode modifications will not require intent declarations.",
+    "error_enabling": "Error enabling intent validation: {error}",
+    "error_disabling": "Error disabling intent validation: {error}",
+    "unknown_subcommand": "Unknown subcommand: {subcommand}\nUsage: pace-maker intent-validation [on|off]"
+  },
+  "tempo": {
+    "session_enabled": "✓ Tempo tracking ENABLED for this session\nSession lifecycle tracking will prevent premature exits in this session only.",
+    "session_disabled": "✓ Tempo tracking DISABLED for this session\nSession lifecycle tracking will not prevent exits in this session.",
+    "enabled": "✓ Tempo tracking ENABLED\nSession lifecycle tracking will prevent premature session exits during implementations.",
+    "disabled": "✓ Tempo tracking DISABLED\nSession lifecycle tracking will not prevent session exits.",
+    "error_enabling": "Error enabling tempo: {error}",
+    "error_disabling": "Error disabling tempo: {error}",
+    "error_session_enabling": "Error enabling tempo for session: {error}",
+    "error_session_disabling": "Error disabling tempo for session: {error}",
+    "unknown_subcommand": "Unknown subcommand: {subcommand}\nUsage: pace-maker tempo [on|off] or pace-maker tempo session [on|off]"
+  }
+}

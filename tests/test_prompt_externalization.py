@@ -95,11 +95,8 @@ Template vars: {all_user_messages} {n}
         self.assertIsInstance(template, str)
         self.assertGreater(len(template), 0)
 
-        # Should contain expected template variables
-        self.assertIn("{all_user_messages}", template)
-        self.assertIn("{last_assistant_messages}", template)
-        self.assertIn("{last_assistant}", template)
-        self.assertIn("{n}", template)
+        # Should contain expected template variable
+        self.assertIn("{conversation_context}", template)
 
         # Should contain key validation instructions
         self.assertIn("APPROVED", template)
@@ -125,24 +122,17 @@ Template vars: {all_user_messages} {n}
         """Should use externalized template in build_validation_prompt."""
         from src.pacemaker.intent_validator import build_validation_prompt
 
-        all_user_messages = ["User message 1", "User message 2"]
-        last_assistant_messages = ["Assistant response 1"]
-        last_assistant = "Final response"
+        # Build prompt with formatted conversation context
+        conversation_context = "User: Test message\nAssistant: Test response"
+        prompt = build_validation_prompt(conversation_context)
 
-        # Build prompt (should use externalized template)
-        prompt = build_validation_prompt(
-            all_user_messages, last_assistant_messages, last_assistant
-        )
-
-        # Should contain all substituted values
-        self.assertIn("User message 1", prompt)
-        self.assertIn("User message 2", prompt)
-        self.assertIn("Assistant response 1", prompt)
-        self.assertIn("Final response", prompt)
+        # Should contain conversation context
+        self.assertIn("Test message", prompt)
+        self.assertIn("Test response", prompt)
 
         # Should contain template structure from external file
-        self.assertIn("COMPLETE", prompt.upper())
-        self.assertIn("REQUEST", prompt.upper())
+        self.assertIn("APPROVED", prompt)
+        self.assertIn("BLOCKED:", prompt)
 
     def test_externalized_prompt_contains_required_sections(self):
         """External prompt file should contain all required validation sections."""
@@ -154,18 +144,17 @@ Template vars: {all_user_messages} {n}
         # Should contain critical sections
         self.assertIn("APPROVED", external_template)
         self.assertIn("BLOCKED:", external_template)
-        self.assertIn("YOUR COMPLETE REQUESTS", external_template)
-        self.assertIn("CLAUDE'S RECENT RESPONSES", external_template)
-        self.assertIn("CLAUDE'S VERY LAST RESPONSE", external_template)
+        # Template uses {conversation_context} placeholder now
+        self.assertIn("{conversation_context}", external_template)
 
     def test_prompt_file_location_is_correct(self):
-        """Prompt file should be at src/pacemaker/prompts/stop_hook_validator_prompt.md"""
+        """Prompt file should be at src/pacemaker/prompts/stop/stop_hook_validator_prompt.md"""
         import src.pacemaker.intent_validator as validator_module
 
-        # Calculate expected path
+        # Calculate expected path (now in stop subfolder)
         module_dir = os.path.dirname(validator_module.__file__)
         expected_path = os.path.join(
-            module_dir, "prompts", "stop_hook_validator_prompt.md"
+            module_dir, "prompts", "stop", "stop_hook_validator_prompt.md"
         )
 
         # File should exist
@@ -188,18 +177,14 @@ class TestPromptTemplateVariables(unittest.TestCase):
 
         template = get_prompt_template()
 
-        # Required variables
-        required_vars = [
-            "{all_user_messages}",
-            "{last_assistant_messages}",
-            "{last_assistant}",
-            "{n}",
-        ]
+        # Required variable (now just conversation_context)
+        required_var = "{conversation_context}"
 
-        for var in required_vars:
-            self.assertIn(
-                var, template, f"Required variable {var} not found in template"
-            )
+        self.assertIn(
+            required_var,
+            template,
+            f"Required variable {required_var} not found in template",
+        )
 
     def test_externalized_prompt_has_response_format(self):
         """External prompt should specify APPROVED/BLOCKED response format."""

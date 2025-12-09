@@ -32,53 +32,7 @@ Example:
 
 Then use your {tool_name} tool in the same message or next message.
 
-════════════════════════════════════════════════════════════════
-OUTCOME 1.5: CORE CODE WITHOUT TEST DECLARATION → BLOCK + REQUEST TDD
-════════════════════════════════════════════════════════════════
-
-If the file being modified is in a CORE CODE PATH:
-  - core/
-  - source/
-  - src/
-  - lib/
-  - libraries/
-  - kernel/
-
-AND no test declaration is found in the 4 messages context, return:
-
-⛔ TDD Required for Core Code
-
-You're modifying core code: {file_path}
-
-No test declaration found in recent context. Before modifying core code, you must either:
-
-1. Declare the corresponding test:
-   - TEST FILE: Which test file covers this change
-   - TEST SCOPE: What behavior the test validates
-
-2. OR quote the user's explicit permission to skip TDD OR the user specifically asked for a surgical change to be performed
-
-Example with test declaration:
-  "I will modify src/auth.py to add password validation.
-   Test coverage: tests/test_auth.py - test_password_validation_rejects_weak_passwords()"
-
-Example citing user permission (MUST quote user's actual words):
-  "I will modify src/auth.py to add password validation.
-   User permission to skip TDD: User said "I allow you not to use TDD" in message 3."
-
-CRITICAL RULES FOR TDD SKIP:
-  - The LLM MUST quote the user's ACTUAL words from the messages
-  - The quote MUST exist in the provided message context
-  - DO NOT allow fabricated or paraphrased permission
-  - If no such quote exists in the messages, BLOCK the change
-
-Look for user statements like:
-  - "skip TDD", "no tests needed", "don't worry about tests"
-  - "I allow you not to use TDD", "skip tests for this"
-  - "no need to write tests", "tests not required"
-
-If test declaration OR valid user quote found, proceed to OUTCOME 2 checks.
-If modifying files NOT in core paths, skip this check entirely.
+{tdd_section}
 
 ════════════════════════════════════════════════════════════════
 OUTCOME 2: INTENT DECLARED BUT VIOLATIONS FOUND → BLOCK + EXPLAIN
@@ -93,23 +47,7 @@ A) CODE MATCH VIOLATIONS:
    - UNAUTHORIZED CHANGES: Modifications beyond declared scope?
 
 B) CLEAN CODE VIOLATIONS:
-   - Hardcoded secrets (API keys, passwords, tokens)
-   - SQL injection vulnerabilities (string concatenation in queries)
-   - Bare except clauses (must catch specific exceptions)
-   - Silently swallowed exceptions (must log or re-raise)
-   - Commented-out code blocks (delete or document WHY)
-   - Magic numbers (use named constants)
-   - Mutable default arguments (Python: def func(items=[]):)
-   - Overnested if statements (excessive indentation)
-   - Blatant logic bugs not aligned with intent
-   - Missing boundary checks (null/None, overflows, bounds)
-   - Lack of comments in complicated/brittle code
-   - Introduction of undeclared and/or undesireable fallbacks. Remember the golden rule: graceful failure over forced success
-   - When writing tests, we don't want the core area being tested to be mocked.
-   - Large files. No more than ~500 lines per source code file.
-   - Large-blobs of code written at once.
-   - Large methods. An individual method should never exceed the size about ~50 lines.
-   - Too many units/pieces of code written at a time (more than three methods, more than one class)
+{clean_code_rules}
 
 If violations found, return detailed feedback:
   - List each violation with specifics

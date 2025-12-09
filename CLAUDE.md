@@ -11,19 +11,51 @@
 **Why:**
 - Hooks are installed in `~/.claude/hooks/` (not the project directory)
 - Code changes in `src/pacemaker/` won't take effect until hooks are reinstalled
-- The installer copies updated Python modules and hook scripts to the active location
+- The installer copies updated Python modules, hook scripts, and prompt templates to the active location
 
 **When to Deploy:**
 - After any changes to `src/pacemaker/*.py` files
 - After refactoring hook logic or intent validation
 - After bug fixes in the pacing engine
+- After modifying validation prompts in `src/pacemaker/prompts/`
 - Before testing hook behavior changes
 
-**Don't Forget:**
+**Deployment Workflow:**
 1. Make code changes in `src/pacemaker/`
-2. Write/update tests
-3. Commit changes to git
+2. Write/update tests (ensure >90% coverage)
+3. If modifying intent validation logic: `pace-maker intent-validation off`
 4. **Run `./install.sh` to deploy** ← CRITICAL STEP
-5. Test the deployed hooks
+5. If you disabled validation: `pace-maker intent-validation on`
+6. Test the deployed hooks with manual verification
 
 Without running the installer, your code changes remain undeployed and inactive.
+
+## Intent Validation Development
+
+**Bootstrapping Problem**: When modifying intent validation code while validation is enabled, you create a circular dependency where the validator blocks changes to itself.
+
+**Solution**: Temporarily disable intent validation during development:
+
+```bash
+# Before modifying validation code
+pace-maker intent-validation off
+
+# Make your changes to:
+# - src/pacemaker/intent_validator.py
+# - src/pacemaker/prompts/pre_tool_use/*.md
+# - src/pacemaker/hook.py (pre-tool validation logic)
+
+# Deploy changes
+./install.sh
+
+# Re-enable validation
+pace-maker intent-validation on
+
+# Test that validation works correctly
+```
+
+This applies to:
+- Intent validation Python code (`intent_validator.py`, `hook.py`)
+- Validation prompt templates (`prompts/pre_tool_use/`)
+- Clean code rules and core paths configuration
+- Any code that affects the pre-tool validation hook

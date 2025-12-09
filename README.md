@@ -38,17 +38,40 @@ pace-maker tempo on|off           # Enable/disable session lifecycle (global)
 pace-maker tempo session on|off   # Override tempo for current session
 pace-maker reminder on|off        # Enable/disable subagent reminder
 pace-maker intent-validation on|off  # Enable/disable pre-tool validation
+pace-maker tdd on|off             # Enable/disable TDD enforcement
+pace-maker clean-code list        # List all clean code rules
+pace-maker clean-code add NAME DESCRIPTION  # Add custom clean code rule
+pace-maker clean-code remove NAME # Remove clean code rule
+pace-maker core-paths list        # List core code paths
+pace-maker core-paths add PATH    # Add core code path
+pace-maker core-paths remove PATH # Remove core code path
+pace-maker loglevel 0-4           # Set log level (0=OFF, 1=ERROR, 2=WARNING, 3=INFO, 4=DEBUG)
 pace-maker version                # Show version
 pace-maker help                   # Show help
 ```
 
 ## Intent Validation System
 
-When enabled, Claude must declare intent before modifying source code files.
+Two-stage AI validation system that ensures code quality and intent transparency.
+
+### Two-Stage Validation Architecture
+
+**Stage 1: Fast Declaration Check** (~2-4 seconds)
+- Model: Claude Sonnet 4.5
+- Validates intent declaration exists with all 3 required components
+- Checks TDD declarations for core code paths
+- Returns: YES, NO, or NO_TDD
+
+**Stage 2: Comprehensive Code Review** (~10-15 seconds)
+- Model: Claude Opus 4.5 (falls back to Sonnet on rate limits)
+- Validates code matches declared intent exactly
+- Checks for clean code violations (security, anti-patterns, bugs)
+- Detects scope creep and unauthorized changes
+- Returns: APPROVED or detailed violation feedback
 
 ### Required Declaration Format
 
-Before any code edit, declare:
+Before any code edit, declare in the SAME message as the Write/Edit tool:
 1. **FILE**: Which file is being modified
 2. **CHANGES**: What specific changes are being made
 3. **GOAL**: Why the changes are being made
@@ -57,6 +80,8 @@ Example:
 ```
 I will modify src/auth.py to add a validate_password() function
 that checks password strength, to improve security.
+
+[then use Write/Edit tool in same message]
 ```
 
 ### TDD Enforcement for Core Code
@@ -97,9 +122,49 @@ The quoted permission must exist in the last 5 messages. Fabricated quotes are r
 | Missing functionality | Declared features not implemented |
 | Unauthorized deletions | Removing code not mentioned in intent |
 
-### Configuration
+### Configuration Files
 
-Source code extensions: `~/.claude-pace-maker/source_code_extensions.json`
+All configuration is externalized for easy customization:
+
+- **Config**: `~/.claude-pace-maker/config.json` - Main configuration (enable/disable features, log level)
+- **Extensions**: `~/.claude-pace-maker/source_code_extensions.json` - Source file extensions to validate
+- **Clean Code Rules**: `~/.claude-pace-maker/clean_code_rules.yaml` - Customizable code quality rules
+- **Core Paths**: `~/.claude-pace-maker/core_paths.yaml` - Directories requiring TDD enforcement
+- **Prompts**: `~/.claude/hooks/pacemaker/prompts/` - Validation prompt templates
+
+Use CLI commands to manage rules and paths without editing YAML directly.
+
+### Modifying Validation Prompts Without Loops
+
+⚠️ **CRITICAL**: When modifying intent validator prompts, disable validation temporarily to prevent infinite loops.
+
+**Problem**: Editing validation prompts while validation is enabled creates recursive validation loops.
+
+**Solution**: Temporarily bypass validation during prompt development.
+
+```bash
+# BEFORE modifying prompts in src/pacemaker/prompts/
+pace-maker intent-validation off
+
+# Now safe to edit validation prompt files:
+# - src/pacemaker/prompts/pre_tool_use/pre_tool_validator_prompt.md
+# - src/pacemaker/prompts/stop/stop_hook_validator_prompt.md
+# - src/pacemaker/prompts/common/intent_declaration_prompt.md
+
+# Make your prompt changes...
+
+# AFTER completing prompt modifications
+pace-maker intent-validation on
+```
+
+**Workflow**:
+1. Disable validation: `pace-maker intent-validation off`
+2. Edit prompt files in `src/pacemaker/prompts/`
+3. Deploy changes: `./install.sh` (copies prompts to `~/.claude/hooks/`)
+4. Re-enable validation: `pace-maker intent-validation on`
+5. Test the updated prompts
+
+**Note**: This applies to ALL prompt file modifications that affect validation logic. Prompts for other hooks (session_start, user_commands) don't require validation bypass.
 
 ## Credit Throttling
 

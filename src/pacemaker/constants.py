@@ -26,6 +26,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "conversation_context_size": 5,
     "user_message_max_length": 4096,
     "intent_validation_enabled": False,
+    "tdd_enabled": True,
     "stop_hook_token_budget": 16000,
     "stop_hook_first_n_pairs": 10,
     "log_level": 2,  # Default: WARNING level
@@ -39,6 +40,10 @@ DEFAULT_EXTENSION_REGISTRY_PATH = str(
     Path.home() / ".claude-pace-maker" / "source_code_extensions.json"
 )
 DEFAULT_LOG_PATH = str(Path.home() / ".claude-pace-maker" / "pace-maker.log")
+DEFAULT_CLEAN_CODE_RULES_PATH = str(
+    Path.home() / ".claude-pace-maker" / "clean_code_rules.yaml"
+)
+DEFAULT_CORE_PATHS_PATH = str(Path.home() / ".claude-pace-maker" / "core_paths.yaml")
 
 # Log level constants
 LOG_LEVEL_OFF = 0

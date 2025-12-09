@@ -25,3 +25,4 @@ bin/
 .code-indexer/
 .code-indexer-override.yaml
 /__pycache__
+coverage.json
