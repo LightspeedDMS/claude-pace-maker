@@ -709,6 +709,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
     2. Proposed code matches declared intent exactly
     3. No clean code violations
 
+    Debug note: Comprehensive logging captures all hook_data fields and CLAUDE_* environment variables.
+
     Returns:
         {"continue": True} to allow, or
         {"decision": "block", "reason": "..."} to block
@@ -723,22 +725,89 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
         # DEBUG: Log all available hook_data fields
         log_debug("hook", f"Pre-tool hook_data keys: {list(hook_data.keys())}")
-        if "message" in hook_data:
-            log_debug(
-                "hook",
-                f"hook_data has 'message' field: {str(hook_data['message'])[:300]}",
-            )
-        if "content" in hook_data:
-            log_debug(
-                "hook",
-                f"hook_data has 'content' field: {str(hook_data['content'])[:300]}",
-            )
+
+        # Log ALL hook_data values
+        for key in hook_data.keys():
+            if key == "tool_input":
+                # Log tool_input keys only (not full content)
+                tool_input = hook_data[key]
+                if isinstance(tool_input, dict):
+                    log_debug(
+                        "hook",
+                        f"hook_data['tool_input'] keys: {list(tool_input.keys())}",
+                    )
+                    # Log non-content fields
+                    for k, v in tool_input.items():
+                        if k not in [
+                            "content",
+                            "old_string",
+                            "new_string",
+                        ]:  # Skip large code fields
+                            log_debug("hook", f"  tool_input['{k}']: {v}")
+            else:
+                value_str = str(hook_data[key])
+                if len(value_str) > 300:
+                    value_str = value_str[:300] + "..."
+                log_debug("hook", f"hook_data['{key}']: {value_str}")
 
         # 2. Extract fields
         tool_name = hook_data.get("tool_name")
         tool_input = hook_data.get("tool_input", {})
         file_path = tool_input.get("file_path")
         transcript_path = hook_data.get("transcript_path")
+        session_id = hook_data.get("session_id")
+
+        log_debug("hook", f"session_id: {session_id}")
+        log_debug("hook", f"transcript_path: {transcript_path}")
+
+        # Check environment variables
+        import os as os_module
+
+        log_debug("hook", f"CWD: {os_module.getcwd()}")
+        log_debug(
+            "hook", f"CLAUDE_AGENT_ID: {os_module.environ.get('CLAUDE_AGENT_ID')}"
+        )
+        log_debug(
+            "hook",
+            f"All CLAUDE_ env vars: {[k for k in os_module.environ.keys() if 'CLAUDE' in k.upper()]}",
+        )
+
+        # Check if we're in a subagent context by matching tool_use_id
+        tool_use_id = hook_data.get("tool_use_id")
+        if transcript_path and "/agent-" not in transcript_path and tool_use_id:
+            # Main context transcript - search for agent transcript with this tool_use_id
+            import glob
+
+            projects_dir = os.path.dirname(transcript_path)
+            agent_transcripts = glob.glob(os.path.join(projects_dir, "agent-*.jsonl"))
+
+            # Filter to only recently modified agent transcripts (last 30 seconds)
+            recent_agents = [
+                f for f in agent_transcripts if time.time() - os.path.getmtime(f) < 30
+            ]
+
+            log_debug(
+                "hook",
+                f"Searching {len(recent_agents)} recent agent transcripts for tool_use_id: {tool_use_id}",
+            )
+
+            # Search for the agent transcript containing this tool_use_id
+            for agent_path in recent_agents:
+                try:
+                    with open(agent_path, "r") as f:
+                        # Search from end of file (most recent entries)
+                        for line in f:
+                            if tool_use_id in line:
+                                log_debug(
+                                    "hook",
+                                    f"Found tool_use_id in subagent transcript: {agent_path}",
+                                )
+                                transcript_path = agent_path
+                                break
+                    if transcript_path == agent_path:
+                        break  # Found it, stop searching
+                except Exception as e:
+                    log_debug("hook", f"Error searching {agent_path}: {e}")
 
         # 2a. Only validate Write/Edit tools
         if tool_name not in ["Write", "Edit"]:

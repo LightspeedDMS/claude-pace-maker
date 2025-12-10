@@ -13,20 +13,21 @@ YOUR TASK - RESPOND WITH ONE WORD:
 CHECK 1: INTENT DECLARATION
 ════════════════════════════════════════════════════════════════
 
-Does the CURRENT MESSAGE contain a clear intent declaration with these 3 components?
+Does the CURRENT MESSAGE contain "intent:" or "INTENT:" marker (case-insensitive) followed by a clear intent declaration with these 3 components?
   1. FILE: Mentions the file being modified ({file_path} or its basename)
   2. CHANGES: Describes what changes are being made
   3. GOAL: Explains why/goal of the changes
 
-Examples of VALID intent declarations:
-  ✓ "I will modify auth.py to add validate_token() function that checks JWT expiration"
-  ✓ "I will edit src/utils.py to fix the parsing bug by adding null checks"
-  ✓ "I will create config.py to store application settings for better maintainability"
+Examples of VALID intent declarations (accepts any case):
+  ✓ "INTENT: Modify auth.py to add validate_token() function that checks JWT expiration"
+  ✓ "intent: Edit src/utils.py to fix the parsing bug by adding null checks"
+  ✓ "Intent: Create config.py to store application settings for better maintainability"
 
-Examples of INVALID (missing components):
-  ✗ "Let me fix this" - No file, no changes, no goal
-  ✗ "Updating code" - Too vague, missing file and specifics
-  ✗ "Adding function" - Missing file and goal
+Examples of INVALID (missing components or marker):
+  ✗ "Let me fix this" - No intent: marker, no file, no changes, no goal
+  ✗ "Updating code" - No intent: marker, too vague, missing file and specifics
+  ✗ "I will modify auth.py..." - Missing intent: marker
+  ✗ "Adding function" - No intent: marker, missing file and goal
 
 If intent declaration is MISSING or INCOMPLETE, respond: NO
 

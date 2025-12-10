@@ -170,7 +170,10 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
     Returns:
         List of formatted message texts
     """
+    from .logger import log_debug
+
     try:
+        log_debug("transcript_reader", f"Reading transcript: {transcript_path}")
         messages = []
 
         with open(transcript_path, "r") as f:
@@ -185,19 +188,34 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
                 msg_parts = _extract_message_parts(content)
                 messages.append(msg_parts)
 
+        log_debug(
+            "transcript_reader", f"Total assistant messages found: {len(messages)}"
+        )
+
         # Get last N messages
         recent = messages[-n:] if len(messages) >= n else messages
+        log_debug("transcript_reader", f"Extracting last {len(recent)} messages")
 
         # Format: text-only for first N-1, full for last
         result = []
         for i, msg in enumerate(recent):
             if i == len(recent) - 1 and msg["tools"]:
                 # Last message: include tool info
-                result.append(_format_message_with_tools(msg))
+                formatted = _format_message_with_tools(msg)
+                log_debug(
+                    "transcript_reader",
+                    f"Message {i} (with tools): {formatted[:100]}...",
+                )
+                result.append(formatted)
             else:
                 # Earlier messages: text only
+                log_debug(
+                    "transcript_reader",
+                    f"Message {i} (text only): {msg['text'][:100]}...",
+                )
                 result.append(msg["text"])
 
+        log_debug("transcript_reader", f"Returning {len(result)} formatted messages")
         return result
 
     except Exception as e:

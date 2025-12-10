@@ -492,16 +492,17 @@ def validate_intent_declared(
 
 def extract_current_assistant_message(messages: List[str]) -> str:
     """
-    Extract the CURRENT assistant message, combining last 2 messages if needed.
+    Extract the CURRENT assistant message by finding "intent:" marker.
 
-    Claude Code splits text and tool calls into separate transcript entries.
-    We need to combine the last text message with the tool call message.
+    Searches backward up to 3 messages to find intent declaration.
+    Case-insensitive search for "intent:" anywhere in message text.
+    Handles intermediate tool calls (Read, Grep, etc.) between intent and Write/Edit.
 
     Args:
         messages: List of messages (most recent last)
 
     Returns:
-        Combined text from last 2 messages (intent + tool call)
+        Combined text with intent declaration + current tool call
     """
     if not messages:
         return ""
@@ -509,8 +510,18 @@ def extract_current_assistant_message(messages: List[str]) -> str:
     if len(messages) == 1:
         return messages[-1]
 
-    # Combine last 2 messages: intent text (N-1) + tool call (N)
-    return f"{messages[-2]}\n\n{messages[-1]}"
+    # Current tool message (always last)
+    current_tool = messages[-1]
+
+    # Search backward up to 3 messages for "intent:" marker (case-insensitive)
+    for i in range(min(3, len(messages) - 1)):
+        msg = messages[-(i + 2)]  # Check messages[-2], messages[-3], messages[-4]
+        if msg and "intent:" in msg.lower():
+            return f"{msg}\n\n{current_tool}"
+
+    # Fallback: if no intent: found, return just the current tool
+    # (This will trigger validation failure as expected)
+    return current_tool
 
 
 def _build_stage1_prompt(current_message: str, file_path: str, tool_name: str) -> str:
@@ -793,7 +804,13 @@ System failing closed to prevent bypassing intent declaration requirements.""",
         log_debug(
             "intent_validator", f"Stage 1 prompt length: {len(stage1_prompt)} chars"
         )
-        log_debug("intent_validator", f"Stage 1 FULL PROMPT:\n{stage1_prompt}")
+        log_debug("intent_validator", "=" * 80)
+        log_debug("intent_validator", "STAGE 1 COMPLETE PROMPT BEING SENT TO SDK:")
+        log_debug("intent_validator", "=" * 80)
+        log_debug("intent_validator", stage1_prompt)
+        log_debug("intent_validator", "=" * 80)
+        log_debug("intent_validator", "END OF STAGE 1 PROMPT")
+        log_debug("intent_validator", "=" * 80)
 
         stage1_response = _call_stage1_validation(stage1_prompt)
         log_debug("intent_validator", f"Stage 1 SDK response: '{stage1_response}'")
@@ -812,13 +829,15 @@ System failing closed to prevent bypassing intent declaration requirements.""",
 
 You must declare your intent BEFORE using Write/Edit tools.
 
+⚠️  CRITICAL: Start with "INTENT:" marker!
+
 Required format - include ALL 3 components IN YOUR CURRENT MESSAGE:
   1. FILE: Which file you're modifying
   2. CHANGES: What specific changes you're making
   3. GOAL: Why you're making these changes
 
 Example (all in same message as Write/Edit):
-  "I will modify src/auth.py to add a validate_input() function
+  "INTENT: Modify src/auth.py to add a validate_input() function
    that checks user input for XSS attacks, to improve security."
 
 Then use your Write/Edit tool in the same message.""",
@@ -841,11 +860,11 @@ No test declaration found in your CURRENT message. Before modifying core code, y
 2. OR quote the user's explicit permission to skip TDD
 
 Example with test declaration (in same message as Write/Edit):
-  "I will modify src/auth.py to add password validation.
+  "INTENT: Modify src/auth.py to add password validation.
    Test coverage: tests/test_auth.py - test_password_validation_rejects_weak_passwords()"
 
 Example citing user permission (in same message as Write/Edit):
-  "I will modify src/auth.py to add password validation.
+  "INTENT: Modify src/auth.py to add password validation.
    User permission to skip TDD: User said 'skip tests for this' in message 3."
 
 CRITICAL: Quote must reference actual user words from recent context.""",
