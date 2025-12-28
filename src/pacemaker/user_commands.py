@@ -79,8 +79,8 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": f"session {match_tempo_session.group(1)}",
         }
 
-    # Pattern 4: pace-maker tempo (on|off) - global tempo control
-    pattern_tempo = r"^pace-maker\s+tempo\s+(on|off)$"
+    # Pattern 4: pace-maker tempo (on|off|auto) - global tempo control
+    pattern_tempo = r"^pace-maker\s+tempo\s+(on|off|auto)$"
     match_tempo = re.match(pattern_tempo, normalized)
 
     if match_tempo:
@@ -222,6 +222,39 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": f"remove {match_core_paths_remove.group(1)}",
         }
 
+    # Pattern 16: pace-maker excluded-paths list
+    pattern_excluded_paths_list = r"^pace-maker\s+excluded-paths\s+list$"
+    match_excluded_paths_list = re.match(pattern_excluded_paths_list, normalized)
+
+    if match_excluded_paths_list:
+        return {
+            "is_pace_maker_command": True,
+            "command": "excluded-paths",
+            "subcommand": "list",
+        }
+
+    # Pattern 17: pace-maker excluded-paths add PATH
+    pattern_excluded_paths_add = r"^pace-maker\s+excluded-paths\s+add\s+(.+)$"
+    match_excluded_paths_add = re.match(pattern_excluded_paths_add, normalized)
+
+    if match_excluded_paths_add:
+        return {
+            "is_pace_maker_command": True,
+            "command": "excluded-paths",
+            "subcommand": f"add {match_excluded_paths_add.group(1)}",
+        }
+
+    # Pattern 18: pace-maker excluded-paths remove PATH
+    pattern_excluded_paths_remove = r"^pace-maker\s+excluded-paths\s+remove\s+(.+)$"
+    match_excluded_paths_remove = re.match(pattern_excluded_paths_remove, normalized)
+
+    if match_excluded_paths_remove:
+        return {
+            "is_pace_maker_command": True,
+            "command": "excluded-paths",
+            "subcommand": f"remove {match_excluded_paths_remove.group(1)}",
+        }
+
     return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
@@ -275,6 +308,8 @@ def execute_command(
         return _execute_clean_code(subcommand)
     elif command == "core-paths":
         return _execute_core_paths(subcommand)
+    elif command == "excluded-paths":
+        return _execute_excluded_paths(subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -346,20 +381,34 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         enabled = config.get("enabled", False)
         weekly_limit_enabled = config.get("weekly_limit_enabled", True)
         five_hour_limit_enabled = config.get("five_hour_limit_enabled", True)
-        tempo_enabled = config.get("tempo_enabled", True)
         subagent_reminder_enabled = config.get("subagent_reminder_enabled", True)
         intent_validation_enabled = config.get("intent_validation_enabled", False)
         tdd_enabled = config.get("tdd_enabled", True)
         log_level = config.get("log_level", 2)
         level_names = {0: "OFF", 1: "ERROR", 2: "WARNING", 3: "INFO", 4: "DEBUG"}
 
-        # Check for tempo session override in state
+        # Get tempo_mode with backward compatibility
+        from .hook import format_elapsed_time
+
+        tempo_mode = config.get("tempo_mode")
+        if tempo_mode is None:
+            # Backward compat: check old tempo_enabled
+            tempo_enabled = config.get("tempo_enabled")
+            if tempo_enabled is not None:
+                tempo_mode = "on" if tempo_enabled else "off"
+            else:
+                tempo_mode = "auto"  # Default
+
+        # Check for tempo session override and last interaction in state
         tempo_session_override = None
+        last_user_interaction = None
         try:
             state = load_state(DEFAULT_STATE_PATH)
             if "tempo_session_enabled" in state:
                 tempo_session_override = state["tempo_session_enabled"]
+            last_user_interaction = state.get("last_user_interaction_time")
         except Exception:
+            # State file may not exist on fresh install - use defaults (None values)
             pass
 
         # Build status message
@@ -371,16 +420,59 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
             f"\n5-Hour Limit: {'ENABLED' if five_hour_limit_enabled else 'DISABLED'}"
         )
 
-        # Show tempo status with override if present
-        if tempo_session_override is not None:
-            tempo_status = "ENABLED" if tempo_session_override else "DISABLED"
-            override_text = "ON" if tempo_session_override else "OFF"
-            global_text = "ENABLED" if tempo_enabled else "DISABLED"
-            status_text += f"\nTempo Tracking: {tempo_status} (session override: {override_text}, global: {global_text})"
+        # Show tempo status with mode details
+        # Only show session override if it's actually overriding (set to True)
+        # When session override is False or None, show mode-specific details
+        if tempo_session_override is True:
+            # Session override forcing tempo ON regardless of mode
+            status_text += f"\nTempo Tracking: ENABLED (session override: ON, global: {tempo_mode.upper()})"
+        elif tempo_mode == "auto":
+            # Auto mode - show detailed status
+            threshold = config.get("auto_tempo_threshold_minutes", 10)
+            elapsed_str = format_elapsed_time(last_user_interaction)
+
+            # Show auto mode header
+            if tempo_session_override is False:
+                # Session explicitly disabled, but show auto mode would do
+                status_text += (
+                    "\nTempo Tracking: DISABLED (session override: OFF, global: AUTO)"
+                )
+                status_text += "\nAuto Mode Details (if session override removed):"
+                status_text += f"\n  Threshold: {threshold} min"
+                status_text += f"\n  Last User Interaction: {elapsed_str}"
+            else:
+                # No session override, show active auto mode
+                status_text += f"\nTempo Mode: AUTO (threshold: {threshold} min)"
+                status_text += f"\nLast User Interaction: {elapsed_str}"
+
+            # Determine if tempo would be engaged (if not overridden)
+            if last_user_interaction is None:
+                engagement_status = "ENGAGED (no interaction recorded)"
+            else:
+                from datetime import datetime
+
+                elapsed_minutes = (
+                    datetime.now() - last_user_interaction
+                ).total_seconds() / 60
+                if elapsed_minutes >= threshold:
+                    engagement_status = "ENGAGED (user inactive)"
+                else:
+                    engagement_status = "PAUSED (user active)"
+
+            if tempo_session_override is False:
+                status_text += f"\n  Would Be: {engagement_status}"
+            else:
+                status_text += f"\nTempo Status: {engagement_status}"
         else:
-            status_text += (
-                f"\nTempo Tracking: {'ENABLED' if tempo_enabled else 'DISABLED'}"
-            )
+            # On or off mode
+            if tempo_session_override is False:
+                status_text += f"\nTempo Tracking: DISABLED (session override: OFF, global: {tempo_mode.upper()})"
+            else:
+                status_text += f"\nTempo Mode: {tempo_mode.upper()}"
+                if tempo_mode == "on":
+                    status_text += " (always engaged)"
+                elif tempo_mode == "off":
+                    status_text += " (disabled)"
 
         status_text += f"\nSubagent Reminder: {'ENABLED' if subagent_reminder_enabled else 'DISABLED'}"
         status_text += f"\nIntent Validation: {'ENABLED' if intent_validation_enabled else 'DISABLED'}"
@@ -510,8 +602,9 @@ COMMANDS:
   pace-maker weekly-limit off     Disable weekly limit throttling
   pace-maker 5-hour-limit on      Enable 5-hour limit throttling
   pace-maker 5-hour-limit off     Disable 5-hour limit throttling
-  pace-maker tempo on             Enable session lifecycle tracking (global)
-  pace-maker tempo off            Disable session lifecycle tracking (global)
+  pace-maker tempo on             Enable session lifecycle tracking (global, always on)
+  pace-maker tempo off            Disable session lifecycle tracking (global, always off)
+  pace-maker tempo auto           Enable auto mode (engages after inactivity threshold)
   pace-maker tempo session on     Enable tempo for this session only
   pace-maker tempo session off    Disable tempo for this session only
   pace-maker reminder on          Enable subagent reminder (Write/Edit nudge)
@@ -530,6 +623,9 @@ COMMANDS:
   pace-maker core-paths list                   List all TDD-enforced core paths
   pace-maker core-paths add PATH               Add a new core path
   pace-maker core-paths remove PATH            Remove a core path
+  pace-maker excluded-paths list               List all folders excluded from TDD
+  pace-maker excluded-paths add PATH           Add a new excluded path
+  pace-maker excluded-paths remove PATH        Remove an excluded path
 
 LOG LEVELS:
   0 = OFF      - No logging
@@ -556,7 +652,16 @@ TEMPO TRACKING:
   the Stop hook will require Claude to declare IMPLEMENTATION_COMPLETE
   before allowing the session to end.
 
-  Global Control: 'pace-maker tempo on/off' sets the default for all sessions
+  Modes:
+  - ON: Tempo always engaged (validates every session exit)
+  - OFF: Tempo disabled (allows all exits without validation)
+  - AUTO: Tempo engages only after user inactivity (DEFAULT)
+    * Tracks last user interaction via UserPromptSubmit hook
+    * Engages after configurable threshold (default: 10 minutes)
+    * Active users get uninterrupted conversations
+    * Unattended operations get automatic protection
+
+  Global Control: 'pace-maker tempo on/off/auto' sets mode for all sessions
   Session Control: 'pace-maker tempo session on/off' overrides the global
                    setting for the current session only
 
@@ -603,6 +708,21 @@ CORE PATHS:
   - 'pace-maker core-paths list' to see current paths
   - 'pace-maker core-paths add custom/' to add a new path
   - 'pace-maker core-paths remove lib/' to remove a path
+
+EXCLUDED PATHS:
+  Manage folders excluded from TDD enforcement. Files in excluded paths
+  skip TDD requirements but still require intent declaration.
+
+  Default exclusions: .tmp/, test/, tests/, fixtures/, __pycache__/,
+                      node_modules/, vendor/, dist/, build/, .git/
+  Config file: ~/.claude-pace-maker/excluded_paths.yaml
+
+  Users can customize excluded paths using:
+  - 'pace-maker excluded-paths list' to see current exclusions
+  - 'pace-maker excluded-paths add .generated/' to add a new exclusion
+  - 'pace-maker excluded-paths remove .tmp/' to remove an exclusion
+
+  Use cases: Temporary files, generated code, test fixtures, build artifacts
 
 CONFIGURATION:
   Config file: ~/.claude-pace-maker/config.json
@@ -1007,7 +1127,7 @@ def _execute_tempo(config_path: str, subcommand: Optional[str]) -> Dict[str, Any
     if subcommand == "on":
         try:
             config = _load_config(config_path)
-            config["tempo_enabled"] = True
+            config["tempo_mode"] = "on"
             _write_config_atomic(config, config_path)
             message = MESSAGES.get("tempo", {}).get(
                 "enabled",
@@ -1028,7 +1148,7 @@ def _execute_tempo(config_path: str, subcommand: Optional[str]) -> Dict[str, Any
     elif subcommand == "off":
         try:
             config = _load_config(config_path)
-            config["tempo_enabled"] = False
+            config["tempo_mode"] = "off"
             _write_config_atomic(config, config_path)
             message = MESSAGES.get("tempo", {}).get(
                 "disabled",
@@ -1046,10 +1166,32 @@ def _execute_tempo(config_path: str, subcommand: Optional[str]) -> Dict[str, Any
                 "success": False,
                 "message": error_template.replace("{error}", str(e)),
             }
+    elif subcommand == "auto":
+        try:
+            config = _load_config(config_path)
+            config["tempo_mode"] = "auto"
+            _write_config_atomic(config, config_path)
+            threshold = config.get("auto_tempo_threshold_minutes", 10)
+            message = MESSAGES.get("tempo", {}).get(
+                "auto_enabled",
+                f"✓ Tempo tracking set to AUTO mode\nTempo will engage after {threshold} minutes of user inactivity.",
+            )
+            return {
+                "success": True,
+                "message": message,
+            }
+        except Exception as e:
+            error_template = MESSAGES.get("tempo", {}).get(
+                "error_auto", "Error setting tempo to auto: {error}"
+            )
+            return {
+                "success": False,
+                "message": error_template.replace("{error}", str(e)),
+            }
     else:
         error_template = MESSAGES.get("tempo", {}).get(
             "unknown_subcommand",
-            "Unknown subcommand: {subcommand}\nUsage: pace-maker tempo [on|off] or pace-maker tempo session [on|off]",
+            "Unknown subcommand: {subcommand}\nUsage: pace-maker tempo [on|off|auto] or pace-maker tempo session [on|off]",
         )
         return {
             "success": False,
@@ -1388,6 +1530,79 @@ def _execute_core_paths(subcommand: Optional[str]) -> Dict[str, Any]:
         return {"success": False, "message": f"Unknown core-paths subcommand: {action}"}
 
 
+def _execute_excluded_paths(subcommand: Optional[str]) -> Dict[str, Any]:
+    """Execute excluded-paths subcommands."""
+    from .constants import DEFAULT_EXCLUDED_PATHS_PATH
+    from . import excluded_paths
+
+    if not subcommand:
+        return {
+            "success": False,
+            "message": "excluded-paths requires a subcommand: list, add, remove",
+        }
+
+    # Parse subcommand
+    parts = subcommand.split(None, 1)
+    action = parts[0]
+
+    if action == "list":
+        try:
+            exclusions = excluded_paths.load_exclusions(DEFAULT_EXCLUDED_PATHS_PATH)
+            formatted = excluded_paths.format_exclusions_for_display(exclusions)
+            return {"success": True, "message": formatted}
+        except Exception as e:
+            return {"success": False, "message": f"Error listing exclusions: {str(e)}"}
+
+    elif action == "add":
+        # Parse path from command
+        if len(parts) < 2:
+            return {
+                "success": False,
+                "message": "Usage: pace-maker excluded-paths add PATH",
+            }
+
+        path = parts[1].strip()
+
+        try:
+            excluded_paths.add_exclusion(DEFAULT_EXCLUDED_PATHS_PATH, path)
+            normalized = path if path.endswith("/") else path + "/"
+            return {
+                "success": True,
+                "message": f"✓ Excluded path '{normalized}' added successfully",
+            }
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        except Exception as e:
+            return {"success": False, "message": f"Error adding exclusion: {str(e)}"}
+
+    elif action == "remove":
+        # Parse path from command
+        if len(parts) < 2:
+            return {
+                "success": False,
+                "message": "Usage: pace-maker excluded-paths remove PATH",
+            }
+
+        path = parts[1].strip()
+
+        try:
+            excluded_paths.remove_exclusion(DEFAULT_EXCLUDED_PATHS_PATH, path)
+            return {
+                "success": True,
+                "message": f"✓ Excluded path '{path}' removed successfully",
+            }
+        except ValueError as e:
+            return {"success": False, "message": str(e)}
+        except Exception as e:
+            return {"success": False, "message": f"Error removing exclusion: {str(e)}"}
+
+    else:
+        return {
+            "success": False,
+            "message": f"Unknown excluded-paths subcommand: {action}",
+        }
+
+
 def _parse_rule_args(args_str: str, require_all: bool = True) -> Dict[str, str]:
     """
     Parse --id, --name, --description from argument string.
@@ -1473,6 +1688,7 @@ For more information, run: pace-maker help
             "loglevel",
             "clean-code",
             "core-paths",
+            "excluded-paths",
         ],
         help="Command to execute",
     )

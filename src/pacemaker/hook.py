@@ -67,6 +67,10 @@ def load_state(state_path: str = DEFAULT_STATE_PATH) -> dict:
                     data["last_cleanup_time"] = datetime.fromisoformat(
                         data["last_cleanup_time"]
                     )
+                if data.get("last_user_interaction_time"):
+                    data["last_user_interaction_time"] = datetime.fromisoformat(
+                        data["last_user_interaction_time"]
+                    )
 
                 # Merge with defaults to ensure all required fields exist
                 # Loaded data takes precedence, defaults fill in missing fields
@@ -91,6 +95,10 @@ def save_state(state: dict, state_path: str = DEFAULT_STATE_PATH):
         if isinstance(state_copy.get("last_cleanup_time"), datetime):
             state_copy["last_cleanup_time"] = state_copy[
                 "last_cleanup_time"
+            ].isoformat()
+        if isinstance(state_copy.get("last_user_interaction_time"), datetime):
+            state_copy["last_user_interaction_time"] = state_copy[
+                "last_user_interaction_time"
             ].isoformat()
 
         with open(state_path, "w") as f:
@@ -462,24 +470,29 @@ def parse_user_prompt_input(raw_input: str) -> dict:
 def run_user_prompt_submit():
     """Handle user prompt submit hook - pace-maker command interception only."""
     try:
-        # Reset subagent counter on every new user prompt
-        # This fixes orphaned state from ESC cancellations
-        state = load_state(DEFAULT_STATE_PATH)
-        state["subagent_counter"] = 0
-        state["in_subagent"] = False
-        save_state(state, DEFAULT_STATE_PATH)
-
-        # Read user input from stdin
+        # Read user input from stdin first
         raw_input = sys.stdin.read().strip()
 
         # Parse input (JSON or plain text)
         parsed_data = parse_user_prompt_input(raw_input)
         user_input = parsed_data["prompt"]
 
-        # Handle pace-maker commands
+        # Check if this is a pace-maker command BEFORE updating state
         result = user_commands.handle_user_prompt(
             user_input, DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH
         )
+
+        # Update state - but only track interaction time for non-pace-maker commands
+        state = load_state(DEFAULT_STATE_PATH)
+        state["subagent_counter"] = 0
+        state["in_subagent"] = False
+
+        # Only update last_user_interaction_time for actual prompts to Claude
+        # NOT for pace-maker commands (which are just checking status/settings)
+        if not result["intercepted"]:
+            state["last_user_interaction_time"] = datetime.now()
+
+        save_state(state, DEFAULT_STATE_PATH)
 
         if result["intercepted"]:
             # Command was intercepted - output JSON to block and display output
@@ -602,11 +615,14 @@ def should_run_tempo(config: dict, state: dict) -> bool:
     Precedence logic:
     1. Check if session override exists (tempo_session_enabled in state)
     2. If session override exists, use that value
-    3. Otherwise, use global setting (tempo_enabled in config)
+    3. Otherwise, use tempo_mode setting (auto/on/off)
+    4. For auto mode, check last_user_interaction_time against threshold
+
+    Supports backward compatibility with tempo_enabled boolean.
 
     Args:
-        config: Configuration dictionary with tempo_enabled
-        state: State dictionary with tempo_session_enabled (optional)
+        config: Configuration dictionary with tempo_mode (or legacy tempo_enabled)
+        state: State dictionary with tempo_session_enabled and last_user_interaction_time (optional)
 
     Returns:
         True if tempo should run, False otherwise
@@ -618,8 +634,196 @@ def should_run_tempo(config: dict, state: dict) -> bool:
     if tempo_session_enabled is not None:
         return tempo_session_enabled
 
-    # Otherwise, use global setting
-    return config.get("tempo_enabled", True)
+    # Get tempo_mode from config (with backward compatibility)
+    tempo_mode = config.get("tempo_mode")
+
+    # Backward compatibility: check for old tempo_enabled boolean
+    if tempo_mode is None:
+        tempo_enabled = config.get("tempo_enabled")
+        if tempo_enabled is not None:
+            # Map old boolean to new mode
+            tempo_mode = "on" if tempo_enabled else "off"
+        else:
+            # Default to auto if nothing specified
+            tempo_mode = "auto"
+
+    # Handle tempo_mode
+    if tempo_mode == "off":
+        return False
+
+    if tempo_mode == "on":
+        return True
+
+    if tempo_mode == "auto":
+        # Check user activity
+        last_interaction = state.get("last_user_interaction_time")
+
+        # No interaction recorded, assume unattended
+        if last_interaction is None:
+            return True
+
+        # Check if elapsed time exceeds threshold
+        threshold_minutes = config.get("auto_tempo_threshold_minutes", 10)
+        elapsed_seconds = (datetime.now() - last_interaction).total_seconds()
+        elapsed_minutes = elapsed_seconds / 60
+
+        return elapsed_minutes >= threshold_minutes
+
+    # Unknown mode, default to enabled for safety
+    return True
+
+
+def format_elapsed_time(last_interaction_time) -> str:
+    """
+    Format elapsed time since last interaction in human-readable format.
+
+    Args:
+        last_interaction_time: datetime object or None
+
+    Returns:
+        Human-readable string like "5 minutes ago", "2.5 hours ago", or "never"
+    """
+    if last_interaction_time is None:
+        return "never"
+
+    elapsed_seconds = (datetime.now() - last_interaction_time).total_seconds()
+
+    if elapsed_seconds < 60:
+        return f"{int(elapsed_seconds)} seconds ago"
+    elif elapsed_seconds < 3600:
+        minutes = int(elapsed_seconds / 60)
+        return f"{minutes} minutes ago"
+    else:
+        hours = elapsed_seconds / 3600
+        return f"{hours:.1f} hours ago"
+
+
+def is_context_exhaustion_detected(transcript_path: str) -> bool:
+    """
+    Detect if conversation is approaching or has reached context exhaustion.
+
+    Detects TWO scenarios based on actual code-indexer conversation pattern:
+
+    SCENARIO 1 - Early Warning (Context Low):
+    - Last compact_boundary has preTokens > 180000 (approaching 200K limit)
+    - This is when Claude Code shows "Context low · Run /compact to compact & continue"
+    - Allows graceful exit BEFORE hitting infinite loop
+
+    SCENARIO 2 - Terminal Exhaustion:
+    - Last message is "Prompt is too long" API error
+    - Context window completely exhausted
+    - Compaction failed
+    - No recovery possible
+
+    Real pattern from code-indexer conversation (f9185385):
+    - Line 1121: compact_boundary with preTokens=185279 (danger zone)
+    - Line 1135: First "Prompt is too long" error (~14 min later)
+    - Lines 1135-1570: Infinite loop of error + stop hook + error...
+
+    This prevents the race condition where:
+    - API returns "Prompt is too long" error
+    - Stop hook blocks exit demanding response
+    - Claude cannot respond (context full)
+    - Loop repeats 40+ times
+
+    Args:
+        transcript_path: Path to JSONL transcript file
+
+    Returns:
+        True if context exhaustion detected (early or terminal), False otherwise
+    """
+    try:
+        # Read last 50KB to capture recent entries including compact_boundary
+        with open(transcript_path, "rb") as f:
+            f.seek(0, 2)  # End of file
+            file_size = f.tell()
+
+            if file_size == 0:
+                return False
+
+            # Read last 50KB (enough for multiple JSONL entries)
+            read_size = min(50000, file_size)
+            f.seek(file_size - read_size)
+
+            # Decode and split into lines
+            content = f.read().decode("utf-8", errors="ignore")
+            lines = [line.strip() for line in content.split("\n") if line.strip()]
+
+            if not lines:
+                return False
+
+            # Parse last entry
+            last_entry = json.loads(lines[-1])
+
+            # SCENARIO 2: Check for terminal "Prompt is too long" error
+            error = last_entry.get("error")
+            if error == "invalid_request":
+                message = last_entry.get("message", {})
+                role = message.get("role")
+
+                if role == "assistant":
+                    # Extract text from content blocks
+                    content_blocks = message.get("content", [])
+                    text_parts = []
+
+                    if isinstance(content_blocks, list):
+                        for block in content_blocks:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_parts.append(block.get("text", "").strip())
+
+                    text = " ".join(text_parts).strip()
+
+                    if text == "Prompt is too long":
+                        log_debug(
+                            "hook", "=== TERMINAL CONTEXT EXHAUSTION DETECTED ==="
+                        )
+                        log_debug(
+                            "hook", "Last message: 'Prompt is too long' API error"
+                        )
+                        log_debug(
+                            "hook", "Allowing graceful exit - conversation is dead"
+                        )
+                        return True
+
+            # SCENARIO 1: Check for high preTokens in recent compact_boundary
+            # Walk backwards through last ~20 entries looking for compact_boundary
+            for line in reversed(lines[-20:]):
+                try:
+                    entry = json.loads(line)
+
+                    if entry.get("subtype") == "compact_boundary":
+                        compact_metadata = entry.get("compactMetadata", {})
+                        pre_tokens = compact_metadata.get("preTokens", 0)
+
+                        # Danger threshold: 180K tokens (90% of 200K Sonnet limit)
+                        if pre_tokens > 180000:
+                            log_debug(
+                                "hook", "=== EARLY WARNING: CONTEXT LOW DETECTED ==="
+                            )
+                            log_debug(
+                                "hook", f"Last compact_boundary preTokens: {pre_tokens}"
+                            )
+                            log_debug(
+                                "hook",
+                                "Context approaching exhaustion - allowing graceful exit",
+                            )
+                            log_debug(
+                                "hook",
+                                "User should run /compact or start fresh conversation",
+                            )
+                            return True
+
+                        # Found compact_boundary but preTokens OK - stop searching
+                        break
+
+                except json.JSONDecodeError:
+                    continue
+
+            return False
+
+    except Exception as e:
+        log_warning("hook", "Failed to check context exhaustion", e)
+        return False
 
 
 def run_stop_hook():
@@ -671,6 +875,13 @@ def run_stop_hook():
 
         if not transcript_path or not os.path.exists(transcript_path):
             log_debug("hook", "No transcript - allow exit")
+            return {"continue": True}
+
+        # CRITICAL: Check for context exhaustion BEFORE SDK validation
+        # If conversation hit "Prompt is too long" error, compaction failed
+        # and Claude cannot respond - must allow graceful exit
+        if is_context_exhaustion_detected(transcript_path):
+            log_debug("hook", "Allowing graceful exit due to context exhaustion")
             return {"continue": True}
 
         # Use intent validator to check if work is complete

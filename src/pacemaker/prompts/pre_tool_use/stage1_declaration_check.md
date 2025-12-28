@@ -37,12 +37,18 @@ If intent declaration is PRESENT and COMPLETE, proceed to CHECK 2.
 CHECK 2: TDD DECLARATION (Only for core code paths)
 ════════════════════════════════════════════════════════════════
 
-Is the file being modified in a CORE CODE PATH?
+STEP 1: Check if file is in an EXCLUDED PATH (TDD bypass):
+Excluded paths:
+{{excluded_paths}}
+
+If file path contains ANY excluded path → Skip TDD check, respond: YES
+
+STEP 2: Check if file is in a CORE CODE PATH:
 Core paths: src/, lib/, core/, source/, libraries/, kernel/
 
 If NOT in core path → Skip this check, respond: YES
 
-If IN core path → Check if TDD declaration or TDD skip permission exists:
+STEP 3: If IN core path AND NOT excluded → Check if TDD declaration or TDD skip permission exists:
 
 TDD DECLARATION - Look for test coverage statement:
   ✓ "Test coverage: tests/test_auth.py::test_validate_token()"

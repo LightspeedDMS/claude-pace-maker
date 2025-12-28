@@ -22,7 +22,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "cleanup_interval_hours": 24,
     "retention_days": 60,
     "weekly_limit_enabled": True,
-    "tempo_enabled": True,
+    "tempo_mode": "auto",  # Changed from tempo_enabled boolean to tempo_mode string
+    "auto_tempo_threshold_minutes": 10,  # Inactivity threshold for auto mode
     "conversation_context_size": 5,
     "user_message_max_length": 4096,
     "intent_validation_enabled": False,
@@ -44,6 +45,9 @@ DEFAULT_CLEAN_CODE_RULES_PATH = str(
     Path.home() / ".claude-pace-maker" / "clean_code_rules.yaml"
 )
 DEFAULT_CORE_PATHS_PATH = str(Path.home() / ".claude-pace-maker" / "core_paths.yaml")
+DEFAULT_EXCLUDED_PATHS_PATH = str(
+    Path.home() / ".claude-pace-maker" / "excluded_paths.yaml"
+)
 
 # Log level constants
 LOG_LEVEL_OFF = 0

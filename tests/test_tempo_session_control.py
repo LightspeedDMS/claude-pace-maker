@@ -94,7 +94,7 @@ class TestTempoSessionCommands:
         """'pace-maker tempo on/off' (without session) should still work globally."""
         config_path = tmp_path / "config.json"
 
-        config = {"enabled": True, "tempo_enabled": False}
+        config = {"enabled": True, "tempo_mode": "off"}
         config_path.write_text(json.dumps(config))
 
         # Test global tempo on
@@ -104,7 +104,7 @@ class TestTempoSessionCommands:
         assert result["intercepted"] is True
 
         config = json.loads(config_path.read_text())
-        assert config["tempo_enabled"] is True
+        assert config["tempo_mode"] == "on"
 
         # Test global tempo off
         result = user_commands.handle_user_prompt(
@@ -113,7 +113,7 @@ class TestTempoSessionCommands:
         assert result["intercepted"] is True
 
         config = json.loads(config_path.read_text())
-        assert config["tempo_enabled"] is False
+        assert config["tempo_mode"] == "off"
 
 
 class TestTempoSessionPrecedence:

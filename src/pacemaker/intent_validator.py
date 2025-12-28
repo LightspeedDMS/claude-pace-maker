@@ -549,9 +549,24 @@ def _build_stage1_prompt(current_message: str, file_path: str, tool_name: str) -
 
     template = load_prompt_template(prompt_path)
 
-    return template.format(
+    # Load excluded paths and format for prompt
+    from .constants import DEFAULT_EXCLUDED_PATHS_PATH
+    from . import excluded_paths
+
+    exclusions = excluded_paths.load_exclusions(DEFAULT_EXCLUDED_PATHS_PATH)
+    excluded_paths_text = excluded_paths.format_exclusions_for_prompt(exclusions)
+
+    # Replace placeholders
+    prompt = template.format(
         current_message=current_message, file_path=file_path, tool_name=tool_name
     )
+
+    # Replace excluded_paths placeholder
+    # NOTE: Template has {{excluded_paths}} (double braces), but .format() above
+    # consumes one layer, leaving {excluded_paths} (single braces)
+    prompt = prompt.replace("{excluded_paths}", excluded_paths_text)
+
+    return prompt
 
 
 async def _call_stage1_validation_async(prompt: str) -> str:
