@@ -5,6 +5,7 @@ Intelligent credit consumption throttling and code quality enforcement for Claud
 ## Features
 
 - **Credit Throttling**: Adaptive pacing for 5-hour and 7-day usage windows
+- **Model Preference**: Nudges Claude to use specific model for subagents (quota balancing)
 - **Intent Validation**: Requires intent declaration before code modifications
 - **TDD Enforcement**: Core code paths require test declarations
 - **Clean Code Checks**: Blocks security vulnerabilities, anti-patterns, and logic bugs
@@ -45,6 +46,7 @@ pace-maker clean-code remove NAME # Remove clean code rule
 pace-maker core-paths list        # List core code paths
 pace-maker core-paths add PATH    # Add core code path
 pace-maker core-paths remove PATH # Remove core code path
+pace-maker prefer-model opus|sonnet|haiku|auto  # Set model preference for subagents
 pace-maker loglevel 0-4           # Set log level (0=OFF, 1=ERROR, 2=WARNING, 3=INFO, 4=DEBUG)
 pace-maker version                # Show version
 pace-maker help                   # Show help
@@ -182,6 +184,58 @@ pace-maker intent-validation on
 - **Zero Tolerance**: Throttles immediately when over budget
 - **Adaptive Delay**: Calculates exact delay to reach 95% by window end
 
+## Model Preference (Quota Balancing)
+
+Controls which model Claude uses for subagent Task tool calls to balance quota consumption across models.
+
+### The Problem
+
+Claude Pro Max has separate quotas for different models (Opus, Sonnet). When one model's quota is consumed faster than another, you can hit rate limits on one while having unused capacity on the other.
+
+**Example scenario:**
+- 7-day overall usage: 82%
+- Sonnet-specific usage: 96%
+- Opus-specific usage: 60%
+
+Without intervention, Claude defaults to Sonnet for subagents, exhausting that quota while Opus capacity sits unused.
+
+### The Solution
+
+```bash
+pace-maker prefer-model opus    # Force subagents to use Opus
+pace-maker prefer-model sonnet  # Force subagents to use Sonnet
+pace-maker prefer-model haiku   # Force subagents to use Haiku
+pace-maker prefer-model auto    # No preference (default behavior)
+```
+
+### How It Works
+
+When a model preference is set, the system injects **mandatory nudges** at two points:
+
+1. **Session Start**: Shows current usage stats and the required model
+2. **Post-Tool Reminders**: After every tool use, reminds Claude to use the preferred model
+
+The nudge is assertive:
+```
+⚠️  MANDATORY MODEL PREFERENCE: OPUS
+
+   You MUST use model: "opus" for ALL Task tool subagent calls.
+
+   WHY: This is for QUOTA BALANCING, not capability.
+   The user needs to balance token consumption across models to maximize
+   their usage window. Even if the default model 'works fine', using the
+   preferred model (opus) helps prevent hitting rate limits.
+
+   REQUIRED FORMAT:
+   Task(subagent_type='...', model='opus', prompt='...')
+```
+
+### Important Notes
+
+- **Main session model cannot change mid-conversation** - to switch the main conversation model, restart with `claude --model opus`
+- The nudge is about **resource management**, not capability - Claude should use the preferred model even if the default "works fine"
+- Set to `auto` to disable nudging and return to default behavior
+
 ## Session Lifecycle (Tempo)
 
 Prevents Claude from ending sessions prematurely.
@@ -216,6 +270,7 @@ When Claude attempts to stop:
   "tempo_enabled": true,
   "intent_validation_enabled": true,
   "subagent_reminder_enabled": true,
+  "preferred_subagent_model": "auto",
   "base_delay": 5,
   "max_delay": 350,
   "safety_buffer_pct": 95.0,
