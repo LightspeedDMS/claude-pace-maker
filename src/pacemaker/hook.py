@@ -26,7 +26,7 @@ from .constants import (
 from .transcript_reader import (
     get_last_n_messages_for_validation,
 )
-from .logger import log_warning, log_debug
+from .logger import log_warning, log_debug, log_info
 
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
@@ -139,6 +139,66 @@ def display_intent_validation_guidance() -> str:
     )
 
 
+def get_model_preference_nudge(
+    config: dict, include_usage: bool = True
+) -> Optional[str]:
+    """
+    Generate model preference nudge message based on config.
+
+    Used at session start and in subagent reminders to guide model selection
+    for quota balancing.
+
+    Args:
+        config: Configuration dictionary
+        include_usage: If True, include current usage stats (for session start)
+
+    Returns:
+        Nudge message string, or None if no preference set (auto mode)
+    """
+    import requests
+
+    preferred_model = config.get("preferred_subagent_model", "auto")
+
+    # No nudge if auto mode
+    if preferred_model == "auto":
+        return None
+
+    # Build nudge message
+    lines = []
+    lines.append(f"⚡ MODEL PREFERENCE: {preferred_model.upper()}")
+
+    if include_usage:
+        # Try to get current usage for context
+        try:
+            from . import api_client
+
+            access_token = api_client.load_access_token()
+            if access_token:
+                usage_data = api_client.fetch_usage(access_token, timeout=5)
+                if usage_data:
+                    five_hour = usage_data.get("five_hour_util", 0)
+                    seven_day = usage_data.get("seven_day_util", 0)
+                    lines.append(
+                        f"   Current usage: 5-hour {five_hour:.1f}%, 7-day {seven_day:.1f}%"
+                    )
+        except (requests.RequestException, KeyError, TypeError) as e:
+            log_debug("hook", f"Could not fetch usage stats for model nudge: {e}")
+
+    lines.append(
+        f'   When using Task tool for subagents, specify: model: "{preferred_model}"'
+    )
+    lines.append(
+        f"   Example: Task(subagent_type='tdd-engineer', model='{preferred_model}', ...)"
+    )
+
+    if include_usage:
+        lines.append(
+            f"   To change main session model, restart with: claude --model {preferred_model}"
+        )
+
+    return "\n".join(lines)
+
+
 def run_session_start_hook():
     """
     Handle SessionStart hook - beginning of new session.
@@ -178,6 +238,15 @@ def run_session_start_hook():
             f"[PACE-MAKER WARNING] Failed to display intent guidance: {e}",
             file=sys.stderr,
         )
+
+    # Display model preference nudge if configured
+    try:
+        model_nudge = get_model_preference_nudge(config, include_usage=True)
+        if model_nudge:
+            print(model_nudge, file=sys.stdout, flush=True)
+    except Exception as e:
+        # Log error but don't break session start
+        log_warning("hook", "Failed to display model preference nudge", e)
 
 
 def run_subagent_start_hook():
@@ -291,6 +360,7 @@ def inject_subagent_reminder(config: dict) -> Optional[str]:
 
     Returns the reminder message that should be shown to Claude.
     Does NOT print to stdout - caller is responsible for output.
+    Includes model preference nudge if configured.
 
     Args:
         config: Configuration dictionary
@@ -304,14 +374,20 @@ def inject_subagent_reminder(config: dict) -> Optional[str]:
     try:
         loader = PromptLoader()
         message = loader.load_prompt("subagent_reminder.md", subfolder="post_tool_use")
-        return message.strip()
+        message = message.strip()
     except FileNotFoundError:
         # Fallback to config or hardcoded message
         message = config.get(
             "subagent_reminder_message",
             "💡 Consider using the Task tool to delegate work to specialized subagents (per your guidelines)",
         )
-        return message
+
+    # Append model preference nudge if configured (without usage stats for brevity)
+    model_nudge = get_model_preference_nudge(config, include_usage=False)
+    if model_nudge:
+        message = f"{message}\n\n{model_nudge}"
+
+    return message
 
 
 def run_hook():
@@ -845,14 +921,38 @@ def run_stop_hook():
     """
 
     try:
+        # === STOP HOOK ENTRY POINT ===
+        log_info("hook", "=" * 70)
+        log_info("hook", "STOP HOOK FIRED")
+        log_info("hook", f"Timestamp: {datetime.now().isoformat()}")
+        log_info("hook", "=" * 70)
+
         # Load config and state to check if tempo should run
         config = load_config(DEFAULT_CONFIG_PATH)
 
         # Master switch - all features disabled
         if not config.get("enabled", True):
+            log_info("hook", "Pace maker disabled - allowing exit")
             return {"continue": True}
 
         state = load_state(DEFAULT_STATE_PATH)
+
+        # Log auto tempo status
+        tempo_mode = config.get("tempo_mode", "auto")
+        tempo_session_override = state.get("tempo_session_override")
+        last_user_interaction = state.get("last_user_interaction_time")
+        if last_user_interaction:
+            elapsed = (datetime.now() - last_user_interaction).total_seconds()
+            log_info(
+                "hook",
+                f"Auto Tempo Status: mode={tempo_mode}, "
+                f"session_override={tempo_session_override}, "
+                f"last_interaction={elapsed:.1f}s ago",
+            )
+        else:
+            log_info(
+                "hook", f"Auto Tempo Status: mode={tempo_mode}, no interaction tracked"
+            )
 
         if not should_run_tempo(config, state):
             log_debug("hook", "Tempo disabled - allow exit")

@@ -255,6 +255,17 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": f"remove {match_excluded_paths_remove.group(1)}",
         }
 
+    # Pattern 19: pace-maker prefer-model (opus|sonnet|haiku|auto)
+    pattern_prefer_model = r"^pace-maker\s+prefer-model\s+(opus|sonnet|haiku|auto)$"
+    match_prefer_model = re.match(pattern_prefer_model, normalized)
+
+    if match_prefer_model:
+        return {
+            "is_pace_maker_command": True,
+            "command": "prefer-model",
+            "subcommand": match_prefer_model.group(1),
+        }
+
     return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
@@ -310,6 +321,8 @@ def execute_command(
         return _execute_core_paths(subcommand)
     elif command == "excluded-paths":
         return _execute_excluded_paths(subcommand)
+    elif command == "prefer-model":
+        return _execute_prefer_model(config_path, subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -626,6 +639,10 @@ COMMANDS:
   pace-maker excluded-paths list               List all folders excluded from TDD
   pace-maker excluded-paths add PATH           Add a new excluded path
   pace-maker excluded-paths remove PATH        Remove an excluded path
+  pace-maker prefer-model opus                 Prefer Opus model for subagents
+  pace-maker prefer-model sonnet               Prefer Sonnet model for subagents
+  pace-maker prefer-model haiku                Prefer Haiku model for subagents
+  pace-maker prefer-model auto                 Use default model selection (no preference)
 
 LOG LEVELS:
   0 = OFF      - No logging
@@ -723,6 +740,28 @@ EXCLUDED PATHS:
   - 'pace-maker excluded-paths remove .tmp/' to remove an exclusion
 
   Use cases: Temporary files, generated code, test fixtures, build artifacts
+
+MODEL PREFERENCE (Quota Balancing):
+  Control which model Claude prefers for subagent Task tool calls.
+  Use this to balance quota usage between Opus and Sonnet.
+
+  Example scenario:
+  - 7-day usage at 82%, Sonnet usage at 96%
+  - Set 'pace-maker prefer-model opus' to use more Opus tokens
+  - This helps sync quota consumption across models
+
+  Modes:
+  - opus: Nudge to use model: "opus" in Task tool calls
+  - sonnet: Nudge to use model: "sonnet" in Task tool calls
+  - haiku: Nudge to use model: "haiku" in Task tool calls
+  - auto: No preference, use default behavior (DEFAULT)
+
+  Nudges appear in:
+  - Session start message (with usage stats)
+  - Post-tool subagent reminders
+
+  Note: Main conversation model cannot be changed mid-session.
+  To change main model, restart with: claude --model opus
 
 CONFIGURATION:
   Config file: ~/.claude-pace-maker/config.json
@@ -1057,6 +1096,42 @@ def _execute_tdd(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
         return {
             "success": False,
             "message": error_template.replace("{subcommand}", str(subcommand)),
+        }
+
+
+def _execute_prefer_model(
+    config_path: str, subcommand: Optional[str]
+) -> Dict[str, Any]:
+    """Set preferred subagent model for quota balancing."""
+    valid_models = ["opus", "sonnet", "haiku", "auto"]
+
+    if subcommand not in valid_models:
+        return {
+            "success": False,
+            "message": f"Invalid model: {subcommand}\nUsage: pace-maker prefer-model [opus|sonnet|haiku|auto]",
+        }
+
+    try:
+        config = _load_config(config_path)
+        config["preferred_subagent_model"] = subcommand
+        _write_config_atomic(config, config_path)
+
+        if subcommand == "auto":
+            message = (
+                "✓ Model preference set to AUTO\n"
+                "Subagents will use default model selection (inherit from parent)."
+            )
+        else:
+            message = (
+                f"✓ Preferred subagent model set to {subcommand.upper()}\n"
+                f"Session start and post-tool reminders will nudge to use model: '{subcommand}' in Task tool calls.\n"
+                f"Note: Main session model cannot be changed mid-conversation - restart with `claude --model {subcommand}` if needed."
+            )
+        return {"success": True, "message": message}
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error setting model preference: {str(e)}",
         }
 
 
@@ -1689,6 +1764,7 @@ For more information, run: pace-maker help
             "clean-code",
             "core-paths",
             "excluded-paths",
+            "prefer-model",
         ],
         help="Command to execute",
     )
