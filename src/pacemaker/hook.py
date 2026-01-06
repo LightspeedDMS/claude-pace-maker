@@ -163,9 +163,24 @@ def get_model_preference_nudge(
     if preferred_model == "auto":
         return None
 
-    # Build nudge message
+    # Build nudge message - ASSERTIVE language for quota balancing
     lines = []
-    lines.append(f"⚡ MODEL PREFERENCE: {preferred_model.upper()}")
+    lines.append(f"⚠️  MANDATORY MODEL PREFERENCE: {preferred_model.upper()}")
+    lines.append("")
+    lines.append(
+        f'   You MUST use model: "{preferred_model}" for ALL Task tool subagent calls.'
+    )
+    lines.append("")
+    lines.append("   WHY: This is for QUOTA BALANCING, not capability.")
+    lines.append(
+        "   The user needs to balance token consumption across models to maximize"
+    )
+    lines.append(
+        "   their usage window. Even if the default model 'works fine', using the"
+    )
+    lines.append(
+        f"   preferred model ({preferred_model}) helps prevent hitting rate limits."
+    )
 
     if include_usage:
         # Try to get current usage for context
@@ -178,20 +193,21 @@ def get_model_preference_nudge(
                 if usage_data:
                     five_hour = usage_data.get("five_hour_util", 0)
                     seven_day = usage_data.get("seven_day_util", 0)
+                    lines.append("")
                     lines.append(
-                        f"   Current usage: 5-hour {five_hour:.1f}%, 7-day {seven_day:.1f}%"
+                        f"   Current quotas: 5-hour {five_hour:.1f}%, 7-day {seven_day:.1f}%"
                     )
         except (requests.RequestException, KeyError, TypeError) as e:
             log_debug("hook", f"Could not fetch usage stats for model nudge: {e}")
 
+    lines.append("")
+    lines.append("   REQUIRED FORMAT:")
     lines.append(
-        f'   When using Task tool for subagents, specify: model: "{preferred_model}"'
-    )
-    lines.append(
-        f"   Example: Task(subagent_type='tdd-engineer', model='{preferred_model}', ...)"
+        f"   Task(subagent_type='...', model='{preferred_model}', prompt='...')"
     )
 
     if include_usage:
+        lines.append("")
         lines.append(
             f"   To change main session model, restart with: claude --model {preferred_model}"
         )
