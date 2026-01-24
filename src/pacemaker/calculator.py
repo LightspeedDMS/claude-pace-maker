@@ -73,7 +73,8 @@ def calculate_time_percent(
         window_hours: Length of the window in hours (default 5 for 5-hour window)
 
     Returns:
-        Percentage of time elapsed (0-100), or 0.0 if window is inactive (NULL)
+        Percentage of time elapsed (0-100), or 0.0 if window is inactive (NULL),
+        or -1.0 if data is stale (resets_at more than 5 minutes in the past)
     """
     if resets_at is None:
         # Inactive window (NULL reset time)
@@ -84,8 +85,13 @@ def calculate_time_percent(
     # Calculate time remaining until reset
     time_remaining = (resets_at - now).total_seconds()
 
-    # If reset time has passed, we're at 100% (or beyond)
+    # If reset time has passed
     if time_remaining <= 0:
+        # Check if data is stale (reset time more than 5 minutes in the past)
+        # STALE_DATA_THRESHOLD_SECONDS = 300 (5 minutes)
+        if time_remaining < -300:
+            return -1.0  # Stale data sentinel
+        # Within 5 minutes past - treat as 100% (window just ended)
         return 100.0
 
     # Calculate total window duration in seconds

@@ -73,6 +73,50 @@ def calculate_pacing_decision(
         seven_day_resets_at, window_hours=168
     )  # 7 days
 
+    # Check for stale 5-hour data (sentinel value -1.0 means > 5 min past reset)
+    if five_hour_time_pct == -1.0:
+        return {
+            "should_throttle": False,
+            "delay_seconds": 0,
+            "stale_data": True,
+            "constrained_window": None,
+            "deviation_percent": 0.0,
+            "five_hour": {
+                "utilization": five_hour_util,
+                "target": 0,
+                "time_elapsed_pct": -1.0,
+            },
+            "seven_day": {
+                "utilization": seven_day_util,
+                "target": 0,
+                "time_elapsed_pct": seven_day_time_pct,
+            },
+            "algorithm": "stale_data_detected",
+            "error": "5-hour window data is stale (resets_at > 5min in past)",
+        }
+
+    # Check for stale 7-day data (sentinel value -1.0 means > 5 min past reset)
+    if seven_day_time_pct == -1.0:
+        return {
+            "should_throttle": False,
+            "delay_seconds": 0,
+            "stale_data": True,
+            "constrained_window": None,
+            "deviation_percent": 0.0,
+            "five_hour": {
+                "utilization": five_hour_util,
+                "target": 0,
+                "time_elapsed_pct": five_hour_time_pct,
+            },
+            "seven_day": {
+                "utilization": seven_day_util,
+                "target": 0,
+                "time_elapsed_pct": -1.0,
+            },
+            "algorithm": "stale_data_detected",
+            "error": "7-day window data is stale (resets_at > 5min in past)",
+        }
+
     # Get current time once for all calculations
     now = datetime.utcnow()
 
