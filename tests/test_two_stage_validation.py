@@ -93,7 +93,7 @@ class TestStage1DeclarationCheck:
             ) as mock_s2,
         ):
             mock_s1.return_value = "YES"
-            mock_s2.return_value = ""  # Empty = approved
+            mock_s2.return_value = "APPROVED"  # Explicit approval required
 
             result = intent_validator.validate_intent_and_code(
                 messages=messages, code=code, file_path=file_path, tool_name=tool_name
@@ -159,7 +159,7 @@ def risky_function():
             ) as mock_s2,
         ):
             mock_s1.return_value = "YES"
-            mock_s2.return_value = ""  # Empty = approved
+            mock_s2.return_value = "APPROVED"  # Explicit approval required
 
             result = intent_validator.validate_intent_and_code(
                 messages=messages, code=code, file_path=file_path, tool_name=tool_name
@@ -248,7 +248,7 @@ class TestPerformanceAndTokenEfficiency:
             with patch(
                 "pacemaker.intent_validator._call_unified_validation_async"
             ) as mock_s2:
-                mock_s2.return_value = ""
+                mock_s2.return_value = "APPROVED"
 
                 intent_validator.validate_intent_and_code(
                     messages=messages,

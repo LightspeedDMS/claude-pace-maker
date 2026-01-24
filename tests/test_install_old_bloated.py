@@ -225,13 +225,15 @@ class TestInstallScript:
             settings = json.load(f)
 
         assert "hooks" in settings, "settings must have 'hooks' section"
-        # SessionStart is deprecated/obsolete - should be empty array
+        # SessionStart is now used for intent validation mandate display
+        assert "SessionStart" in settings["hooks"], "hooks must have SessionStart"
         assert (
-            "SessionStart" in settings["hooks"]
-        ), "hooks must have SessionStart (empty)"
+            len(settings["hooks"]["SessionStart"]) == 1
+        ), "SessionStart should have one pace-maker hook"
         assert (
-            settings["hooks"]["SessionStart"] == []
-        ), "SessionStart should be empty (deprecated)"
+            ".claude/hooks/session-start.sh"
+            in settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        ), "SessionStart should have session-start.sh hook"
 
         # Active hooks that should be registered
         assert "PostToolUse" in settings["hooks"], "hooks must have PostToolUse"
@@ -398,10 +400,10 @@ class TestInstallScript:
             settings = json.load(f)
 
         # Verify existing hooks preserved
-        # SessionStart: pace-maker no longer uses this hook, so only tdd-guard hook should remain
+        # SessionStart: both tdd-guard and pace-maker hooks should be present
         assert (
-            len(settings["hooks"]["SessionStart"]) == 1
-        ), "Should have only tdd-guard SessionStart hook (pace-maker doesn't use SessionStart)"
+            len(settings["hooks"]["SessionStart"]) == 2
+        ), "Should have both tdd-guard and pace-maker SessionStart hooks"
         assert (
             len(settings["hooks"]["PostToolUse"]) == 2
         ), "Should have both tdd-guard and pace-maker PostToolUse hooks"
@@ -409,13 +411,16 @@ class TestInstallScript:
             len(settings["hooks"]["Stop"]) == 2
         ), "Should have both tdd-guard and pace-maker Stop hooks"
 
-        # Verify tdd-guard SessionStart hook still present (pace-maker doesn't use SessionStart)
+        # Verify tdd-guard SessionStart hook still present
         session_start_commands = [
             hook["hooks"][0]["command"] for hook in settings["hooks"]["SessionStart"]
         ]
         assert (
             "~/.claude/hooks/tdd-guard-session-start.sh" in session_start_commands
         ), "tdd-guard SessionStart hook must be preserved"
+        assert any(
+            ".claude/hooks/session-start.sh" in cmd for cmd in session_start_commands
+        ), "pace-maker SessionStart hook must be added"
 
         post_commands = [
             hook["hooks"][0]["command"] for hook in settings["hooks"]["PostToolUse"]
@@ -483,10 +488,10 @@ class TestInstallScript:
             settings = json.load(f)
 
         # Each hook type should have exactly one pace-maker hook entry
-        # SessionStart is deprecated - should be empty array
+        # SessionStart is now used for intent validation mandate display
         assert (
-            len(settings["hooks"]["SessionStart"]) == 0
-        ), "SessionStart should be empty (deprecated, no pace-maker hook)"
+            len(settings["hooks"]["SessionStart"]) == 1
+        ), "Should have exactly one SessionStart hook after reinstall"
         assert (
             len(settings["hooks"]["PostToolUse"]) == 1
         ), "Should have exactly one PostToolUse hook after reinstall"
@@ -552,10 +557,10 @@ class TestInstallScript:
             settings = json.load(f)
 
         # Verify pace-maker hooks added to empty arrays
-        # SessionStart is deprecated - should remain empty
+        # SessionStart is now used for intent validation mandate display
         assert (
-            len(settings["hooks"]["SessionStart"]) == 0
-        ), "SessionStart should remain empty (deprecated)"
+            len(settings["hooks"]["SessionStart"]) == 1
+        ), "Should have one SessionStart hook"
         assert (
             len(settings["hooks"]["PostToolUse"]) == 1
         ), "Should have one PostToolUse hook"
@@ -616,14 +621,17 @@ class TestInstallScript:
         with open(settings_file) as f:
             settings = json.load(f)
 
-        # Verify SessionStart hook preserved (pace-maker doesn't use SessionStart anymore)
+        # Verify SessionStart hooks: existing + pace-maker
         assert (
-            len(settings["hooks"]["SessionStart"]) == 1
-        ), "Should have only existing SessionStart hook (pace-maker doesn't use SessionStart)"
+            len(settings["hooks"]["SessionStart"]) == 2
+        ), "Should have existing and pace-maker SessionStart hooks"
         session_start_commands = [
             hook["hooks"][0]["command"] for hook in settings["hooks"]["SessionStart"]
         ]
         assert "~/other-session-start.sh" in session_start_commands
+        assert any(
+            ".claude/hooks/session-start.sh" in cmd for cmd in session_start_commands
+        ), "pace-maker SessionStart hook must be added"
 
         # Verify missing hook types were created
         assert (
@@ -701,19 +709,23 @@ class TestInstallScript:
         with open(settings_file) as f:
             settings = json.load(f)
 
-        # Should have ONE SessionStart entry: tdd-guard only (pace-maker doesn't use SessionStart)
+        # Should have TWO SessionStart entries: tdd-guard + pace-maker
         assert (
-            len(settings["hooks"]["SessionStart"]) == 1
-        ), f"Should have 1 SessionStart entry (tdd-guard only, pace-maker doesn't use SessionStart), got {len(settings['hooks']['SessionStart'])}"
+            len(settings["hooks"]["SessionStart"]) == 2
+        ), f"Should have 2 SessionStart entries (tdd-guard + pace-maker), got {len(settings['hooks']['SessionStart'])}"
 
-        # Find tdd-guard entry
+        # Find tdd-guard entry and pace-maker entry
         tdd_entry = None
+        pace_entry = None
         for entry in settings["hooks"]["SessionStart"]:
             commands = [h["command"] for h in entry["hooks"]]
             if "tdd-guard" in commands:
                 tdd_entry = entry
+            elif any(".claude/hooks/session-start.sh" in cmd for cmd in commands):
+                pace_entry = entry
 
         assert tdd_entry is not None, "tdd-guard entry must exist"
+        assert pace_entry is not None, "pace-maker entry must exist"
 
         # Verify tdd-guard entry preserved matcher and has only tdd-guard command
         assert (
@@ -721,7 +733,7 @@ class TestInstallScript:
         ), "tdd-guard entry must preserve matcher"
         assert (
             len(tdd_entry["hooks"]) == 1
-        ), "tdd-guard entry should have only tdd-guard command (pace-maker session-start.sh removed)"
+        ), "tdd-guard entry should have only tdd-guard command (pace-maker session-start.sh removed from combined entry)"
         assert tdd_entry["hooks"][0]["command"] == "tdd-guard"
 
         # Same checks for PostToolUse

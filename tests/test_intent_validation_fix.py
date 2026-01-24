@@ -14,7 +14,7 @@ def test_extract_current_message_combines_last_two():
     """Verify extract_current_assistant_message combines last 2 messages."""
     messages = [
         "Message 1: Previous operation",
-        "Message 2: I will modify test.py to add test_function()",
+        "INTENT: I will modify test.py to add test_function()",
         "[TOOL: Write]\nfile_path: test.py\ncontent: ...",
     ]
 
