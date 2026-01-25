@@ -60,3 +60,25 @@ LOG_LEVEL_DEBUG = 4
 # Throttling thresholds
 PROMPT_INJECTION_THRESHOLD_SECONDS = 30
 MAX_DELAY_SECONDS = 350  # 360s timeout - 10s safety margin
+
+# Blockage telemetry categories (Story #21)
+# Used for tracking and categorizing hook blockages
+BLOCKAGE_CATEGORIES = (
+    "intent_validation",  # Missing/vague INTENT: marker
+    "intent_validation_tdd",  # TDD declaration missing for core code
+    "intent_validation_cleancode",  # Clean code rule violation
+    "pacing_tempo",  # Tempo validation blocked
+    "pacing_quota",  # Throttle delay applied
+    "other",  # Catch-all for unexpected blockages
+)
+
+# Human-readable labels for blockage categories (Story #22)
+# Used for CLI status command display
+BLOCKAGE_CATEGORY_LABELS: Dict[str, str] = {
+    "intent_validation": "Intent Validation",
+    "intent_validation_tdd": "Intent TDD",
+    "intent_validation_cleancode": "Clean Code",
+    "pacing_tempo": "Pacing Tempo",
+    "pacing_quota": "Pacing Quota",
+    "other": "Other",
+}

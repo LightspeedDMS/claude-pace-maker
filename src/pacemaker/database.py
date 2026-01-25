@@ -6,12 +6,15 @@ Manages SQLite database for storing usage snapshots and calculating
 consumption rates over time.
 """
 
+import json
 import sqlite3
+import time
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 from .logger import log_error, log_warning
+from .constants import BLOCKAGE_CATEGORIES
 
 
 # Database schema
@@ -41,6 +44,20 @@ CREATE TABLE IF NOT EXISTS pacing_decisions (
 
 CREATE INDEX IF NOT EXISTS idx_pacing_timestamp ON pacing_decisions(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_pacing_session ON pacing_decisions(session_id);
+
+CREATE TABLE IF NOT EXISTS blockage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    hook_type TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    details TEXT,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_blockage_timestamp ON blockage_events(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_blockage_category ON blockage_events(category);
 """
 
 
@@ -318,3 +335,116 @@ def get_last_pacing_decision(db_path: str, session_id: str) -> Optional[Dict]:
     except Exception as e:
         log_warning("database", "Failed to get last pacing decision", e)
         return None
+
+
+def record_blockage(
+    db_path: str,
+    category: str,
+    reason: str,
+    hook_type: str,
+    session_id: str,
+    details: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Record a blockage event in the database.
+
+    Args:
+        db_path: Path to SQLite database file
+        category: Blockage category (validated against BLOCKAGE_CATEGORIES)
+        reason: Description of why the blockage occurred
+        hook_type: Type of hook that triggered the blockage (e.g., pre_tool_use, stop)
+        session_id: Unique identifier for this session
+        details: Optional dict with additional context (converted to JSON)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Validate category - use 'other' if invalid
+        if category not in BLOCKAGE_CATEGORIES:
+            log_warning(
+                "database",
+                f"Invalid blockage category '{category}' - using 'other'",
+                None,
+            )
+            category = "other"
+
+        # Convert details dict to JSON string if provided
+        details_json = json.dumps(details) if details is not None else None
+
+        # Get current timestamp
+        timestamp = int(time.time())
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Use parameterized query to prevent SQL injection
+        cursor.execute(
+            """
+            INSERT INTO blockage_events (
+                timestamp,
+                category,
+                reason,
+                hook_type,
+                session_id,
+                details
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (timestamp, category, reason, hook_type, session_id, details_json),
+        )
+
+        conn.commit()
+        conn.close()
+
+        return True
+
+    except Exception as e:
+        log_error("database", "Failed to record blockage event", e)
+        return False
+
+
+def get_hourly_blockage_stats(db_path: str) -> Dict[str, int]:
+    """
+    Get blockage counts per category for the last 60 minutes.
+
+    Args:
+        db_path: Path to SQLite database file
+
+    Returns:
+        Dict mapping each category to its count (zero-filled for missing categories)
+    """
+    # Initialize result with all categories set to 0
+    result = {category: 0 for category in BLOCKAGE_CATEGORIES}
+
+    try:
+        # Calculate cutoff timestamp (60 minutes ago)
+        cutoff_timestamp = int(time.time()) - 3600
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Query counts grouped by category, using index on timestamp
+        cursor.execute(
+            """
+            SELECT category, COUNT(*) as count
+            FROM blockage_events
+            WHERE timestamp >= ?
+            GROUP BY category
+            """,
+            (cutoff_timestamp,),
+        )
+
+        # Update result with actual counts
+        for row in cursor.fetchall():
+            category, count = row
+            if category in result:
+                result[category] = count
+
+        conn.close()
+
+        return result
+
+    except Exception as e:
+        log_warning("database", "Failed to get hourly blockage stats", e)
+        # Return all zeros on error
+        return result

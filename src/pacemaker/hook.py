@@ -15,6 +15,7 @@ import json
 from typing import Optional, Dict, Any
 
 from . import pacing_engine, database, user_commands
+from .database import record_blockage
 from .constants import (
     DEFAULT_CONFIG,
     DEFAULT_DB_PATH,
@@ -507,6 +508,15 @@ def run_hook():
 
         # Always execute delay if delay > 0
         if delay > 0:
+            # AC5: Record blockage for pacing throttle
+            record_blockage(
+                db_path=db_path,
+                category="pacing_quota",
+                reason=f"Throttle delay {delay}s applied due to quota protection",
+                hook_type="post_tool_use",
+                session_id=state.get("session_id", "unknown"),
+                details={"delay_seconds": delay},
+            )
             execute_delay(delay)
 
     # Capture subagent reminder if conditions met (don't print yet)
@@ -1018,6 +1028,17 @@ def run_stop_hook():
 
         log_debug("hook", f"Intent validation result: {result}")
 
+        # AC5: Record blockage for tempo validation failure
+        if result.get("decision") == "block":
+            record_blockage(
+                db_path=DEFAULT_DB_PATH,
+                category="pacing_tempo",
+                reason=result.get("reason", "Work appears incomplete"),
+                hook_type="stop",
+                session_id=session_id or "unknown",
+                details=None,
+            )
+
         # Return validation result
         return result
 
@@ -1190,6 +1211,24 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         if result.get("approved", False):
             return {"continue": True}
         else:
+            # AC4: Record blockage for intent validation failure
+            # Determine category based on failure type
+            if result.get("tdd_failure", False):
+                category = "intent_validation_tdd"
+            elif result.get("clean_code_failure", False):
+                category = "intent_validation_cleancode"
+            else:
+                category = "intent_validation"
+
+            record_blockage(
+                db_path=DEFAULT_DB_PATH,
+                category=category,
+                reason=result.get("feedback", "Validation failed"),
+                hook_type="pre_tool_use",
+                session_id=session_id or "unknown",
+                details={"tool": tool_name, "file_path": file_path},
+            )
+
             return {
                 "decision": "block",
                 "reason": result.get("feedback", "Validation failed"),

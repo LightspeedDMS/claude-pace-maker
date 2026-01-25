@@ -911,7 +911,33 @@ CRITICAL: Quote must reference actual user words from recent context.""",
         else:
             # Any other response = blocked with feedback
             log_debug("intent_validator", "=== STAGE 2 BLOCKED (has feedback) ===")
-            return {"approved": False, "feedback": stage2_feedback}
+
+            # Detect if this is a clean code violation
+            feedback_lower = stage2_feedback.lower()
+            clean_code_keywords = [
+                "clean code",
+                "hardcoded secret",
+                "sql injection",
+                "bare except",
+                "swallowed exception",
+                "commented-out code",
+                "magic number",
+                "mutable default",
+                "god class",
+                "long method",
+                "deeply nested",
+                "code smell",
+                "code violation",
+            ]
+            is_clean_code_failure = any(
+                kw in feedback_lower for kw in clean_code_keywords
+            )
+
+            return {
+                "approved": False,
+                "feedback": stage2_feedback,
+                "clean_code_failure": is_clean_code_failure,
+            }
 
     except Exception as e:
         log_warning("intent_validator", "Two-stage validation failed", e)

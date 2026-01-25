@@ -578,6 +578,9 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         else:
             status_text += "\n\nNo usage data available yet."
 
+        # Add blockage statistics section
+        status_text += _format_blockage_stats(db_path)
+
         return {
             "success": True,
             "message": status_text,
@@ -586,6 +589,49 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         }
     except Exception as e:
         return {"success": False, "message": f"Error getting status: {str(e)}"}
+
+
+def _format_blockage_stats(db_path: Optional[str]) -> str:
+    """
+    Format blockage statistics for status display.
+
+    Args:
+        db_path: Path to the database file
+
+    Returns:
+        Formatted string with blockage statistics section
+    """
+    from .constants import BLOCKAGE_CATEGORY_LABELS
+    from . import database
+
+    result = "\n\nBlockages (last hour):"
+
+    try:
+        stats = database.get_hourly_blockage_stats(db_path)
+        total = 0
+
+        # Display each category with human-readable label (except 'other')
+        for category in [
+            "intent_validation",
+            "intent_validation_tdd",
+            "intent_validation_cleancode",
+            "pacing_tempo",
+            "pacing_quota",
+        ]:
+            label = BLOCKAGE_CATEGORY_LABELS.get(category, category)
+            count = stats.get(category, 0)
+            total += count
+            result += f"\n  {label}:{count:>10}"
+
+        # Add separator and total
+        result += "\n  " + "-" * 25
+        result += f"\n  {'Total:':<18}{total:>7}"
+
+    except Exception as e:
+        result += "\n  (unavailable)"
+        log_warning("user_commands", "Failed to get blockage stats", e)
+
+    return result
 
 
 def _execute_version() -> Dict[str, Any]:
