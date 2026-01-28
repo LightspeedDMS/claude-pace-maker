@@ -397,6 +397,7 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         subagent_reminder_enabled = config.get("subagent_reminder_enabled", True)
         intent_validation_enabled = config.get("intent_validation_enabled", False)
         tdd_enabled = config.get("tdd_enabled", True)
+        preferred_model = config.get("preferred_subagent_model", "auto")
         log_level = config.get("log_level", 2)
         level_names = {0: "OFF", 1: "ERROR", 2: "WARNING", 3: "INFO", 4: "DEBUG"}
 
@@ -490,6 +491,7 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         status_text += f"\nSubagent Reminder: {'ENABLED' if subagent_reminder_enabled else 'DISABLED'}"
         status_text += f"\nIntent Validation: {'ENABLED' if intent_validation_enabled else 'DISABLED'}"
         status_text += f"\nTDD Enforcement: {'ENABLED' if tdd_enabled else 'DISABLED'}"
+        status_text += f"\nModel Preference: {preferred_model.upper()}"
         status_text += (
             f"\nLog Level: {log_level} ({level_names.get(log_level, 'UNKNOWN')})"
         )

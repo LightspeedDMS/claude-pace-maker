@@ -862,6 +862,7 @@ Then use your Write/Edit tool in the same message.""",
             # TDD declaration missing for core path
             return {
                 "approved": False,
+                "tdd_failure": True,
                 "feedback": f"""⛔ TDD Required for Core Code
 
 You're modifying core code: {file_path}
