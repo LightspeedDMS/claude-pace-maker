@@ -266,6 +266,17 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_prefer_model.group(1),
         }
 
+    # Pattern 20: pace-maker langfuse (config|on|off|status) [args...]
+    pattern_langfuse = r"^pace-maker\s+langfuse\s+(.+)$"
+    match_langfuse = re.match(pattern_langfuse, normalized)
+
+    if match_langfuse:
+        return {
+            "is_pace_maker_command": True,
+            "command": "langfuse",
+            "subcommand": match_langfuse.group(1),
+        }
+
     return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
@@ -323,6 +334,8 @@ def execute_command(
         return _execute_excluded_paths(subcommand)
     elif command == "prefer-model":
         return _execute_prefer_model(config_path, subcommand)
+    elif command == "langfuse":
+        return _execute_langfuse(config_path, subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -691,6 +704,11 @@ COMMANDS:
   pace-maker prefer-model sonnet               Prefer Sonnet model for subagents
   pace-maker prefer-model haiku                Prefer Haiku model for subagents
   pace-maker prefer-model auto                 Use default model selection (no preference)
+  pace-maker langfuse config <url> <public_key> <secret_key>
+                                               Configure Langfuse credentials
+  pace-maker langfuse on                       Enable Langfuse telemetry collection
+  pace-maker langfuse off                      Disable Langfuse telemetry collection
+  pace-maker langfuse status                   Show Langfuse configuration and connection status
 
 LOG LEVELS:
   0 = OFF      - No logging
@@ -1726,6 +1744,343 @@ def _execute_excluded_paths(subcommand: Optional[str]) -> Dict[str, Any]:
         }
 
 
+def _execute_langfuse(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
+    """
+    Execute langfuse subcommands (dispatcher).
+
+    Routes to appropriate handler based on subcommand.
+    """
+    if not subcommand:
+        return {
+            "success": False,
+            "message": "langfuse requires a subcommand: config, on, off, status",
+        }
+
+    # Parse subcommand
+    parts = subcommand.split(None, 3)  # Split into max 4 parts for config command
+    action = parts[0]
+
+    # Route to appropriate handler
+    if action == "config":
+        return _langfuse_config(config_path, parts)
+    elif action == "on":
+        return _langfuse_on(config_path)
+    elif action == "off":
+        return _langfuse_off(config_path)
+    elif action == "status":
+        return _langfuse_status(config_path)
+    elif action == "filter":
+        return _langfuse_filter(config_path, parts)
+    elif action == "backfill":
+        return _langfuse_backfill(config_path, parts)
+    elif action == "stats":
+        return _langfuse_stats(config_path, parts)
+    else:
+        return {
+            "success": False,
+            "message": f"Unknown langfuse subcommand: {action}\nUsage: pace-maker langfuse [config|on|off|status|filter|backfill|stats]",
+        }
+
+
+def _langfuse_filter(config_path: str, parts: list) -> Dict[str, Any]:
+    """Handle 'langfuse filter [--max-result-size N] [--redact on|off]' command."""
+    try:
+        config = _load_config(config_path)
+
+        # If no arguments, show current settings
+        if len(parts) == 1:
+            max_size = config.get("langfuse_max_result_size", 10240)
+            redact = config.get("langfuse_redact_secrets", True)
+
+            status_text = "Langfuse Filter Settings:"
+            status_text += f"\n  Max Result Size: {max_size} bytes"
+            status_text += f"\n  Secret Redaction: {'ON' if redact else 'OFF'}"
+
+            return {
+                "success": True,
+                "message": status_text,
+            }
+
+        # Parse arguments
+        args_str = " ".join(parts[1:])
+
+        # Extract --max-result-size
+        max_size_match = re.search(r"--max-result-size\s+(\d+)", args_str)
+        if max_size_match:
+            config["langfuse_max_result_size"] = int(max_size_match.group(1))
+
+        # Extract --redact on|off
+        redact_match = re.search(r"--redact\s+(on|off)", args_str)
+        if redact_match:
+            config["langfuse_redact_secrets"] = redact_match.group(1) == "on"
+
+        # Write config
+        _write_config_atomic(config, config_path)
+
+        # Build confirmation message
+        message = "✓ Langfuse filter settings updated:"
+        if max_size_match:
+            message += (
+                f"\n  Max Result Size: {config['langfuse_max_result_size']} bytes"
+            )
+        if redact_match:
+            message += f"\n  Secret Redaction: {'ON' if config['langfuse_redact_secrets'] else 'OFF'}"
+
+        return {
+            "success": True,
+            "message": message,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error configuring filter: {str(e)}",
+        }
+
+
+def _parse_backfill_date(parts: list) -> tuple:
+    """Parse --since date from command parts. Returns (date, error_dict or None)."""
+    from datetime import datetime
+
+    args_str = " ".join(parts[1:]) if len(parts) > 1 else ""
+    since_match = re.search(r"--since\s+(\d{4}-\d{2}-\d{2})", args_str)
+
+    if not since_match:
+        return None, {
+            "success": False,
+            "message": "Usage: pace-maker langfuse backfill --since YYYY-MM-DD",
+        }
+
+    try:
+        return datetime.strptime(since_match.group(1), "%Y-%m-%d"), None
+    except ValueError:
+        return None, {
+            "success": False,
+            "message": "Invalid date format. Use YYYY-MM-DD",
+        }
+
+
+def _langfuse_backfill(config_path: str, parts: list) -> Dict[str, Any]:
+    """Handle 'langfuse backfill --since YYYY-MM-DD' command."""
+    from pathlib import Path
+    from .langfuse.backfill import backfill_sessions
+
+    since_date, error = _parse_backfill_date(parts)
+    if error:
+        return error
+
+    config = _load_config(config_path)
+    base_url = config.get("langfuse_base_url")
+    public_key = config.get("langfuse_public_key")
+    secret_key = config.get("langfuse_secret_key")
+
+    if not all([base_url, public_key, secret_key]):
+        return {
+            "success": False,
+            "message": "Langfuse not configured. Run: pace-maker langfuse config",
+        }
+
+    if not config.get("langfuse_enabled", False):
+        return {
+            "success": False,
+            "message": "Langfuse disabled. Run: pace-maker langfuse on",
+        }
+
+    claude_projects = Path.home() / ".claude" / "projects"
+    if not claude_projects.exists():
+        return {"success": False, "message": f"No Claude projects at {claude_projects}"}
+
+    totals = {"total": 0, "success": 0, "failed": 0, "skipped": 0}
+    print(f"Scanning projects since {since_date.strftime('%Y-%m-%d')}...")
+
+    for project_dir in claude_projects.iterdir():
+        if project_dir.is_dir():
+            result = backfill_sessions(
+                str(project_dir),
+                since_date,
+                base_url,
+                public_key,
+                secret_key,
+                progress=True,
+            )
+            for key in totals:
+                totals[key] += result[key]
+
+    summary = f"✓ Backfill: {totals['total']} processed, {totals['success']} new, {totals['skipped']} skipped"
+    if totals["failed"] > 0:
+        summary += f", {totals['failed']} failed"
+    return {"success": True, "message": summary}
+
+
+def _langfuse_config(config_path: str, parts: list) -> Dict[str, Any]:
+    """Handle 'langfuse config <base_url> <public_key> <secret_key>' command."""
+    if len(parts) < 4:
+        return {
+            "success": False,
+            "message": "Usage: pace-maker langfuse config <base_url> <public_key> <secret_key>",
+        }
+
+    base_url = parts[1]
+    public_key = parts[2]
+    secret_key = parts[3]
+
+    try:
+        # Load existing config
+        config = _load_config(config_path)
+
+        # Store credentials (CRITICAL: Never log secret_key)
+        config["langfuse_base_url"] = base_url
+        config["langfuse_public_key"] = public_key
+        config["langfuse_secret_key"] = secret_key
+
+        # Write atomically
+        _write_config_atomic(config, config_path)
+
+        return {
+            "success": True,
+            "message": "✓ Langfuse configuration saved successfully\nCredentials stored securely in config.",
+        }
+    except Exception as e:
+        # CRITICAL: Never log the secret_key in error messages
+        return {
+            "success": False,
+            "message": f"Error saving Langfuse configuration: {str(e)}",
+        }
+
+
+def _langfuse_on(config_path: str) -> Dict[str, Any]:
+    """Handle 'langfuse on' command."""
+    try:
+        config = _load_config(config_path)
+        config["langfuse_enabled"] = True
+        _write_config_atomic(config, config_path)
+        return {
+            "success": True,
+            "message": "✓ Langfuse telemetry ENABLED\nSession data will be pushed to Langfuse at session end.",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error enabling Langfuse: {str(e)}",
+        }
+
+
+def _langfuse_off(config_path: str) -> Dict[str, Any]:
+    """Handle 'langfuse off' command."""
+    try:
+        config = _load_config(config_path)
+        config["langfuse_enabled"] = False
+        _write_config_atomic(config, config_path)
+        return {
+            "success": True,
+            "message": "✓ Langfuse telemetry DISABLED\nSession data will not be pushed to Langfuse.",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error disabling Langfuse: {str(e)}",
+        }
+
+
+def _langfuse_test_connection(config: dict) -> Dict[str, Any]:
+    """Test Langfuse API connection."""
+    from .langfuse import client
+
+    base_url = config.get("langfuse_base_url")
+    public_key = config.get("langfuse_public_key")
+    secret_key = config.get("langfuse_secret_key")
+
+    # Validate credentials configured
+    if not base_url or not public_key or not secret_key:
+        return {"connected": False, "message": "Credentials not configured"}
+
+    # Test connection with 5-second timeout
+    return client.test_connection(base_url, public_key, secret_key, timeout=5)
+
+
+def _langfuse_status(config_path: str) -> Dict[str, Any]:
+    """Handle 'langfuse status' command."""
+    try:
+        config = _load_config(config_path)
+        enabled = config.get("langfuse_enabled", False)
+        base_url = config.get("langfuse_base_url", "Not configured")
+        public_key = config.get("langfuse_public_key", "Not configured")
+        # CRITICAL: Never display secret_key in status output
+
+        status_text = f"Langfuse: {'ENABLED' if enabled else 'DISABLED'}"
+        status_text += f"\nBase URL: {base_url}"
+        status_text += f"\nPublic Key: {public_key}"
+
+        # AC3: Test connection
+        connection_result = _langfuse_test_connection(config)
+        if connection_result["connected"]:
+            status_text += f"\nConnection: ✓ {connection_result['message']}"
+        else:
+            status_text += f"\nConnection: ✗ {connection_result['message']}"
+
+        return {
+            "success": True,
+            "message": status_text,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error getting Langfuse status: {str(e)}",
+        }
+
+
+def _langfuse_stats(config_path: str, parts: list) -> Dict[str, Any]:
+    """
+    Handle 'langfuse stats [--week]' command (Story #33).
+
+    Args:
+        config_path: Path to config file
+        parts: Command parts (parts[0] = 'stats', parts[1:] = flags)
+
+    Returns:
+        Dict with success and message
+    """
+    from .langfuse import stats
+
+    try:
+        # Load config
+        config = _load_config(config_path)
+
+        # Check if Langfuse is configured
+        base_url = config.get("langfuse_base_url")
+        public_key = config.get("langfuse_public_key")
+        secret_key = config.get("langfuse_secret_key")
+
+        if not all([base_url, public_key, secret_key]):
+            return {
+                "success": False,
+                "message": "Langfuse not configured. Run: pace-maker langfuse config <url> <public_key> <secret_key>",
+            }
+
+        # Check if Langfuse is enabled
+        if not config.get("langfuse_enabled", False):
+            return {
+                "success": False,
+                "message": "Langfuse disabled. Run: pace-maker langfuse on",
+            }
+
+        # Check for --week flag
+        is_weekly = len(parts) > 1 and "--week" in " ".join(parts[1:])
+
+        if is_weekly:
+            # AC2: Weekly breakdown
+            output = stats.get_weekly_breakdown(base_url, public_key, secret_key)
+        else:
+            # AC1: Daily summary
+            output = stats.get_daily_summary(base_url, public_key, secret_key)
+
+        # AC4: Always return success=True even if API failed (graceful fallback)
+        return {"success": True, "message": output}
+
+    except Exception as e:
+        # AC4: Even unexpected errors should return success=True with error message
+        return {"success": True, "message": f"Error fetching stats: {str(e)}"}
+
+
 def _parse_rule_args(args_str: str, require_all: bool = True) -> Dict[str, str]:
     """
     Parse --id, --name, --description from argument string.
@@ -1813,6 +2168,7 @@ For more information, run: pace-maker help
             "core-paths",
             "excluded-paths",
             "prefer-model",
+            "langfuse",
         ],
         help="Command to execute",
     )
@@ -1824,14 +2180,15 @@ For more information, run: pace-maker help
         help="Subcommand (on|off|session) for weekly-limit, tempo, reminder, intent-validation or log level (0-4) for loglevel",
     )
 
-    # Parse arguments
-    args = parser.parse_args()
+    # Parse arguments - use parse_known_args to allow -- flags to pass through
+    args, unknown = parser.parse_known_args()
 
     # Import constants for default paths
     from .constants import DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH
 
-    # Join subcommand args into a single string (for "tempo session on")
-    subcommand_str = " ".join(args.subcommand) if args.subcommand else None
+    # Combine known subcommand args with unknown args (for flags like --since, --max-result-size)
+    all_parts = (args.subcommand or []) + unknown
+    subcommand_str = " ".join(all_parts) if all_parts else None
 
     # Execute command
     result = execute_command(

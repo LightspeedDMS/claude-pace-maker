@@ -49,7 +49,7 @@ class TestSubagentReminderState:
         """SubagentStop hook should decrement counter and update flag."""
         state_path = tmp_path / "state.json"
 
-        # Initial state - in subagent
+        # Initial state - in subagent (no dict since Langfuse disabled)
         initial_state = {
             "session_id": "test-session",
             "in_subagent": True,
@@ -58,8 +58,18 @@ class TestSubagentReminderState:
         }
         state_path.write_text(json.dumps(initial_state))
 
+        # Mock stdin to provide hook_data with agent_id
+        hook_data = {"agent_id": "agent-123", "session_id": "parent-session"}
+
         # Run SubagentStop hook
-        with patch("pacemaker.hook.DEFAULT_STATE_PATH", str(state_path)):
+        with (
+            patch("pacemaker.hook.DEFAULT_STATE_PATH", str(state_path)),
+            patch("sys.stdin.read", return_value=json.dumps(hook_data)),
+            patch("pacemaker.hook.get_transcript_path", return_value=None),
+            patch(
+                "pacemaker.hook.load_config", return_value={"langfuse_enabled": False}
+            ),
+        ):
             hook.run_subagent_stop_hook()
 
         # Verify state updated
@@ -67,6 +77,7 @@ class TestSubagentReminderState:
         assert state["in_subagent"] is False
         assert state["subagent_counter"] == 0
         assert state["tool_execution_count"] == 10  # Counter unchanged
+        # NOTE: Dict cleanup only happens when Langfuse enabled
 
     def test_session_start_resets_flag(self, tmp_path):
         """SessionStart hook should reset counter and flag, preventing state corruption."""
@@ -81,7 +92,7 @@ class TestSubagentReminderState:
         }
         state_path.write_text(json.dumps(initial_state))
 
-        # Run SessionStart hook
+        # Run SessionStart hook (no stdin = defaults to source='startup')
         with patch("pacemaker.hook.DEFAULT_STATE_PATH", str(state_path)):
             hook.run_session_start_hook()
 
@@ -89,7 +100,8 @@ class TestSubagentReminderState:
         state = json.loads(state_path.read_text())
         assert state["in_subagent"] is False
         assert state["subagent_counter"] == 0
-        assert state["tool_execution_count"] == 15  # Counter unchanged
+        # FIXED: tool_execution_count should be RESET for new session (source='startup')
+        assert state["tool_execution_count"] == 0
 
     def test_parallel_subagents_tracking(self, tmp_path):
         """Counter-based approach correctly handles parallel subagents."""
@@ -104,27 +116,55 @@ class TestSubagentReminderState:
         }
         state_path.write_text(json.dumps(initial_state))
 
-        with patch("pacemaker.hook.DEFAULT_STATE_PATH", str(state_path)):
-            # Start first subagent
-            hook.run_subagent_start_hook()
+        with (
+            patch("pacemaker.hook.DEFAULT_STATE_PATH", str(state_path)),
+            patch(
+                "pacemaker.hook.load_config",
+                return_value={
+                    "langfuse_enabled": False,
+                    "intent_validation_enabled": False,
+                },
+            ),
+            patch("pacemaker.hook.display_intent_validation_guidance", return_value=""),
+            patch("pacemaker.hook.get_transcript_path", return_value=None),
+        ):
+            # Start first subagent with agent_id
+            hook_data_1 = {
+                "agent_id": "agent-1",
+                "transcript_path": "/tmp/parent.jsonl",
+            }
+            with patch("sys.stdin.read", return_value=json.dumps(hook_data_1)):
+                hook.run_subagent_start_hook()
             state = json.loads(state_path.read_text())
             assert state["subagent_counter"] == 1
             assert state["in_subagent"] is True
+            # NOTE: Dict not created when Langfuse disabled (only created when trace exists)
 
-            # Start second subagent (parallel)
-            hook.run_subagent_start_hook()
+            # Start second subagent (parallel) with different agent_id
+            hook_data_2 = {
+                "agent_id": "agent-2",
+                "transcript_path": "/tmp/parent.jsonl",
+            }
+            with patch("sys.stdin.read", return_value=json.dumps(hook_data_2)):
+                hook.run_subagent_start_hook()
             state = json.loads(state_path.read_text())
             assert state["subagent_counter"] == 2
             assert state["in_subagent"] is True
 
             # Stop first subagent (second still running)
-            hook.run_subagent_stop_hook()
+            with patch(
+                "sys.stdin.read", return_value=json.dumps({"agent_id": "agent-1"})
+            ):
+                hook.run_subagent_stop_hook()
             state = json.loads(state_path.read_text())
             assert state["subagent_counter"] == 1
             assert state["in_subagent"] is True  # Still in subagent!
 
             # Stop second subagent (back to main context)
-            hook.run_subagent_stop_hook()
+            with patch(
+                "sys.stdin.read", return_value=json.dumps({"agent_id": "agent-2"})
+            ):
+                hook.run_subagent_stop_hook()
             state = json.loads(state_path.read_text())
             assert state["subagent_counter"] == 0
             assert state["in_subagent"] is False
@@ -142,7 +182,16 @@ class TestSubagentReminderState:
         }
         state_path.write_text(json.dumps(initial_state))
 
-        with patch("pacemaker.hook.DEFAULT_STATE_PATH", str(state_path)):
+        with (
+            patch("pacemaker.hook.DEFAULT_STATE_PATH", str(state_path)),
+            patch(
+                "pacemaker.hook.load_config", return_value={"langfuse_enabled": False}
+            ),
+            patch(
+                "sys.stdin.read", return_value=json.dumps({"agent_id": "agent-orphan"})
+            ),
+            patch("pacemaker.hook.get_transcript_path", return_value=None),
+        ):
             # Try to stop when counter is 0 (should stay at 0)
             hook.run_subagent_stop_hook()
             state = json.loads(state_path.read_text())
@@ -631,6 +680,13 @@ class TestIntegration:
             "in_subagent": True,  # Start in subagent
             "subagent_counter": 1,
             "tool_execution_count": 9,  # One away from 10
+            # Include dict-based trace storage
+            "subagent_traces": {
+                "agent-test": {
+                    "trace_id": "trace-123",
+                    "parent_transcript_path": "/tmp/parent.jsonl",
+                }
+            },
         }
         state_path.write_text(json.dumps(initial_state))
 
@@ -639,6 +695,7 @@ class TestIntegration:
             "subagent_reminder_enabled": True,
             "subagent_reminder_frequency": 5,
             "subagent_reminder_message": "[TEST REMINDER]",
+            "langfuse_enabled": False,
         }
         config_path.write_text(json.dumps(config))
 
@@ -664,10 +721,14 @@ class TestIntegration:
                 "__init__",
                 lambda self: setattr(self, "prompts_dir", prompts_dir),
             ),
+            patch("pacemaker.hook.get_transcript_path", return_value=None),
         ):
 
-            # Exit subagent
-            hook.run_subagent_stop_hook()
+            # Exit subagent with proper hook_data containing agent_id
+            with patch(
+                "sys.stdin.read", return_value=json.dumps({"agent_id": "agent-test"})
+            ):
+                hook.run_subagent_stop_hook()
 
             # Execute 1 tool in main context (count becomes 10)
             mock_print.reset_mock()

@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.4.1] - 2026-02-04
+
+### Added
+- **Langfuse telemetry integration**: Direct HTTP API integration for tracing Claude Code sessions
+- **Blockage telemetry tracking**: Track and report intent validation blockages via CLI stats
+- **Model preference to status display**: Shows preferred model in pace-maker status output
+- **Stale data detection**: Resilient pacing calculations handle stale/missing data gracefully
+
+### Fixed
+- **Intent validation message count**: Fixed to n=2 (minimum required because Claude Code writes text content and tool_use as separate transcript entries)
+- **TDD blockage tracking**: Proper tracking of TDD enforcement blockages
+- **Stop hook tempo checker**: More permissive handling of incomplete context
+
+### Changed
+- **Package description**: Updated to reflect full feature set (pacing, intent validation, TDD enforcement, Langfuse telemetry)
+
 ## [1.5.0] - 2025-12-09
 
 ### Added

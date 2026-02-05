@@ -220,8 +220,24 @@ def run_session_start_hook():
     """
     Handle SessionStart hook - beginning of new session.
 
-    Resets subagent_counter to 0 and in_subagent to false to ensure clean state.
-    This prevents state corruption from cancelled subagents.
+    Resets state based on session source:
+    - source='startup': Full reset (new session)
+    - source='resume': Update session_id but preserve counters
+    - source='clear'/'compact': Reset counters but keep session_id
+    - Missing source: Default to 'startup' behavior
+
+    This prevents state corruption from cancelled subagents and stale data.
+
+    SessionStart hook receives JSON via stdin:
+    {
+        "session_id": "abc123",
+        "transcript_path": "/path/to/transcript.jsonl",
+        "cwd": "/current/working/directory",
+        "permission_mode": "default",
+        "hook_event_name": "SessionStart",
+        "source": "startup|resume|clear|compact",
+        "model": "claude-sonnet-4-5-20250929"
+    }
 
     Also displays intent validation mandate if feature is enabled.
     """
@@ -232,17 +248,62 @@ def run_session_start_hook():
     if not config.get("enabled", True):
         return
 
+    # Read hook data from stdin
+    hook_data = None
+    session_id = None
+    source = "startup"  # Default to startup behavior
+
+    try:
+        raw_input = sys.stdin.read()
+        if raw_input:
+            hook_data = json.loads(raw_input)
+            session_id = hook_data.get("session_id")
+            source = hook_data.get("source", "startup")
+    except (json.JSONDecodeError, Exception) as e:
+        # Graceful degradation - log warning and continue with defaults
+        log_warning("hook", "Failed to parse SessionStart stdin data", e)
+
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
 
-    # Reset counter
+    # Reset subagent tracking (always reset regardless of source)
     state["subagent_counter"] = 0
-
-    # Ensure we start in main context
     state["in_subagent"] = False
+
+    # Conditional reset based on source
+    if source == "startup":
+        # NEW SESSION - Full reset
+        if session_id:
+            state["session_id"] = session_id
+        state["last_user_interaction_time"] = None
+        state["tool_execution_count"] = 0
+        state["last_poll_time"] = None
+    elif source == "resume":
+        # RESUME existing session - Update session_id but preserve counters
+        if session_id:
+            state["session_id"] = session_id
+        # Keep: last_user_interaction_time, tool_execution_count, last_poll_time
+    elif source in ("clear", "compact"):
+        # CLEAR/COMPACT - Reset counters but keep session_id
+        # (session_id from stdin should match existing session_id)
+        state["last_user_interaction_time"] = None
+        state["tool_execution_count"] = 0
+        state["last_poll_time"] = None
+        # Keep: session_id (same session continues)
 
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
+
+    # AC3: Cleanup stale Langfuse state files (>7 days old)
+    try:
+        from .langfuse import state as langfuse_state
+
+        langfuse_state_dir = os.path.expanduser("~/.claude-pace-maker/langfuse_state")
+        state_manager = langfuse_state.StateManager(langfuse_state_dir)
+        state_manager.cleanup_stale_files(max_age_days=7)
+    except Exception as e:
+        # Log error but don't break session start
+        log_warning("hook", "Failed to cleanup stale Langfuse state files", e)
 
     # Display intent validation mandate if enabled
     try:
@@ -270,13 +331,32 @@ def run_subagent_start_hook():
     """
     Handle SubagentStart hook - entering subagent context.
 
+    AC3: Creates child Langfuse span when Langfuse enabled
     Increments subagent_counter and sets in_subagent flag based on counter.
     Does NOT reset tool_execution_count (global counter persists).
 
     Also displays intent validation mandate if feature is enabled.
     """
-    # Load config to check if intent validation enabled
+    # Load config
     config = load_config(DEFAULT_CONFIG_PATH)
+
+    # Read hook data from stdin for Langfuse integration
+    hook_data = None
+    try:
+        raw_input = sys.stdin.read()
+        # Debug: Log what we received
+        log_debug(
+            "hook",
+            f"SubagentStart raw_input length: {len(raw_input) if raw_input else 0}",
+        )
+        log_debug(
+            "hook",
+            f"SubagentStart raw_input: {raw_input[:500] if raw_input else 'EMPTY'}",
+        )
+        if raw_input:
+            hook_data = json.loads(raw_input)
+    except (json.JSONDecodeError, Exception) as e:
+        log_warning("hook", "Failed to parse SubagentStart stdin data", e)
 
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
@@ -289,6 +369,41 @@ def run_subagent_start_hook():
 
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
+
+    # AC3: Create Langfuse trace for subagent if hook data available
+    if hook_data:
+        log_debug("hook", f"SubagentStart hook_data keys: {list(hook_data.keys())}")
+        log_debug("hook", f"SubagentStart hook_data: {hook_data}")
+        subagent_trace_id = _handle_langfuse_subagent_start(hook_data, config)
+
+        # Store subagent trace info in pacemaker state for:
+        # 1. PostToolUse to link spans to subagent trace
+        # 2. SubagentStop to finalize trace with output
+        # Use dict keyed by agent_id to support concurrent subagents
+        if subagent_trace_id:
+            agent_id = hook_data.get("agent_id")
+            parent_transcript_path = hook_data.get("transcript_path", "")
+
+            # Store in dict keyed by agent_id (supports concurrent subagents)
+            if "subagent_traces" not in state:
+                state["subagent_traces"] = {}
+            state["subagent_traces"][agent_id] = {
+                "trace_id": subagent_trace_id,
+                "parent_transcript_path": parent_transcript_path,
+            }
+
+            # Keep old keys for backward compatibility (will be deprecated)
+            state["current_subagent_trace_id"] = subagent_trace_id
+            state["current_subagent_agent_id"] = agent_id
+            state["current_subagent_parent_transcript_path"] = parent_transcript_path
+
+            save_state(state, DEFAULT_STATE_PATH)
+            log_debug(
+                "hook",
+                f"SubagentStart: Stored subagent trace_id={subagent_trace_id} for agent_id={agent_id} in dict",
+            )
+    else:
+        log_debug("hook", "SubagentStart: No hook_data received from stdin")
 
     # Display intent validation mandate if enabled
     try:
@@ -314,9 +429,24 @@ def run_subagent_stop_hook():
     """
     Handle SubagentStop hook - exiting subagent context.
 
+    AC5: Finalizes subagent span by flushing remaining transcript lines
     Decrements subagent_counter and sets in_subagent flag based on counter.
     Does NOT reset tool_execution_count (global counter persists).
     """
+    # Load config
+    config = load_config(DEFAULT_CONFIG_PATH)
+
+    # Read hook data from stdin for Langfuse finalization
+    hook_data = None
+    try:
+        raw_input = sys.stdin.read()
+        if raw_input:
+            hook_data = json.loads(raw_input)
+            log_debug("hook", f"SubagentStop hook_data keys: {list(hook_data.keys())}")
+            log_debug("hook", f"SubagentStop hook_data: {hook_data}")
+    except (json.JSONDecodeError, Exception) as e:
+        log_warning("hook", "Failed to parse SubagentStop stdin data", e)
+
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
 
@@ -328,6 +458,81 @@ def run_subagent_stop_hook():
 
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
+
+    # AC5: Subagent trace finalization
+    # Get agent_id from hook_data to lookup correct trace in dict
+    hook_agent_id = hook_data.get("agent_id") if hook_data else None
+
+    # Lookup trace info from dict (supports concurrent subagents)
+    trace_info = None
+    if hook_agent_id:
+        subagent_traces = state.get("subagent_traces", {})
+        trace_info = subagent_traces.get(hook_agent_id)
+
+    # Backward compatibility: fallback to old single-value keys if dict lookup fails
+    if not trace_info:
+        old_trace_id = state.get("current_subagent_trace_id")
+        old_agent_id = state.get("current_subagent_agent_id")
+        old_parent_path = state.get("current_subagent_parent_transcript_path")
+        if old_trace_id:
+            trace_info = {
+                "trace_id": old_trace_id,
+                "parent_transcript_path": old_parent_path,
+            }
+            hook_agent_id = old_agent_id
+
+    if trace_info and config.get("langfuse_enabled", False):
+        subagent_trace_id = trace_info.get("trace_id")
+        parent_transcript_path = trace_info.get("parent_transcript_path")
+
+        try:
+            from .langfuse import orchestrator
+
+            # Get parent transcript path for extracting subagent output
+            # Try to get transcript path from hook_data first, then use stored path
+            parent_session_id = hook_data.get("session_id") if hook_data else None
+            if parent_session_id:
+                transcript_from_session = get_transcript_path(parent_session_id)
+                if transcript_from_session:
+                    parent_transcript_path = transcript_from_session
+
+            # Extract agent_transcript_path from hook_data (NEW)
+            # This is the subagent's own transcript where output already exists
+            agent_transcript_path = (
+                hook_data.get("agent_transcript_path") if hook_data else None
+            )
+
+            # Finalize subagent trace with output
+            # Pass agent_transcript_path to read from subagent's own transcript
+            # Pass agent_id to correctly correlate output when multiple subagents run (fallback)
+            orchestrator.handle_subagent_stop(
+                config=config,
+                subagent_trace_id=subagent_trace_id,
+                parent_transcript_path=parent_transcript_path,
+                agent_id=hook_agent_id,
+                agent_transcript_path=agent_transcript_path,
+            )
+            log_info(
+                "hook",
+                f"SubagentStop: Finalized subagent trace {subagent_trace_id} for agent_id={hook_agent_id}",
+            )
+        except Exception as e:
+            # Graceful failure - log but don't break hook
+            log_warning(
+                "hook", f"SubagentStop: Failed to finalize trace {subagent_trace_id}", e
+            )
+
+        # Clear this agent's trace info from dict
+        if hook_agent_id and "subagent_traces" in state:
+            state["subagent_traces"].pop(hook_agent_id, None)
+
+        # Clear old backward-compat keys
+        state.pop("current_subagent_trace_id", None)
+        state.pop("current_subagent_agent_id", None)
+        state.pop("current_subagent_parent_transcript_path", None)
+        save_state(state, DEFAULT_STATE_PATH)
+    elif not trace_info:
+        log_debug("hook", "SubagentStop: No subagent trace_id to finalize")
 
 
 def should_inject_reminder(
@@ -408,7 +613,10 @@ def inject_subagent_reminder(config: dict) -> Optional[str]:
 
 
 def run_hook():
-    """Main hook execution with pacing AND code review.
+    """
+    Main hook execution with pacing AND incremental Langfuse push.
+
+    AC2: Trigger incremental Langfuse push on PostToolUse
 
     Returns:
         bool: True if code review feedback was provided, False otherwise
@@ -430,11 +638,15 @@ def run_hook():
     # Read hook data from stdin to get tool_name
     tool_name = None
     hook_data = None
+    session_id = None
+    transcript_path = None
     try:
         raw_input = sys.stdin.read()
         if raw_input:
             hook_data = json.loads(raw_input)
             tool_name = hook_data.get("tool_name")
+            session_id = hook_data.get("session_id")
+            transcript_path = hook_data.get("transcript_path")
     except (json.JSONDecodeError, Exception) as e:
         log_warning("hook", "Failed to parse hook data from stdin", e)
 
@@ -528,6 +740,30 @@ def run_hook():
     if state_changed:
         save_state(state, DEFAULT_STATE_PATH)
 
+    # AC2: Create span for tool call (trace-per-turn)
+    if session_id and hook_data:
+        try:
+            from .langfuse import orchestrator
+
+            langfuse_state_dir = os.path.expanduser(
+                "~/.claude-pace-maker/langfuse_state"
+            )
+
+            # Create spans from transcript (graceful failure per AC5)
+            # Refactored: No longer uses tool_input/tool_output from hook
+            # Instead parses transcript to capture ALL content (text + tools)
+            orchestrator.handle_post_tool_use(
+                config=config,
+                session_id=session_id,
+                transcript_path=transcript_path,
+                state_dir=langfuse_state_dir,
+            )
+            # Note: We don't check return value - failures are logged but don't block hook
+
+        except Exception as e:
+            # AC5: Graceful failure - log error but don't crash hook
+            log_warning("hook", "Langfuse span creation failed on PostToolUse", e)
+
     # Print final message if any (code review takes priority over subagent nudge)
     if pending_message:
         output = {
@@ -569,8 +805,46 @@ def parse_user_prompt_input(raw_input: str) -> dict:
         }
 
 
+def get_transcript_path(session_id: str) -> Optional[str]:
+    """
+    Derive transcript path from session_id and current working directory.
+
+    Claude Code stores transcripts at:
+    ~/.claude/projects/<cwd-with-slashes-replaced-by-dashes>/<session_id>.jsonl
+
+    Args:
+        session_id: Session UUID from hook data
+
+    Returns:
+        Path to transcript file, or None if not found
+    """
+    # Get current working directory
+    cwd = os.getcwd()
+
+    # Convert to project directory name (replace / with -)
+    # /home/jsbattig/Dev/code-indexer -> -home-jsbattig-Dev-code-indexer
+    project_dir_name = cwd.replace("/", "-")
+
+    # Build transcript path
+    transcript_path = os.path.expanduser(
+        f"~/.claude/projects/{project_dir_name}/{session_id}.jsonl"
+    )
+
+    # Return only if file exists
+    if os.path.exists(transcript_path):
+        return transcript_path
+    return None
+
+
 def run_user_prompt_submit():
-    """Handle user prompt submit hook - pace-maker command interception only."""
+    """
+    Handle user prompt submit hook.
+
+    Responsibilities:
+    - Intercept pace-maker commands
+    - Update state (interaction time, subagent tracking)
+    - AC1: Trigger incremental Langfuse push
+    """
     try:
         # Read user input from stdin first
         raw_input = sys.stdin.read().strip()
@@ -578,6 +852,7 @@ def run_user_prompt_submit():
         # Parse input (JSON or plain text)
         parsed_data = parse_user_prompt_input(raw_input)
         user_input = parsed_data["prompt"]
+        session_id = parsed_data["session_id"]
 
         # Check if this is a pace-maker command BEFORE updating state
         result = user_commands.handle_user_prompt(
@@ -595,6 +870,37 @@ def run_user_prompt_submit():
             state["last_user_interaction_time"] = datetime.now()
 
         save_state(state, DEFAULT_STATE_PATH)
+
+        # AC1: Trigger trace creation for user prompt (trace-per-turn)
+        # Only for non-intercepted prompts (actual Claude interactions)
+        if not result["intercepted"]:
+            try:
+                from .langfuse import orchestrator
+
+                # Derive transcript path from session_id (Claude Code doesn't send it)
+                transcript_path = get_transcript_path(session_id)
+
+                if transcript_path:
+                    config = load_config(DEFAULT_CONFIG_PATH)
+                    langfuse_state_dir = os.path.expanduser(
+                        "~/.claude-pace-maker/langfuse_state"
+                    )
+
+                    # Create trace for user prompt (graceful failure per AC5)
+                    orchestrator.handle_user_prompt_submit(
+                        config=config,
+                        session_id=session_id,
+                        transcript_path=transcript_path,
+                        state_dir=langfuse_state_dir,
+                        user_message=user_input,
+                    )
+                    # Note: We don't check return value - failures are logged but don't block hook
+
+            except Exception as e:
+                # AC5: Graceful failure - log error but don't crash hook
+                log_warning(
+                    "hook", "Langfuse trace creation failed on UserPromptSubmit", e
+                )
 
         if result["intercepted"]:
             # Command was intercepted - output JSON to block and display output
@@ -800,6 +1106,109 @@ def format_elapsed_time(last_interaction_time) -> str:
         return f"{hours:.1f} hours ago"
 
 
+# Langfuse push timeout for AC4 (<2s constraint)
+LANGFUSE_PUSH_TIMEOUT_SECONDS = 2
+
+
+def _handle_langfuse_subagent_start(hook_data: dict, config: dict) -> Optional[str]:
+    """
+    Handle Langfuse trace creation for SubagentStart hook.
+
+    AC3: Creates trace for subagent linked to parent session when subagent starts.
+
+    Uses orchestrator.handle_subagent_start() for real API integration.
+
+    Args:
+        hook_data: Hook data from stdin with subagent metadata
+        config: Configuration dict
+
+    Returns:
+        Subagent trace ID if successful, None if skipped or failed
+    """
+    # Check if Langfuse enabled
+    if not config.get("langfuse_enabled", False):
+        return None
+
+    try:
+        from .langfuse import orchestrator
+
+        # Extract subagent metadata from Claude Code's actual hook data format:
+        # - session_id: This is the PARENT's session ID (Claude Code's naming)
+        # - agent_id: The subagent's identifier
+        # - agent_type: The subagent type (e.g., "Explore", "tdd-engineer")
+        # - transcript_path: Parent's transcript path
+        parent_session_id = hook_data.get("session_id")
+        agent_id = hook_data.get("agent_id")
+        subagent_name = hook_data.get("agent_type", "subagent")
+        parent_transcript_path = hook_data.get("transcript_path", "")
+
+        # Validate required fields
+        if not parent_session_id or not agent_id:
+            log_debug(
+                "hook",
+                "SubagentStart: Missing required fields (session_id or agent_id)",
+            )
+            return None
+
+        # Create a subagent session ID from the agent_id
+        subagent_session_id = f"subagent-{agent_id}"
+
+        # State directory
+        langfuse_state_dir = os.path.expanduser("~/.claude-pace-maker/langfuse_state")
+
+        # Call orchestrator handler - creates TRACE for subagent (not span)
+        subagent_trace_id = orchestrator.handle_subagent_start(
+            config=config,
+            parent_session_id=parent_session_id,
+            subagent_session_id=subagent_session_id,
+            subagent_name=subagent_name,
+            parent_transcript_path=parent_transcript_path,
+            state_dir=langfuse_state_dir,
+        )
+
+        if subagent_trace_id:
+            log_info(
+                "hook",
+                f"SubagentStart: Created subagent trace {subagent_trace_id} for {subagent_name}",
+            )
+
+        return subagent_trace_id
+
+    except Exception as e:
+        # AC5: Graceful failure - log error but don't crash hook
+        log_warning(
+            "hook", "Failed to create Langfuse subagent trace on SubagentStart", e
+        )
+        return None
+
+
+def run_langfuse_push(config: dict, session_id: str, transcript_path: str) -> bool:
+    """
+    DEPRECATED: Legacy generation event push - replaced by span-based architecture.
+
+    This function created "claude-code-generation" events with token tracking.
+    Now replaced by:
+    - handle_user_prompt_submit() - creates traces
+    - handle_post_tool_use() - creates text/tool spans
+    - handle_stop_finalize() - finalizes traces
+
+    Kept for backward compatibility but does nothing.
+
+    Args:
+        config: Configuration dict (ignored)
+        session_id: Session identifier (ignored)
+        transcript_path: Path to transcript JSONL file (ignored)
+
+    Returns:
+        True (always succeeds as no-op)
+    """
+    log_debug(
+        "hook",
+        "run_langfuse_push called but deprecated - using span-based architecture",
+    )
+    return True
+
+
 def is_context_exhaustion_detected(transcript_path: str) -> bool:
     """
     Detect if conversation is approaching or has reached context exhaustion.
@@ -980,11 +1389,7 @@ def run_stop_hook():
                 "hook", f"Auto Tempo Status: mode={tempo_mode}, no interaction tracked"
             )
 
-        if not should_run_tempo(config, state):
-            log_debug("hook", "Tempo disabled - allow exit")
-            return {"continue": True}  # Tempo disabled - allow exit
-
-        # Read hook data from stdin
+        # Read hook data from stdin FIRST (needed for Langfuse regardless of tempo)
         raw_input = sys.stdin.read()
         if not raw_input:
             log_debug("hook", "No raw input from stdin")
@@ -992,7 +1397,35 @@ def run_stop_hook():
 
         hook_data = json.loads(raw_input)
         session_id = hook_data.get("session_id")
-        transcript_path = hook_data.get("transcript_path")
+
+        # Derive transcript path from session_id (Claude Code doesn't send it)
+        transcript_path = get_transcript_path(session_id) if session_id else None
+
+        # Finalize current trace with Claude's output (ALWAYS runs, regardless of tempo)
+        # This adds the output field to the trace before final push
+        try:
+            from .langfuse import orchestrator
+
+            langfuse_state_dir = os.path.expanduser(
+                "~/.claude-pace-maker/langfuse_state"
+            )
+            orchestrator.handle_stop_finalize(
+                config=config,
+                session_id=session_id,
+                transcript_path=transcript_path,
+                state_dir=langfuse_state_dir,
+            )
+        except Exception as e:
+            log_warning("hook", "Failed to finalize Langfuse trace", e)
+
+        # AC4: Legacy generation event push removed
+        # NOTE: Trace finalization now handled by handle_stop_finalize above
+        # No need for separate run_langfuse_push - span-based architecture handles everything
+
+        # NOW check tempo - if disabled, allow exit after Langfuse is handled
+        if not should_run_tempo(config, state):
+            log_debug("hook", "Tempo disabled - allow exit")
+            return {"continue": True}  # Tempo disabled - allow exit
 
         # Debug log
         log_debug("hook", "=== INTENT VALIDATION (Refactored) ===")
@@ -1102,8 +1535,10 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         tool_name = hook_data.get("tool_name")
         tool_input = hook_data.get("tool_input", {})
         file_path = tool_input.get("file_path")
-        transcript_path = hook_data.get("transcript_path")
         session_id = hook_data.get("session_id")
+
+        # Derive transcript path from session_id (Claude Code doesn't send it)
+        transcript_path = get_transcript_path(session_id) if session_id else None
 
         log_debug("hook", f"session_id: {session_id}")
         log_debug("hook", f"transcript_path: {transcript_path}")
@@ -1194,8 +1629,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         else:
             return {"continue": True}
 
-        # 6. Read last 4 messages for validation (includes user and assistant)
-        messages = get_last_n_messages_for_validation(transcript_path, n=4)
+        # 6. Read last 2 messages for validation (text + tool_use are separate entries)
+        messages = get_last_n_messages_for_validation(transcript_path, n=2)
 
         # 7. Call unified validation via SDK
         from . import intent_validator

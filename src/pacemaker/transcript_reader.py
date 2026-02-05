@@ -246,6 +246,34 @@ def _extract_text_only(content: Union[list, str]) -> str:
     return ""
 
 
+def _find_last_compact_boundary_line(transcript_path: str) -> int:
+    """
+    Find the line number of the last compact_boundary entry.
+
+    When a conversation is compacted, old content stays in the JSONL file
+    but should be ignored. Only content AFTER the last compact_boundary
+    represents the current conversation.
+
+    Args:
+        transcript_path: Path to JSONL transcript file
+
+    Returns:
+        Line number (0-indexed) of last compact_boundary, or -1 if none found
+    """
+    last_boundary_line = -1
+    try:
+        with open(transcript_path, "r") as f:
+            for line_num, line in enumerate(f):
+                entry = json.loads(line)
+                # Check for compact_boundary marker
+                if entry.get("subtype") == "compact_boundary":
+                    last_boundary_line = line_num
+    except Exception as e:
+        log_warning("transcript_reader", "Failed to find compact boundary", e)
+
+    return last_boundary_line
+
+
 def build_stop_hook_context(
     transcript_path: str,
     first_n_pairs: int = 10,
@@ -257,6 +285,9 @@ def build_stop_hook_context(
     This function extracts:
     1. First N user/assistant message pairs from the beginning (to understand session goals)
     2. Recent messages by walking backwards from end (to understand current state)
+
+    CRITICAL: Only reads content AFTER the last compact_boundary marker to ensure
+    validation occurs against the current conversation, not stale pre-compaction content.
 
     A "pair" consists of a user message and all assistant messages that follow it
     before the next user message.
@@ -274,11 +305,19 @@ def build_stop_hook_context(
         - 'total_tokens': Estimated token count
     """
     try:
+        # Find last compact boundary to skip pre-compaction content
+        compact_boundary_line = _find_last_compact_boundary_line(transcript_path)
+
         # Parse transcript and extract all messages (text only)
+        # Skip all content before and including the compact boundary
         all_messages = []
 
         with open(transcript_path, "r") as f:
-            for line in f:
+            for line_num, line in enumerate(f):
+                # Skip lines before and including the compact boundary
+                if line_num <= compact_boundary_line:
+                    continue
+
                 entry = json.loads(line)
                 message = entry.get("message", {})
                 role = message.get("role")

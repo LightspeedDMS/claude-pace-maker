@@ -562,6 +562,18 @@ install_hook_modules() {
     echo -e "${YELLOW}⚠ Warning: prompts directory not found, skipping${NC}"
   fi
 
+  # Copy langfuse directory (for incremental telemetry)
+  if [ -d "$PACEMAKER_SOURCE_DIR/langfuse" ]; then
+    echo "Copying langfuse directory..."
+    cp -r "$PACEMAKER_SOURCE_DIR/langfuse" "$HOOKS_PACEMAKER_DIR/"
+  fi
+
+  # Copy telemetry directory (for JSONL parsing)
+  if [ -d "$PACEMAKER_SOURCE_DIR/telemetry" ]; then
+    echo "Copying telemetry directory..."
+    cp -r "$PACEMAKER_SOURCE_DIR/telemetry" "$HOOKS_PACEMAKER_DIR/"
+  fi
+
   # Copy __init__.py if exists
   if [ -f "$PACEMAKER_SOURCE_DIR/__init__.py" ]; then
     echo "Copying __init__.py..."

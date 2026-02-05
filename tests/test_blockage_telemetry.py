@@ -76,11 +76,13 @@ class TestBlockageCategoriesConstant:
 
         assert "other" in BLOCKAGE_CATEGORIES
 
-    def test_blockage_categories_has_exactly_five_categories(self):
-        """BLOCKAGE_CATEGORIES should have exactly 5 categories."""
+    def test_blockage_categories_has_exactly_six_categories(self):
+        """BLOCKAGE_CATEGORIES should have exactly 6 categories (3 intent validation types + 2 pacing + other)."""
         from pacemaker.constants import BLOCKAGE_CATEGORIES
 
-        assert len(BLOCKAGE_CATEGORIES) == 5
+        # Updated to 6: intent_validation, intent_validation_tdd, intent_validation_cleancode,
+        # pacing_tempo, pacing_quota, other
+        assert len(BLOCKAGE_CATEGORIES) == 6
 
 
 # ==============================================================================

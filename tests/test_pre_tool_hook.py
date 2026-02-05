@@ -127,20 +127,21 @@ class TestPreToolHook:
     @patch("pacemaker.extension_registry.is_source_code_file")
     @patch("pacemaker.hook.get_last_n_messages_for_validation")
     @patch("pacemaker.intent_validator.validate_intent_and_code")
+    @patch("pacemaker.hook.get_transcript_path")
     @patch("sys.stdin")
-    def test_reads_last_5_messages(
+    def test_reads_last_2_messages(
         self,
         mock_stdin,
+        mock_get_transcript_path,
         mock_validate,
         mock_get_messages,
         mock_is_source,
         mock_load_ext,
         mock_load_config,
     ):
-        """Should read last 4 messages from transcript for validation (changed from 5)."""
+        """Should read last 2 messages (text + tool_use are separate transcript entries)."""
         hook_data = {
-            "session_id": "test",
-            "transcript_path": "/tmp/transcript.jsonl",
+            "session_id": "test-session",
             "tool_name": "Write",
             "tool_input": {"file_path": "/path/to/test.py", "content": "code"},
         }
@@ -148,13 +149,14 @@ class TestPreToolHook:
         mock_load_config.return_value = {"intent_validation_enabled": True}
         mock_load_ext.return_value = [".py"]
         mock_is_source.return_value = True
-        mock_get_messages.return_value = ["msg1", "msg2", "msg3", "msg4"]
+        mock_get_transcript_path.return_value = "/tmp/transcript.jsonl"
+        mock_get_messages.return_value = ["INTENT: Modify test.py to add code"]
         mock_validate.return_value = {"approved": True}
 
         run_pre_tool_hook()
 
-        # Verify get_last_n_messages_for_validation was called with n=4
-        mock_get_messages.assert_called_once_with("/tmp/transcript.jsonl", n=4)
+        # Verify get_last_n_messages_for_validation was called with n=2
+        mock_get_messages.assert_called_once_with("/tmp/transcript.jsonl", n=2)
 
     @patch("pacemaker.hook.load_config")
     @patch("pacemaker.extension_registry.load_extensions")

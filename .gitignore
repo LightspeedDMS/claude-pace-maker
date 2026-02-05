@@ -26,3 +26,9 @@ bin/
 .code-indexer-override.yaml
 /__pycache__
 coverage.json
+
+# Local testing credentials (DO NOT COMMIT)
+.local-testing
+/src/pacemaker/langfuse/__pycache__
+/src/pacemaker/telemetry/__pycache__
+/tests/unit/__pycache__

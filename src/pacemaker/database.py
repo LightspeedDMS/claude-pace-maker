@@ -58,6 +58,13 @@ CREATE TABLE IF NOT EXISTS blockage_events (
 
 CREATE INDEX IF NOT EXISTS idx_blockage_timestamp ON blockage_events(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_blockage_category ON blockage_events(category);
+
+CREATE TABLE IF NOT EXISTS langfuse_metrics (
+    bucket_timestamp INTEGER PRIMARY KEY,
+    sessions_count INTEGER DEFAULT 0,
+    traces_count INTEGER DEFAULT 0,
+    spans_count INTEGER DEFAULT 0
+);
 """
 
 

@@ -371,6 +371,7 @@ class TestPacingBlockageCapture:
             hook_data = {
                 "session_id": "test-session-tempo",
                 "transcript_path": transcript_path,
+                "agent_transcript_path": transcript_path,  # NEW: Added for new signature
             }
 
             with (
@@ -378,6 +379,10 @@ class TestPacingBlockageCapture:
                 patch("pacemaker.hook.DEFAULT_DB_PATH", self.db_path),
                 patch("pacemaker.hook.DEFAULT_STATE_PATH", self.state_path),
                 patch("sys.stdin.read", return_value=json.dumps(hook_data)),
+                patch(
+                    "pacemaker.hook.get_transcript_path", return_value=transcript_path
+                ),
+                patch("pacemaker.langfuse.orchestrator.handle_stop_finalize"),
                 patch("pacemaker.intent_validator.validate_intent") as mock_validate,
             ):
                 # Simulate tempo validation failure (blocked exit)
