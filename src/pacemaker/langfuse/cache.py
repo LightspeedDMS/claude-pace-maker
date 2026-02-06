@@ -7,8 +7,8 @@ fallback when Langfuse is unavailable (AC3, AC4 for Story #33).
 """
 
 import time
-from typing import Any, Optional, Dict
-from datetime import datetime
+from typing import Any, Optional, Dict, Union
+from datetime import datetime, date
 
 
 # In-memory cache storage
@@ -89,14 +89,16 @@ def clear() -> None:
 
 
 def generate_key(
-    prefix: str, from_date: datetime, to_date: Optional[datetime] = None
+    prefix: str,
+    from_date: Union[date, datetime],
+    to_date: Optional[Union[date, datetime]] = None,
 ) -> str:
     """
     Generate cache key from date range.
 
     Args:
         prefix: Key prefix (e.g., "daily", "weekly")
-        from_date: Start date
+        from_date: Start date (date or datetime)
         to_date: End date (optional, defaults to from_date)
 
     Returns:

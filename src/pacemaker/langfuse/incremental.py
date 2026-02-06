@@ -301,29 +301,34 @@ def create_or_update_trace(
         # Subsequent push - update existing trace
         trace = existing_trace.copy()
 
-        # Append new tool calls
+        # Get existing metadata or create new one
         if "metadata" not in trace:
             trace["metadata"] = {}
 
-        existing_tools = trace["metadata"].get("tool_calls", [])
-        trace["metadata"]["tool_calls"] = (
-            existing_tools + incremental_data["tool_calls"]
-        )
-        trace["metadata"]["tool_count"] = len(trace["metadata"]["tool_calls"])
+        # Type annotation for mypy - metadata is Dict[str, Any]
+        metadata: Dict[str, Any] = trace["metadata"]  # type: ignore[assignment]
+
+        # Append new tool calls
+        existing_tools = metadata.get("tool_calls", [])
+        metadata["tool_calls"] = existing_tools + incremental_data["tool_calls"]
+        metadata["tool_count"] = len(metadata["tool_calls"])
 
         # Accumulate token usage in metadata
-        trace["metadata"]["input_tokens"] = (
-            trace["metadata"].get("input_tokens", 0)
+        metadata["input_tokens"] = (
+            metadata.get("input_tokens", 0)
             + incremental_data["token_usage"]["input_tokens"]
         )
-        trace["metadata"]["output_tokens"] = (
-            trace["metadata"].get("output_tokens", 0)
+        metadata["output_tokens"] = (
+            metadata.get("output_tokens", 0)
             + incremental_data["token_usage"]["output_tokens"]
         )
-        trace["metadata"]["cache_read_tokens"] = (
-            trace["metadata"].get("cache_read_tokens", 0)
+        metadata["cache_read_tokens"] = (
+            metadata.get("cache_read_tokens", 0)
             + incremental_data["token_usage"]["cache_read_tokens"]
         )
+
+        # Update trace with modified metadata
+        trace["metadata"] = metadata
 
         return trace
 
@@ -354,23 +359,26 @@ def create_generation(
 
     token_usage = incremental_data["token_usage"]
 
+    # Build usage dict with type annotation for mypy
+    usage: Dict[str, int] = {
+        "input": token_usage["input_tokens"],
+        "output": token_usage["output_tokens"],
+        "total": token_usage["input_tokens"] + token_usage["output_tokens"],
+    }
+
+    # Add cache tokens if present
+    if token_usage.get("cache_read_tokens", 0) > 0:
+        usage["cache_read"] = token_usage["cache_read_tokens"]
+
     generation = {
         "id": f"{trace_id}-gen-{str(uuid.uuid4())[:8]}",  # Unique ID for generation
         "traceId": trace_id,  # Link to parent trace (trace-per-turn architecture)
         "type": "generation",
         "name": "claude-code-generation",
         "model": model,
-        "usage": {
-            "input": token_usage["input_tokens"],
-            "output": token_usage["output_tokens"],
-            "total": token_usage["input_tokens"] + token_usage["output_tokens"],
-        },
+        "usage": usage,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-
-    # Add cache tokens if present
-    if token_usage.get("cache_read_tokens", 0) > 0:
-        generation["usage"]["cache_read"] = token_usage["cache_read_tokens"]
 
     return generation
 

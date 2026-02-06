@@ -31,6 +31,18 @@ def create_trace(
     Returns:
         Langfuse trace dict ready for API submission
     """
+    # Build usage dict with type annotation for mypy
+    usage: Dict[str, int] = {
+        "input": token_usage.get("input_tokens", 0),
+        "output": token_usage.get("output_tokens", 0),
+        "total": token_usage.get("input_tokens", 0)
+        + token_usage.get("output_tokens", 0),
+    }
+
+    # Add cache tokens if present
+    if token_usage.get("cache_read_tokens", 0) > 0:
+        usage["cache_read"] = token_usage["cache_read_tokens"]
+
     trace = {
         "id": session_id,
         "name": f"claude-code-session-{session_id[:8]}",
@@ -40,17 +52,8 @@ def create_trace(
             "tool_calls": tool_calls,
             "tool_count": len(tool_calls),
         },
-        "usage": {
-            "input": token_usage.get("input_tokens", 0),
-            "output": token_usage.get("output_tokens", 0),
-            "total": token_usage.get("input_tokens", 0)
-            + token_usage.get("output_tokens", 0),
-        },
+        "usage": usage,
         "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
     }
-
-    # Add cache tokens if present
-    if token_usage.get("cache_read_tokens", 0) > 0:
-        trace["usage"]["cache_read"] = token_usage["cache_read_tokens"]
 
     return trace

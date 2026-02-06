@@ -200,6 +200,11 @@ def fetch_daily_stats(
     if not all([base_url, public_key, secret_key]):
         raise ValueError("API credentials required for cache miss")
 
+    # Type narrowing for mypy: after the check above, these cannot be None
+    assert base_url is not None
+    assert public_key is not None
+    assert secret_key is not None
+
     # Fetch trace count and token usage in parallel would be ideal,
     # but for simplicity and staying under 3s, we'll do sequential
     trace_count = query_trace_count(
@@ -413,6 +418,11 @@ def get_weekly_breakdown(
     week_ago = today - timedelta(days=6)  # 7 days inclusive
 
     try:
+        # Type narrowing for mypy: these should be provided by caller
+        assert base_url is not None, "base_url required"
+        assert public_key is not None, "public_key required"
+        assert secret_key is not None, "secret_key required"
+
         stats = fetch_weekly_stats(week_ago, today, base_url, public_key, secret_key)
         return format_weekly_breakdown(stats)
     except Exception as e:
