@@ -5,11 +5,17 @@ Intelligent credit consumption throttling and code quality enforcement for Claud
 ## Features
 
 - **Credit Throttling**: Adaptive pacing for 5-hour and 7-day usage windows
+- **Stale Data Detection**: Resilient pacing calculations when usage data is outdated
 - **Model Preference**: Nudges Claude to use specific model for subagents (quota balancing)
 - **Intent Validation**: Requires intent declaration before code modifications
 - **TDD Enforcement**: Core code paths require test declarations
 - **Clean Code Checks**: Blocks security vulnerabilities, anti-patterns, and logic bugs
+- **Folder Exclusion**: Exclude paths from TDD/Clean Code enforcement
 - **Session Lifecycle**: Prevents premature session endings via AI validation
+- **Langfuse Telemetry**: Optional tracing integration with Langfuse for session/trace/span tracking
+- **Blockage Telemetry**: Track and report validation blocks via `pace-maker blockage-stats`
+- **Daily Log Rotation**: Automatic log rotation (one file per day, 15 days retention)
+- **Enhanced Status Display**: Shows versions, Langfuse connectivity, and error counts
 
 ## Installation
 
@@ -47,6 +53,7 @@ pace-maker core-paths list        # List core code paths
 pace-maker core-paths add PATH    # Add core code path
 pace-maker core-paths remove PATH # Remove core code path
 pace-maker prefer-model opus|sonnet|haiku|auto  # Set model preference for subagents
+pace-maker langfuse on|off|status|configure  # Langfuse telemetry controls
 pace-maker loglevel 0-4           # Set log level (0=OFF, 1=ERROR, 2=WARNING, 3=INFO, 4=DEBUG)
 pace-maker version                # Show version
 pace-maker help                   # Show help
@@ -184,6 +191,31 @@ pace-maker intent-validation on
 - **Zero Tolerance**: Throttles immediately when over budget
 - **Adaptive Delay**: Calculates exact delay to reach 95% by window end
 
+## Langfuse Telemetry Integration
+
+Optional integration with [Langfuse](https://langfuse.com) for observability and tracing.
+
+### Configuration
+
+```bash
+pace-maker langfuse on                           # Enable Langfuse
+pace-maker langfuse off                          # Disable Langfuse
+pace-maker langfuse status                       # Show connection status
+pace-maker langfuse configure URL PUBLIC SECRET  # Set credentials
+```
+
+### Features
+
+- **Session Tracking**: Creates Langfuse sessions per Claude Code conversation
+- **Trace Hierarchy**: Tracks main conversation and subagent traces
+- **Span Details**: Records tool calls, token usage, and timing
+- **24-Hour Metrics**: Aggregates sessions, traces, and spans
+
+### Requirements
+
+- Self-hosted or cloud Langfuse instance
+- API credentials (public key + secret key)
+
 ## Model Preference (Quota Balancing)
 
 Controls which model Claude uses for subagent Task tool calls to balance quota consumption across models.
@@ -291,6 +323,32 @@ When Claude attempts to stop:
 - [Preload System](docs/PRELOAD_SYSTEM.md)
 - [Weekend Algorithm](docs/WEEKEND_AWARE_ALGORITHM.md)
 - [Test Report](reports/pre_tool_validation_test_report.md)
+
+## Changelog
+
+### v1.5.0 (February 2026)
+- **Daily Log Rotation**: One log file per day (`pace-maker-YYYY-MM-DD.log`), 15 days retention, automatic cleanup
+- **Enhanced Status Display**: Shows Pace Maker version, Usage Console version, Langfuse connectivity status, 24-hour error count with color coding
+- **Mypy Type Fixes**: Resolved all type errors in langfuse modules
+
+### v1.4.0 (January 2026)
+- **Langfuse Telemetry Integration**: Full observability with session/trace/span tracking, subagent trace support, 24-hour metrics aggregation
+- **Blockage Telemetry**: Track and report intent validation, TDD, clean code, and pacing blockages via `pace-maker blockage-stats`
+- **Model Preference (Quota Balancing)**: Nudge Claude to use specific models for subagents (`pace-maker prefer-model opus|sonnet|haiku|auto`)
+- **Stale Data Detection**: Resilient pacing calculations when usage data is outdated
+- **Folder Exclusion**: Exclude paths from TDD/Clean Code enforcement (`pace-maker excluded-paths add/remove/list`)
+
+### v1.3.0 (December 2025)
+- **Two-Stage Intent Validation**: Fast declaration check (Sonnet) + comprehensive code review (Opus)
+- **Explicit INTENT: Marker**: Required prefix for intent declarations
+- **Externalized Configuration**: Clean code rules, core paths, excluded paths in YAML files
+- **Centralized Logging**: Configurable log levels (0=OFF to 4=DEBUG)
+- **TDD Enforcement**: Core code paths require test declarations or explicit skip permission
+
+### v1.2.0 (November 2025)
+- **Session Lifecycle (Tempo)**: AI-validated session completion prevents premature endings
+- **Subagent Reminders**: Post-tool nudges for model preference and intent guidance
+- **Stop Hook Validation**: Context-aware session completion checks
 
 ## License
 
