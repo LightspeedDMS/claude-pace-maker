@@ -1,5 +1,15 @@
 # Claude Pace Maker - Development Knowledge
 
+## Related Codebase: Claude Usage Reporting
+
+**IMPORTANT**: When the user says "claude usage" or "claude-usage", they mean the **claude-usage-reporting** codebase located at:
+- `/home/jsbattig/Dev/claude-usage-reporting`
+
+This is a separate tool that displays usage metrics in a monitor/dashboard format. It has a "Pacing Status" column where pace-maker integration features should be displayed.
+
+- `pace-maker status` = CLI command from THIS repo (claude-pace-maker)
+- `claude-usage` = Monitor tool from claude-usage-reporting repo
+
 ## Deployment After Code Changes
 
 **CRITICAL**: After completing code changes to hook logic (`src/pacemaker/`), you MUST run the installer to deploy:

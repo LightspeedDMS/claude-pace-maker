@@ -42,6 +42,11 @@ DEFAULT_EXTENSION_REGISTRY_PATH = str(
     Path.home() / ".claude-pace-maker" / "source_code_extensions.json"
 )
 DEFAULT_LOG_PATH = str(Path.home() / ".claude-pace-maker" / "pace-maker.log")
+# Log rotation settings
+DEFAULT_LOG_DIR = str(Path.home() / ".claude-pace-maker")
+LOG_FILE_PREFIX = "pace-maker-"
+LOG_FILE_SUFFIX = ".log"
+LOG_RETENTION_DAYS = 15
 DEFAULT_CLEAN_CODE_RULES_PATH = str(
     Path.home() / ".claude-pace-maker" / "clean_code_rules.yaml"
 )

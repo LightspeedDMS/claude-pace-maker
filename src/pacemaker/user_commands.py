@@ -17,6 +17,16 @@ from .logger import log_warning
 from .prompt_loader import PromptLoader
 
 
+# Pre-compiled regex for log error parsing
+_ERROR_LOG_PATTERN = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[ERROR\]")
+
+# ANSI color codes for terminal output
+ANSI_GREEN = "\033[32m"
+ANSI_YELLOW = "\033[33m"
+ANSI_RED = "\033[31m"
+ANSI_RESET = "\033[0m"
+
+
 # Load messages on module import
 _prompt_loader = PromptLoader()
 try:
@@ -394,6 +404,58 @@ def _execute_off(config_path: str) -> Dict[str, Any]:
         return {"success": False, "message": error_template.replace("{error}", str(e))}
 
 
+def _count_recent_errors(log_path: str, hours: int = 24) -> int:
+    """
+    Count ERROR-level log entries from the last N hours.
+
+    Scans rotated log files (today's and yesterday's) for errors.
+
+    Args:
+        log_path: Base log path (ignored, uses rotated files)
+        hours: Number of hours to look back (default: 24)
+
+    Returns:
+        Count of ERROR entries within the time window
+    """
+    from datetime import datetime, timedelta
+    from .logger import get_recent_log_paths
+
+    try:
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        error_count = 0
+
+        # Get log files for the last 2 days (covers 24-hour window)
+        log_files = get_recent_log_paths(days=2)
+
+        if not log_files:
+            return 0
+
+        for log_file in log_files:
+            try:
+                with open(log_file, "r") as f:
+                    for line in f:
+                        match = _ERROR_LOG_PATTERN.match(line)
+                        if match:
+                            try:
+                                timestamp_str = match.group(1)
+                                timestamp = datetime.strptime(
+                                    timestamp_str, "%Y-%m-%d %H:%M:%S"
+                                )
+                                if timestamp >= cutoff_time:
+                                    error_count += 1
+                            except ValueError:
+                                continue
+            except (OSError, IOError):
+                continue  # Skip files that can't be read
+
+        return error_count
+    except Exception as e:
+        from .logger import log_warning
+
+        log_warning("_count_recent_errors", "Error counting errors", e)
+        return 0
+
+
 def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str, Any]:
     """Display current pace maker status."""
     try:
@@ -508,6 +570,59 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         status_text += (
             f"\nLog Level: {log_level} ({level_names.get(log_level, 'UNKNOWN')})"
         )
+
+        # Add version information
+        from . import __version__ as pacemaker_version
+
+        status_text += f"\nPace Maker: v{pacemaker_version}"
+
+        # Try to get Usage Console version
+        try:
+            from claude_usage import __version__ as usage_version
+
+            status_text += f"\nUsage Console: v{usage_version}"
+        except ImportError:
+            status_text += "\nUsage Console: not installed"
+
+        # Add Langfuse status
+        langfuse_enabled = config.get("langfuse_enabled", False)
+        status_text += f"\nLangfuse: {'ENABLED' if langfuse_enabled else 'DISABLED'}"
+
+        # If Langfuse is enabled, show connectivity status
+        if langfuse_enabled:
+            connection_result = _langfuse_test_connection(config)
+            if connection_result["connected"]:
+                status_text += (
+                    f"\n  {ANSI_GREEN}✓ {connection_result['message']}{ANSI_RESET}"
+                )
+            else:
+                status_text += (
+                    f"\n  {ANSI_RED}✗ {connection_result['message']}{ANSI_RESET}"
+                )
+
+        # Add 24-hour error count from logs
+        from .constants import DEFAULT_LOG_PATH
+
+        error_count = _count_recent_errors(DEFAULT_LOG_PATH, hours=24)
+
+        # Handle different error count scenarios
+        if error_count == -1:
+            # Log file too large to scan
+            status_text += (
+                f"\n24-Hour Errors: {ANSI_YELLOW}(log too large to scan){ANSI_RESET}"
+            )
+        elif error_count == 0:
+            status_text += (
+                f"\n24-Hour Errors: {ANSI_GREEN}{error_count} errors{ANSI_RESET}"
+            )
+        elif error_count <= 10:
+            status_text += (
+                f"\n24-Hour Errors: {ANSI_YELLOW}{error_count} errors{ANSI_RESET}"
+            )
+        else:
+            status_text += (
+                f"\n24-Hour Errors: {ANSI_RED}{error_count} errors{ANSI_RESET}"
+            )
 
         # Try to get usage data
         usage_data = None
