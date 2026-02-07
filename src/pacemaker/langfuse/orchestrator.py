@@ -27,8 +27,10 @@ from .metrics import increment_metric
 from ..constants import DEFAULT_DB_PATH, DEFAULT_STATE_PATH
 
 
-# AC5: 2-second timeout for incremental push
-INCREMENTAL_PUSH_TIMEOUT_SECONDS = 2
+# Timeout for incremental push (increased from 2s to 10s to prevent premature timeouts)
+# When timeout occurs, data may have been sent to Langfuse (server just didn't respond in time)
+# 10 seconds provides adequate time for push while still being non-blocking
+INCREMENTAL_PUSH_TIMEOUT_SECONDS = 10
 
 
 def extract_task_tool_prompt(
@@ -518,7 +520,7 @@ def run_incremental_push(
             existing_trace=existing_trace,
         )
 
-        # Push batch to Langfuse API with timeout (AC5: <2s)
+        # Push batch to Langfuse API with timeout
         success = push.push_batch_events(
             base_url,
             public_key,
@@ -527,16 +529,13 @@ def run_incremental_push(
             timeout=INCREMENTAL_PUSH_TIMEOUT_SECONDS,
         )
 
-        if not success:
-            log_warning(
-                "orchestrator",
-                f"Failed to push incremental data for {session_id}",
-                None,
-            )
-            # AC5: Don't update state on failure (will retry next trigger)
-            return False
-
-        # Update state on success with accumulated metadata
+        # CRITICAL FIX: Update state EVEN on timeout to prevent duplicate spans
+        # When timeout occurs, the data was likely sent to Langfuse (server just
+        # didn't respond in time). We must update last_pushed_line to prevent
+        # re-processing the same lines on next hook call.
+        #
+        # This fixes the duplicate spans issue where timeout → no state update →
+        # next hook re-reads from old last_pushed_line → duplicate observations
         new_last_pushed_line = incremental_data["last_line"]
 
         # Extract trace from batch for metadata storage
@@ -548,6 +547,15 @@ def run_incremental_push(
             last_pushed_line=new_last_pushed_line,
             metadata=trace.get("metadata", {}),
         )
+
+        if not success:
+            log_warning(
+                "orchestrator",
+                f"Failed to push incremental data for {session_id} "
+                f"(state updated to line {new_last_pushed_line} to prevent duplicates)",
+                None,
+            )
+            return False
 
         # Increment metrics on successful push (Story #34)
         db_path = config.get("db_path", DEFAULT_DB_PATH)
@@ -802,6 +810,8 @@ def handle_post_tool_use(
         secret_key = config["langfuse_secret_key"]
 
         state_manager = state.StateManager(state_dir)
+
+        # Initially read parent's state
         existing_state = state_manager.read(session_id)
 
         if not existing_state or "metadata" not in existing_state:
@@ -818,16 +828,44 @@ def handle_post_tool_use(
 
         # Check if we're in a subagent context
         # Read pacemaker state to get in_subagent flag and current_subagent_trace_id
+        # CRITICAL: If in subagent, we need to switch to subagent's session_id for state management
+        effective_session_id = session_id  # Default to parent's session_id
         try:
             with open(DEFAULT_STATE_PATH, "r") as f:
                 pacemaker_state = json.load(f)
 
                 in_subagent = pacemaker_state.get("in_subagent", False)
                 subagent_trace_id = pacemaker_state.get("current_subagent_trace_id")
+                subagent_agent_id = pacemaker_state.get("current_subagent_agent_id")
 
                 # If in subagent and we have subagent trace_id, use it instead of parent's
-                if in_subagent and subagent_trace_id:
+                if in_subagent and subagent_trace_id and subagent_agent_id:
                     current_trace_id = subagent_trace_id
+
+                    # CRITICAL FIX: Derive subagent_session_id and re-read state
+                    effective_session_id = f"subagent-{subagent_agent_id}"
+
+                    # Re-read state for subagent's session_id to get correct last_pushed_line
+                    subagent_state = state_manager.read(effective_session_id)
+                    if subagent_state:
+                        last_pushed_line = subagent_state.get("last_pushed_line", 0)
+                        metadata = subagent_state.get("metadata", metadata)
+                        existing_state = (
+                            subagent_state  # Use subagent's state for trace_id
+                        )
+                        log_debug(
+                            "orchestrator",
+                            f"Using subagent state: session_id={effective_session_id}, "
+                            f"last_pushed_line={last_pushed_line}",
+                        )
+                    else:
+                        log_debug(
+                            "orchestrator",
+                            f"No existing state for subagent {effective_session_id}, "
+                            f"starting from line 0",
+                        )
+                        last_pushed_line = 0
+
                     log_debug(
                         "orchestrator", f"Using subagent trace_id: {subagent_trace_id}"
                     )
@@ -860,26 +898,37 @@ def handle_post_tool_use(
             timeout=INCREMENTAL_PUSH_TIMEOUT_SECONDS,
         )
 
+        # CRITICAL FIX: Update state EVEN on timeout to prevent duplicate spans
+        # When timeout occurs, the data was likely sent to Langfuse (server just
+        # didn't respond in time). We must update last_pushed_line to prevent
+        # re-processing the same content blocks on next hook call.
+        #
+        # This applies the same optimistic state update pattern used in run_incremental_push().
+        max_line = max(b["line_number"] for b in content_blocks)
+        state_manager.create_or_update(
+            session_id=effective_session_id,
+            trace_id=existing_state["trace_id"],
+            last_pushed_line=max_line,
+            metadata=metadata,
+        )
+
         if not success:
-            log_warning("orchestrator", f"Failed to push spans for {session_id}", None)
+            log_warning(
+                "orchestrator",
+                f"Failed to push spans for {session_id} "
+                f"(state updated to line {max_line} to prevent duplicates)",
+                None,
+            )
             return False
 
         # Increment spans metric for each span pushed (Story #34)
+        # ONLY increment on confirmed success (not on timeout)
         db_path = config.get("db_path", DEFAULT_DB_PATH)
         for _ in batch:
             try:
                 increment_metric("spans", db_path)
             except Exception as e:
                 log_warning("orchestrator", "Failed to increment spans metric", e)
-
-        # Update last_pushed_line
-        max_line = max(b["line_number"] for b in content_blocks)
-        state_manager.create_or_update(
-            session_id=session_id,
-            trace_id=existing_state["trace_id"],
-            last_pushed_line=max_line,
-            metadata=metadata,
-        )
 
         log_debug("orchestrator", f"Created {len(batch)} spans for {current_trace_id}")
         return True

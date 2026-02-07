@@ -15,7 +15,7 @@ Tests:
 import unittest
 from datetime import datetime
 
-from src.pacemaker.langfuse.transformer import create_trace
+from pacemaker.langfuse.transformer import create_trace
 
 
 class TestLangfuseTransformer(unittest.TestCase):

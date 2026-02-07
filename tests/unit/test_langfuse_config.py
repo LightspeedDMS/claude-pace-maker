@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from src.pacemaker import user_commands
+from pacemaker import user_commands
 
 
 class TestLangfuseConfig(unittest.TestCase):
@@ -65,7 +65,7 @@ class TestLangfuseConfig(unittest.TestCase):
         secret_key = "sk-lf-test-secret-456"
 
         # Act - Mock logger to capture all log calls
-        with patch("src.pacemaker.user_commands.log_warning") as mock_warning:
+        with patch("pacemaker.user_commands.log_warning") as mock_warning:
             user_commands.execute_command(
                 command="langfuse",
                 config_path=self.config_path,

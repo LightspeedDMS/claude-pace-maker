@@ -14,7 +14,7 @@ import os
 import tempfile
 import unittest
 
-from src.pacemaker import user_commands
+from pacemaker import user_commands
 
 
 class TestLangfuseEnable(unittest.TestCase):
@@ -33,6 +33,16 @@ class TestLangfuseEnable(unittest.TestCase):
 
     def test_langfuse_on_enables_flag(self):
         """AC2: langfuse_enabled set to true in config when 'on' command run"""
+        # Arrange - Pre-configure Langfuse keys to avoid auto-provisioning
+        initial_config = {
+            "langfuse_public_key": "pk_test",
+            "langfuse_secret_key": "sk_test",
+            "langfuse_base_url": "https://example.com",
+            "langfuse_enabled": False,
+        }
+        with open(self.config_path, "w") as f:
+            json.dump(initial_config, f)
+
         # Act
         result = user_commands.execute_command(
             command="langfuse",
@@ -51,12 +61,15 @@ class TestLangfuseEnable(unittest.TestCase):
 
     def test_langfuse_off_disables_flag(self):
         """AC2: langfuse_enabled set to false in config when 'off' command run"""
-        # Arrange - First enable it
-        user_commands.execute_command(
-            command="langfuse",
-            config_path=self.config_path,
-            subcommand="on",
-        )
+        # Arrange - Pre-configure with enabled=True
+        initial_config = {
+            "langfuse_public_key": "pk_test",
+            "langfuse_secret_key": "sk_test",
+            "langfuse_base_url": "https://example.com",
+            "langfuse_enabled": True,
+        }
+        with open(self.config_path, "w") as f:
+            json.dump(initial_config, f)
 
         # Act - Then disable it
         result = user_commands.execute_command(
@@ -76,6 +89,16 @@ class TestLangfuseEnable(unittest.TestCase):
 
     def test_langfuse_on_success_message(self):
         """AC2: Success message confirms enabled status"""
+        # Arrange - Pre-configure Langfuse keys to avoid auto-provisioning
+        initial_config = {
+            "langfuse_public_key": "pk_test",
+            "langfuse_secret_key": "sk_test",
+            "langfuse_base_url": "https://example.com",
+            "langfuse_enabled": False,
+        }
+        with open(self.config_path, "w") as f:
+            json.dump(initial_config, f)
+
         # Act
         result = user_commands.execute_command(
             command="langfuse",

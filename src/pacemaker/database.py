@@ -9,12 +9,22 @@ consumption rates over time.
 import json
 import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable, TypeVar, Generator
 from pathlib import Path
 
 from .logger import log_error, log_warning
 from .constants import BLOCKAGE_CATEGORIES
+
+# Type variable for generic return type
+T = TypeVar("T")
+
+
+# Constants for concurrency handling
+DB_TIMEOUT = 5.0  # Wait up to 5 seconds for lock
+MAX_RETRIES = 3  # Retry up to 3 times on lock
+RETRY_DELAY = 0.1  # Initial delay between retries (100ms)
 
 
 # Database schema
@@ -68,6 +78,80 @@ CREATE TABLE IF NOT EXISTS langfuse_metrics (
 """
 
 
+@contextmanager
+def get_db_connection(
+    db_path: str, readonly: bool = False
+) -> Generator[sqlite3.Connection, None, None]:
+    """
+    Get database connection with proper concurrency handling.
+
+    Uses timeout to avoid indefinite blocking, enables WAL mode for better
+    concurrent access, and ensures connection is properly closed even on errors.
+
+    Args:
+        db_path: Path to SQLite database file
+        readonly: If True, optimize for read-only access
+
+    Yields:
+        sqlite3.Connection: Database connection with proper settings
+    """
+    conn: Optional[sqlite3.Connection] = None
+    try:
+        conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT)
+        conn.execute("PRAGMA journal_mode=WAL")
+        if readonly:
+            conn.execute("PRAGMA read_uncommitted=1")
+        yield conn
+        if not readonly:
+            conn.commit()
+    finally:
+        if conn:
+            conn.close()
+
+
+def execute_with_retry(
+    db_path: str,
+    operation: Callable[[sqlite3.Connection], T],
+    readonly: bool = False,
+    max_retries: int = MAX_RETRIES,
+) -> T:
+    """
+    Execute database operation with retry on lock.
+
+    Retries the operation if a database lock error occurs, with exponential
+    backoff between attempts.
+
+    Args:
+        db_path: Path to SQLite database file
+        operation: Function that takes a connection and performs the operation
+        readonly: If True, use read-only optimizations
+        max_retries: Maximum number of retry attempts
+
+    Returns:
+        Result from the operation function
+
+    Raises:
+        Exception: Re-raises the last exception if all retries fail
+    """
+    last_error: Optional[sqlite3.OperationalError] = None
+    for attempt in range(max_retries):
+        try:
+            with get_db_connection(db_path, readonly=readonly) as conn:
+                return operation(conn)
+        except sqlite3.OperationalError as e:
+            last_error = e
+            if "locked" in str(e).lower() and attempt < max_retries - 1:
+                # Exponential backoff: 0.1s, 0.2s, 0.4s, etc.
+                delay = RETRY_DELAY * (2**attempt)
+                time.sleep(delay)
+                continue
+            raise
+    if last_error:
+        raise last_error
+    # This should never be reached, but satisfies mypy
+    raise RuntimeError("Retry loop completed without returning or raising")
+
+
 def initialize_database(db_path: str) -> bool:
     """
     Initialize database with required schema.
@@ -82,14 +166,10 @@ def initialize_database(db_path: str) -> bool:
         # Ensure parent directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-
-        # Execute schema creation
-        cursor.executescript(SCHEMA)
-
-        conn.commit()
-        conn.close()
+        with get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+            # Execute schema creation
+            cursor.executescript(SCHEMA)
 
         return True
 
@@ -123,41 +203,39 @@ def insert_usage_snapshot(
         True if successful, False otherwise
     """
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
 
-        cursor.execute(
-            """
-            INSERT INTO usage_snapshots (
-                timestamp,
-                five_hour_util,
-                five_hour_resets_at,
-                seven_day_util,
-                seven_day_resets_at,
-                session_id
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-            (
-                int(timestamp.timestamp()),
-                five_hour_util,
-                five_hour_resets_at.isoformat() if five_hour_resets_at else None,
-                seven_day_util,
-                seven_day_resets_at.isoformat() if seven_day_resets_at else None,
-                session_id,
-            ),
-        )
+        def operation(conn: sqlite3.Connection) -> bool:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO usage_snapshots (
+                    timestamp,
+                    five_hour_util,
+                    five_hour_resets_at,
+                    seven_day_util,
+                    seven_day_resets_at,
+                    session_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    int(timestamp.timestamp()),
+                    five_hour_util,
+                    five_hour_resets_at.isoformat() if five_hour_resets_at else None,
+                    seven_day_util,
+                    seven_day_resets_at.isoformat() if seven_day_resets_at else None,
+                    session_id,
+                ),
+            )
+            return True
 
-        conn.commit()
-        conn.close()
-
-        return True
+        return execute_with_retry(db_path, operation)
 
     except Exception as e:
         log_error("database", "Failed to insert usage snapshot", e)
         return False
 
 
-def query_recent_snapshots(db_path: str, minutes: int = 60) -> List[Dict]:
+def query_recent_snapshots(db_path: str, minutes: int = 60) -> List[Dict[str, Any]]:
     """
     Query usage snapshots from the last N minutes.
 
@@ -171,35 +249,33 @@ def query_recent_snapshots(db_path: str, minutes: int = 60) -> List[Dict]:
     try:
         cutoff_time = datetime.utcnow() - timedelta(minutes=minutes)
 
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row  # Enable dict-like access
-        cursor = conn.cursor()
+        def operation(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+            conn.row_factory = sqlite3.Row  # Enable dict-like access
+            cursor = conn.cursor()
 
-        cursor.execute(
-            """
-            SELECT
-                id,
-                timestamp,
-                five_hour_util,
-                five_hour_resets_at,
-                seven_day_util,
-                seven_day_resets_at,
-                session_id,
-                created_at
-            FROM usage_snapshots
-            WHERE timestamp >= ?
-            ORDER BY timestamp DESC
-        """,
-            (int(cutoff_time.timestamp()),),
-        )
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    timestamp,
+                    five_hour_util,
+                    five_hour_resets_at,
+                    seven_day_util,
+                    seven_day_resets_at,
+                    session_id,
+                    created_at
+                FROM usage_snapshots
+                WHERE timestamp >= ?
+                ORDER BY timestamp DESC
+            """,
+                (int(cutoff_time.timestamp()),),
+            )
 
-        rows = cursor.fetchall()
-        conn.close()
+            rows = cursor.fetchall()
+            # Convert to list of dicts
+            return [dict(row) for row in rows]
 
-        # Convert to list of dicts
-        snapshots = [dict(row) for row in rows]
-
-        return snapshots
+        return execute_with_retry(db_path, operation, readonly=True)
 
     except Exception as e:
         log_warning("database", "Failed to query recent snapshots", e)
@@ -220,24 +296,19 @@ def cleanup_old_snapshots(db_path: str, retention_days: int = 60) -> int:
     try:
         cutoff_time = datetime.utcnow() - timedelta(days=retention_days)
 
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        def operation(conn: sqlite3.Connection) -> int:
+            cursor = conn.cursor()
+            # Delete old records
+            cursor.execute(
+                """
+                DELETE FROM usage_snapshots
+                WHERE timestamp < ?
+            """,
+                (int(cutoff_time.timestamp()),),
+            )
+            return cursor.rowcount
 
-        # Delete old records
-        cursor.execute(
-            """
-            DELETE FROM usage_snapshots
-            WHERE timestamp < ?
-        """,
-            (int(cutoff_time.timestamp()),),
-        )
-
-        deleted_count = cursor.rowcount
-
-        conn.commit()
-        conn.close()
-
-        return deleted_count
+        return execute_with_retry(db_path, operation)
 
     except Exception as e:
         log_error("database", "Failed to cleanup old snapshots", e)
@@ -265,37 +336,35 @@ def insert_pacing_decision(
         True if successful, False otherwise
     """
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
 
-        cursor.execute(
-            """
-            INSERT INTO pacing_decisions (
-                timestamp,
-                should_throttle,
-                delay_seconds,
-                session_id
-            ) VALUES (?, ?, ?, ?)
-        """,
-            (
-                int(timestamp.timestamp()),
-                1 if should_throttle else 0,
-                delay_seconds,
-                session_id,
-            ),
-        )
+        def operation(conn: sqlite3.Connection) -> bool:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO pacing_decisions (
+                    timestamp,
+                    should_throttle,
+                    delay_seconds,
+                    session_id
+                ) VALUES (?, ?, ?, ?)
+            """,
+                (
+                    int(timestamp.timestamp()),
+                    1 if should_throttle else 0,
+                    delay_seconds,
+                    session_id,
+                ),
+            )
+            return True
 
-        conn.commit()
-        conn.close()
-
-        return True
+        return execute_with_retry(db_path, operation)
 
     except Exception as e:
         log_error("database", "Failed to insert pacing decision", e)
         return False
 
 
-def get_last_pacing_decision(db_path: str, session_id: str) -> Optional[Dict]:
+def get_last_pacing_decision(db_path: str, session_id: str) -> Optional[Dict[str, Any]]:
     """
     Retrieve the most recent pacing decision for a session.
 
@@ -307,37 +376,39 @@ def get_last_pacing_decision(db_path: str, session_id: str) -> Optional[Dict]:
         Dict with decision details, or None if no decision found
     """
     try:
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
 
-        cursor.execute(
-            """
-            SELECT
-                timestamp,
-                should_throttle,
-                delay_seconds,
-                session_id
-            FROM pacing_decisions
-            WHERE session_id = ?
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """,
-            (session_id,),
-        )
+        def operation(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
 
-        row = cursor.fetchone()
-        conn.close()
+            cursor.execute(
+                """
+                SELECT
+                    timestamp,
+                    should_throttle,
+                    delay_seconds,
+                    session_id
+                FROM pacing_decisions
+                WHERE session_id = ?
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """,
+                (session_id,),
+            )
 
-        if row:
-            return {
-                "timestamp": row["timestamp"],
-                "should_throttle": bool(row["should_throttle"]),
-                "delay_seconds": row["delay_seconds"],
-                "session_id": row["session_id"],
-            }
+            row = cursor.fetchone()
 
-        return None
+            if row:
+                return {
+                    "timestamp": row["timestamp"],
+                    "should_throttle": bool(row["should_throttle"]),
+                    "delay_seconds": row["delay_seconds"],
+                    "session_id": row["session_id"],
+                }
+
+            return None
+
+        return execute_with_retry(db_path, operation, readonly=True)
 
     except Exception as e:
         log_warning("database", "Failed to get last pacing decision", e)
@@ -382,28 +453,26 @@ def record_blockage(
         # Get current timestamp
         timestamp = int(time.time())
 
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        def operation(conn: sqlite3.Connection) -> bool:
+            cursor = conn.cursor()
+            # Use parameterized query to prevent SQL injection
+            cursor.execute(
+                """
+                INSERT INTO blockage_events (
+                    timestamp,
+                    category,
+                    reason,
+                    hook_type,
+                    session_id,
+                    details
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (timestamp, category, reason, hook_type, session_id, details_json),
+            )
+            return True
 
-        # Use parameterized query to prevent SQL injection
-        cursor.execute(
-            """
-            INSERT INTO blockage_events (
-                timestamp,
-                category,
-                reason,
-                hook_type,
-                session_id,
-                details
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (timestamp, category, reason, hook_type, session_id, details_json),
-        )
-
-        conn.commit()
-        conn.close()
-
-        return True
+        result: bool = execute_with_retry(db_path, operation)
+        return result
 
     except Exception as e:
         log_error("database", "Failed to record blockage event", e)
@@ -427,29 +496,31 @@ def get_hourly_blockage_stats(db_path: str) -> Dict[str, int]:
         # Calculate cutoff timestamp (60 minutes ago)
         cutoff_timestamp = int(time.time()) - 3600
 
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        def operation(conn: sqlite3.Connection) -> Dict[str, int]:
+            cursor = conn.cursor()
 
-        # Query counts grouped by category, using index on timestamp
-        cursor.execute(
-            """
-            SELECT category, COUNT(*) as count
-            FROM blockage_events
-            WHERE timestamp >= ?
-            GROUP BY category
-            """,
-            (cutoff_timestamp,),
-        )
+            # Query counts grouped by category, using index on timestamp
+            cursor.execute(
+                """
+                SELECT category, COUNT(*) as count
+                FROM blockage_events
+                WHERE timestamp >= ?
+                GROUP BY category
+                """,
+                (cutoff_timestamp,),
+            )
 
-        # Update result with actual counts
-        for row in cursor.fetchall():
-            category, count = row
-            if category in result:
-                result[category] = count
+            # Update result with actual counts
+            local_result = dict(result)
+            for row in cursor.fetchall():
+                category, count = row
+                if category in local_result:
+                    local_result[category] = count
 
-        conn.close()
+            return local_result
 
-        return result
+        stats: Dict[str, int] = execute_with_retry(db_path, operation, readonly=True)
+        return stats
 
     except Exception as e:
         log_warning("database", "Failed to get hourly blockage stats", e)

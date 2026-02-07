@@ -820,8 +820,12 @@ COMMANDS:
   pace-maker prefer-model haiku                Prefer Haiku model for subagents
   pace-maker prefer-model auto                 Use default model selection (no preference)
   pace-maker langfuse config <url> <public_key> <secret_key>
-                                               Configure Langfuse credentials
-  pace-maker langfuse on                       Enable Langfuse telemetry collection
+                                               Configure Langfuse credentials manually
+  pace-maker langfuse provision [--force] [--verbose]
+                                               Auto-provision Langfuse keys from Lambda service
+  pace-maker langfuse provision-url [<url>|reset]
+                                               Show/set/reset auto-provisioning endpoint URL
+  pace-maker langfuse on                       Enable Langfuse telemetry (auto-provisions if needed)
   pace-maker langfuse off                      Disable Langfuse telemetry collection
   pace-maker langfuse status                   Show Langfuse configuration and connection status
 
@@ -1868,7 +1872,7 @@ def _execute_langfuse(config_path: str, subcommand: Optional[str]) -> Dict[str, 
     if not subcommand:
         return {
             "success": False,
-            "message": "langfuse requires a subcommand: config, on, off, status",
+            "message": "langfuse requires a subcommand: config, provision, on, off, status",
         }
 
     # Parse subcommand
@@ -1878,6 +1882,13 @@ def _execute_langfuse(config_path: str, subcommand: Optional[str]) -> Dict[str, 
     # Route to appropriate handler
     if action == "config":
         return _langfuse_config(config_path, parts)
+    elif action == "provision":
+        # Parse flags for provision command
+        force = "--force" in subcommand
+        verbose = "--verbose" in subcommand
+        return _langfuse_provision(config_path, force=force, verbose=verbose)
+    elif action == "provision-url":
+        return _langfuse_provision_url(config_path, parts)
     elif action == "on":
         return _langfuse_on(config_path)
     elif action == "off":
@@ -1893,7 +1904,7 @@ def _execute_langfuse(config_path: str, subcommand: Optional[str]) -> Dict[str, 
     else:
         return {
             "success": False,
-            "message": f"Unknown langfuse subcommand: {action}\nUsage: pace-maker langfuse [config|on|off|status|filter|backfill|stats]",
+            "message": f"Unknown langfuse subcommand: {action}\nUsage: pace-maker langfuse [config|provision|provision-url|on|off|status|filter|backfill|stats]",
         }
 
 
@@ -2062,16 +2073,164 @@ def _langfuse_config(config_path: str, parts: list) -> Dict[str, Any]:
         }
 
 
-def _langfuse_on(config_path: str) -> Dict[str, Any]:
-    """Handle 'langfuse on' command."""
+def _langfuse_provision(
+    config_path: str, force: bool = False, verbose: bool = False
+) -> Dict[str, Any]:
+    """
+    Handle 'langfuse provision' command.
+
+    Auto-provisions Langfuse keys from Lambda service.
+    """
+    from .langfuse.provisioner import (
+        LangfuseProvisioner,
+        CredentialsNotFoundError,
+        ProvisioningError,
+    )
+
     try:
+        # Check if keys already configured
         config = _load_config(config_path)
-        config["langfuse_enabled"] = True
-        _write_config_atomic(config, config_path)
+        has_keys = all(
+            [
+                config.get("langfuse_public_key"),
+                config.get("langfuse_secret_key"),
+                config.get("langfuse_base_url"),
+            ]
+        )
+
+        # If keys exist and not force, prompt for confirmation
+        if has_keys and not force:
+            response = (
+                input(
+                    "Langfuse keys already configured. Overwrite existing keys? [y/N]: "
+                )
+                .strip()
+                .lower()
+            )
+            if response != "y":
+                return {
+                    "success": True,
+                    "message": "✓ Provisioning cancelled",
+                }
+
+        # Initialize provisioner with endpoint from config (if set)
+        endpoint = config.get("langfuse_provision_endpoint")
+        provisioner = LangfuseProvisioner(endpoint=endpoint)
+
+        # Collect credentials
+        if verbose:
+            print("Collecting credentials...")
+        oauth_token, admin_api_key, user_email = provisioner.collect_credentials()
+
+        # Provision keys from Lambda
+        if verbose:
+            print(f"Provisioning keys for {user_email}...")
+        keys = provisioner.provision(oauth_token, admin_api_key, user_email)
+
+        # Save to config
+        if verbose:
+            print("Saving configuration...")
+        provisioner.save_to_config(keys, config_path)
+
         return {
             "success": True,
-            "message": "✓ Langfuse telemetry ENABLED\nSession data will be pushed to Langfuse at session end.",
+            "message": f"✓ Langfuse keys provisioned successfully\nHost: {keys['host']}\nPublic Key: {keys['publicKey']}",
         }
+
+    except CredentialsNotFoundError as e:
+        return {
+            "success": False,
+            "message": f"✗ {str(e)}",
+        }
+    except ProvisioningError as e:
+        return {
+            "success": False,
+            "message": f"✗ Provisioning failed: {str(e)}",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"✗ Error provisioning Langfuse keys: {str(e)}",
+        }
+
+
+def _langfuse_on(config_path: str) -> Dict[str, Any]:
+    """
+    Handle 'langfuse on' command.
+
+    Auto-provisions keys if not configured.
+    """
+    from .langfuse.provisioner import (
+        LangfuseProvisioner,
+        CredentialsNotFoundError,
+        ProvisioningError,
+    )
+
+    try:
+        # Load config
+        config = _load_config(config_path)
+
+        # Check if keys are configured
+        has_keys = all(
+            [
+                config.get("langfuse_public_key"),
+                config.get("langfuse_secret_key"),
+                config.get("langfuse_base_url"),
+            ]
+        )
+
+        # If keys exist, just enable
+        if has_keys:
+            config["langfuse_enabled"] = True
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": "✓ Langfuse telemetry ENABLED\nSession data will be pushed to Langfuse at session end.",
+            }
+
+        # No keys - attempt auto-provisioning
+        print("No Langfuse keys configured. Attempting auto-provisioning...")
+
+        try:
+            # Initialize provisioner with endpoint from config (if set)
+            endpoint = config.get("langfuse_provision_endpoint")
+            provisioner = LangfuseProvisioner(endpoint=endpoint)
+
+            # Collect credentials
+            oauth_token, admin_api_key, user_email = provisioner.collect_credentials()
+
+            # Provision keys from Lambda
+            keys = provisioner.provision(oauth_token, admin_api_key, user_email)
+
+            # Save to config
+            provisioner.save_to_config(keys, config_path)
+
+            return {
+                "success": True,
+                "message": f"✓ Langfuse enabled with auto-provisioned keys\nHost: {keys['host']}",
+            }
+
+        except CredentialsNotFoundError as e:
+            return {
+                "success": False,
+                "message": (
+                    f"✗ Auto-provisioning failed: {str(e)}\n\n"
+                    "To configure Langfuse manually, run:\n"
+                    "  pace-maker langfuse config <url> <public_key> <secret_key>\n\n"
+                    "Or to provision automatically, run:\n"
+                    "  pace-maker langfuse provision"
+                ),
+            }
+        except ProvisioningError as e:
+            return {
+                "success": False,
+                "message": (
+                    f"✗ Auto-provisioning failed: {str(e)}\n\n"
+                    "To configure Langfuse manually, run:\n"
+                    "  pace-maker langfuse config <url> <public_key> <secret_key>"
+                ),
+            }
+
     except Exception as e:
         return {
             "success": False,
@@ -2132,6 +2291,19 @@ def _langfuse_status(config_path: str) -> Dict[str, Any]:
         else:
             status_text += f"\nConnection: ✗ {connection_result['message']}"
 
+        # FEATURE 1: Show auto-provisioning URL and status
+        provision_endpoint = config.get(
+            "langfuse_provision_endpoint"
+        ) or os.environ.get(
+            "LANGFUSE_PROVISION_ENDPOINT", "http://localhost:3000/provision"
+        )
+        is_configured = (
+            config.get("langfuse_provision_endpoint") is not None
+            or os.environ.get("LANGFUSE_PROVISION_ENDPOINT") is not None
+        )
+        status_text += f"\nAuto-Provision URL: {provision_endpoint}"
+        status_text += f"\nAuto-Provision: {'CONFIGURED' if is_configured else 'DEFAULT (not configured)'}"
+
         return {
             "success": True,
             "message": status_text,
@@ -2140,6 +2312,67 @@ def _langfuse_status(config_path: str) -> Dict[str, Any]:
         return {
             "success": False,
             "message": f"Error getting Langfuse status: {str(e)}",
+        }
+
+
+def _langfuse_provision_url(config_path: str, parts: list) -> Dict[str, Any]:
+    """Handle 'langfuse provision-url [<url>|reset]' command."""
+    try:
+        config = _load_config(config_path)
+
+        # No arguments: show current URL
+        if len(parts) == 1:
+            provision_endpoint = config.get(
+                "langfuse_provision_endpoint"
+            ) or os.environ.get(
+                "LANGFUSE_PROVISION_ENDPOINT", "http://localhost:3000/provision"
+            )
+            return {
+                "success": True,
+                "message": f"Auto-Provision URL: {provision_endpoint}",
+            }
+
+        # Reset: remove from config
+        if len(parts) == 2 and parts[1] == "reset":
+            if "langfuse_provision_endpoint" in config:
+                del config["langfuse_provision_endpoint"]
+                _write_config_atomic(config, config_path)
+                return {
+                    "success": True,
+                    "message": "Auto-provision URL reset to default (env var or http://localhost:3000/provision)",
+                }
+            else:
+                return {
+                    "success": True,
+                    "message": "Auto-provision URL already using default",
+                }
+
+        # Set URL: validate and save to config
+        if len(parts) >= 2:
+            url = parts[1]
+            # Validate URL has http:// or https:// scheme
+            if not url.startswith(("http://", "https://")):
+                return {
+                    "success": False,
+                    "message": "Invalid URL: must start with http:// or https://",
+                }
+            config["langfuse_provision_endpoint"] = url
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": f"Auto-provision URL configured: {url}",
+            }
+
+        # Fallback (shouldn't reach here, but satisfies mypy)
+        return {
+            "success": False,
+            "message": "Invalid provision-url command. Usage: pace-maker langfuse provision-url [<url>|reset]",
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error managing provision URL: {str(e)}",
         }
 
 

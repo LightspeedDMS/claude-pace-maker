@@ -9,7 +9,7 @@ Tests for:
 
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
-from src.pacemaker.user_commands import (
+from pacemaker.user_commands import (
     _execute_status,
     _count_recent_errors,
 )
@@ -135,8 +135,8 @@ class TestErrorCounting:
 class TestStatusDisplayErrorCount:
     """Test error count display in status command."""
 
-    @patch("src.pacemaker.user_commands._count_recent_errors")
-    @patch("src.pacemaker.user_commands._load_config")
+    @patch("pacemaker.user_commands._count_recent_errors")
+    @patch("pacemaker.user_commands._load_config")
     def test_status_shows_zero_errors_green(
         self, mock_config, mock_count_errors, tmp_path
     ):
@@ -155,8 +155,8 @@ class TestStatusDisplayErrorCount:
         assert "0 errors" in result["message"].lower() or "0)" in result["message"]
         assert "\033[0m" in result["message"]  # Reset color
 
-    @patch("src.pacemaker.user_commands._count_recent_errors")
-    @patch("src.pacemaker.user_commands._load_config")
+    @patch("pacemaker.user_commands._count_recent_errors")
+    @patch("pacemaker.user_commands._load_config")
     def test_status_shows_few_errors_yellow(
         self, mock_config, mock_count_errors, tmp_path
     ):
@@ -175,8 +175,8 @@ class TestStatusDisplayErrorCount:
         assert "5 errors" in result["message"].lower() or "5)" in result["message"]
         assert "\033[0m" in result["message"]  # Reset color
 
-    @patch("src.pacemaker.user_commands._count_recent_errors")
-    @patch("src.pacemaker.user_commands._load_config")
+    @patch("pacemaker.user_commands._count_recent_errors")
+    @patch("pacemaker.user_commands._load_config")
     def test_status_shows_many_errors_red(
         self, mock_config, mock_count_errors, tmp_path
     ):
@@ -199,7 +199,7 @@ class TestStatusDisplayErrorCount:
 class TestStatusDisplayVersions:
     """Test version display in status command."""
 
-    @patch("src.pacemaker.user_commands._load_config")
+    @patch("pacemaker.user_commands._load_config")
     def test_status_shows_pacemaker_version(self, mock_config, tmp_path):
         """Test status displays Pace Maker version."""
         mock_config.return_value = {"enabled": False}
@@ -214,7 +214,7 @@ class TestStatusDisplayVersions:
 
         assert re.search(r"Pace Maker: v\d+\.\d+\.\d+", result["message"])
 
-    @patch("src.pacemaker.user_commands._load_config")
+    @patch("pacemaker.user_commands._load_config")
     def test_status_shows_usage_console_version_when_installed(
         self, mock_config, tmp_path
     ):
@@ -231,7 +231,7 @@ class TestStatusDisplayVersions:
         assert result["success"] is True
         assert "Usage Console: v2.1.0" in result["message"]
 
-    @patch("src.pacemaker.user_commands._load_config")
+    @patch("pacemaker.user_commands._load_config")
     def test_status_shows_usage_console_not_installed(self, mock_config, tmp_path):
         """Test status displays 'not installed' when Usage Console missing."""
         mock_config.return_value = {"enabled": False}
@@ -257,8 +257,8 @@ class TestStatusDisplayVersions:
 class TestStatusDisplayLangfuse:
     """Test Langfuse status display in status command."""
 
-    @patch("src.pacemaker.user_commands._langfuse_test_connection")
-    @patch("src.pacemaker.user_commands._load_config")
+    @patch("pacemaker.user_commands._langfuse_test_connection")
+    @patch("pacemaker.user_commands._load_config")
     def test_status_shows_langfuse_disabled(self, mock_config, mock_test, tmp_path):
         """Test status displays Langfuse as DISABLED."""
         mock_config.return_value = {
@@ -274,8 +274,8 @@ class TestStatusDisplayLangfuse:
         # Should not call test_connection when disabled
         mock_test.assert_not_called()
 
-    @patch("src.pacemaker.user_commands._langfuse_test_connection")
-    @patch("src.pacemaker.user_commands._load_config")
+    @patch("pacemaker.user_commands._langfuse_test_connection")
+    @patch("pacemaker.user_commands._load_config")
     def test_status_shows_langfuse_enabled_connected(
         self, mock_config, mock_test, tmp_path
     ):
@@ -297,8 +297,8 @@ class TestStatusDisplayLangfuse:
         assert "\033[32m✓ Connected successfully\033[0m" in result["message"]
         mock_test.assert_called_once()
 
-    @patch("src.pacemaker.user_commands._langfuse_test_connection")
-    @patch("src.pacemaker.user_commands._load_config")
+    @patch("pacemaker.user_commands._langfuse_test_connection")
+    @patch("pacemaker.user_commands._load_config")
     def test_status_shows_langfuse_enabled_failed(
         self, mock_config, mock_test, tmp_path
     ):

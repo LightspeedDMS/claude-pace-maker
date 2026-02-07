@@ -19,7 +19,9 @@ Story #34: Langfuse Integration Status and Metrics Display
 
 import sqlite3
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
+
+from pacemaker.database import execute_with_retry
 
 
 def align_to_bucket(timestamp: float) -> int:
@@ -69,8 +71,7 @@ def increment_metric(metric_type: str, db_path: str) -> None:
     bucket = align_to_bucket(time.time())
     column = f"{metric_type}_count"
 
-    conn = sqlite3.connect(db_path)
-    try:
+    def operation(conn: sqlite3.Connection) -> None:
         # Upsert: insert new bucket or increment existing
         conn.execute(
             f"""
@@ -80,9 +81,9 @@ def increment_metric(metric_type: str, db_path: str) -> None:
             """,
             (bucket,),
         )
-        conn.commit()
-    finally:
-        conn.close()
+
+    # Use execute_with_retry for proper concurrency handling
+    execute_with_retry(db_path, operation)
 
     # Cleanup stale buckets after every increment
     cleanup_stale_buckets(db_path)
@@ -99,15 +100,14 @@ def cleanup_stale_buckets(db_path: str) -> None:
     """
     cutoff = time.time() - 86400  # 24 hours in seconds
 
-    conn = sqlite3.connect(db_path)
-    try:
+    def operation(conn: sqlite3.Connection) -> None:
         conn.execute(
             "DELETE FROM langfuse_metrics WHERE bucket_timestamp < ?",
             (cutoff,),
         )
-        conn.commit()
-    finally:
-        conn.close()
+
+    # Use execute_with_retry for proper concurrency handling
+    execute_with_retry(db_path, operation)
 
 
 def get_24h_metrics(db_path: str) -> Dict[str, int]:
@@ -132,8 +132,7 @@ def get_24h_metrics(db_path: str) -> Dict[str, int]:
     """
     cutoff = time.time() - 86400  # 24 hours
 
-    conn = sqlite3.connect(db_path)
-    try:
+    def operation(conn: sqlite3.Connection) -> Tuple[int, int, int]:
         result = conn.execute(
             """
             SELECT COALESCE(SUM(sessions_count), 0),
@@ -144,12 +143,17 @@ def get_24h_metrics(db_path: str) -> Dict[str, int]:
             """,
             (cutoff,),
         ).fetchone()
-    finally:
-        conn.close()
+        if result is None:
+            return (0, 0, 0)
+        # Convert to ints explicitly to satisfy type checker
+        return (int(result[0]), int(result[1]), int(result[2]))
 
-    sessions = int(result[0])
-    traces = int(result[1])
-    spans = int(result[2])
+    # Use execute_with_retry for proper concurrency handling (readonly=True)
+    result = execute_with_retry(db_path, operation, readonly=True)
+
+    sessions = result[0]
+    traces = result[1]
+    spans = result[2]
     total = sessions + traces + spans
 
     return {

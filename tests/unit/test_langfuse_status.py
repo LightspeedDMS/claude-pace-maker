@@ -17,7 +17,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from src.pacemaker import user_commands
+from pacemaker import user_commands
 
 
 class TestLangfuseStatus(unittest.TestCase):
@@ -96,9 +96,7 @@ class TestLangfuseStatus(unittest.TestCase):
     def test_langfuse_status_tests_connection(self):
         """AC3: Status tests connection to Langfuse API"""
         # Mock the langfuse client connection test
-        with patch(
-            "src.pacemaker.user_commands._langfuse_test_connection"
-        ) as mock_test:
+        with patch("pacemaker.user_commands._langfuse_test_connection") as mock_test:
             mock_test.return_value = {
                 "connected": True,
                 "message": "Connection successful",
