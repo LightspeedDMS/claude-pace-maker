@@ -615,6 +615,9 @@ def handle_user_prompt_submit(
     5. STORE trace as pending_trace in state (NOT pushed yet)
     6. Update state with current_trace_id and pending_trace
 
+    NOTE: Intel attachment removed - intel is now pushed immediately to current trace
+    in handle_post_tool_use when parsed, not stored for next trace.
+
     Args:
         config: Configuration dict with Langfuse credentials
         session_id: Session identifier (Langfuse sessionId)
@@ -797,6 +800,27 @@ def handle_post_tool_use(
         True if successful or disabled, False if failed
     """
     try:
+        # STEP 0: Parse intel from recent assistant responses (runs on EVERY post_tool_use)
+        # This captures prompt intelligence metadata for trace filtering and analytics
+        # NEW: Intel is now pushed immediately to current trace, not stored for next trace
+        parsed_intel = None
+        try:
+            from ..intel.parser import parse_intel_line
+            from ..transcript_reader import get_last_n_assistant_messages
+
+            # Get last 3 assistant messages to check for intel lines
+            recent_messages = get_last_n_assistant_messages(transcript_path, n=3)
+            for msg in recent_messages:
+                if msg and "§" in msg:
+                    # Parse intel line
+                    intel = parse_intel_line(msg)
+                    if intel:
+                        parsed_intel = intel
+                        log_debug("orchestrator", f"Parsed intel: {intel}")
+                        break  # Use the most recent intel line found
+        except Exception as e:
+            log_warning("orchestrator", "Failed to parse intel from transcript", e)
+
         if not should_run_langfuse_push(config):
             log_debug("orchestrator", "Langfuse push skipped (disabled)")
             return True
@@ -823,7 +847,52 @@ def handle_post_tool_use(
             log_warning("orchestrator", f"No current_trace_id for {session_id}", None)
             return False
 
-        # STEP 0: Parse secrets from recent assistant responses (runs on EVERY post_tool_use)
+        # STEP 0.5: Push intel to CURRENT trace immediately (if parsed)
+        # NEW ARCHITECTURE: Intel describes current prompt, so attach to current trace NOW
+        if parsed_intel:
+            intel_metadata = {}
+            if "frustration" in parsed_intel:
+                intel_metadata["intel_frustration"] = parsed_intel["frustration"]
+            if "specificity" in parsed_intel:
+                intel_metadata["intel_specificity"] = parsed_intel["specificity"]
+            if "task_type" in parsed_intel:
+                intel_metadata["intel_task_type"] = parsed_intel["task_type"]
+            if "quality" in parsed_intel:
+                intel_metadata["intel_quality"] = parsed_intel["quality"]
+            if "iteration" in parsed_intel:
+                intel_metadata["intel_iteration"] = parsed_intel["iteration"]
+
+            # Create trace-update event to add intel to current trace
+            intel_batch = [
+                {
+                    "id": f"intel-{current_trace_id}-{str(uuid.uuid4())[:8]}",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "type": "trace-create",  # Upsert semantics
+                    "body": {
+                        "id": current_trace_id,
+                        "metadata": intel_metadata,
+                    },
+                }
+            ]
+
+            # Push intel immediately to Langfuse
+            intel_success, _ = push.push_batch_events(
+                base_url, public_key, secret_key, intel_batch, timeout=5
+            )
+
+            if intel_success:
+                log_debug(
+                    "orchestrator",
+                    f"Pushed intel to current trace {current_trace_id}: {parsed_intel}",
+                )
+            else:
+                log_warning(
+                    "orchestrator",
+                    f"Failed to push intel to current trace {current_trace_id}",
+                    None,
+                )
+
+        # STEP 1: Parse secrets from recent assistant responses (runs on EVERY post_tool_use)
         # This ensures secrets are stored in database and available for masking in any future traces
         try:
             from ..secrets.parser import parse_assistant_response
@@ -894,6 +963,7 @@ def handle_post_tool_use(
                 last_pushed_line=last_pushed_line,
                 metadata=metadata,
                 # pending_trace not passed - will be omitted from state file
+                # pending_intel not passed - intel is now pushed immediately, not stored
             )
             # Re-read state to get updated version without pending_trace
             existing_state = state_manager.read(session_id)
@@ -1030,12 +1100,14 @@ def handle_post_tool_use(
             max_line = max(b["line_number"] for b in content_blocks)
             new_last_pushed_line = max_line
 
-        state_manager.create_or_update(
-            session_id=effective_session_id,
-            trace_id=existing_state["trace_id"],
-            last_pushed_line=new_last_pushed_line,
-            metadata=metadata,
-        )
+        if existing_state:
+            state_manager.create_or_update(
+                session_id=effective_session_id,
+                trace_id=existing_state["trace_id"],
+                last_pushed_line=new_last_pushed_line,
+                metadata=metadata,
+                # pending_intel not passed - intel is now pushed immediately, not stored
+            )
 
         if not success:
             log_warning(

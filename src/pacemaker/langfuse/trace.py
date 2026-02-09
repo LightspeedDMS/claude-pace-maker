@@ -146,6 +146,12 @@ def finalize_trace_with_output(
     non_empty_messages = [m for m in assistant_messages if m]
     output = non_empty_messages[-1] if non_empty_messages else ""
 
+    # Strip intel line from output (§ marker with metadata)
+    if output:
+        from ..intel.parser import strip_intel_line
+
+        output = strip_intel_line(output)
+
     # Extract token counts from trace_start_line forward
     incremental_data = incremental.parse_incremental_lines(
         transcript_path, trace_start_line

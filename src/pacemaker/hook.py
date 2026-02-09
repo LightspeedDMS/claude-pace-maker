@@ -356,6 +356,22 @@ def run_session_start_hook():
         # Log error but don't break session start
         log_warning("hook", "Failed to display secrets nudge", e)
 
+    # Display intel guidance for Prompt Intelligence Telemetry
+    try:
+        from .prompt_loader import PromptLoader
+
+        loader = PromptLoader()
+        intel_guidance = loader.load_prompt(
+            "intel_guidance.md", subfolder="session_start"
+        )
+        print(intel_guidance, file=sys.stdout, flush=True)
+    except FileNotFoundError:
+        # Graceful degradation - intel guidance is optional
+        log_debug("hook", "Intel guidance prompt not found - skipping")
+    except Exception as e:
+        # Log error but don't break session start
+        log_warning("hook", "Failed to display intel guidance", e)
+
 
 def run_subagent_start_hook():
     """

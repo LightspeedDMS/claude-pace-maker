@@ -74,6 +74,7 @@ class StateManager:
         last_pushed_line: int,
         metadata: Optional[Dict[str, Any]] = None,
         pending_trace: Optional[List[Dict[str, Any]]] = None,
+        pending_intel: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Create or update state for a session.
@@ -86,6 +87,7 @@ class StateManager:
             last_pushed_line: Last line pushed to Langfuse
             metadata: Optional trace metadata (tool calls, accumulated tokens)
             pending_trace: Optional pending trace batch (for secrets sanitization)
+            pending_intel: Optional prompt intelligence metadata (frustration, specificity, etc)
 
         Returns:
             True if successful, False if failed
@@ -106,6 +108,10 @@ class StateManager:
         # Add pending_trace if provided
         if pending_trace is not None:
             state_data["pending_trace"] = pending_trace
+
+        # Add pending_intel if provided
+        if pending_intel is not None:
+            state_data["pending_intel"] = pending_intel
 
         try:
             # Write to temp file first (atomic operation)

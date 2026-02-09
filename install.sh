@@ -580,6 +580,12 @@ install_hook_modules() {
     cp -r "$PACEMAKER_SOURCE_DIR/secrets" "$HOOKS_PACEMAKER_DIR/"
   fi
 
+  # Copy intel directory (for prompt intelligence telemetry)
+  if [ -d "$PACEMAKER_SOURCE_DIR/intel" ]; then
+    echo "Copying intel directory..."
+    cp -r "$PACEMAKER_SOURCE_DIR/intel" "$HOOKS_PACEMAKER_DIR/"
+  fi
+
   # Copy __init__.py if exists
   if [ -f "$PACEMAKER_SOURCE_DIR/__init__.py" ]; then
     echo "Copying __init__.py..."
