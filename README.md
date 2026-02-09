@@ -16,6 +16,9 @@ Intelligent credit consumption throttling and code quality enforcement for Claud
 - **Blockage Telemetry**: Track and report validation blocks via `pace-maker blockage-stats`
 - **Daily Log Rotation**: Automatic log rotation (one file per day, 15 days retention)
 - **Enhanced Status Display**: Shows versions, Langfuse connectivity, and error counts
+- **Prompt Intelligence (Intel)**: Optional per-prompt metadata (frustration, specificity, task type, quality, iteration) attached to Langfuse traces for dashboard analytics
+- **Secrets Management**: Sanitizes sensitive data from Langfuse trace outputs
+- **Langfuse Auto-Provisioning**: Automatic API key provisioning with configurable URL
 
 ## Installation
 
@@ -216,6 +219,65 @@ pace-maker langfuse configure URL PUBLIC SECRET  # Set credentials
 - Self-hosted or cloud Langfuse instance
 - API credentials (public key + secret key)
 
+### Prompt Intelligence Telemetry (Intel)
+
+Optional per-prompt metadata that Claude emits at the start of responses. The intel line is automatically parsed, stripped from visible output, and attached to the corresponding Langfuse trace as metadata.
+
+#### Intel Line Format
+
+Claude emits a single line starting with the `§` marker:
+
+```
+§ △0.8 ◎surg ■bug ◇0.7 ↻2
+```
+
+#### Symbol Vocabulary
+
+| Symbol | Field | Type | Values | Description |
+|--------|-------|------|--------|-------------|
+| `§` | _(marker)_ | - | - | Identifies the intel line (required) |
+| `△` | frustration | float | 0.0 - 1.0 | User frustration level (0=calm, 1=high) |
+| `◎` | specificity | enum | `surg`, `const`, `outc`, `expl` | How specific the request is |
+| `■` | task_type | enum | `bug`, `feat`, `refac`, `research`, `test`, `docs`, `debug`, `conf`, `other` | Nature of the work |
+| `◇` | quality | float | 0.0 - 1.0 | Claude's confidence in understanding/solution |
+| `↻` | iteration | int | 1 - 9 | Number of attempts on this issue |
+
+**Specificity values:**
+- `surg` = Surgical (very specific, targeted change)
+- `const` = Constrained (specific scope with boundaries)
+- `outc` = Outcome-focused (goal stated, approach open)
+- `expl` = Exploratory (vague, needs clarification)
+
+#### Langfuse Metadata Keys (for Dashboards)
+
+Intel fields are attached to Langfuse traces with the `intel_` prefix. Use these keys when building Langfuse dashboards, filters, and analytics:
+
+| Langfuse Metadata Key | Source Field | Type | Example Value |
+|----------------------|-------------|------|---------------|
+| `intel_frustration` | `△` | float | `0.8` |
+| `intel_specificity` | `◎` | string | `"surg"` |
+| `intel_task_type` | `■` | string | `"bug"` |
+| `intel_quality` | `◇` | float | `0.7` |
+| `intel_iteration` | `↻` | int | `2` |
+
+**Dashboard examples:**
+- Filter traces by `intel_task_type = "bug"` to see all bug fix conversations
+- Chart `intel_frustration` over time to detect recurring pain points
+- Group by `intel_specificity` to analyze prompt quality patterns
+- Alert on `intel_iteration >= 4` to identify stuck conversations
+- Correlate `intel_quality` with session duration for efficiency metrics
+
+#### Data Flow
+
+1. **Session start**: Intel guidance prompt is injected (full symbol vocabulary, from `prompts/session_start/intel_guidance.md`)
+2. **User prompt submit**: Short nudge reminder injected after each user prompt (`§ intel: Start your response with a § intel line...`)
+3. **Claude responds**: Optionally emits `§` intel line at the start of a response
+4. **Post-tool hook**: Parses intel from the last 3 assistant messages in the transcript
+5. **Langfuse push**: Attaches parsed intel as trace metadata (upsert to current trace)
+6. **Output cleanup**: Intel line is stripped from trace output so users never see it
+
+All fields are optional. Missing or invalid fields are silently skipped (no defaults injected).
+
 ## Model Preference (Quota Balancing)
 
 Controls which model Claude uses for subagent Task tool calls to balance quota consumption across models.
@@ -283,10 +345,10 @@ When Claude attempts to stop:
 
 | Hook | Function |
 |------|----------|
-| SessionStart | Initializes state |
+| SessionStart | Initializes state, injects intel guidance prompt |
 | UserPromptSubmit | Captures prompts, handles CLI commands |
 | PreToolUse | Intent validation, TDD checks, clean code validation |
-| PostToolUse | Credit throttling, subagent reminders |
+| PostToolUse | Credit throttling, subagent reminders, intel parsing and Langfuse push |
 | Stop | Session completion validation |
 | SubagentStart/Stop | Tracks subagent context |
 
@@ -325,6 +387,21 @@ When Claude attempts to stop:
 - [Test Report](reports/pre_tool_validation_test_report.md)
 
 ## Changelog
+
+### v1.8.0 (February 2026)
+- **Prompt Intelligence (Intel)**: New module for per-prompt metadata telemetry (`§` intel lines with frustration, specificity, task type, quality, iteration)
+- **Intel Langfuse Integration**: Parsed intel attached to Langfuse traces as `intel_*` metadata keys for dashboard filtering and analytics
+- **Intel Guidance Prompt**: Session-start injection of intel symbol vocabulary so Claude can emit metadata
+- **Langfuse Provisioner E2E Tests**: End-to-end test coverage for Langfuse auto-provisioning
+- **Version Sync**: All version files (`__init__.py`, `pyproject.toml`, `setup.py`) synchronized to 1.8.0
+
+### v1.7.0 (February 2026)
+- **Secrets Management**: Sanitizes sensitive data (API keys, tokens, passwords) from Langfuse trace outputs before pushing
+- **Langfuse Tool Output Capture**: Fixed tool output capture for accurate trace content
+
+### v1.6.0 (February 2026)
+- **Langfuse Auto-Provisioning**: Automatic API key provisioning with configurable URL via `pace-maker langfuse configure`
+- **Langfuse Status Display**: Shows provisioning URL and connectivity status in `pace-maker langfuse status`
 
 ### v1.5.0 (February 2026)
 - **Daily Log Rotation**: One log file per day (`pace-maker-YYYY-MM-DD.log`), 15 days retention, automatic cleanup

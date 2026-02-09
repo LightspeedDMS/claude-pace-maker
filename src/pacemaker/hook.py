@@ -970,8 +970,18 @@ def run_user_prompt_submit():
             print(json.dumps(response), file=sys.stdout, flush=True)
             sys.exit(0)
 
-        # Pass through original input (no prompt storage needed)
-        print(raw_input, file=sys.stdout, flush=True)
+        # Output with intel nudge reminder
+        intel_nudge = (
+            "§ intel: Start your response with a § intel line "
+            "(△frustration ◎specificity ■task_type ◇quality ↻iteration)"
+        )
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": intel_nudge,
+            }
+        }
+        print(json.dumps(output), file=sys.stdout, flush=True)
         sys.exit(0)
 
     except Exception as e:
