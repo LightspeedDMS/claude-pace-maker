@@ -15,6 +15,8 @@ from typing import Dict, Optional, Any
 from .constants import DEFAULT_CONFIG
 from .logger import log_warning
 from .prompt_loader import PromptLoader
+from .secrets.metrics import get_24h_secrets_metrics
+from .secrets.database import list_secrets
 
 
 # Pre-compiled regex for log error parsing
@@ -287,6 +289,39 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_langfuse.group(1),
         }
 
+    # Pattern 21: pace-maker secrets (add|list|clear)
+    pattern_secrets_simple = r"^pace-maker\s+secrets\s+(add|list|clear)$"
+    match_secrets_simple = re.match(pattern_secrets_simple, normalized)
+
+    if match_secrets_simple:
+        return {
+            "is_pace_maker_command": True,
+            "command": "secrets",
+            "subcommand": match_secrets_simple.group(1),
+        }
+
+    # Pattern 22: pace-maker secrets addfile PATH
+    pattern_secrets_addfile = r"^pace-maker\s+secrets\s+addfile\s+(.+)$"
+    match_secrets_addfile = re.match(pattern_secrets_addfile, normalized)
+
+    if match_secrets_addfile:
+        return {
+            "is_pace_maker_command": True,
+            "command": "secrets",
+            "subcommand": f"addfile {match_secrets_addfile.group(1)}",
+        }
+
+    # Pattern 23: pace-maker secrets remove ID
+    pattern_secrets_remove = r"^pace-maker\s+secrets\s+remove\s+(.+)$"
+    match_secrets_remove = re.match(pattern_secrets_remove, normalized)
+
+    if match_secrets_remove:
+        return {
+            "is_pace_maker_command": True,
+            "command": "secrets",
+            "subcommand": f"remove {match_secrets_remove.group(1)}",
+        }
+
     return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
@@ -346,6 +381,8 @@ def execute_command(
         return _execute_prefer_model(config_path, subcommand)
     elif command == "langfuse":
         return _execute_langfuse(config_path, subcommand)
+    elif command == "secrets":
+        return _execute_secrets(db_path, subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -404,15 +441,15 @@ def _execute_off(config_path: str) -> Dict[str, Any]:
         return {"success": False, "message": error_template.replace("{error}", str(e))}
 
 
-def _count_recent_errors(log_path: str, hours: int = 24) -> int:
+def _count_recent_errors(hours: int = 24, log_dir: Optional[str] = None) -> int:
     """
     Count ERROR-level log entries from the last N hours.
 
     Scans rotated log files (today's and yesterday's) for errors.
 
     Args:
-        log_path: Base log path (ignored, uses rotated files)
         hours: Number of hours to look back (default: 24)
+        log_dir: Log directory path (default: production log directory)
 
     Returns:
         Count of ERROR entries within the time window
@@ -425,7 +462,7 @@ def _count_recent_errors(log_path: str, hours: int = 24) -> int:
         error_count = 0
 
         # Get log files for the last 2 days (covers 24-hour window)
-        log_files = get_recent_log_paths(days=2)
+        log_files = get_recent_log_paths(days=2, log_dir=log_dir)
 
         if not log_files:
             return 0
@@ -601,9 +638,7 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
                 )
 
         # Add 24-hour error count from logs
-        from .constants import DEFAULT_LOG_PATH
-
-        error_count = _count_recent_errors(DEFAULT_LOG_PATH, hours=24)
+        error_count = _count_recent_errors(hours=24)
 
         # Handle different error count scenarios
         if error_count == -1:
@@ -623,6 +658,9 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
             status_text += (
                 f"\n24-Hour Errors: {ANSI_RED}{error_count} errors{ANSI_RESET}"
             )
+
+        # Add Secrets section
+        status_text += _format_secrets_stats(db_path)
 
         # Try to get usage data
         usage_data = None
@@ -760,6 +798,41 @@ def _format_blockage_stats(db_path: Optional[str]) -> str:
     except Exception as e:
         result += "\n  (unavailable)"
         log_warning("user_commands", "Failed to get blockage stats", e)
+
+    return result
+
+
+def _format_secrets_stats(db_path: Optional[str]) -> str:
+    """
+    Format secrets statistics for status display.
+
+    Args:
+        db_path: Path to the database file
+
+    Returns:
+        Formatted string with secrets statistics section
+    """
+    result = "\n\nSecrets:"
+
+    try:
+        if db_path is None:
+            result += "\n  (no database path)"
+            return result
+
+        # Get 24h masked count
+        metrics = get_24h_secrets_metrics(db_path)
+        masked_count = metrics.get("secrets_masked", 0)
+
+        # Get stored secrets count
+        secrets = list_secrets(db_path)
+        stored_count = len(secrets)
+
+        result += f"\n  Masked (24h):{masked_count:>10}"
+        result += f"\n  Stored:{stored_count:>16}"
+
+    except Exception as e:
+        result += "\n  (unavailable)"
+        log_warning("user_commands", "Failed to get secrets stats", e)
 
     return result
 
@@ -2473,6 +2546,185 @@ def _parse_rule_args(args_str: str, require_all: bool = True) -> Dict[str, str]:
     return result
 
 
+def _execute_secrets(
+    db_path: Optional[str], subcommand: Optional[str]
+) -> Dict[str, Any]:
+    """
+    Execute secrets management commands.
+
+    Args:
+        db_path: Path to secrets database
+        subcommand: Subcommand (add|addfile <path>|list|remove <id>|clear)
+
+    Returns:
+        Dictionary with success status and message
+    """
+    import getpass
+    from pathlib import Path
+    from .secrets.database import (
+        create_secret,
+        list_secrets,
+        remove_secret,
+        clear_all_secrets,
+    )
+
+    # Default database path if not provided
+    if not db_path:
+        home = Path.home()
+        db_path = str(home / ".pace-maker" / "secrets.db")
+
+    if not subcommand:
+        return {
+            "success": False,
+            "message": "Error: secrets command requires a subcommand (add|addfile|list|remove|clear)",
+        }
+
+    subcommand_lower = subcommand.lower()
+
+    # Handle 'add' - prompt for secret
+    if subcommand_lower == "add":
+        try:
+            secret_value = getpass.getpass("Enter secret value (hidden): ")
+
+            if not secret_value or secret_value.strip() == "":
+                return {
+                    "success": False,
+                    "message": "Error: Secret value cannot be empty",
+                }
+
+            secret_id = create_secret(db_path, "text", secret_value)
+
+            return {
+                "success": True,
+                "message": f"✓ Secret added successfully (ID: {secret_id})",
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error adding secret: {e}"}
+
+    # Handle 'addfile <path>' - read file and store
+    elif subcommand_lower.startswith("addfile"):
+        parts = subcommand.split(maxsplit=1)
+
+        if len(parts) < 2:
+            return {
+                "success": False,
+                "message": "Error: addfile requires a file path",
+            }
+
+        file_path = parts[1]
+
+        try:
+            if not os.path.exists(file_path):
+                return {
+                    "success": False,
+                    "message": f"Error: File not found: {file_path}",
+                }
+
+            with open(file_path, "r") as f:
+                file_content = f.read()
+
+            secret_id = create_secret(db_path, "file", file_content)
+
+            return {
+                "success": True,
+                "message": f"✓ File secret added successfully (ID: {secret_id})",
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error adding file secret: {e}"}
+
+    # Handle 'list' - show all secrets with masked values
+    elif subcommand_lower == "list":
+        try:
+            secrets = list_secrets(db_path)
+
+            if not secrets:
+                return {
+                    "success": True,
+                    "message": "No secrets stored in database.",
+                }
+
+            lines = ["Stored secrets:"]
+            for secret in secrets:
+                secret_id = secret["id"]
+                secret_type = secret["type"]
+                secret_value = secret["value"]
+
+                # Mask the value - show first 4 + ... + last 4, or *** if too short
+                if len(secret_value) <= 8:
+                    masked_value = "***"
+                else:
+                    masked_value = f"{secret_value[:4]}...{secret_value[-4:]}"
+
+                lines.append(f"  ID {secret_id}: [{secret_type}] {masked_value}")
+
+            return {"success": True, "message": "\n".join(lines)}
+        except Exception as e:
+            return {"success": False, "message": f"Error listing secrets: {e}"}
+
+    # Handle 'remove <id>' - delete secret by ID
+    elif subcommand_lower.startswith("remove"):
+        parts = subcommand.split(maxsplit=1)
+
+        if len(parts) < 2:
+            return {
+                "success": False,
+                "message": "Error: remove requires a secret ID",
+            }
+
+        try:
+            secret_id = int(parts[1])
+        except ValueError:
+            return {
+                "success": False,
+                "message": f"Error: Invalid secret ID: {parts[1]}",
+            }
+
+        try:
+            success = remove_secret(db_path, secret_id)
+
+            if success:
+                return {
+                    "success": True,
+                    "message": f"✓ Secret {secret_id} removed successfully",
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": f"Error: Secret {secret_id} not found",
+                }
+        except Exception as e:
+            return {"success": False, "message": f"Error removing secret: {e}"}
+
+    # Handle 'clear' - delete all secrets with confirmation
+    elif subcommand_lower == "clear":
+        try:
+            # Prompt for confirmation
+            confirmation = input(
+                "Are you sure you want to delete ALL secrets? (yes/no): "
+            )
+
+            if confirmation.lower() != "yes":
+                return {
+                    "success": True,
+                    "message": "Operation cancelled.",
+                }
+
+            count = clear_all_secrets(db_path)
+
+            return {
+                "success": True,
+                "message": f"✓ Cleared {count} secret(s) from database",
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error clearing secrets: {e}"}
+
+    else:
+        return {
+            "success": False,
+            "message": f"Error: Unknown secrets subcommand: {subcommand}",
+        }
+
+
 def main():
     """CLI entry point for pace-maker command."""
     import sys
@@ -2517,6 +2769,7 @@ For more information, run: pace-maker help
             "excluded-paths",
             "prefer-model",
             "langfuse",
+            "secrets",
         ],
         help="Command to execute",
     )

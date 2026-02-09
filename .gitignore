@@ -32,3 +32,7 @@ coverage.json
 /src/pacemaker/langfuse/__pycache__
 /src/pacemaker/telemetry/__pycache__
 /tests/unit/__pycache__
+.secrets
+/src/pacemaker/secrets/__pycache__
+/tests/integration/__pycache__
+/tests/e2e/__pycache__

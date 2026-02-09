@@ -25,6 +25,7 @@ from .project_context import get_project_context
 from ..telemetry import jsonl_parser
 from .metrics import increment_metric
 from ..constants import DEFAULT_DB_PATH, DEFAULT_STATE_PATH
+from ..secrets.sanitizer import sanitize_trace
 
 
 # Timeout for incremental push (increased from 2s to 10s to prevent premature timeouts)
@@ -520,12 +521,18 @@ def run_incremental_push(
             existing_trace=existing_trace,
         )
 
-        # Push batch to Langfuse API with timeout
-        success = push.push_batch_events(
+        # Get db_path for sanitization and metrics
+        db_path = config.get("db_path", DEFAULT_DB_PATH)
+
+        # SECURITY: Sanitize batch before pushing to Langfuse (mask all secrets)
+        sanitized_batch = sanitize_trace(batch, db_path)
+
+        # Push sanitized batch to Langfuse API with timeout
+        success, _ = push.push_batch_events(
             base_url,
             public_key,
             secret_key,
-            batch,
+            sanitized_batch,
             timeout=INCREMENTAL_PUSH_TIMEOUT_SECONDS,
         )
 
@@ -558,8 +565,6 @@ def run_incremental_push(
             return False
 
         # Increment metrics on successful push (Story #34)
-        db_path = config.get("db_path", DEFAULT_DB_PATH)
-
         # First push: increment sessions counter (new session created)
         if existing_state is None:
             try:
@@ -595,18 +600,20 @@ def handle_user_prompt_submit(
     user_message: str,
 ) -> bool:
     """
-    Handle UserPromptSubmit hook - create new trace for user turn.
+    Handle UserPromptSubmit hook - create new trace but DEFER push.
 
-    TRACE-PER-TURN ARCHITECTURE:
-    Each user prompt creates a NEW trace (not one trace per session).
+    REFACTORED ARCHITECTURE (Secrets Sanitization):
+    - Creates trace but STORES it as pending_trace in state
+    - Does NOT push immediately
+    - Actual push happens in post_tool_use after sanitization
 
     Workflow:
     1. Check if Langfuse enabled
     2. Generate unique trace_id for this turn
     3. Extract user_id from transcript
     4. Create trace via trace module
-    5. Push trace to Langfuse
-    6. Update state with current_trace_id and trace_start_line
+    5. STORE trace as pending_trace in state (NOT pushed yet)
+    6. Update state with current_trace_id and pending_trace
 
     Args:
         config: Configuration dict with Langfuse credentials
@@ -623,11 +630,6 @@ def handle_user_prompt_submit(
         if not should_run_langfuse_push(config):
             log_debug("orchestrator", "Langfuse push skipped (disabled)")
             return True
-
-        # Extract credentials
-        base_url = config["langfuse_base_url"]
-        public_key = config["langfuse_public_key"]
-        secret_key = config["langfuse_secret_key"]
 
         # Initialize state manager
         state_manager = state.StateManager(state_dir)
@@ -668,47 +670,26 @@ def handle_user_prompt_submit(
             }
         ]
 
-        # Push to Langfuse
-        success = push.push_batch_events(
-            base_url,
-            public_key,
-            secret_key,
-            batch,
-            timeout=INCREMENTAL_PUSH_TIMEOUT_SECONDS,
-        )
+        # CRITICAL CHANGE: Do NOT push immediately
+        # Store batch as pending_trace in state for later sanitization + push
+        state_metadata = {
+            "current_trace_id": trace_id,
+            "trace_start_line": last_pushed_line,
+            "is_first_trace_in_session": existing_state is None,  # Track for metrics
+        }
 
-        if not success:
-            log_warning("orchestrator", f"Failed to push trace for {session_id}", None)
-            return False
-
-        # Increment metrics on successful trace creation (Story #34)
-        db_path = config.get("db_path", DEFAULT_DB_PATH)
-
-        # First trace in session: increment sessions counter
-        if existing_state is None:
-            try:
-                increment_metric("sessions", db_path)
-            except Exception as e:
-                log_warning("orchestrator", "Failed to increment sessions metric", e)
-
-        # All traces: increment traces counter (trace-per-turn architecture)
-        try:
-            increment_metric("traces", db_path)
-        except Exception as e:
-            log_warning("orchestrator", "Failed to increment traces metric", e)
-
-        # Update state with current_trace_id and trace_start_line
         state_manager.create_or_update(
             session_id=session_id,
             trace_id=trace_id,
             last_pushed_line=last_pushed_line,  # Don't change last_pushed_line yet
-            metadata={
-                "current_trace_id": trace_id,
-                "trace_start_line": last_pushed_line,  # Token accumulation starts here
-            },
+            metadata=state_metadata,
+            pending_trace=batch,  # Store for later push in post_tool_use
         )
 
-        log_info("orchestrator", f"Created trace {trace_id} for user prompt")
+        log_info(
+            "orchestrator",
+            f"Stored pending trace {trace_id} for user prompt (will push after sanitization)",
+        )
         return True
 
     except Exception as e:
@@ -751,7 +732,9 @@ def _create_spans_from_blocks(
                 trace_id=trace_id,
                 tool_name=block["tool_name"],
                 tool_input=block["tool_input"],
-                tool_output="",  # Output not available yet at tool_use time
+                tool_output=block.get(
+                    "tool_output", ""
+                ),  # Use extracted output from block
                 start_time=timestamp,
                 end_time=timestamp,
             )
@@ -775,14 +758,19 @@ def handle_post_tool_use(
     session_id: str,
     transcript_path: str,
     state_dir: str,
+    tool_response: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    tool_input: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """
-    Handle PostToolUse hook - create spans for ALL content (text + tools).
+    Handle PostToolUse hook - sanitize and push pending trace, then create spans.
 
-    REFACTORED ARCHITECTURE:
-    Parses transcript incrementally to create spans for ALL content:
-    - Text blocks → text spans (create_text_span)
-    - Tool use blocks → tool spans (create_span)
+    REFACTORED ARCHITECTURE (Secrets Sanitization):
+    1. Check if pending_trace exists in state
+    2. If yes: sanitize pending_trace and push it (this is the trace from user_prompt_submit)
+    3. Parse transcript incrementally to create spans for ALL content:
+       - Text blocks → text spans (create_text_span)
+       - Tool use blocks → tool spans (create_span)
 
     This captures the full conversation flow in Langfuse, not just tool calls.
 
@@ -791,11 +779,19 @@ def handle_post_tool_use(
     If in_subagent=True and current_subagent_trace_id exists, uses subagent's
     trace_id for spans instead of parent's trace_id.
 
+    TOOL OUTPUT CAPTURE:
+    If tool_response is provided (from PostToolUse hook), creates a span for
+    the current tool execution with the actual output. Tool metadata (name and input)
+    are also included if provided, giving full visibility into tool execution.
+
     Args:
         config: Configuration dict with Langfuse credentials
         session_id: Session identifier
         transcript_path: Path to transcript JSONL file
         state_dir: Directory for state files
+        tool_response: Optional tool output from PostToolUse hook
+        tool_name: Optional tool name from PostToolUse hook
+        tool_input: Optional tool input parameters from PostToolUse hook
 
     Returns:
         True if successful or disabled, False if failed
@@ -808,6 +804,7 @@ def handle_post_tool_use(
         base_url = config["langfuse_base_url"]
         public_key = config["langfuse_public_key"]
         secret_key = config["langfuse_secret_key"]
+        db_path = config.get("db_path", DEFAULT_DB_PATH)
 
         state_manager = state.StateManager(state_dir)
 
@@ -826,7 +823,82 @@ def handle_post_tool_use(
             log_warning("orchestrator", f"No current_trace_id for {session_id}", None)
             return False
 
-        # Check if we're in a subagent context
+        # STEP 0: Parse secrets from recent assistant responses (runs on EVERY post_tool_use)
+        # This ensures secrets are stored in database and available for masking in any future traces
+        try:
+            from ..secrets.parser import parse_assistant_response
+            from ..transcript_reader import get_last_n_assistant_messages
+
+            # Get last 5 assistant messages to check for secret declarations
+            recent_messages = get_last_n_assistant_messages(transcript_path, n=5)
+            for msg in recent_messages:
+                if msg and "🔐" in msg:
+                    # Parse and store secrets
+                    parse_assistant_response(msg, db_path)
+        except Exception as e:
+            log_warning("orchestrator", "Failed to parse secrets from transcript", e)
+
+        # STEP 1: Check for pending_trace and push it (sanitized)
+        pending_trace = existing_state.get("pending_trace")
+        if pending_trace:
+            log_debug(
+                "orchestrator",
+                f"Found pending trace for {session_id}, sanitizing and pushing",
+            )
+
+            # Sanitize the trace batch (mask all secrets)
+            sanitized_batch = sanitize_trace(pending_trace, db_path)
+
+            # Push sanitized trace
+            success, _ = push.push_batch_events(
+                base_url,
+                public_key,
+                secret_key,
+                sanitized_batch,
+                timeout=INCREMENTAL_PUSH_TIMEOUT_SECONDS,
+            )
+
+            if not success:
+                log_warning(
+                    "orchestrator",
+                    f"Failed to push pending trace for {session_id}",
+                    None,
+                )
+                # Don't return False - continue with span creation
+            else:
+                log_info(
+                    "orchestrator",
+                    f"Successfully pushed sanitized trace {current_trace_id}",
+                )
+
+                # Increment metrics on successful trace push
+                is_first_trace = metadata.get("is_first_trace_in_session", False)
+                if is_first_trace:
+                    try:
+                        increment_metric("sessions", db_path)
+                    except Exception as e:
+                        log_warning(
+                            "orchestrator", "Failed to increment sessions metric", e
+                        )
+
+                try:
+                    increment_metric("traces", db_path)
+                except Exception as e:
+                    log_warning("orchestrator", "Failed to increment traces metric", e)
+
+            # Remove pending_trace from state (it's been pushed)
+            # Don't pass pending_trace parameter - it won't be written to state
+            state_manager.create_or_update(
+                session_id=session_id,
+                trace_id=existing_state["trace_id"],
+                last_pushed_line=last_pushed_line,
+                metadata=metadata,
+                # pending_trace not passed - will be omitted from state file
+            )
+            # Re-read state to get updated version without pending_trace
+            existing_state = state_manager.read(session_id)
+
+        # STEP 2: Check if we're in a subagent context
         # Read pacemaker state to get in_subagent flag and current_subagent_trace_id
         # CRITICAL: If in subagent, we need to switch to subagent's session_id for state management
         effective_session_id = session_id  # Default to parent's session_id
@@ -876,25 +948,68 @@ def handle_post_tool_use(
                 f"Could not read pacemaker state, using parent trace_id: {e}",
             )
 
-        # Parse transcript for new content
-        content_blocks = incremental.extract_content_blocks(
-            transcript_path=transcript_path, start_line=last_pushed_line
-        )
+        # STEP 3: Create span for current tool if tool_response provided
+        # This handles the case where PostToolUse hook fires BEFORE the tool
+        # output is written to transcript. The hook provides tool_response which
+        # is the ACTUAL output from the tool that just executed.
+        batch = []
+        content_blocks = []  # Track for state update
 
-        if not content_blocks:
-            log_debug("orchestrator", f"No new content for {session_id}")
-            return True
+        if tool_response is not None:
+            # Create a span for the current tool execution using hook data
+            now = datetime.now(timezone.utc)
 
-        # Create spans from content blocks
-        now = datetime.now(timezone.utc)
-        batch = _create_spans_from_blocks(content_blocks, current_trace_id, now)
+            # Create a tool span with full metadata (name, input, output)
+            span_id = f"{current_trace_id}-tool-current-{str(uuid.uuid4())[:8]}"
+            span = {
+                "id": span_id,
+                "traceId": current_trace_id,
+                "name": f"Tool - {tool_name}" if tool_name else "Tool Execution",
+                "startTime": now.isoformat(),
+                "endTime": now.isoformat(),
+                "input": tool_input,
+                "output": tool_response,
+                "metadata": {
+                    "source": "post_tool_use_hook",
+                    "tool": tool_name,
+                },
+            }
 
-        # Push to Langfuse
-        success = push.push_batch_events(
+            batch.append(
+                {
+                    "id": span["id"],
+                    "timestamp": now.isoformat(),
+                    "type": "span-create",
+                    "body": span,
+                }
+            )
+
+            log_debug(
+                "orchestrator", "Created span for current tool with output from hook"
+            )
+        else:
+            # STEP 3 (original): Parse transcript for new content and create spans
+            content_blocks = incremental.extract_content_blocks(
+                transcript_path=transcript_path, start_line=last_pushed_line
+            )
+
+            if not content_blocks:
+                log_debug("orchestrator", f"No new content for {session_id}")
+                return True
+
+            # Create spans from content blocks
+            now = datetime.now(timezone.utc)
+            batch = _create_spans_from_blocks(content_blocks, current_trace_id, now)
+
+        # SECURITY: Sanitize spans batch before pushing to Langfuse (mask all secrets)
+        sanitized_batch = sanitize_trace(batch, db_path)
+
+        # Push sanitized batch to Langfuse
+        success, success_count = push.push_batch_events(
             base_url,
             public_key,
             secret_key,
-            batch,
+            sanitized_batch,
             timeout=INCREMENTAL_PUSH_TIMEOUT_SECONDS,
         )
 
@@ -904,11 +1019,21 @@ def handle_post_tool_use(
         # re-processing the same content blocks on next hook call.
         #
         # This applies the same optimistic state update pattern used in run_incremental_push().
-        max_line = max(b["line_number"] for b in content_blocks)
+
+        # Determine new last_pushed_line
+        if tool_response is not None:
+            # When using tool_response from hook, we didn't parse transcript
+            # so last_pushed_line stays the same
+            new_last_pushed_line = last_pushed_line
+        else:
+            # When parsing transcript, update to max line from content blocks
+            max_line = max(b["line_number"] for b in content_blocks)
+            new_last_pushed_line = max_line
+
         state_manager.create_or_update(
             session_id=effective_session_id,
             trace_id=existing_state["trace_id"],
-            last_pushed_line=max_line,
+            last_pushed_line=new_last_pushed_line,
             metadata=metadata,
         )
 
@@ -921,10 +1046,10 @@ def handle_post_tool_use(
             )
             return False
 
-        # Increment spans metric for each span pushed (Story #34)
+        # Increment spans metric for each span ACTUALLY pushed (Story #34)
+        # CRITICAL BUG FIX: Use success_count (actual successes) not len(batch)
         # ONLY increment on confirmed success (not on timeout)
-        db_path = config.get("db_path", DEFAULT_DB_PATH)
-        for _ in batch:
+        for _ in range(success_count):
             try:
                 increment_metric("spans", db_path)
             except Exception as e:
@@ -1002,6 +1127,22 @@ def handle_stop_finalize(
             )
             return False
 
+        # STEP 0: Parse secrets from recent assistant responses (runs on EVERY stop_finalize)
+        # This ensures secrets are stored in database and available for masking in final output
+        db_path = config.get("db_path", DEFAULT_DB_PATH)
+        try:
+            from ..secrets.parser import parse_assistant_response
+            from ..transcript_reader import get_last_n_assistant_messages
+
+            # Get last 5 assistant messages to check for secret declarations
+            recent_messages = get_last_n_assistant_messages(transcript_path, n=5)
+            for msg in recent_messages:
+                if msg and "🔐" in msg:
+                    # Parse and store secrets
+                    parse_assistant_response(msg, db_path)
+        except Exception as e:
+            log_warning("orchestrator", "Failed to parse secrets from transcript", e)
+
         # Finalize trace with output from transcript
         trace_update = finalize_trace_with_output(
             trace_id=current_trace_id,
@@ -1035,12 +1176,15 @@ def handle_stop_finalize(
             }
         ]
 
-        # Push to Langfuse
-        success = push.push_batch_events(
+        # SECURITY: Sanitize batch before pushing (Claude's output may contain secrets)
+        sanitized_batch = sanitize_trace(batch, db_path)
+
+        # Push sanitized batch to Langfuse
+        success, _ = push.push_batch_events(
             base_url,
             public_key,
             secret_key,
-            batch,
+            sanitized_batch,
             timeout=INCREMENTAL_PUSH_TIMEOUT_SECONDS,
         )
 
@@ -1131,12 +1275,16 @@ def handle_subagent_stop(
             }
         ]
 
-        # Push to Langfuse with timeout
-        success = push.push_batch_events(
+        # SECURITY: Sanitize batch before pushing (subagent output may contain secrets)
+        db_path = config.get("db_path", DEFAULT_DB_PATH)
+        sanitized_batch = sanitize_trace(batch, db_path)
+
+        # Push sanitized batch to Langfuse with timeout
+        success, _ = push.push_batch_events(
             base_url,
             public_key,
             secret_key,
-            batch,
+            sanitized_batch,
             timeout=INCREMENTAL_PUSH_TIMEOUT_SECONDS,
         )
 
@@ -1251,12 +1399,16 @@ def handle_subagent_start(
             }
         ]
 
-        # Push to Langfuse
-        success = push.push_batch_events(
+        # SECURITY: Sanitize batch before pushing (Task prompt may contain secrets)
+        db_path = config.get("db_path", DEFAULT_DB_PATH)
+        sanitized_batch = sanitize_trace(batch, db_path)
+
+        # Push sanitized batch to Langfuse
+        success, _ = push.push_batch_events(
             base_url,
             public_key,
             secret_key,
-            batch,
+            sanitized_batch,
             timeout=INCREMENTAL_PUSH_TIMEOUT_SECONDS,
         )
 

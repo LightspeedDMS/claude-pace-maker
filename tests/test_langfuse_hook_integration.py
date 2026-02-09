@@ -121,7 +121,7 @@ class TestIncrementalPushOrchestrator:
         session_id = "test-session-first"
 
         with patch("pacemaker.langfuse.push.push_batch_events") as mock_push:
-            mock_push.return_value = True
+            mock_push.return_value = (True, 2)
 
             # Run first push
             success = run_incremental_push(
@@ -193,7 +193,7 @@ class TestIncrementalPushOrchestrator:
             )
 
         with patch("pacemaker.langfuse.push.push_batch_events") as mock_push:
-            mock_push.return_value = True
+            mock_push.return_value = (True, 2)
 
             # Run incremental push (should only process lines 4-5)
             success = run_incremental_push(
@@ -239,12 +239,13 @@ class TestIncrementalPushOrchestrator:
         Test timeout aborts push without blocking session.
 
         AC5: Timeout and non-blocking behavior
+        CRITICAL: State is STILL created even on failure to prevent duplicate pushes
         """
         session_id = "test-session-timeout"
 
-        with patch("pacemaker.langfuse.push.push_trace") as mock_push:
-            # Simulate timeout by returning False
-            mock_push.return_value = False
+        with patch("pacemaker.langfuse.push.push_batch_events") as mock_push:
+            # Simulate timeout by returning (False, 0)
+            mock_push.return_value = (False, 0)
 
             # Run push (should fail gracefully)
             success = run_incremental_push(
@@ -258,9 +259,9 @@ class TestIncrementalPushOrchestrator:
             # Should return False but not raise exception
             assert success is False
 
-        # Verify state NOT created (push failed)
+        # CRITICAL: State IS created even on failure (to prevent duplicate pushes)
         state_file = Path(state_dir) / f"{session_id}.json"
-        assert not state_file.exists()
+        assert state_file.exists()  # State created to track last_pushed_line
 
     def test_push_with_slow_api_times_out(self, config, state_dir, transcript_file):
         """
@@ -298,13 +299,16 @@ class TestIncrementalPushOrchestrator:
             # Should complete immediately (no actual network delay in test)
             assert elapsed < 1.0
 
-    def test_failed_push_retains_previous_state(
+    def test_failed_push_updates_state_to_prevent_duplicates(
         self, config, state_dir, transcript_file
     ):
         """
-        Test failed push retains previous last_pushed_line.
+        Test failed push STILL updates last_pushed_line to prevent duplicates.
 
-        AC5: State retains previous last_pushed_line (will retry next trigger)
+        CRITICAL FIX: State is updated even on failure to prevent duplicate spans.
+        When timeout occurs, data may have been sent to Langfuse (server just
+        didn't respond in time). We must update last_pushed_line to prevent
+        re-processing the same lines on next hook call.
         """
         session_id = "test-session-retain"
 
@@ -320,8 +324,8 @@ class TestIncrementalPushOrchestrator:
                 f,
             )
 
-        with patch("pacemaker.langfuse.push.push_trace") as mock_push:
-            mock_push.return_value = False  # Simulate failure
+        with patch("pacemaker.langfuse.push.push_batch_events") as mock_push:
+            mock_push.return_value = (False, 0)  # Simulate failure
 
             # Run push (should fail)
             success = run_incremental_push(
@@ -334,11 +338,11 @@ class TestIncrementalPushOrchestrator:
 
             assert success is False
 
-        # Verify state UNCHANGED (still at line 3)
+        # CRITICAL: State IS updated even on failure (to prevent duplicate pushes)
         with open(state_file) as f:
             state = json.load(f)
 
-        assert state["last_pushed_line"] == 3  # Not updated
+        assert state["last_pushed_line"] == 5  # Updated to prevent duplicates
 
     def test_push_disabled_when_langfuse_disabled(self, state_dir, transcript_file):
         """Test push is skipped when Langfuse disabled in config."""

@@ -574,6 +574,12 @@ install_hook_modules() {
     cp -r "$PACEMAKER_SOURCE_DIR/telemetry" "$HOOKS_PACEMAKER_DIR/"
   fi
 
+  # Copy secrets directory (for secrets management)
+  if [ -d "$PACEMAKER_SOURCE_DIR/secrets" ]; then
+    echo "Copying secrets directory..."
+    cp -r "$PACEMAKER_SOURCE_DIR/secrets" "$HOOKS_PACEMAKER_DIR/"
+  fi
+
   # Copy __init__.py if exists
   if [ -f "$PACEMAKER_SOURCE_DIR/__init__.py" ]; then
     echo "Copying __init__.py..."

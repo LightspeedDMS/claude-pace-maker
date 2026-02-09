@@ -127,7 +127,7 @@ class TestHandleStopFinalize:
         4. Push to Langfuse
         """
         # Setup
-        mock_push.return_value = True
+        mock_push.return_value = (True, 1)
 
         config = {
             "langfuse_enabled": True,
@@ -191,7 +191,7 @@ class TestHandleStopFinalize:
         When trace starts at line 5, should only read transcript from line 5 forward.
         """
         # Setup
-        mock_push.return_value = True
+        mock_push.return_value = (True, 1)
 
         config = {
             "langfuse_enabled": True,
@@ -255,7 +255,7 @@ class TestHandleStopFinalize:
         Should handle push failures gracefully and return False.
         """
         # Setup: push fails
-        mock_push.return_value = False
+        mock_push.return_value = (False, 0)
 
         config = {
             "langfuse_enabled": True,

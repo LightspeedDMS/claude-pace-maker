@@ -20,21 +20,23 @@ class TestErrorCounting:
 
     def test_count_errors_no_errors(self, tmp_path):
         """Test counting when there are no errors in last 24 hours."""
-        # Create log file with no ERROR entries
-        log_file = tmp_path / "pace-maker.log"
+        # Create log file with no ERROR entries using daily rotation naming
+        from datetime import datetime
+
+        log_file = tmp_path / f"pace-maker-{datetime.now().strftime('%Y-%m-%d')}.log"
         now = datetime.now()
         log_file.write_text(
             f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] [INFO] [module] Some info message\n"
             f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] [WARNING] [module] Some warning\n"
         )
 
-        count = _count_recent_errors(str(log_file), hours=24)
+        count = _count_recent_errors(hours=24, log_dir=str(tmp_path))
         assert count == 0
 
     def test_count_errors_within_24_hours(self, tmp_path):
         """Test counting errors within the last 24 hours."""
-        log_file = tmp_path / "pace-maker.log"
         now = datetime.now()
+        log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Create log with 3 errors in last 24h
         log_entries = []
@@ -46,13 +48,13 @@ class TestErrorCounting:
 
         log_file.write_text("".join(log_entries))
 
-        count = _count_recent_errors(str(log_file), hours=24)
+        count = _count_recent_errors(hours=24, log_dir=str(tmp_path))
         assert count == 3
 
     def test_count_errors_ignores_old_errors(self, tmp_path):
         """Test that errors older than 24h are ignored."""
-        log_file = tmp_path / "pace-maker.log"
         now = datetime.now()
+        log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Create log with 2 recent errors and 3 old errors
         log_entries = []
@@ -73,29 +75,30 @@ class TestErrorCounting:
 
         log_file.write_text("".join(log_entries))
 
-        count = _count_recent_errors(str(log_file), hours=24)
+        count = _count_recent_errors(hours=24, log_dir=str(tmp_path))
         assert count == 2
 
     def test_count_errors_missing_log_file(self, tmp_path):
         """Test graceful handling when log file doesn't exist."""
-        non_existent = tmp_path / "non-existent.log"
+        non_existent_dir = tmp_path / "non-existent"
 
         # Should return 0 and not raise exception
-        count = _count_recent_errors(str(non_existent), hours=24)
+        count = _count_recent_errors(hours=24, log_dir=str(non_existent_dir))
         assert count == 0
 
     def test_count_errors_empty_log_file(self, tmp_path):
         """Test counting when log file is empty."""
-        log_file = tmp_path / "pace-maker.log"
+        now = datetime.now()
+        log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
         log_file.write_text("")
 
-        count = _count_recent_errors(str(log_file), hours=24)
+        count = _count_recent_errors(hours=24, log_dir=str(tmp_path))
         assert count == 0
 
     def test_count_errors_malformed_timestamps(self, tmp_path):
         """Test handling of malformed timestamp entries."""
-        log_file = tmp_path / "pace-maker.log"
         now = datetime.now()
+        log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Mix of valid and invalid entries
         log_file.write_text(
@@ -105,13 +108,13 @@ class TestErrorCounting:
         )
 
         # Should count only valid entries
-        count = _count_recent_errors(str(log_file), hours=24)
+        count = _count_recent_errors(hours=24, log_dir=str(tmp_path))
         assert count == 2
 
     def test_count_errors_custom_hours(self, tmp_path):
         """Test counting with custom hour threshold."""
-        log_file = tmp_path / "pace-maker.log"
         now = datetime.now()
+        log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Create errors at different time intervals
         log_entries = []
@@ -124,11 +127,11 @@ class TestErrorCounting:
         log_file.write_text("".join(log_entries))
 
         # Test with 5-hour window (should count 2 errors)
-        count = _count_recent_errors(str(log_file), hours=5)
+        count = _count_recent_errors(hours=5, log_dir=str(tmp_path))
         assert count == 2
 
         # Test with 12-hour window (should count 4 errors)
-        count = _count_recent_errors(str(log_file), hours=12)
+        count = _count_recent_errors(hours=12, log_dir=str(tmp_path))
         assert count == 4
 
 

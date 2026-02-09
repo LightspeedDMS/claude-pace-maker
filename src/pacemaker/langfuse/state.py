@@ -13,7 +13,7 @@ State files are stored in ~/.claude-pace-maker/langfuse_state/<session_id>.json
 import json
 import time
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from ..logger import log_warning, log_debug
 
@@ -73,6 +73,7 @@ class StateManager:
         trace_id: str,
         last_pushed_line: int,
         metadata: Optional[Dict[str, Any]] = None,
+        pending_trace: Optional[List[Dict[str, Any]]] = None,
     ) -> bool:
         """
         Create or update state for a session.
@@ -84,6 +85,7 @@ class StateManager:
             trace_id: Langfuse trace ID
             last_pushed_line: Last line pushed to Langfuse
             metadata: Optional trace metadata (tool calls, accumulated tokens)
+            pending_trace: Optional pending trace batch (for secrets sanitization)
 
         Returns:
             True if successful, False if failed
@@ -100,6 +102,10 @@ class StateManager:
         # Add metadata if provided
         if metadata is not None:
             state_data["metadata"] = metadata
+
+        # Add pending_trace if provided
+        if pending_trace is not None:
+            state_data["pending_trace"] = pending_trace
 
         try:
             # Write to temp file first (atomic operation)

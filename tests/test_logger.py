@@ -33,12 +33,16 @@ from src.pacemaker.constants import (
 def temp_log_dir(monkeypatch):
     """Create temporary log directory and config."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        log_path = os.path.join(tmpdir, "pace-maker.log")
         config_path = os.path.join(tmpdir, "config.json")
 
-        # Monkeypatch paths
-        monkeypatch.setattr("src.pacemaker.logger.DEFAULT_LOG_PATH", log_path)
+        # Monkeypatch paths to use temp directory
+        monkeypatch.setattr("src.pacemaker.logger.DEFAULT_LOG_DIR", tmpdir)
         monkeypatch.setattr("src.pacemaker.logger.DEFAULT_CONFIG_PATH", config_path)
+
+        # Get today's log file path using the new API
+        from src.pacemaker.logger import get_current_log_path
+
+        log_path = get_current_log_path()
 
         yield {
             "log_path": log_path,
@@ -95,18 +99,11 @@ class TestLogDirectoryCreation:
 
     def test_creates_directory_when_missing(self, temp_log_dir):
         """Should create log directory if it doesn't exist."""
-        nested_log = os.path.join(temp_log_dir["dir"], "nested", "pace-maker.log")
+        nested_log_dir = os.path.join(temp_log_dir["dir"], "nested", "logs")
 
-        import src.pacemaker.logger as logger_module
-
-        original_path = logger_module.DEFAULT_LOG_PATH
-        logger_module.DEFAULT_LOG_PATH = nested_log
-
-        try:
-            _ensure_log_dir()
-            assert os.path.exists(os.path.dirname(nested_log))
-        finally:
-            logger_module.DEFAULT_LOG_PATH = original_path
+        # Use the new API with explicit log_dir parameter
+        _ensure_log_dir(nested_log_dir)
+        assert os.path.exists(nested_log_dir)
 
     def test_succeeds_when_directory_exists(self, temp_log_dir):
         """Should succeed silently when directory already exists."""

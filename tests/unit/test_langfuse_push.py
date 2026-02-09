@@ -272,6 +272,8 @@ class TestLangfusePush(unittest.TestCase):
 class TestSubagentStateIsolation(unittest.TestCase):
     """Test subagent state isolation in handle_post_tool_use"""
 
+    @patch("pacemaker.langfuse.orchestrator.sanitize_trace")
+    @patch("pacemaker.transcript_reader.get_last_n_assistant_messages")
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     @patch("pacemaker.langfuse.orchestrator._create_spans_from_blocks")
     @patch("pacemaker.langfuse.orchestrator.incremental.extract_content_blocks")
@@ -284,6 +286,8 @@ class TestSubagentStateIsolation(unittest.TestCase):
         mock_extract,
         mock_create_spans,
         mock_push,
+        mock_get_msgs,
+        mock_sanitize,
     ):
         """
         RED TEST: In subagent context, handle_post_tool_use should read state
@@ -342,7 +346,15 @@ class TestSubagentStateIsolation(unittest.TestCase):
             {"role": "assistant", "content": "test", "line_number": 55}
         ]
         mock_create_spans.return_value = [{"id": "span-1"}]  # Mock span creation
-        mock_push.return_value = True
+
+        # Mock secrets parsing (returns empty - no secrets)
+        mock_get_msgs.return_value = []
+
+        # Mock sanitize to pass through unchanged
+        mock_sanitize.side_effect = lambda x, db: x
+
+        # Mock push success (returns tuple)
+        mock_push.return_value = (True, 1)
 
         # Test config
         config = {
@@ -374,6 +386,8 @@ class TestSubagentStateIsolation(unittest.TestCase):
             "Should use subagent's last_pushed_line, not parent's",
         )
 
+    @patch("pacemaker.langfuse.orchestrator.sanitize_trace")
+    @patch("pacemaker.transcript_reader.get_last_n_assistant_messages")
     @patch("pacemaker.langfuse.orchestrator.increment_metric")
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     @patch("pacemaker.langfuse.orchestrator._create_spans_from_blocks")
@@ -388,6 +402,8 @@ class TestSubagentStateIsolation(unittest.TestCase):
         mock_create_spans,
         mock_push,
         mock_increment,
+        mock_get_msgs,
+        mock_sanitize,
     ):
         """
         RED TEST: In subagent context, handle_post_tool_use should update state
@@ -445,7 +461,15 @@ class TestSubagentStateIsolation(unittest.TestCase):
             {"role": "assistant", "content": "new content", "line_number": 30}
         ]
         mock_create_spans.return_value = [{"id": "span-1"}]  # Mock span creation
-        mock_push.return_value = True
+
+        # Mock secrets parsing (returns empty - no secrets)
+        mock_get_msgs.return_value = []
+
+        # Mock sanitize to pass through unchanged
+        mock_sanitize.side_effect = lambda x, db: x
+
+        # Mock push success (returns tuple)
+        mock_push.return_value = (True, 1)
 
         config = {
             "langfuse_enabled": True,
@@ -510,6 +534,7 @@ class TestTimeoutHandling(unittest.TestCase):
             "Timeout should be 10 seconds to prevent premature failures",
         )
 
+    @patch("pacemaker.langfuse.orchestrator.sanitize_trace")
     @patch("pacemaker.langfuse.orchestrator.increment_metric")
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     @patch("pacemaker.langfuse.orchestrator.incremental.create_batch_event")
@@ -526,6 +551,7 @@ class TestTimeoutHandling(unittest.TestCase):
         mock_create_batch,
         mock_push,
         mock_increment,
+        mock_sanitize,
     ):
         """
         RED TEST: State should be updated even on timeout.
@@ -576,8 +602,11 @@ class TestTimeoutHandling(unittest.TestCase):
         mock_parse_metadata.return_value = {"model": "claude-sonnet-4-5"}
         mock_extract_user.return_value = "user@example.com"
 
-        # SIMULATE TIMEOUT: push_batch_events returns False
-        mock_push.return_value = False
+        # Mock sanitize to pass through unchanged
+        mock_sanitize.side_effect = lambda x, db: x
+
+        # SIMULATE TIMEOUT: push_batch_events returns (False, 0)
+        mock_push.return_value = (False, 0)
 
         config = {
             "langfuse_enabled": True,
@@ -610,6 +639,8 @@ class TestTimeoutHandling(unittest.TestCase):
         # Function should still return False to indicate timeout occurred
         self.assertFalse(result, "Should return False to signal timeout")
 
+    @patch("pacemaker.langfuse.orchestrator.sanitize_trace")
+    @patch("pacemaker.transcript_reader.get_last_n_assistant_messages")
     @patch("pacemaker.langfuse.orchestrator.increment_metric")
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     @patch("pacemaker.langfuse.orchestrator._create_spans_from_blocks")
@@ -624,6 +655,8 @@ class TestTimeoutHandling(unittest.TestCase):
         mock_create_spans,
         mock_push,
         mock_increment,
+        mock_get_msgs,
+        mock_sanitize,
     ):
         """
         RED TEST: handle_post_tool_use should update state even on timeout.
@@ -665,8 +698,14 @@ class TestTimeoutHandling(unittest.TestCase):
         ]
         mock_create_spans.return_value = [{"id": "span-1"}, {"id": "span-2"}]
 
-        # SIMULATE TIMEOUT: push_batch_events returns False
-        mock_push.return_value = False
+        # Mock secrets parsing (returns empty - no secrets)
+        mock_get_msgs.return_value = []
+
+        # Mock sanitize to pass through unchanged
+        mock_sanitize.side_effect = lambda x, db: x
+
+        # SIMULATE TIMEOUT: push_batch_events returns (False, 0)
+        mock_push.return_value = (False, 0)
 
         config = {
             "langfuse_enabled": True,

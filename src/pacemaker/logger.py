@@ -49,24 +49,33 @@ def _get_log_level() -> int:
     return LOG_LEVEL_WARNING
 
 
-def _ensure_log_dir():
-    """Ensure log directory exists."""
-    Path(DEFAULT_LOG_DIR).mkdir(parents=True, exist_ok=True)
+def _ensure_log_dir(log_dir: Optional[str] = None):
+    """Ensure log directory exists.
+
+    Args:
+        log_dir: Directory path (default: DEFAULT_LOG_DIR)
+    """
+    if log_dir is None:
+        log_dir = DEFAULT_LOG_DIR
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
 
 
-def get_log_path_for_date(date: datetime = None) -> str:
+def get_log_path_for_date(date: datetime = None, log_dir: Optional[str] = None) -> str:
     """Get log file path for a specific date.
 
     Args:
         date: Date for log file (default: today)
+        log_dir: Directory path (default: DEFAULT_LOG_DIR)
 
     Returns:
         Path like ~/.claude-pace-maker/pace-maker-2026-02-06.log
     """
     if date is None:
         date = datetime.now()
+    if log_dir is None:
+        log_dir = DEFAULT_LOG_DIR
     date_str = date.strftime("%Y-%m-%d")
-    return str(Path(DEFAULT_LOG_DIR) / f"{LOG_FILE_PREFIX}{date_str}{LOG_FILE_SUFFIX}")
+    return str(Path(log_dir) / f"{LOG_FILE_PREFIX}{date_str}{LOG_FILE_SUFFIX}")
 
 
 def get_current_log_path() -> str:
@@ -74,11 +83,12 @@ def get_current_log_path() -> str:
     return get_log_path_for_date(datetime.now())
 
 
-def get_recent_log_paths(days: int = 2) -> List[str]:
+def get_recent_log_paths(days: int = 2, log_dir: Optional[str] = None) -> List[str]:
     """Get log file paths for the last N days.
 
     Args:
         days: Number of days to include (default: 2 for 24-hour coverage)
+        log_dir: Directory path (default: DEFAULT_LOG_DIR)
 
     Returns:
         List of existing log file paths, most recent first
@@ -86,17 +96,23 @@ def get_recent_log_paths(days: int = 2) -> List[str]:
     paths = []
     for i in range(days):
         date = datetime.now() - timedelta(days=i)
-        path = get_log_path_for_date(date)
+        path = get_log_path_for_date(date, log_dir=log_dir)
         if os.path.exists(path):
             paths.append(path)
     return paths
 
 
-def cleanup_old_logs():
-    """Remove log files older than LOG_RETENTION_DAYS."""
+def cleanup_old_logs(log_dir: Optional[str] = None):
+    """Remove log files older than LOG_RETENTION_DAYS.
+
+    Args:
+        log_dir: Directory path (default: DEFAULT_LOG_DIR)
+    """
     try:
-        _ensure_log_dir()
-        pattern = str(Path(DEFAULT_LOG_DIR) / f"{LOG_FILE_PREFIX}*{LOG_FILE_SUFFIX}")
+        if log_dir is None:
+            log_dir = DEFAULT_LOG_DIR
+        _ensure_log_dir(log_dir)
+        pattern = str(Path(log_dir) / f"{LOG_FILE_PREFIX}*{LOG_FILE_SUFFIX}")
         cutoff_date = datetime.now() - timedelta(days=LOG_RETENTION_DAYS)
 
         for log_file in glob.glob(pattern):

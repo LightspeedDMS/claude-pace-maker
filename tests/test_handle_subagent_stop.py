@@ -67,7 +67,7 @@ class TestHandleSubagentStop:
 
         # Mock push_batch_events to capture the trace update
         with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
-            mock_push_module.push_batch_events = MagicMock(return_value=True)
+            mock_push_module.push_batch_events = MagicMock(return_value=(True, 1))
 
             # Call handler
             from pacemaker.langfuse.orchestrator import handle_subagent_stop
@@ -152,7 +152,7 @@ class TestHandleSubagentStop:
 
         # Mock push_batch_events
         with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
-            mock_push_module.push_batch_events = MagicMock(return_value=True)
+            mock_push_module.push_batch_events = MagicMock(return_value=(True, 1))
 
             # Call handler
             from pacemaker.langfuse.orchestrator import handle_subagent_stop
@@ -194,7 +194,7 @@ class TestHandleSubagentStop:
 
         # Mock push_batch_events
         with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
-            mock_push_module.push_batch_events = MagicMock(return_value=True)
+            mock_push_module.push_batch_events = MagicMock(return_value=(True, 1))
 
             # Call handler
             from pacemaker.langfuse.orchestrator import handle_subagent_stop
@@ -237,7 +237,7 @@ class TestHandleSubagentStop:
 
         # Mock push_batch_events to fail
         with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
-            mock_push_module.push_batch_events = MagicMock(return_value=False)
+            mock_push_module.push_batch_events = MagicMock(return_value=(False, 0))
 
             # Call handler
             from pacemaker.langfuse.orchestrator import handle_subagent_stop
@@ -269,7 +269,7 @@ class TestHandleSubagentStop:
 
         # Mock push_batch_events
         with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
-            mock_push_module.push_batch_events = MagicMock(return_value=True)
+            mock_push_module.push_batch_events = MagicMock(return_value=(True, 1))
 
             # Call handler with None path
             from pacemaker.langfuse.orchestrator import handle_subagent_stop
@@ -312,7 +312,7 @@ class TestHandleSubagentStop:
 
         # Mock push_batch_events
         with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
-            mock_push_module.push_batch_events = MagicMock(return_value=True)
+            mock_push_module.push_batch_events = MagicMock(return_value=(True, 1))
 
             # Call handler
             from pacemaker.langfuse.orchestrator import handle_subagent_stop
@@ -323,8 +323,6 @@ class TestHandleSubagentStop:
                 parent_transcript_path=str(parent_transcript),
             )
 
-            # Verify timeout was passed
+            # Verify timeout was passed (INCREMENTAL_PUSH_TIMEOUT_SECONDS = 10)
             args, kwargs = mock_push_module.push_batch_events.call_args
-            assert (
-                kwargs.get("timeout") == 2 or args[4] == 2
-            )  # Check keyword or positional
+            assert kwargs.get("timeout") == 10  # Timeout passed as keyword arg

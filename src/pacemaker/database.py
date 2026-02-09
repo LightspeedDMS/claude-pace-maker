@@ -75,6 +75,11 @@ CREATE TABLE IF NOT EXISTS langfuse_metrics (
     traces_count INTEGER DEFAULT 0,
     spans_count INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS secrets_metrics (
+    bucket_timestamp INTEGER PRIMARY KEY,
+    secrets_masked_count INTEGER DEFAULT 0
+);
 """
 
 

@@ -71,6 +71,96 @@ def _process_content_item(
     return None
 
 
+def _normalize_tool_result_content(content: Any) -> str:
+    """
+    Normalize tool_result content to string format.
+
+    Handles both string content and array content with dicts like
+    [{"type": "text", "text": "..."}].
+
+    Args:
+        content: Raw content from tool_result (string, array, or None)
+
+    Returns:
+        Normalized string content (empty string if None/empty)
+    """
+    if content is None:
+        return ""
+
+    if isinstance(content, list):
+        # Array may contain dicts like {"type": "text", "text": "..."}
+        # or plain strings
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict):
+                # Extract text from dict (e.g., {"type": "text", "text": "..."})
+                text_parts.append(item.get("text", str(item)))
+            else:
+                text_parts.append(str(item))
+        return "".join(text_parts)
+    elif isinstance(content, str):
+        return content
+    else:
+        return str(content)
+
+
+def _extract_tool_results(transcript_path: str) -> Dict[str, str]:
+    """
+    Extract all tool_result blocks and build tool_use_id -> output mapping.
+
+    This is the first pass of the two-pass extraction algorithm.
+    Scans ALL lines in transcript (ignoring start_line) to build complete mapping.
+
+    Args:
+        transcript_path: Path to JSONL transcript file
+
+    Returns:
+        Dict mapping tool_use_id to result content (string)
+    """
+    tool_results = {}
+
+    try:
+        with open(transcript_path, "r") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+
+                    # Only process user messages (tool_result comes from user)
+                    if entry.get("type") != "user":
+                        continue
+
+                    message = entry.get("message", {})
+                    if not isinstance(message, dict):
+                        continue
+
+                    # Process content array
+                    content = message.get("content", [])
+                    if not isinstance(content, list):
+                        continue
+
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "tool_result":
+                            tool_use_id = item.get("tool_use_id")
+                            result_content = item.get("content")
+
+                            if tool_use_id:
+                                # Normalize content (handles string, array, None)
+                                tool_results[tool_use_id] = (
+                                    _normalize_tool_result_content(result_content)
+                                )
+
+                except json.JSONDecodeError:
+                    # Skip malformed lines
+                    continue
+
+    except FileNotFoundError:
+        log_warning("incremental", f"Transcript not found: {transcript_path}", None)
+    except IOError as e:
+        log_warning("incremental", f"Failed to read transcript: {transcript_path}", e)
+
+    return tool_results
+
+
 def extract_content_blocks(
     transcript_path: str, start_line: int = 0
 ) -> List[Dict[str, Any]]:
@@ -79,10 +169,11 @@ def extract_content_blocks(
 
     Parses assistant messages and extracts:
     - Text blocks (type="text") → for text spans
-    - Tool use blocks (type="tool_use") → for tool spans
+    - Tool use blocks (type="tool_use") → for tool spans WITH outputs
 
-    This replaces the hook-data-driven approach where only tool info was available.
-    By parsing transcript, we can create spans for ALL content (text + tools).
+    This uses a two-pass algorithm:
+    1. First pass: Extract all tool_result blocks and build tool_use_id -> output mapping
+    2. Second pass: Extract content blocks and attach matching outputs to tool_use blocks
 
     Args:
         transcript_path: Path to JSONL transcript file
@@ -96,11 +187,15 @@ def extract_content_blocks(
         - timestamp: Message timestamp (ISO format)
         - message_uuid: Message UUID
         - For text blocks: "text" field
-        - For tool_use blocks: "tool_name", "tool_id", "tool_input" fields
+        - For tool_use blocks: "tool_name", "tool_id", "tool_input", "tool_output" fields
     """
     content_blocks = []
     current_line = 0
 
+    # FIRST PASS: Extract all tool results (scans ALL lines for complete mapping)
+    tool_results = _extract_tool_results(transcript_path)
+
+    # SECOND PASS: Extract content blocks and attach outputs
     try:
         with open(transcript_path, "r") as f:
             for line in f:
@@ -143,6 +238,11 @@ def extract_content_blocks(
                             message_uuid,
                         )
                         if block is not None:
+                            # Attach tool output if this is a tool_use block
+                            if block["content_type"] == "tool_use":
+                                tool_id = block.get("tool_id", "")
+                                block["tool_output"] = tool_results.get(tool_id, "")
+
                             content_blocks.append(block)
 
                 except json.JSONDecodeError:

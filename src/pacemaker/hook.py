@@ -216,6 +216,27 @@ def get_model_preference_nudge(
     return "\n".join(lines)
 
 
+def get_secrets_nudge(subfolder: str) -> Optional[str]:
+    """
+    Load secrets management nudge from prompts directory.
+
+    Args:
+        subfolder: Prompt subfolder (session_start, pre_tool_use, post_tool_use)
+
+    Returns:
+        Nudge message string, or None if file not found
+    """
+    from .prompt_loader import PromptLoader
+
+    try:
+        loader = PromptLoader()
+        message = loader.load_prompt("secrets_nudge.md", subfolder=subfolder)
+        return message.strip()
+    except FileNotFoundError:
+        # Graceful degradation - no nudge if file missing
+        return None
+
+
 def run_session_start_hook():
     """
     Handle SessionStart hook - beginning of new session.
@@ -325,6 +346,15 @@ def run_session_start_hook():
     except Exception as e:
         # Log error but don't break session start
         log_warning("hook", "Failed to display model preference nudge", e)
+
+    # Display secrets management nudge
+    try:
+        secrets_nudge = get_secrets_nudge("session_start")
+        if secrets_nudge:
+            print(secrets_nudge, file=sys.stdout, flush=True)
+    except Exception as e:
+        # Log error but don't break session start
+        log_warning("hook", "Failed to display secrets nudge", e)
 
 
 def run_subagent_start_hook():
@@ -635,8 +665,9 @@ def run_hook():
     if not config.get("enabled", True):
         return feedback_provided  # Disabled - do nothing
 
-    # Read hook data from stdin to get tool_name
+    # Read hook data from stdin to get tool_name and tool_response
     tool_name = None
+    tool_response = None
     hook_data = None
     session_id = None
     transcript_path = None
@@ -645,6 +676,8 @@ def run_hook():
         if raw_input:
             hook_data = json.loads(raw_input)
             tool_name = hook_data.get("tool_name")
+            tool_input = hook_data.get("tool_input", {})
+            tool_response = hook_data.get("tool_response")
             session_id = hook_data.get("session_id")
             transcript_path = hook_data.get("transcript_path")
     except (json.JSONDecodeError, Exception) as e:
@@ -735,6 +768,17 @@ def run_hook():
     if should_inject_reminder(state, config, tool_name):
         pending_message = inject_subagent_reminder(config)
 
+    # Add secrets nudge to pending message
+    try:
+        secrets_nudge = get_secrets_nudge("post_tool_use")
+        if secrets_nudge:
+            if pending_message:
+                pending_message = f"{pending_message}\n\n{secrets_nudge}"
+            else:
+                pending_message = secrets_nudge
+    except Exception as e:
+        log_warning("hook", "Failed to load secrets nudge for post_tool_use", e)
+
     # Save state (always save to persist counter)
     state_changed = True
     if state_changed:
@@ -750,13 +794,15 @@ def run_hook():
             )
 
             # Create spans from transcript (graceful failure per AC5)
-            # Refactored: No longer uses tool_input/tool_output from hook
-            # Instead parses transcript to capture ALL content (text + tools)
+            # Passes tool_response, tool_name, and tool_input from hook to capture current tool's full metadata
             orchestrator.handle_post_tool_use(
                 config=config,
                 session_id=session_id,
                 transcript_path=transcript_path,
                 state_dir=langfuse_state_dir,
+                tool_response=tool_response,
+                tool_name=tool_name,
+                tool_input=tool_input,
             )
             # Note: We don't check return value - failures are logged but don't block hook
 

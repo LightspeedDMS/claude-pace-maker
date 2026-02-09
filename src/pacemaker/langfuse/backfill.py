@@ -16,6 +16,8 @@ from ..telemetry.token_extractor import extract_token_usage
 from ..telemetry.tool_call_extractor import extract_tool_calls
 from .transformer import create_trace
 from .push import push_trace
+from ..secrets.sanitizer import sanitize_trace
+from ..constants import DEFAULT_DB_PATH
 
 
 # Timeout for backfill operations (longer than realtime push)
@@ -110,12 +112,15 @@ def push_session(
             timestamp=metadata["timestamp"],
         )
 
-        # Push to Langfuse
+        # SECURITY: Sanitize trace before pushing (mask all secrets)
+        sanitized_trace = sanitize_trace(trace, DEFAULT_DB_PATH)
+
+        # Push sanitized trace to Langfuse
         success = push_trace(
             base_url=base_url,
             public_key=public_key,
             secret_key=secret_key,
-            trace=trace,
+            trace=sanitized_trace,
             timeout=BACKFILL_TIMEOUT_SECONDS,
         )
 

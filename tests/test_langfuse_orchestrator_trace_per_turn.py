@@ -79,33 +79,35 @@ class TestUserPromptSubmitHandler:
             session_id = "test-session-abc"
             user_message = "implement feature X"
 
-            # Mock push to avoid network call
-            with patch(
-                "pacemaker.langfuse.orchestrator.push.push_batch_events"
-            ) as mock_push:
-                mock_push.return_value = True
+            # After refactoring: handle_user_prompt_submit does NOT push immediately
+            # It stores pending_trace in state for later sanitization + push
+            result = handle_user_prompt_submit(
+                config=mock_config,
+                session_id=session_id,
+                transcript_path=transcript_with_user_prompt,
+                state_dir=state_dir,
+                user_message=user_message,
+            )
 
-                result = handle_user_prompt_submit(
-                    config=mock_config,
-                    session_id=session_id,
-                    transcript_path=transcript_with_user_prompt,
-                    state_dir=state_dir,
-                    user_message=user_message,
-                )
+            # Should succeed
+            assert result is True
 
-                # Should succeed
-                assert result is True
+            # Verify state was created with pending_trace (NOT pushed yet)
+            from pacemaker.langfuse.state import StateManager
 
-                # Should have called push with trace event
-                assert mock_push.called
-                batch = mock_push.call_args[0][3]  # batch argument
-                assert len(batch) >= 1
+            state_mgr = StateManager(state_dir)
+            state = state_mgr.read(session_id)
 
-                # First event should be trace-create
-                trace_event = batch[0]
-                assert trace_event["type"] == "trace-create"
-                assert trace_event["body"]["sessionId"] == session_id
-                assert user_message in trace_event["body"]["name"]
+            assert state is not None
+            assert "pending_trace" in state
+            assert isinstance(state["pending_trace"], list)
+            assert len(state["pending_trace"]) >= 1
+
+            # Verify pending_trace contains trace-create event
+            trace_event = state["pending_trace"][0]
+            assert trace_event["type"] == "trace-create"
+            assert trace_event["body"]["sessionId"] == session_id
+            assert user_message in trace_event["body"]["name"]
 
     def test_updates_state_with_current_trace_id(
         self, mock_config, transcript_with_user_prompt
@@ -119,29 +121,25 @@ class TestUserPromptSubmitHandler:
             session_id = "test-session-def"
             user_message = "fix bug"
 
-            with patch(
-                "pacemaker.langfuse.orchestrator.push.push_batch_events"
-            ) as mock_push:
-                mock_push.return_value = True
+            # After refactoring: handle_user_prompt_submit does NOT push
+            handle_user_prompt_submit(
+                config=mock_config,
+                session_id=session_id,
+                transcript_path=transcript_with_user_prompt,
+                state_dir=state_dir,
+                user_message=user_message,
+            )
 
-                handle_user_prompt_submit(
-                    config=mock_config,
-                    session_id=session_id,
-                    transcript_path=transcript_with_user_prompt,
-                    state_dir=state_dir,
-                    user_message=user_message,
-                )
+            # Check state was updated
+            from pacemaker.langfuse.state import StateManager
 
-                # Check state was updated
-                from pacemaker.langfuse.state import StateManager
+            state_mgr = StateManager(state_dir)
+            state = state_mgr.read(session_id)
 
-                state_mgr = StateManager(state_dir)
-                state = state_mgr.read(session_id)
-
-                assert state is not None
-                assert "metadata" in state
-                assert "current_trace_id" in state["metadata"]
-                assert "trace_start_line" in state["metadata"]
+            assert state is not None
+            assert "metadata" in state
+            assert "current_trace_id" in state["metadata"]
+            assert "trace_start_line" in state["metadata"]
 
     def test_user_prompt_submit_includes_model_in_trace(self, mock_config):
         """
@@ -177,31 +175,32 @@ class TestUserPromptSubmitHandler:
                 session_id = "test-session-model"
                 user_message = "implement feature X"
 
-                with patch(
-                    "pacemaker.langfuse.orchestrator.push.push_batch_events"
-                ) as mock_push:
-                    mock_push.return_value = True
+                # After refactoring: handle_user_prompt_submit does NOT push
+                result = handle_user_prompt_submit(
+                    config=mock_config,
+                    session_id=session_id,
+                    transcript_path=transcript_path,
+                    state_dir=state_dir,
+                    user_message=user_message,
+                )
 
-                    result = handle_user_prompt_submit(
-                        config=mock_config,
-                        session_id=session_id,
-                        transcript_path=transcript_path,
-                        state_dir=state_dir,
-                        user_message=user_message,
-                    )
+                assert result is True
 
-                    assert result is True
-                    assert mock_push.called
+                # Extract trace from state's pending_trace (NOT pushed yet)
+                from pacemaker.langfuse.state import StateManager
 
-                    # Extract trace from batch
-                    batch = mock_push.call_args[0][3]
-                    trace_event = batch[0]
-                    trace = trace_event["body"]
+                state_mgr = StateManager(state_dir)
+                state = state_mgr.read(session_id)
 
-                    # Trace metadata should include model
-                    assert "metadata" in trace
-                    assert "model" in trace["metadata"]
-                    assert trace["metadata"]["model"] == "claude-opus-4-5-20250929"
+                assert "pending_trace" in state
+                batch = state["pending_trace"]
+                trace_event = batch[0]
+                trace = trace_event["body"]
+
+                # Trace metadata should include model
+                assert "metadata" in trace
+                assert "model" in trace["metadata"]
+                assert trace["metadata"]["model"] == "claude-opus-4-5-20250929"
 
             finally:
                 Path(transcript_path).unlink()
@@ -264,7 +263,7 @@ class TestPostToolUseHandler:
             with patch(
                 "pacemaker.langfuse.orchestrator.push.push_batch_events"
             ) as mock_push:
-                mock_push.return_value = True
+                mock_push.return_value = (True, 1)
 
                 result = handle_post_tool_use(
                     config=mock_config,
