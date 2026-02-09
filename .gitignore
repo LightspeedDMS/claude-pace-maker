@@ -36,3 +36,4 @@ coverage.json
 /src/pacemaker/secrets/__pycache__
 /tests/integration/__pycache__
 /tests/e2e/__pycache__
+/src/pacemaker/intel/__pycache__
