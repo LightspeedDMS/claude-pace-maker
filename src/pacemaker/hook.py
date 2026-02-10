@@ -972,8 +972,9 @@ def run_user_prompt_submit():
 
         # Output with intel nudge reminder
         intel_nudge = (
-            "§ intel: Start your response with a § intel line "
-            "(△frustration ◎specificity ■task_type ◇quality ↻iteration)"
+            "§ intel: Start response with § intel line. "
+            "EXACT format: § △0.0-1.0 ◎surg|const|outc|expl ■bug|feat|refac|research|test|docs|debug|conf|other ◇0.0-1.0 ↻1-9 "
+            "(△◇ = decimals NOT words, ◎■ = codes NOT synonyms)"
         )
         output = {
             "hookSpecificOutput": {

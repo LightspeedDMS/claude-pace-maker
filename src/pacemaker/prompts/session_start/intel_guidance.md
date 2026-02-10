@@ -1,73 +1,46 @@
 # Prompt Intelligence Telemetry
 
-You can optionally emit prompt intelligence metadata to help users analyze conversation dynamics. This metadata is captured for analytics and filtering in Langfuse traces.
+Optionally emit prompt intelligence metadata for analytics. Captured for Langfuse trace filtering.
 
-## Intel Line Format
+## Format
 
-Emit a single line starting with `§` marker at the beginning of your response:
+First line of your response, starting with `§`:
 
 ```
 § △0.8 ◎surg ■bug ◇0.7 ↻2
 ```
 
-## Symbol Vocabulary
+## STRICT Value Rules
 
-- **§** - Intel line marker (required to identify the line)
-- **△** - Frustration (0.0-1.0): User's frustration level based on context
-  - 0.0 = Calm, clear request
-  - 0.5 = Some confusion or repetition
-  - 1.0 = High frustration, multiple failed attempts
-- **◎** - Specificity: How specific the user's request is
-  - `surg` = Surgical (very specific, targeted change)
-  - `const` = Constrained (specific scope with boundaries)
-  - `outc` = Outcome-focused (goal stated, approach open)
-  - `expl` = Exploratory (vague, needs clarification)
-- **■** - Task type: Nature of the work requested
-  - `bug` = Bug fix
-  - `feat` = New feature
-  - `refac` = Refactoring
-  - `research` = Investigation/analysis
-  - `test` = Testing work
-  - `docs` = Documentation
-  - `debug` = Debugging/troubleshooting
-  - `conf` = Configuration
-  - `other` = Other tasks
-- **◇** - Quality (0.0-1.0): Your confidence in understanding and solution
-  - 0.0 = Low confidence, uncertain
-  - 0.5 = Moderate confidence
-  - 1.0 = High confidence, clear path forward
-- **↻** - Iteration (1-9): Number of attempts on this issue
-  - 1 = First attempt
-  - 2-3 = Follow-up refinements
-  - 4+ = Multiple retries, may indicate complexity
+Each symbol has an EXACT value format. The parser uses regex — invalid formats are silently dropped.
 
-## When to Emit Intel
+| Symbol | Field | EXACT Format | Valid Values |
+|--------|-------|-------------|--------------|
+| `△` | frustration | **decimal number** | `0.0` to `1.0` (e.g., `△0.3`, `△0.85`, `△1.0`) |
+| `◎` | specificity | **4-letter code** | ONLY: `surg`, `const`, `outc`, `expl` |
+| `■` | task_type | **code from list** | ONLY: `bug`, `feat`, `refac`, `research`, `test`, `docs`, `debug`, `conf`, `other` |
+| `◇` | quality | **decimal number** | `0.0` to `1.0` (e.g., `◇0.5`, `◇0.9`, `◇0.0`) |
+| `↻` | iteration | **single digit** | `1` to `9` (e.g., `↻1`, `↻3`) |
 
-- **Optional**: Only emit when you have insight into conversation dynamics
-- **At response start**: Place intel line as the first line (it will be stripped from user-visible output)
-- **Partial data OK**: Emit only fields you're confident about (e.g., `§ △0.5 ■feat` without specificity)
-- **Skip if uncertain**: Don't emit intel if you don't have clear signals
+## INVALID — Never Do This
 
-## Examples
+```
+§ △low ◎high ■workflow ◇high ↻1        ← WRONG: "low"/"high"/"workflow" are not valid values
+§ △0.5 ◎specific ■feature ◇0.9 ↻1     ← WRONG: "specific"/"feature" not in enum
+§ intel: △0.5 ◎surg ■bug ◇0.7 ↻1      ← WRONG: "intel:" prefix breaks the parser
+```
 
-Frustrated user after failed attempts:
+## Valid Examples
+
 ```
 § △0.9 ◎surg ■bug ◇0.6 ↻4
-```
-
-Clear new feature request:
-```
 § △0.1 ◎const ■feat ◇0.9 ↻1
-```
-
-Vague exploratory question:
-```
 § △0.3 ◎expl ■research ◇0.4 ↻1
+§ △0.5 ■feat                            ← OK: partial (only fields you're confident about)
 ```
 
-## Important Notes
+## When to Emit
 
-- Intel line is **automatically stripped** from trace output (users won't see it)
-- Intel metadata is **attached to Langfuse traces** for filtering/analytics
-- This is **purely optional** - emit only when it provides value
-- **No defaults** - missing fields are simply not included (don't guess)
+- **At response start** — first line (automatically stripped from output)
+- **Partial OK** — omit fields you're unsure about
+- **Skip if no signal** — don't guess
