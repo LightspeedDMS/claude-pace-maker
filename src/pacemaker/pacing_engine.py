@@ -9,6 +9,7 @@ Orchestrates:
 - Hybrid delay strategy
 """
 
+import sys
 from datetime import datetime, timedelta
 from typing import Optional, Dict
 from . import calculator, database, api_client, adaptive_throttle
@@ -362,7 +363,8 @@ def run_pacing_check(
         )
         if deleted_count > 0:
             print(
-                f"[PACING] Cleaned up {deleted_count} old database records (>{retention_days} days)"
+                f"[PACING] Cleaned up {deleted_count} old database records (>{retention_days} days)",
+                file=sys.stderr,
             )
 
     # Check if should poll

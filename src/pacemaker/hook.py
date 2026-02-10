@@ -116,10 +116,32 @@ def execute_delay(delay_seconds: int):
         time.sleep(actual_delay)
 
 
+def safe_print(message: str, file=None, flush: bool = True, end: str = "\n"):
+    """
+    Print to file with BrokenPipeError protection (Bug #2, #10).
+
+    When Claude Code closes the pipe before the hook finishes writing,
+    a BrokenPipeError is raised. This function catches it silently to
+    prevent the entire hook from crashing.
+
+    Args:
+        message: Text to print
+        file: File object to write to (defaults to sys.stdout)
+        flush: Whether to flush after writing (default True)
+        end: String appended after message (default newline)
+    """
+    if file is None:
+        file = sys.stdout
+    try:
+        print(message, file=file, flush=flush, end=end)
+    except BrokenPipeError:
+        pass
+
+
 def inject_prompt_delay(prompt: str):
     """Inject prompt for Claude to wait."""
     # Print to stdout so Claude sees it
-    print(prompt, file=sys.stdout, flush=True)
+    safe_print(prompt, file=sys.stdout, flush=True)
 
 
 def display_intent_validation_guidance() -> str:
@@ -330,7 +352,7 @@ def run_session_start_hook():
     try:
         if config.get("intent_validation_enabled", False):
             guidance = display_intent_validation_guidance()
-            print(guidance, file=sys.stdout, flush=True)
+            safe_print(guidance, file=sys.stdout)
     except Exception as e:
         # Log error but don't break session start
         print(
@@ -342,7 +364,7 @@ def run_session_start_hook():
     try:
         model_nudge = get_model_preference_nudge(config, include_usage=True)
         if model_nudge:
-            print(model_nudge, file=sys.stdout, flush=True)
+            safe_print(model_nudge, file=sys.stdout)
     except Exception as e:
         # Log error but don't break session start
         log_warning("hook", "Failed to display model preference nudge", e)
@@ -351,7 +373,7 @@ def run_session_start_hook():
     try:
         secrets_nudge = get_secrets_nudge("session_start")
         if secrets_nudge:
-            print(secrets_nudge, file=sys.stdout, flush=True)
+            safe_print(secrets_nudge, file=sys.stdout)
     except Exception as e:
         # Log error but don't break session start
         log_warning("hook", "Failed to display secrets nudge", e)
@@ -364,7 +386,7 @@ def run_session_start_hook():
         intel_guidance = loader.load_prompt(
             "intel_guidance.md", subfolder="session_start"
         )
-        print(intel_guidance, file=sys.stdout, flush=True)
+        safe_print(intel_guidance, file=sys.stdout)
     except FileNotFoundError:
         # Graceful degradation - intel guidance is optional
         log_debug("hook", "Intel guidance prompt not found - skipping")
@@ -462,7 +484,7 @@ def run_subagent_start_hook():
                     "additionalContext": guidance,
                 }
             }
-            print(json.dumps(output), file=sys.stdout, flush=True)
+            safe_print(json.dumps(output), file=sys.stdout)
     except Exception as e:
         # Log error but don't break subagent start
         print(
@@ -562,6 +584,39 @@ def run_subagent_stop_hook():
                 "hook",
                 f"SubagentStop: Finalized subagent trace {subagent_trace_id} for agent_id={hook_agent_id}",
             )
+
+            # BUG #1 FIX: Flush parent session's pending_trace
+            # The typical flow is: UserPromptSubmit -> SubagentStart -> SubagentStop -> Stop
+            # Without this, pending_trace from UserPromptSubmit is never consumed
+            # because PostToolUse never fires in the parent session during subagent execution.
+            try:
+                from .langfuse import state as langfuse_state
+
+                if parent_session_id:
+                    langfuse_state_dir = os.path.expanduser(
+                        "~/.claude-pace-maker/langfuse_state"
+                    )
+                    state_mgr = langfuse_state.StateManager(langfuse_state_dir)
+                    parent_state = state_mgr.read(parent_session_id)
+
+                    if parent_state and parent_state.get("pending_trace"):
+                        orchestrator.flush_pending_trace(
+                            config=config,
+                            session_id=parent_session_id,
+                            state_manager=state_mgr,
+                            existing_state=parent_state,
+                            caller="run_subagent_stop_hook",
+                        )
+                        log_info(
+                            "hook",
+                            f"SubagentStop: Flushed parent pending trace for {parent_session_id}",
+                        )
+            except Exception as e:
+                log_warning(
+                    "hook",
+                    "SubagentStop: Failed to flush parent pending trace",
+                    e,
+                )
         except Exception as e:
             # Graceful failure - log but don't break hook
             log_warning(
@@ -709,96 +764,113 @@ def run_hook():
     db_path = DEFAULT_DB_PATH
     database.initialize_database(db_path)
 
-    # Run pacing check
-    result = pacing_engine.run_pacing_check(
-        db_path=db_path,
-        session_id=state["session_id"],
-        last_poll_time=state.get("last_poll_time"),
-        poll_interval=config.get("poll_interval", 60),
-        last_cleanup_time=state.get("last_cleanup_time"),
-        safety_buffer_pct=config.get("safety_buffer_pct", 95.0),
-        preload_hours=config.get("preload_hours", 12.0),
-        api_timeout_seconds=config.get("api_timeout_seconds", 10),
-        cleanup_interval_hours=config.get("cleanup_interval_hours", 24),
-        retention_days=config.get("retention_days", 60),
-        weekly_limit_enabled=config.get("weekly_limit_enabled", True),
-        five_hour_limit_enabled=config.get("five_hour_limit_enabled", True),
-    )
-
-    # Update state if polled or cleaned up
-    state_changed = False
-    if result.get("polled"):
-        state["last_poll_time"] = result.get("poll_time")
-        state_changed = True
-    if result.get("cleanup_time"):
-        state["last_cleanup_time"] = result.get("cleanup_time")
-        state_changed = True
-
-    if state_changed:
-        save_state(state)
-
-    # Apply throttling if needed
-    decision = result.get("decision", {})
-
-    # Show usage status if we polled
-    if result.get("polled") and decision:
-        five_hour = decision.get("five_hour", {})
-        constrained = decision.get("constrained_window")
-
-        if five_hour and constrained:
-            util = five_hour.get("utilization", 0)
-            target = five_hour.get("target", 0)
-            overage = util - target
-
-            print(
-                f"[PACING] 5-hour usage: {util}% (target: {target:.1f}%, over by: {overage:.1f}%)",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    if decision.get("should_throttle"):
-        # Handle both cached decisions (direct delay_seconds) and fresh decisions (strategy dict)
-        strategy = decision.get("strategy", {})
-
-        # Check if this is a cached decision (has delay_seconds directly)
-        if "delay_seconds" in decision and not strategy:
-            delay = decision.get("delay_seconds", 0)
-        else:
-            # Fresh decision with strategy
-            delay = strategy.get("delay_seconds", 0)
-
-        # Always execute delay if delay > 0
-        if delay > 0:
-            # AC5: Record blockage for pacing throttle
-            record_blockage(
-                db_path=db_path,
-                category="pacing_quota",
-                reason=f"Throttle delay {delay}s applied due to quota protection",
-                hook_type="post_tool_use",
-                session_id=state.get("session_id", "unknown"),
-                details={"delay_seconds": delay},
-            )
-            execute_delay(delay)
-
-    # Capture subagent reminder if conditions met (don't print yet)
-    if should_inject_reminder(state, config, tool_name):
-        pending_message = inject_subagent_reminder(config)
-
-    # Add secrets nudge to pending message
+    # Pacing section - wrapped to prevent BrokenPipeError from blocking Langfuse
     try:
-        secrets_nudge = get_secrets_nudge("post_tool_use")
-        if secrets_nudge:
-            if pending_message:
-                pending_message = f"{pending_message}\n\n{secrets_nudge}"
-            else:
-                pending_message = secrets_nudge
-    except Exception as e:
-        log_warning("hook", "Failed to load secrets nudge for post_tool_use", e)
+        # Run pacing check
+        result = pacing_engine.run_pacing_check(
+            db_path=db_path,
+            session_id=state["session_id"],
+            last_poll_time=state.get("last_poll_time"),
+            poll_interval=config.get("poll_interval", 60),
+            last_cleanup_time=state.get("last_cleanup_time"),
+            safety_buffer_pct=config.get("safety_buffer_pct", 95.0),
+            preload_hours=config.get("preload_hours", 12.0),
+            api_timeout_seconds=config.get("api_timeout_seconds", 10),
+            cleanup_interval_hours=config.get("cleanup_interval_hours", 24),
+            retention_days=config.get("retention_days", 60),
+            weekly_limit_enabled=config.get("weekly_limit_enabled", True),
+            five_hour_limit_enabled=config.get("five_hour_limit_enabled", True),
+        )
 
-    # Save state (always save to persist counter)
-    state_changed = True
-    if state_changed:
-        save_state(state, DEFAULT_STATE_PATH)
+        # Update state if polled or cleaned up
+        state_changed = False
+        if result.get("polled"):
+            state["last_poll_time"] = result.get("poll_time")
+            state_changed = True
+        if result.get("cleanup_time"):
+            state["last_cleanup_time"] = result.get("cleanup_time")
+            state_changed = True
+
+        if state_changed:
+            save_state(state)
+
+        # Apply throttling if needed
+        decision = result.get("decision", {})
+
+        # Show usage status if we polled
+        if result.get("polled") and decision:
+            five_hour = decision.get("five_hour", {})
+            constrained = decision.get("constrained_window")
+
+            if five_hour and constrained:
+                util = five_hour.get("utilization", 0)
+                target = five_hour.get("target", 0)
+                overage = util - target
+
+                print(
+                    f"[PACING] 5-hour usage: {util}% (target: {target:.1f}%, over by: {overage:.1f}%)",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+        if decision.get("should_throttle"):
+            # Handle both cached decisions (direct delay_seconds) and fresh decisions (strategy dict)
+            strategy = decision.get("strategy", {})
+
+            # Check if this is a cached decision (has delay_seconds directly)
+            if "delay_seconds" in decision and not strategy:
+                delay = decision.get("delay_seconds", 0)
+            else:
+                # Fresh decision with strategy
+                delay = strategy.get("delay_seconds", 0)
+
+            # Always execute delay if delay > 0
+            if delay > 0:
+                # AC5: Record blockage for pacing throttle
+                record_blockage(
+                    db_path=db_path,
+                    category="pacing_quota",
+                    reason=f"Throttle delay {delay}s applied due to quota protection",
+                    hook_type="post_tool_use",
+                    session_id=state.get("session_id", "unknown"),
+                    details={"delay_seconds": delay},
+                )
+                execute_delay(delay)
+
+        # Capture subagent reminder if conditions met (don't print yet)
+        if should_inject_reminder(state, config, tool_name):
+            pending_message = inject_subagent_reminder(config)
+
+        # Add secrets nudge to pending message
+        try:
+            secrets_nudge = get_secrets_nudge("post_tool_use")
+            if secrets_nudge:
+                if pending_message:
+                    pending_message = f"{pending_message}\n\n{secrets_nudge}"
+                else:
+                    pending_message = secrets_nudge
+        except Exception as e:
+            log_warning("hook", "Failed to load secrets nudge for post_tool_use", e)
+
+        # Save state (always save to persist counter)
+        state_changed = True
+        if state_changed:
+            save_state(state, DEFAULT_STATE_PATH)
+
+    except BrokenPipeError:
+        log_warning(
+            "hook",
+            "BrokenPipeError during pacing section, continuing to Langfuse",
+            None,
+        )
+    except Exception as e:
+        log_warning("hook", f"Error during pacing section: {e}", e)
+
+    # DIAGNOSTIC: Log whether we'll enter Langfuse section
+    log_debug(
+        "hook",
+        f"PostToolUse: session_id={session_id}, hook_data_present={hook_data is not None}, tool={tool_name}",
+    )
 
     # AC2: Create span for tool call (trace-per-turn)
     if session_id and hook_data:
@@ -809,9 +881,14 @@ def run_hook():
                 "~/.claude-pace-maker/langfuse_state"
             )
 
+            log_debug(
+                "hook",
+                f"PostToolUse: Calling handle_post_tool_use for session={session_id}, tool={tool_name}",
+            )
+
             # Create spans from transcript (graceful failure per AC5)
             # Passes tool_response, tool_name, and tool_input from hook to capture current tool's full metadata
-            orchestrator.handle_post_tool_use(
+            result = orchestrator.handle_post_tool_use(
                 config=config,
                 session_id=session_id,
                 transcript_path=transcript_path,
@@ -820,7 +897,11 @@ def run_hook():
                 tool_name=tool_name,
                 tool_input=tool_input,
             )
-            # Note: We don't check return value - failures are logged but don't block hook
+
+            log_debug(
+                "hook",
+                f"PostToolUse: handle_post_tool_use returned {result} for session={session_id}",
+            )
 
         except Exception as e:
             # AC5: Graceful failure - log error but don't crash hook
@@ -834,7 +915,7 @@ def run_hook():
                 "additionalContext": pending_message,
             }
         }
-        print(json.dumps(output), file=sys.stdout, flush=True)
+        safe_print(json.dumps(output), file=sys.stdout)
         return False  # Not blocking feedback, just injecting context
 
     # Return whether feedback was provided
@@ -967,7 +1048,7 @@ def run_user_prompt_submit():
         if result["intercepted"]:
             # Command was intercepted - output JSON to block and display output
             response = {"decision": "block", "reason": result["output"]}
-            print(json.dumps(response), file=sys.stdout, flush=True)
+            safe_print(json.dumps(response), file=sys.stdout)
             sys.exit(0)
 
         # Output with intel nudge reminder
@@ -982,7 +1063,7 @@ def run_user_prompt_submit():
                 "additionalContext": intel_nudge,
             }
         }
-        print(json.dumps(output), file=sys.stdout, flush=True)
+        safe_print(json.dumps(output), file=sys.stdout)
         sys.exit(0)
 
     except Exception as e:
@@ -991,7 +1072,7 @@ def run_user_prompt_submit():
         # Re-print original input on error
         try:
             sys.stdin.seek(0)
-            print(sys.stdin.read(), file=sys.stdout, flush=True)
+            safe_print(sys.stdin.read(), file=sys.stdout)
         except Exception:
             pass
         sys.exit(0)
@@ -1753,7 +1834,7 @@ def main():
     # Check if this is pre_tool_use hook
     if len(sys.argv) > 1 and sys.argv[1] == "pre_tool_use":
         result = run_pre_tool_hook()
-        print(json.dumps(result), file=sys.stdout, flush=True)
+        safe_print(json.dumps(result), file=sys.stdout)
 
         if result.get("decision") == "block":
             sys.exit(2)  # Block tool use
@@ -1764,7 +1845,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "stop":
         result = run_stop_hook()
         # Output JSON response
-        print(json.dumps(result), file=sys.stdout, flush=True)
+        safe_print(json.dumps(result), file=sys.stdout)
 
         # ========================================================================
         # CRITICAL: Exit code determines Claude Code behavior

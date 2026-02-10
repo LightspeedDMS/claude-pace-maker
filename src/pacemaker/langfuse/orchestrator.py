@@ -404,6 +404,106 @@ def should_run_langfuse_push(config: Dict[str, Any]) -> bool:
     return True
 
 
+def flush_pending_trace(
+    config: Dict[str, Any],
+    session_id: str,
+    state_manager: state.StateManager,
+    existing_state: Optional[Dict[str, Any]],
+    caller: str = "unknown",
+) -> bool:
+    """
+    Flush a pending trace from state: sanitize, push to Langfuse, clear from state.
+
+    This is the shared "check -> sanitize -> push -> clear" pattern used by:
+    - handle_post_tool_use() (existing behavior)
+    - handle_stop_finalize() (Bug #3 fix)
+    - handle_user_prompt_submit() (Bug #4 fix - flush old before new)
+    - SubagentStop flow (Bug #1 completion)
+
+    Args:
+        config: Configuration dict with Langfuse credentials
+        session_id: Session identifier (parent session)
+        state_manager: StateManager instance for reading/writing state
+        existing_state: Current state dict (must contain pending_trace to flush)
+        caller: Name of the calling function (for logging)
+
+    Returns:
+        True if a pending_trace was found and processed (even if push failed),
+        False if no pending_trace found or Langfuse disabled
+    """
+    # Guard: no state or no pending_trace
+    if not existing_state:
+        return False
+
+    pending_trace = existing_state.get("pending_trace")
+    if not pending_trace:
+        return False
+
+    # Guard: Langfuse must be enabled
+    if not should_run_langfuse_push(config):
+        return False
+
+    # Extract credentials
+    base_url = config["langfuse_base_url"]
+    public_key = config["langfuse_public_key"]
+    secret_key = config["langfuse_secret_key"]
+    db_path = config.get("db_path", DEFAULT_DB_PATH)
+
+    log_debug(
+        "orchestrator",
+        f"Flushing pending trace for {session_id} (caller={caller})",
+    )
+
+    # Sanitize the trace batch (mask all secrets)
+    sanitized_batch = sanitize_trace(pending_trace, db_path)
+
+    # Push sanitized trace
+    success, _ = push.push_batch_events(
+        base_url,
+        public_key,
+        secret_key,
+        sanitized_batch,
+        timeout=INCREMENTAL_PUSH_TIMEOUT_SECONDS,
+    )
+
+    if success:
+        log_info(
+            "orchestrator",
+            f"Successfully pushed pending trace for {session_id} (caller={caller})",
+        )
+
+        # Increment metrics on successful push
+        metadata = existing_state.get("metadata", {})
+        is_first_trace = metadata.get("is_first_trace_in_session", False)
+        if is_first_trace:
+            try:
+                increment_metric("sessions", db_path)
+            except Exception as e:
+                log_warning("orchestrator", "Failed to increment sessions metric", e)
+
+        try:
+            increment_metric("traces", db_path)
+        except Exception as e:
+            log_warning("orchestrator", "Failed to increment traces metric", e)
+    else:
+        log_warning(
+            "orchestrator",
+            f"Failed to push pending trace for {session_id} (caller={caller})",
+            None,
+        )
+
+    # ALWAYS clear pending_trace from state (even on failure, to prevent retry loops)
+    state_manager.create_or_update(
+        session_id=session_id,
+        trace_id=existing_state["trace_id"],
+        last_pushed_line=existing_state.get("last_pushed_line", 0),
+        metadata=existing_state.get("metadata", {}),
+        # pending_trace intentionally omitted - clears it from state
+    )
+
+    return True
+
+
 def run_incremental_push(
     config: Dict[str, Any],
     session_id: str,
@@ -641,6 +741,23 @@ def handle_user_prompt_submit(
         existing_state = state_manager.read(session_id)
         last_pushed_line = existing_state["last_pushed_line"] if existing_state else 0
 
+        # BUG #4 FIX: Flush old pending_trace before storing new one
+        # If a previous pending_trace exists (from an earlier UserPromptSubmit that
+        # was never consumed by PostToolUse), flush it now to prevent data loss.
+        if existing_state and existing_state.get("pending_trace"):
+            flush_pending_trace(
+                config=config,
+                session_id=session_id,
+                state_manager=state_manager,
+                existing_state=existing_state,
+                caller="handle_user_prompt_submit",
+            )
+            # Re-read state after flush (pending_trace cleared, other fields preserved)
+            existing_state = state_manager.read(session_id)
+            last_pushed_line = (
+                existing_state["last_pushed_line"] if existing_state else 0
+            )
+
         # Generate unique trace_id for this turn
         trace_id = f"{session_id}-turn-{str(uuid.uuid4())[:8]}"
 
@@ -843,6 +960,61 @@ def handle_post_tool_use(
         current_trace_id = metadata.get("current_trace_id")
         last_pushed_line = existing_state.get("last_pushed_line", 0)
 
+        # PRESERVE parent state before subagent context detection may overwrite it
+        # The parent's pending_trace must survive the subagent state override
+        parent_state = existing_state
+
+        # CRITICAL FIX (Bug #1): Check subagent context BEFORE early return on missing current_trace_id
+        # This ensures subagent spans are created even when parent has no current_trace_id
+        # The subagent context detection will override current_trace_id with subagent's trace_id
+        effective_session_id = session_id  # Default to parent's session_id
+        try:
+            with open(DEFAULT_STATE_PATH, "r") as f:
+                pacemaker_state = json.load(f)
+
+                in_subagent = pacemaker_state.get("in_subagent", False)
+                subagent_trace_id = pacemaker_state.get("current_subagent_trace_id")
+                subagent_agent_id = pacemaker_state.get("current_subagent_agent_id")
+
+                # If in subagent and we have subagent trace_id, use it instead of parent's
+                if in_subagent and subagent_trace_id and subagent_agent_id:
+                    current_trace_id = subagent_trace_id
+
+                    # CRITICAL FIX: Derive subagent_session_id and re-read state
+                    effective_session_id = f"subagent-{subagent_agent_id}"
+
+                    # Re-read state for subagent's session_id to get correct last_pushed_line
+                    subagent_state = state_manager.read(effective_session_id)
+                    if subagent_state:
+                        last_pushed_line = subagent_state.get("last_pushed_line", 0)
+                        metadata = subagent_state.get("metadata", metadata)
+                        existing_state = (
+                            subagent_state  # Use subagent's state for trace_id
+                        )
+                        log_debug(
+                            "orchestrator",
+                            f"Using subagent state: session_id={effective_session_id}, "
+                            f"last_pushed_line={last_pushed_line}",
+                        )
+                    else:
+                        log_debug(
+                            "orchestrator",
+                            f"No existing state for subagent {effective_session_id}, "
+                            f"starting from line 0",
+                        )
+                        last_pushed_line = 0
+
+                    log_debug(
+                        "orchestrator", f"Using subagent trace_id: {subagent_trace_id}"
+                    )
+        except (FileNotFoundError, json.JSONDecodeError, IOError) as e:
+            # Graceful fallback: use parent trace_id if can't read pacemaker state
+            log_debug(
+                "orchestrator",
+                f"Could not read pacemaker state, using parent trace_id: {e}",
+            )
+
+        # NOW check current_trace_id after subagent override
         if not current_trace_id:
             log_warning("orchestrator", f"No current_trace_id for {session_id}", None)
             return False
@@ -907,116 +1079,20 @@ def handle_post_tool_use(
         except Exception as e:
             log_warning("orchestrator", "Failed to parse secrets from transcript", e)
 
-        # STEP 1: Check for pending_trace and push it (sanitized)
-        pending_trace = existing_state.get("pending_trace")
-        if pending_trace:
-            log_debug(
-                "orchestrator",
-                f"Found pending trace for {session_id}, sanitizing and pushing",
-            )
-
-            # Sanitize the trace batch (mask all secrets)
-            sanitized_batch = sanitize_trace(pending_trace, db_path)
-
-            # Push sanitized trace
-            success, _ = push.push_batch_events(
-                base_url,
-                public_key,
-                secret_key,
-                sanitized_batch,
-                timeout=INCREMENTAL_PUSH_TIMEOUT_SECONDS,
-            )
-
-            if not success:
-                log_warning(
-                    "orchestrator",
-                    f"Failed to push pending trace for {session_id}",
-                    None,
-                )
-                # Don't return False - continue with span creation
-            else:
-                log_info(
-                    "orchestrator",
-                    f"Successfully pushed sanitized trace {current_trace_id}",
-                )
-
-                # Increment metrics on successful trace push
-                is_first_trace = metadata.get("is_first_trace_in_session", False)
-                if is_first_trace:
-                    try:
-                        increment_metric("sessions", db_path)
-                    except Exception as e:
-                        log_warning(
-                            "orchestrator", "Failed to increment sessions metric", e
-                        )
-
-                try:
-                    increment_metric("traces", db_path)
-                except Exception as e:
-                    log_warning("orchestrator", "Failed to increment traces metric", e)
-
-            # Remove pending_trace from state (it's been pushed)
-            # Don't pass pending_trace parameter - it won't be written to state
-            state_manager.create_or_update(
+        # STEP 2: Check for pending_trace and push it (sanitized)
+        # CRITICAL: Use parent_state (preserved before subagent override) to find pending_trace
+        # If we're in subagent context, existing_state was overwritten with subagent's state
+        # which has NO pending_trace - the parent's pending_trace would be lost
+        if parent_state.get("pending_trace"):
+            flush_pending_trace(
+                config=config,
                 session_id=session_id,
-                trace_id=existing_state["trace_id"],
-                last_pushed_line=last_pushed_line,
-                metadata=metadata,
-                # pending_trace not passed - will be omitted from state file
-                # pending_intel not passed - intel is now pushed immediately, not stored
+                state_manager=state_manager,
+                existing_state=parent_state,
+                caller="handle_post_tool_use",
             )
-            # Re-read state to get updated version without pending_trace
-            existing_state = state_manager.read(session_id)
-
-        # STEP 2: Check if we're in a subagent context
-        # Read pacemaker state to get in_subagent flag and current_subagent_trace_id
-        # CRITICAL: If in subagent, we need to switch to subagent's session_id for state management
-        effective_session_id = session_id  # Default to parent's session_id
-        try:
-            with open(DEFAULT_STATE_PATH, "r") as f:
-                pacemaker_state = json.load(f)
-
-                in_subagent = pacemaker_state.get("in_subagent", False)
-                subagent_trace_id = pacemaker_state.get("current_subagent_trace_id")
-                subagent_agent_id = pacemaker_state.get("current_subagent_agent_id")
-
-                # If in subagent and we have subagent trace_id, use it instead of parent's
-                if in_subagent and subagent_trace_id and subagent_agent_id:
-                    current_trace_id = subagent_trace_id
-
-                    # CRITICAL FIX: Derive subagent_session_id and re-read state
-                    effective_session_id = f"subagent-{subagent_agent_id}"
-
-                    # Re-read state for subagent's session_id to get correct last_pushed_line
-                    subagent_state = state_manager.read(effective_session_id)
-                    if subagent_state:
-                        last_pushed_line = subagent_state.get("last_pushed_line", 0)
-                        metadata = subagent_state.get("metadata", metadata)
-                        existing_state = (
-                            subagent_state  # Use subagent's state for trace_id
-                        )
-                        log_debug(
-                            "orchestrator",
-                            f"Using subagent state: session_id={effective_session_id}, "
-                            f"last_pushed_line={last_pushed_line}",
-                        )
-                    else:
-                        log_debug(
-                            "orchestrator",
-                            f"No existing state for subagent {effective_session_id}, "
-                            f"starting from line 0",
-                        )
-                        last_pushed_line = 0
-
-                    log_debug(
-                        "orchestrator", f"Using subagent trace_id: {subagent_trace_id}"
-                    )
-        except (FileNotFoundError, json.JSONDecodeError, IOError) as e:
-            # Graceful fallback: use parent trace_id if can't read pacemaker state
-            log_debug(
-                "orchestrator",
-                f"Could not read pacemaker state, using parent trace_id: {e}",
-            )
+            # Re-read parent state to get updated version without pending_trace
+            parent_state = state_manager.read(session_id)
 
         # STEP 3: Create span for current tool if tool_response provided
         # This handles the case where PostToolUse hook fires BEFORE the tool
@@ -1058,7 +1134,7 @@ def handle_post_tool_use(
                 "orchestrator", "Created span for current tool with output from hook"
             )
         else:
-            # STEP 3 (original): Parse transcript for new content and create spans
+            # STEP 4: Parse transcript for new content and create spans
             content_blocks = incremental.extract_content_blocks(
                 transcript_path=transcript_path, start_line=last_pushed_line
             )
@@ -1113,7 +1189,7 @@ def handle_post_tool_use(
             log_warning(
                 "orchestrator",
                 f"Failed to push spans for {session_id} "
-                f"(state updated to line {max_line} to prevent duplicates)",
+                f"(state updated to line {new_last_pushed_line} to prevent duplicates)",
                 None,
             )
             return False
@@ -1198,6 +1274,17 @@ def handle_stop_finalize(
                 None,
             )
             return False
+
+        # BUG #3 FIX: Flush pending_trace BEFORE finalize_trace_with_output
+        # If pending_trace exists, it means UserPromptSubmit stored a trace but no
+        # PostToolUse consumed it. We must push it now before finalizing.
+        flush_pending_trace(
+            config=config,
+            session_id=session_id,
+            state_manager=state_manager,
+            existing_state=existing_state,
+            caller="handle_stop_finalize",
+        )
 
         # STEP 0: Parse secrets from recent assistant responses (runs on EVERY stop_finalize)
         # This ensures secrets are stored in database and available for masking in final output
@@ -1334,6 +1421,7 @@ def handle_subagent_stop(
         trace_update = {
             "id": subagent_trace_id,
             "output": subagent_output,
+            "endTime": now.isoformat(),  # BUG FIX #2: Add explicit endTime for latency calculation
         }
 
         # Build batch event
@@ -1455,6 +1543,7 @@ def handle_subagent_start(
             "sessionId": parent_session_id,  # Links to parent session
             "input": subagent_prompt,  # The Task tool prompt
             "timestamp": now.isoformat(),
+            "startTime": now.isoformat(),  # BUG FIX #2: Add explicit startTime for latency calculation
             "metadata": {
                 "subagent_session_id": subagent_session_id,
                 "subagent_name": subagent_name,
