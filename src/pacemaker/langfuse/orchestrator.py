@@ -1335,6 +1335,53 @@ def handle_stop_finalize(
             }
         ]
 
+        # Create generation observation with accumulated token usage
+        # Langfuse computes totalCost from generation observations (not traces/spans)
+        # Parse token usage from FULL transcript (state doesn't accumulate tokens)
+        token_data = incremental.parse_incremental_lines(transcript_path, 0)
+        token_usage = token_data.get("token_usage", {})
+        accumulated_input = token_usage.get("input_tokens", 0)
+        accumulated_output = token_usage.get("output_tokens", 0)
+        accumulated_cache = token_usage.get("cache_read_tokens", 0)
+
+        if accumulated_input > 0 or accumulated_output > 0:
+            gen_usage: Dict[str, int] = {
+                "input": accumulated_input,
+                "output": accumulated_output,
+                "total": accumulated_input + accumulated_output,
+            }
+            if accumulated_cache > 0:
+                gen_usage["cache_read"] = accumulated_cache
+
+            model_name = jsonl_parser.parse_session_metadata(transcript_path).get(
+                "model", "claude-opus-4-6"
+            )
+            gen_id = f"{current_trace_id}-gen-{str(uuid.uuid4())[:8]}"
+            generation = {
+                "id": gen_id,
+                "traceId": current_trace_id,
+                "name": "claude-code-generation",
+                "model": model_name,
+                "usage": gen_usage,
+                "startTime": now,
+            }
+
+            batch.append(
+                {
+                    "id": gen_id,
+                    "timestamp": now,
+                    "type": "generation-create",
+                    "body": generation,
+                }
+            )
+
+            log_info(
+                "orchestrator",
+                f"Created generation for trace {current_trace_id}: "
+                f"in={accumulated_input}, out={accumulated_output}, "
+                f"cache={accumulated_cache}",
+            )
+
         # SECURITY: Sanitize batch before pushing (Claude's output may contain secrets)
         sanitized_batch = sanitize_trace(batch, db_path)
 
