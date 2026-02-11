@@ -792,9 +792,18 @@ def handle_user_prompt_submit(
 
         # CRITICAL CHANGE: Do NOT push immediately
         # Store batch as pending_trace in state for later sanitization + push
+
+        # Count transcript lines to mark where this turn's responses will begin
+        # UserPromptSubmit fires BEFORE assistant responds, so current line count = turn boundary
+        try:
+            with open(transcript_path, "r") as f:
+                turn_start_line = sum(1 for _ in f)
+        except (FileNotFoundError, IOError):
+            turn_start_line = last_pushed_line  # Fallback
+
         state_metadata = {
             "current_trace_id": trace_id,
-            "trace_start_line": last_pushed_line,
+            "trace_start_line": turn_start_line,
             "is_first_trace_in_session": existing_state is None,  # Track for metrics
         }
 
@@ -1335,10 +1344,12 @@ def handle_stop_finalize(
             }
         ]
 
-        # Create generation observation with accumulated token usage
+        # Create generation observation with per-turn token usage
         # Langfuse computes totalCost from generation observations (not traces/spans)
-        # Parse token usage from FULL transcript (state doesn't accumulate tokens)
-        token_data = incremental.parse_incremental_lines(transcript_path, 0)
+        # Parse token usage starting from trace_start_line (per-turn boundary)
+        token_data = incremental.parse_incremental_lines(
+            transcript_path, trace_start_line
+        )
         token_usage = token_data.get("token_usage", {})
         accumulated_input = token_usage.get("input_tokens", 0)
         accumulated_output = token_usage.get("output_tokens", 0)
@@ -1481,6 +1492,51 @@ def handle_subagent_stop(
                 "body": trace_update,
             }
         ]
+
+        # Create generation observation for subagent cost tracking
+        if agent_transcript_path:
+            token_data = incremental.parse_incremental_lines(agent_transcript_path, 0)
+            token_usage = token_data.get("token_usage", {})
+            gen_input = token_usage.get("input_tokens", 0)
+            gen_output = token_usage.get("output_tokens", 0)
+            gen_cache = token_usage.get("cache_read_tokens", 0)
+
+            if gen_input > 0 or gen_output > 0:
+                gen_usage: Dict[str, int] = {
+                    "input": gen_input,
+                    "output": gen_output,
+                    "total": gen_input + gen_output,
+                }
+                if gen_cache > 0:
+                    gen_usage["cache_read"] = gen_cache
+
+                model_name = jsonl_parser.parse_session_metadata(
+                    agent_transcript_path
+                ).get("model", "claude-sonnet-4-5-20250929")
+                gen_id = f"{subagent_trace_id}-gen-{str(uuid.uuid4())[:8]}"
+                generation = {
+                    "id": gen_id,
+                    "traceId": subagent_trace_id,
+                    "name": "claude-code-generation",
+                    "model": model_name,
+                    "usage": gen_usage,
+                    "startTime": now.isoformat(),
+                }
+
+                batch.append(
+                    {
+                        "id": gen_id,
+                        "timestamp": now.isoformat(),
+                        "type": "generation-create",
+                        "body": generation,
+                    }
+                )
+
+                log_info(
+                    "orchestrator",
+                    f"Created generation for subagent trace {subagent_trace_id}: "
+                    f"in={gen_input}, out={gen_output}, cache={gen_cache}",
+                )
 
         # SECURITY: Sanitize batch before pushing (subagent output may contain secrets)
         db_path = config.get("db_path", DEFAULT_DB_PATH)

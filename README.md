@@ -381,51 +381,11 @@ When Claude attempts to stop:
 
 ## Documentation
 
+- [Changelog](CHANGELOG.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Preload System](docs/PRELOAD_SYSTEM.md)
 - [Weekend Algorithm](docs/WEEKEND_AWARE_ALGORITHM.md)
 - [Test Report](reports/pre_tool_validation_test_report.md)
-
-## Changelog
-
-### v1.8.0 (February 2026)
-- **Prompt Intelligence (Intel)**: New module for per-prompt metadata telemetry (`§` intel lines with frustration, specificity, task type, quality, iteration)
-- **Intel Langfuse Integration**: Parsed intel attached to Langfuse traces as `intel_*` metadata keys for dashboard filtering and analytics
-- **Intel Guidance Prompt**: Session-start injection of intel symbol vocabulary so Claude can emit metadata
-- **Langfuse Provisioner E2E Tests**: End-to-end test coverage for Langfuse auto-provisioning
-- **Version Sync**: All version files (`__init__.py`, `pyproject.toml`, `setup.py`) synchronized to 1.8.0
-
-### v1.7.0 (February 2026)
-- **Secrets Management**: Sanitizes sensitive data (API keys, tokens, passwords) from Langfuse trace outputs before pushing
-- **Langfuse Tool Output Capture**: Fixed tool output capture for accurate trace content
-
-### v1.6.0 (February 2026)
-- **Langfuse Auto-Provisioning**: Automatic API key provisioning with configurable URL via `pace-maker langfuse configure`
-- **Langfuse Status Display**: Shows provisioning URL and connectivity status in `pace-maker langfuse status`
-
-### v1.5.0 (February 2026)
-- **Daily Log Rotation**: One log file per day (`pace-maker-YYYY-MM-DD.log`), 15 days retention, automatic cleanup
-- **Enhanced Status Display**: Shows Pace Maker version, Usage Console version, Langfuse connectivity status, 24-hour error count with color coding
-- **Mypy Type Fixes**: Resolved all type errors in langfuse modules
-
-### v1.4.0 (January 2026)
-- **Langfuse Telemetry Integration**: Full observability with session/trace/span tracking, subagent trace support, 24-hour metrics aggregation
-- **Blockage Telemetry**: Track and report intent validation, TDD, clean code, and pacing blockages via `pace-maker blockage-stats`
-- **Model Preference (Quota Balancing)**: Nudge Claude to use specific models for subagents (`pace-maker prefer-model opus|sonnet|haiku|auto`)
-- **Stale Data Detection**: Resilient pacing calculations when usage data is outdated
-- **Folder Exclusion**: Exclude paths from TDD/Clean Code enforcement (`pace-maker excluded-paths add/remove/list`)
-
-### v1.3.0 (December 2025)
-- **Two-Stage Intent Validation**: Fast declaration check (Sonnet) + comprehensive code review (Opus)
-- **Explicit INTENT: Marker**: Required prefix for intent declarations
-- **Externalized Configuration**: Clean code rules, core paths, excluded paths in YAML files
-- **Centralized Logging**: Configurable log levels (0=OFF to 4=DEBUG)
-- **TDD Enforcement**: Core code paths require test declarations or explicit skip permission
-
-### v1.2.0 (November 2025)
-- **Session Lifecycle (Tempo)**: AI-validated session completion prevents premature endings
-- **Subagent Reminders**: Post-tool nudges for model preference and intent guidance
-- **Stop Hook Validation**: Context-aware session completion checks
 
 ## License
 

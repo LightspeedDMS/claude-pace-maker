@@ -1,5 +1,59 @@
 # Changelog
 
+## [1.11.0] - 2026-02-11
+
+### Fixed
+- **Per-turn token counting**: Generation observations now report tokens for the current turn only, not accumulated across the entire transcript. Fixes inflated cost reporting (e.g. $3.74 reported vs actual ~$0.02 per turn)
+- **Subagent transcript path detection**: Search new Claude Code 2.1.39+ nested directory structure (`<session-id>/subagents/agent-*.jsonl`) with backward compatibility for old flat structure
+
+### Added
+- **Subagent generation observations**: Subagent traces now include `generation-create` events with token usage and cost, matching main session behavior
+- **Per-turn token counting tests**: 3 tests for turn boundary detection and token scoping
+- **Subagent generation tests**: 4 tests for subagent cost tracking
+
+## [1.10.0] - 2026-02-10
+
+### Fixed
+- **Langfuse trace pipeline**: Fixed 12 bugs in trace/span lifecycle (deferred push, pending trace flush, subagent state corruption, BrokenPipeError protection)
+- **Generation observation**: Added `generation-create` event to stop hook for Langfuse totalCost computation (traces/spans alone don't compute cost)
+
+### Added
+- **BrokenPipeError protection**: All stdout writes use `safe_print()` to prevent hook crashes
+
+## [1.9.0] - 2026-02-09
+
+### Fixed
+- **Intel prompt value formats**: Enforce strict decimal/code formats to prevent text-based values that break the parser
+
+## [1.8.0] - 2026-02-08
+
+### Added
+- **Prompt Intelligence (Intel)**: Per-prompt metadata telemetry (`§` intel lines with frustration, specificity, task type, quality, iteration)
+- **Intel Langfuse Integration**: Parsed intel attached to Langfuse traces as `intel_*` metadata keys for dashboard filtering
+- **Intel Guidance Prompt**: Session-start injection of intel symbol vocabulary
+- **Langfuse Provisioner E2E Tests**: End-to-end test coverage for auto-provisioning
+
+## [1.7.0] - 2026-02-06
+
+### Added
+- **Secrets Management**: Sanitizes sensitive data (API keys, tokens, passwords) from Langfuse trace outputs before pushing
+
+### Fixed
+- **Langfuse Tool Output Capture**: Fixed tool output capture for accurate trace content
+
+## [1.6.0] - 2026-02-05
+
+### Added
+- **Langfuse Auto-Provisioning**: Automatic API key provisioning with configurable URL via `pace-maker langfuse configure`
+- **Langfuse Status Display**: Shows provisioning URL and connectivity in `pace-maker langfuse status`
+
+## [1.5.0] - 2026-02-04
+
+### Added
+- **Daily Log Rotation**: One log file per day (`pace-maker-YYYY-MM-DD.log`), 15 days retention
+- **Enhanced Status Display**: Shows versions, Langfuse connectivity, 24-hour error counts
+- **Mypy Type Fixes**: Resolved all type errors in langfuse modules
+
 ## [1.4.1] - 2026-02-04
 
 ### Added
