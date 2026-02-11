@@ -1717,6 +1717,11 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
             projects_dir = os.path.dirname(transcript_path)
             agent_transcripts = glob.glob(os.path.join(projects_dir, "agent-*.jsonl"))
+            # Also search new Claude Code 2.1.39+ nested structure: <session_id>/subagents/agent-*.jsonl
+            if session_id:
+                agent_transcripts += glob.glob(
+                    os.path.join(projects_dir, session_id, "subagents", "agent-*.jsonl")
+                )
 
             # Filter to only recently modified agent transcripts (last 30 seconds)
             recent_agents = [
