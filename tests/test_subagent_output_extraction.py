@@ -180,7 +180,7 @@ class TestHandleSubagentStopWithTranscriptPath:
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     def test_uses_agent_transcript_path_when_provided(self, mock_push):
         """Test that agent_transcript_path is used when provided."""
-        mock_push.return_value = True
+        mock_push.return_value = (True, 1)
 
         config = {
             "langfuse_enabled": True,
@@ -217,7 +217,7 @@ class TestHandleSubagentStopWithTranscriptPath:
         self, mock_extract_task, mock_push
     ):
         """Test backward compatibility: falls back to parent transcript search."""
-        mock_push.return_value = True
+        mock_push.return_value = (True, 1)
         mock_extract_task.return_value = "Output from parent Task result"
 
         config = {
@@ -253,7 +253,7 @@ class TestHandleSubagentStopWithTranscriptPath:
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     def test_uses_empty_string_when_transcript_not_found(self, mock_push):
         """Test that empty string is used when agent transcript doesn't exist."""
-        mock_push.return_value = True
+        mock_push.return_value = (True, 1)
 
         config = {
             "langfuse_enabled": True,

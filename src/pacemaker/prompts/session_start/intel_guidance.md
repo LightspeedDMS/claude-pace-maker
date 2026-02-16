@@ -41,6 +41,7 @@ Each symbol has an EXACT value format. The parser uses regex — invalid formats
 
 ## When to Emit
 
-- **At response start** — first line (automatically stripped from output)
+- **Once per user prompt** — emit as the FIRST line of your FIRST response after the user's message
+- **Do NOT repeat** — never emit again in subsequent tool-use follow-up messages within the same turn
 - **Partial OK** — omit fields you're unsure about
 - **Skip if no signal** — don't guess

@@ -161,8 +161,8 @@ class TestStopGenerationObservation:
         usage = gen_body["usage"]
         assert usage["input"] == 5000
         assert usage["output"] == 2000
-        assert usage["total"] == 7000
-        assert usage["cache_read"] == 100000
+        assert usage["total"] == 107000  # 5000 + 2000 + 100000
+        assert usage["cache_read_input_tokens"] == 100000
 
     @patch(
         "pacemaker.langfuse.orchestrator.incremental.parse_incremental_lines",
@@ -338,4 +338,4 @@ class TestStopGenerationObservation:
         assert usage["input"] == 1000
         assert usage["output"] == 500
         assert usage["total"] == 1500
-        assert "cache_read" not in usage  # Should NOT be present
+        assert "cache_read_input_tokens" not in usage  # Should NOT be present

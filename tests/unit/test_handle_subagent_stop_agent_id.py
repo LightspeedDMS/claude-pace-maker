@@ -45,7 +45,7 @@ def test_handle_subagent_stop_passes_agent_id_to_extractor():
         ) as mock_push:
             # Configure mocks
             mock_extract.return_value = "Subagent output\n\nagentId: test123"
-            mock_push.return_value = True
+            mock_push.return_value = (True, 1)
 
             # Call handle_subagent_stop with agent_id
             result = handle_subagent_stop(
@@ -90,7 +90,7 @@ def test_handle_subagent_stop_backward_compat_no_agent_id():
         ) as mock_push:
             # Configure mocks
             mock_extract.return_value = "Generic subagent output"
-            mock_push.return_value = True
+            mock_push.return_value = (True, 1)
 
             # Call handle_subagent_stop WITHOUT agent_id
             result = handle_subagent_stop(
@@ -133,7 +133,7 @@ def test_handle_subagent_stop_with_explicit_none_agent_id():
         ) as mock_push:
             # Configure mocks
             mock_extract.return_value = "Output without agent_id"
-            mock_push.return_value = True
+            mock_push.return_value = (True, 1)
 
             # Call with explicit agent_id=None
             result = handle_subagent_stop(
@@ -206,7 +206,7 @@ def test_handle_subagent_stop_no_parent_transcript():
         with patch(
             "pacemaker.langfuse.orchestrator.push.push_batch_events"
         ) as mock_push:
-            mock_push.return_value = True
+            mock_push.return_value = (True, 1)
 
             # Call with parent_transcript_path=None
             result = handle_subagent_stop(
@@ -254,7 +254,7 @@ def test_handle_subagent_stop_extractor_returns_none():
         ) as mock_push:
             # extractor returns None (no match)
             mock_extract.return_value = None
-            mock_push.return_value = True
+            mock_push.return_value = (True, 1)
 
             result = handle_subagent_stop(
                 config=config,

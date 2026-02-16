@@ -86,7 +86,7 @@ class TestSubagentTraceCreation:
 
         with (
             patch(
-                "pacemaker.langfuse.push.push_batch_events", return_value=True
+                "pacemaker.langfuse.push.push_batch_events", return_value=(True, 1)
             ) as mock_push,
             patch("pacemaker.langfuse.metrics.increment_metric"),
         ):
@@ -158,7 +158,7 @@ class TestSubagentTraceCreation:
             json.dump(parent_state, f)
 
         with (
-            patch("pacemaker.langfuse.push.push_batch_events", return_value=True),
+            patch("pacemaker.langfuse.push.push_batch_events", return_value=(True, 1)),
             patch("pacemaker.langfuse.metrics.increment_metric"),
         ):
 

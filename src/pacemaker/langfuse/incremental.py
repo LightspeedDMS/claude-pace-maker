@@ -268,6 +268,11 @@ def parse_incremental_lines(
 
     AC1/AC2: Parse only new lines (unpushed) from transcript
 
+    BUG FIXES:
+    - Deduplicates repeated usage dicts within same API turn (Claude Code writes
+      multiple JSONL entries per turn with identical usage)
+    - Tracks cache_creation_input_tokens (previously ignored)
+
     Args:
         transcript_path: Path to JSONL transcript file
         last_pushed_line: Line number of last successful push (0 = parse all)
@@ -276,7 +281,8 @@ def parse_incremental_lines(
         Dict with:
         - lines_parsed: Number of new lines parsed
         - last_line: Total line count after parsing
-        - token_usage: Dict with input_tokens, output_tokens, cache_read_tokens
+        - token_usage: Dict with input_tokens, output_tokens, cache_read_tokens,
+          cache_creation_tokens
         - tool_calls: List of tool names from new lines
     """
     lines_parsed = 0
@@ -285,8 +291,13 @@ def parse_incremental_lines(
         "input_tokens": 0,
         "output_tokens": 0,
         "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
     }
     tool_calls = []
+
+    # Track last seen usage for deduplication
+    # Claude Code writes multiple JSONL entries per API turn with identical usage
+    last_seen_usage = None
 
     try:
         with open(transcript_path, "r") as f:
@@ -307,13 +318,34 @@ def parse_incremental_lines(
                     message = entry.get("message", {})
                     if isinstance(message, dict) and "usage" in message:
                         usage_data = message["usage"]
-                        token_usage["input_tokens"] += usage_data.get("input_tokens", 0)
-                        token_usage["output_tokens"] += usage_data.get(
-                            "output_tokens", 0
+
+                        # Create comparable tuple for deduplication
+                        # Within a single API turn, all entries have identical usage
+                        # Different API turns have different values (at minimum, cache_read changes)
+                        usage_key = (
+                            usage_data.get("input_tokens", 0),
+                            usage_data.get("output_tokens", 0),
+                            usage_data.get("cache_read_input_tokens", 0),
+                            usage_data.get("cache_creation_input_tokens", 0),
                         )
-                        token_usage["cache_read_tokens"] += usage_data.get(
-                            "cache_read_input_tokens", 0
-                        )
+
+                        # Only count if this is a new/different usage dict
+                        if usage_key != last_seen_usage:
+                            last_seen_usage = usage_key
+
+                            # Accumulate token counts
+                            token_usage["input_tokens"] += usage_data.get(
+                                "input_tokens", 0
+                            )
+                            token_usage["output_tokens"] += usage_data.get(
+                                "output_tokens", 0
+                            )
+                            token_usage["cache_read_tokens"] += usage_data.get(
+                                "cache_read_input_tokens", 0
+                            )
+                            token_usage["cache_creation_tokens"] += usage_data.get(
+                                "cache_creation_input_tokens", 0
+                            )
 
                     # Extract tool calls from message.content array
                     if isinstance(message, dict) and "content" in message:
@@ -391,6 +423,9 @@ def create_or_update_trace(
                 "cache_read_tokens": incremental_data["token_usage"][
                     "cache_read_tokens"
                 ],
+                "cache_creation_tokens": incremental_data["token_usage"].get(
+                    "cache_creation_tokens", 0
+                ),
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -426,6 +461,9 @@ def create_or_update_trace(
             metadata.get("cache_read_tokens", 0)
             + incremental_data["token_usage"]["cache_read_tokens"]
         )
+        metadata["cache_creation_tokens"] = metadata.get(
+            "cache_creation_tokens", 0
+        ) + incremental_data["token_usage"].get("cache_creation_tokens", 0)
 
         # Update trace with modified metadata
         trace["metadata"] = metadata
@@ -447,6 +485,9 @@ def create_generation(
     TRACE-PER-TURN: Generation links to trace_id (not session_id).
     Each trace has its own generation with per-trace token usage.
 
+    BUG FIX: Effective input for billing is input_tokens + cache_creation_tokens
+    (both billed at input rate). cache_read_tokens is billed at discounted rate.
+
     Args:
         trace_id: Trace identifier (used as traceId to link generation to trace)
         model: Model name used
@@ -459,16 +500,32 @@ def create_generation(
 
     token_usage = incremental_data["token_usage"]
 
+    # Extract individual token types
+    # input_tokens: non-cached input (typically 1-3 per call)
+    # output_tokens: output tokens
+    # cache_read_tokens: tokens read from cache (discounted rate)
+    # cache_creation_tokens: tokens written to cache (separate pricing)
+    input_tokens = token_usage.get("input_tokens", 0)
+    output_tokens = token_usage.get("output_tokens", 0)
+    cache_read = token_usage.get("cache_read_tokens", 0)
+    cache_creation = token_usage.get("cache_creation_tokens", 0)
+
+    # Total = all token types summed
+    total = input_tokens + output_tokens + cache_read + cache_creation
+
     # Build usage dict with type annotation for mypy
+    # Send each token type as separate field matching Langfuse pricing keys
     usage: Dict[str, int] = {
-        "input": token_usage["input_tokens"],
-        "output": token_usage["output_tokens"],
-        "total": token_usage["input_tokens"] + token_usage["output_tokens"],
+        "input": input_tokens,
+        "output": output_tokens,
+        "total": total,
     }
 
-    # Add cache tokens if present
-    if token_usage.get("cache_read_tokens", 0) > 0:
-        usage["cache_read"] = token_usage["cache_read_tokens"]
+    # Add cache tokens as separate fields matching Langfuse pricing keys
+    if cache_read > 0:
+        usage["cache_read_input_tokens"] = cache_read
+    if cache_creation > 0:
+        usage["cache_creation_input_tokens"] = cache_creation
 
     generation = {
         "id": f"{trace_id}-gen-{str(uuid.uuid4())[:8]}",  # Unique ID for generation
@@ -523,6 +580,7 @@ def create_batch_event(
         "input_tokens": trace["metadata"]["input_tokens"],
         "output_tokens": trace["metadata"]["output_tokens"],
         "cache_read_tokens": trace["metadata"]["cache_read_tokens"],
+        "cache_creation_tokens": trace["metadata"].get("cache_creation_tokens", 0),
     }
     accumulated_data = {
         "token_usage": accumulated_tokens,

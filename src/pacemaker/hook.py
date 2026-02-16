@@ -1053,7 +1053,8 @@ def run_user_prompt_submit():
 
         # Output with intel nudge reminder
         intel_nudge = (
-            "§ intel: Start response with § intel line. "
+            "§ intel: Start your FIRST response to this user prompt with § intel line. "
+            "Emit ONCE only — do NOT repeat in subsequent tool-use messages within this turn. "
             "EXACT format: § △0.0-1.0 ◎surg|const|outc|expl ■bug|feat|refac|research|test|docs|debug|conf|other ◇0.0-1.0 ↻1-9 "
             "(△◇ = decimals NOT words, ◎■ = codes NOT synonyms)"
         )

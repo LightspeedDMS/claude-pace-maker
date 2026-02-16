@@ -130,7 +130,7 @@ def test_two_subagents_correct_output_correlation():
         with patch(
             "pacemaker.langfuse.orchestrator.push.push_batch_events"
         ) as mock_push:
-            mock_push.return_value = True
+            mock_push.return_value = (True, 1)
 
             # FIRST SUBAGENT: code-reviewer (agent_id: aaa1234)
             result1 = handle_subagent_stop(

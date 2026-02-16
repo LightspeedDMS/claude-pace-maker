@@ -96,7 +96,7 @@ class TestUserPromptSubmitMetrics:
             with patch(
                 "pacemaker.langfuse.orchestrator.push.push_batch_events"
             ) as mock_push:
-                mock_push.return_value = True
+                mock_push.return_value = (True, 1)
 
                 # Call handle_user_prompt_submit (first trace in session)
                 result = handle_user_prompt_submit(
@@ -108,6 +108,18 @@ class TestUserPromptSubmitMetrics:
                 )
 
                 assert result is True
+
+                # Call again to trigger flush of first pending trace
+                # (Deferred push architecture: metrics only increment on flush)
+                result2 = handle_user_prompt_submit(
+                    config=config_with_db,
+                    session_id=session_id,
+                    transcript_path=transcript_with_user_prompt,
+                    state_dir=state_dir,
+                    user_message="second prompt",
+                )
+
+                assert result2 is True
 
                 # Verify metrics were incremented
                 conn = sqlite3.connect(test_db)
@@ -152,7 +164,7 @@ class TestUserPromptSubmitMetrics:
             with patch(
                 "pacemaker.langfuse.orchestrator.push.push_batch_events"
             ) as mock_push:
-                mock_push.return_value = True
+                mock_push.return_value = (True, 1)
 
                 # First trace
                 result1 = handle_user_prompt_submit(
@@ -173,6 +185,17 @@ class TestUserPromptSubmitMetrics:
                     user_message="implement feature Z",
                 )
                 assert result2 is True
+
+                # Third call to flush second pending trace
+                # (Deferred push architecture: each call flushes previous, stores new)
+                result3 = handle_user_prompt_submit(
+                    config=config_with_db,
+                    session_id=session_id,
+                    transcript_path=transcript_with_user_prompt,
+                    state_dir=state_dir,
+                    user_message="third prompt",
+                )
+                assert result3 is True
 
                 # Verify metrics
                 conn = sqlite3.connect(test_db)
@@ -219,8 +242,9 @@ class TestUserPromptSubmitMetrics:
             with patch(
                 "pacemaker.langfuse.orchestrator.push.push_batch_events"
             ) as mock_push:
-                mock_push.return_value = False
+                mock_push.return_value = (False, 0)
 
+                # First call: stores pending trace (returns True)
                 result = handle_user_prompt_submit(
                     config=config_with_db,
                     session_id=session_id,
@@ -228,9 +252,18 @@ class TestUserPromptSubmitMetrics:
                     state_dir=state_dir,
                     user_message=user_message,
                 )
+                assert result is True  # Storage always succeeds
 
-                # Should fail
-                assert result is False
+                # Second call: flushes first pending trace (push fails)
+                # This is where the failed push happens
+                result2 = handle_user_prompt_submit(
+                    config=config_with_db,
+                    session_id=session_id,
+                    transcript_path=transcript_with_user_prompt,
+                    state_dir=state_dir,
+                    user_message="second message",
+                )
+                assert result2 is True  # Still succeeds (stores second trace)
 
                 # Verify metrics were NOT incremented
                 conn = sqlite3.connect(test_db)

@@ -92,7 +92,10 @@ class TestLangfuseMetricsIntegration:
             patch("src.pacemaker.telemetry.jsonl_parser.extract_user_id") as mock_user,
         ):
 
-            mock_push.return_value = True  # Successful push
+            mock_push.return_value = (
+                True,
+                1,
+            )  # Successful push (returns tuple[bool, int])
             mock_metadata.return_value = {"model": "claude-sonnet-4"}
             mock_user.return_value = "test@example.com"
 
@@ -131,7 +134,10 @@ class TestLangfuseMetricsIntegration:
             patch("src.pacemaker.telemetry.jsonl_parser.extract_user_id") as mock_user,
         ):
 
-            mock_push.return_value = False  # Failed push
+            mock_push.return_value = (
+                False,
+                0,
+            )  # Failed push (returns tuple[bool, int])
             mock_metadata.return_value = {"model": "claude-sonnet-4"}
             mock_user.return_value = "test@example.com"
 

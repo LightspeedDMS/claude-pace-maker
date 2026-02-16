@@ -118,10 +118,12 @@ class TestWeeklyBreakdown:
             # ... more days
         ]
 
-        with patch.object(
-            stats, "fetch_weekly_stats", return_value=mock_data
+        with patch(
+            "pacemaker.langfuse.stats.fetch_weekly_stats", return_value=mock_data
         ) as mock_fetch:
-            stats.get_weekly_breakdown()
+            stats.get_weekly_breakdown(
+                base_url="http://test", public_key="pk", secret_key="sk"
+            )
 
             # Should call API with 7-day range
             mock_fetch.assert_called_once()

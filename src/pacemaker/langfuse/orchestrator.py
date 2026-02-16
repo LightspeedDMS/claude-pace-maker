@@ -1354,15 +1354,27 @@ def handle_stop_finalize(
         accumulated_input = token_usage.get("input_tokens", 0)
         accumulated_output = token_usage.get("output_tokens", 0)
         accumulated_cache = token_usage.get("cache_read_tokens", 0)
+        accumulated_cache_creation = token_usage.get("cache_creation_tokens", 0)
 
-        if accumulated_input > 0 or accumulated_output > 0:
+        # Send each token type as separate field for Langfuse pricing
+        if (
+            accumulated_input > 0
+            or accumulated_output > 0
+            or accumulated_cache_creation > 0
+            or accumulated_cache > 0
+        ):
             gen_usage: Dict[str, int] = {
                 "input": accumulated_input,
                 "output": accumulated_output,
-                "total": accumulated_input + accumulated_output,
+                "total": accumulated_input
+                + accumulated_output
+                + accumulated_cache
+                + accumulated_cache_creation,
             }
             if accumulated_cache > 0:
-                gen_usage["cache_read"] = accumulated_cache
+                gen_usage["cache_read_input_tokens"] = accumulated_cache
+            if accumulated_cache_creation > 0:
+                gen_usage["cache_creation_input_tokens"] = accumulated_cache_creation
 
             model_name = jsonl_parser.parse_session_metadata(transcript_path).get(
                 "model", "claude-opus-4-6"
@@ -1390,7 +1402,7 @@ def handle_stop_finalize(
                 "orchestrator",
                 f"Created generation for trace {current_trace_id}: "
                 f"in={accumulated_input}, out={accumulated_output}, "
-                f"cache={accumulated_cache}",
+                f"cache_read={accumulated_cache}, cache_creation={accumulated_cache_creation}",
             )
 
         # SECURITY: Sanitize batch before pushing (Claude's output may contain secrets)
@@ -1500,15 +1512,24 @@ def handle_subagent_stop(
             gen_input = token_usage.get("input_tokens", 0)
             gen_output = token_usage.get("output_tokens", 0)
             gen_cache = token_usage.get("cache_read_tokens", 0)
+            gen_cache_creation = token_usage.get("cache_creation_tokens", 0)
 
-            if gen_input > 0 or gen_output > 0:
+            # Send each token type as separate field for Langfuse pricing
+            if (
+                gen_input > 0
+                or gen_output > 0
+                or gen_cache_creation > 0
+                or gen_cache > 0
+            ):
                 gen_usage: Dict[str, int] = {
                     "input": gen_input,
                     "output": gen_output,
-                    "total": gen_input + gen_output,
+                    "total": gen_input + gen_output + gen_cache + gen_cache_creation,
                 }
                 if gen_cache > 0:
-                    gen_usage["cache_read"] = gen_cache
+                    gen_usage["cache_read_input_tokens"] = gen_cache
+                if gen_cache_creation > 0:
+                    gen_usage["cache_creation_input_tokens"] = gen_cache_creation
 
                 model_name = jsonl_parser.parse_session_metadata(
                     agent_transcript_path
@@ -1535,7 +1556,7 @@ def handle_subagent_stop(
                 log_info(
                     "orchestrator",
                     f"Created generation for subagent trace {subagent_trace_id}: "
-                    f"in={gen_input}, out={gen_output}, cache={gen_cache}",
+                    f"in={gen_input}, out={gen_output}, cache_read={gen_cache}, cache_creation={gen_cache_creation}",
                 )
 
         # SECURITY: Sanitize batch before pushing (subagent output may contain secrets)

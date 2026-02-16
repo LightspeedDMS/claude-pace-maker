@@ -114,7 +114,9 @@ def test_generation_uses_trace_start_line_not_zero():
         turn2 = [
             _make_assistant_message(50, 100),
             {"type": "tool_use", "name": "Write"},
-            _make_assistant_message(50, 100),
+            _make_assistant_message(
+                50, 100, cache_read=1
+            ),  # Different from first to avoid dedup
         ]
         _create_transcript_with_turns(transcript_path, [turn1, turn2])
 

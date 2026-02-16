@@ -15,9 +15,10 @@ from pathlib import Path
 
 
 def test_orchestrator_parses_intel_from_transcript(tmp_path):
-    """Test orchestrator extracts intel from assistant messages."""
+    """Test orchestrator extracts intel from assistant messages and pushes immediately."""
     from pacemaker.langfuse.orchestrator import handle_post_tool_use
     from pacemaker.langfuse.state import StateManager
+    from unittest.mock import patch
 
     # Create transcript with intel line
     transcript = tmp_path / "transcript.jsonl"
@@ -51,40 +52,55 @@ def test_orchestrator_parses_intel_from_transcript(tmp_path):
         metadata={"current_trace_id": "test_trace"},
     )
 
-    # Mock config (disabled push)
+    # Mock config (ENABLED to allow push)
     config = {
-        "langfuse_enabled": False,
+        "langfuse_enabled": True,
         "langfuse_base_url": "http://localhost",
         "langfuse_public_key": "pk-test",
         "langfuse_secret_key": "sk-test",
         "db_path": str(tmp_path / "test.db"),
     }
 
-    # Call orchestrator
-    handle_post_tool_use(
-        config=config,
-        session_id="test_session",
-        transcript_path=str(transcript),
-        state_dir=str(state_dir),
-    )
+    # Mock push_batch_events to capture intel batch
+    with patch("pacemaker.langfuse.push.push_batch_events") as mock_push:
+        mock_push.return_value = (True, 1)
 
-    # Verify intel was stored in state
-    state = state_manager.read("test_session")
-    assert state is not None
-    assert "pending_intel" in state
+        # Call orchestrator
+        handle_post_tool_use(
+            config=config,
+            session_id="test_session",
+            transcript_path=str(transcript),
+            state_dir=str(state_dir),
+        )
 
-    intel = state["pending_intel"]
-    assert intel["frustration"] == 0.8
-    assert intel["specificity"] == "surg"
-    assert intel["task_type"] == "bug"
-    assert intel["quality"] == 0.7
-    assert intel["iteration"] == 2
+        # Verify intel was pushed (should have at least one call with intel metadata)
+        assert mock_push.called
+
+        # Check if any call contained intel metadata
+        intel_pushed = False
+        for call in mock_push.call_args_list:
+            batch = call[0][3]  # Fourth argument is the batch
+            for event in batch:
+                if event.get("type") == "trace-create":
+                    body = event.get("body", {})
+                    metadata = body.get("metadata", {})
+                    if "intel_frustration" in metadata:
+                        intel_pushed = True
+                        assert metadata["intel_frustration"] == 0.8
+                        assert metadata["intel_specificity"] == "surg"
+                        assert metadata["intel_task_type"] == "bug"
+                        assert metadata["intel_quality"] == 0.7
+                        assert metadata["intel_iteration"] == 2
+                        break
+
+        assert intel_pushed, "Intel metadata should have been pushed to Langfuse"
 
 
 def test_orchestrator_stores_partial_intel(tmp_path):
-    """Test orchestrator handles partial intel with missing fields."""
+    """Test orchestrator handles partial intel with missing fields and pushes immediately."""
     from pacemaker.langfuse.orchestrator import handle_post_tool_use
     from pacemaker.langfuse.state import StateManager
+    from unittest.mock import patch
 
     # Create transcript with partial intel
     transcript = tmp_path / "transcript.jsonl"
@@ -112,32 +128,43 @@ def test_orchestrator_stores_partial_intel(tmp_path):
     )
 
     config = {
-        "langfuse_enabled": False,
+        "langfuse_enabled": True,
         "langfuse_base_url": "http://localhost",
         "langfuse_public_key": "pk-test",
         "langfuse_secret_key": "sk-test",
         "db_path": str(tmp_path / "test.db"),
     }
 
-    handle_post_tool_use(
-        config=config,
-        session_id="test_session",
-        transcript_path=str(transcript),
-        state_dir=str(state_dir),
-    )
+    # Mock push_batch_events to capture intel batch
+    with patch("pacemaker.langfuse.push.push_batch_events") as mock_push:
+        mock_push.return_value = (True, 1)
 
-    # Verify partial intel stored
-    state = state_manager.read("test_session")
-    assert state is not None
-    assert "pending_intel" in state
+        handle_post_tool_use(
+            config=config,
+            session_id="test_session",
+            transcript_path=str(transcript),
+            state_dir=str(state_dir),
+        )
 
-    intel = state["pending_intel"]
-    assert intel["frustration"] == 0.5
-    assert intel["task_type"] == "feat"
-    # Missing fields should not be present
-    assert "specificity" not in intel
-    assert "quality" not in intel
-    assert "iteration" not in intel
+        # Verify partial intel was pushed
+        intel_pushed = False
+        for call in mock_push.call_args_list:
+            batch = call[0][3]
+            for event in batch:
+                if event.get("type") == "trace-create":
+                    body = event.get("body", {})
+                    metadata = body.get("metadata", {})
+                    if "intel_frustration" in metadata:
+                        intel_pushed = True
+                        assert metadata["intel_frustration"] == 0.5
+                        assert metadata["intel_task_type"] == "feat"
+                        # Missing fields should not be present
+                        assert "intel_specificity" not in metadata
+                        assert "intel_quality" not in metadata
+                        assert "intel_iteration" not in metadata
+                        break
+
+        assert intel_pushed, "Partial intel should have been pushed to Langfuse"
 
 
 def test_orchestrator_handles_no_intel(tmp_path):
@@ -197,7 +224,6 @@ def test_orchestrator_handles_no_intel(tmp_path):
 def test_trace_output_strips_intel_line():
     """Test that trace finalization strips intel line from output."""
     from pacemaker.langfuse.trace import finalize_trace_with_output
-    import tempfile
 
     # Create temp transcript with intel line
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
@@ -237,20 +263,33 @@ def test_trace_output_strips_intel_line():
 
 
 def test_trace_metadata_includes_intel():
-    """Test that pending_intel is attached to trace metadata when trace is pushed."""
-    from pacemaker.langfuse.orchestrator import handle_user_prompt_submit
+    """Test that intel is pushed immediately to current trace (new architecture).
+
+    NOTE: This test is now redundant with test_orchestrator_parses_intel_from_transcript
+    since intel is pushed immediately in handle_post_tool_use, not stored as pending_intel.
+    Keeping this test for backward compatibility but it just verifies the immediate push flow.
+    """
+    from pacemaker.langfuse.orchestrator import handle_post_tool_use
     from pacemaker.langfuse.state import StateManager
+    from unittest.mock import patch
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
 
-        # Create transcript with user message
+        # Create transcript with intel line in assistant response
         transcript = tmp_path / "transcript.jsonl"
         transcript.write_text(
             json.dumps(
                 {
-                    "type": "user_message",
-                    "message": {"role": "user", "content": "Test prompt"},
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "§ △0.8 ◎surg ■bug ◇0.7 ↻2\nTest response",
+                            }
+                        ],
+                    },
                 }
             )
             + "\n"
@@ -259,77 +298,48 @@ def test_trace_metadata_includes_intel():
         state_dir = tmp_path / "state"
         state_dir.mkdir()
 
-        # Create state with pending_intel
+        # Create initial state
         state_manager = StateManager(str(state_dir))
         state_manager.create_or_update(
             session_id="test_session",
             trace_id="test_trace_001",
             last_pushed_line=0,
-            metadata={
-                "current_trace_id": "test_trace_001",
-            },
+            metadata={"current_trace_id": "test_trace_001"},
         )
-
-        # Add pending_intel to state
-        existing_state = state_manager.read("test_session")
-        existing_state["pending_intel"] = {
-            "frustration": 0.8,
-            "specificity": "surg",
-            "task_type": "bug",
-            "quality": 0.7,
-            "iteration": 2,
-        }
-        state_manager.create_or_update(
-            session_id="test_session",
-            trace_id=existing_state["trace_id"],
-            last_pushed_line=existing_state["last_pushed_line"],
-            metadata=existing_state.get("metadata", {}),
-        )
-        # Manually add pending_intel (state manager doesn't have parameter for it yet)
-        state_file = state_dir / "test_session.json"
-        with open(state_file, "r") as f:
-            state_data = json.load(f)
-        state_data["pending_intel"] = existing_state["pending_intel"]
-        with open(state_file, "w") as f:
-            json.dump(state_data, f)
 
         config = {
-            "langfuse_enabled": True,  # Enable to create trace (stored as pending_trace, not pushed)
+            "langfuse_enabled": True,
             "langfuse_base_url": "http://localhost",
             "langfuse_public_key": "pk-test",
             "langfuse_secret_key": "sk-test",
             "db_path": str(tmp_path / "test.db"),
         }
 
-        # Call user_prompt_submit (creates trace)
-        handle_user_prompt_submit(
-            config=config,
-            session_id="test_session",
-            transcript_path=str(transcript),
-            state_dir=str(state_dir),
-            user_message="Test prompt",
-        )
+        # Mock push to capture intel batch
+        with patch("pacemaker.langfuse.push.push_batch_events") as mock_push:
+            mock_push.return_value = (True, 1)
 
-        # Verify pending_trace was created with intel in metadata
-        state = state_manager.read("test_session")
-        assert state is not None
-        assert "pending_trace" in state
+            # Call post_tool_use (parses intel and pushes immediately)
+            handle_post_tool_use(
+                config=config,
+                session_id="test_session",
+                transcript_path=str(transcript),
+                state_dir=str(state_dir),
+            )
 
-        # Find trace-create event in pending_trace
-        trace_event = None
-        for event in state["pending_trace"]:
-            if event.get("type") == "trace-create":
-                trace_event = event
-                break
+            # Verify intel was pushed in trace metadata
+            intel_found = False
+            for call in mock_push.call_args_list:
+                batch = call[0][3]
+                for event in batch:
+                    if event.get("type") == "trace-create":
+                        metadata = event.get("body", {}).get("metadata", {})
+                        if "intel_frustration" in metadata:
+                            intel_found = True
+                            assert metadata["intel_frustration"] == 0.8
+                            assert metadata["intel_specificity"] == "surg"
+                            assert metadata["intel_task_type"] == "bug"
+                            assert metadata["intel_quality"] == 0.7
+                            assert metadata["intel_iteration"] == 2
 
-        assert trace_event is not None
-        trace_body = trace_event.get("body", {})
-        metadata = trace_body.get("metadata", {})
-
-        # Verify intel fields are in metadata
-        assert "intel_frustration" in metadata
-        assert metadata["intel_frustration"] == 0.8
-        assert metadata["intel_specificity"] == "surg"
-        assert metadata["intel_task_type"] == "bug"
-        assert metadata["intel_quality"] == 0.7
-        assert metadata["intel_iteration"] == 2
+            assert intel_found, "Intel should be pushed immediately to current trace"

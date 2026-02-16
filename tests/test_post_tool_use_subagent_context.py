@@ -96,7 +96,7 @@ class TestHandlePostToolUseSubagentContext:
         )
 
         with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
-            mock_push_module.push_batch_events = MagicMock(return_value=True)
+            mock_push_module.push_batch_events = MagicMock(return_value=(True, 1))
 
             # Patch DEFAULT_STATE_PATH to point to our test file
             with patch(
@@ -131,7 +131,7 @@ class TestHandlePostToolUseSubagentContext:
         paths = setup_test_files(in_subagent=False)
 
         with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
-            mock_push_module.push_batch_events = MagicMock(return_value=True)
+            mock_push_module.push_batch_events = MagicMock(return_value=(True, 1))
 
             with patch(
                 "pacemaker.langfuse.orchestrator.DEFAULT_STATE_PATH",
@@ -170,7 +170,7 @@ class TestHandlePostToolUseSubagentContext:
         )
 
         with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
-            mock_push_module.push_batch_events = MagicMock(return_value=True)
+            mock_push_module.push_batch_events = MagicMock(return_value=(True, 1))
 
             with patch(
                 "pacemaker.langfuse.orchestrator.DEFAULT_STATE_PATH", nonexistent_path
@@ -206,7 +206,7 @@ class TestHandlePostToolUseSubagentContext:
         malformed_state.write_text("{ invalid json")
 
         with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
-            mock_push_module.push_batch_events = MagicMock(return_value=True)
+            mock_push_module.push_batch_events = MagicMock(return_value=(True, 1))
 
             with patch(
                 "pacemaker.langfuse.orchestrator.DEFAULT_STATE_PATH",

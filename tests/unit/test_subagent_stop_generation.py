@@ -117,8 +117,8 @@ class TestSubagentStopGenerationObservation:
         usage = gen_body["usage"]
         assert usage["input"] == 3000
         assert usage["output"] == 1500
-        assert usage["total"] == 4500
-        assert usage["cache_read"] == 50000
+        assert usage["total"] == 54500  # 3000 + 1500 + 50000
+        assert usage["cache_read_input_tokens"] == 50000
 
         # Verify parse_incremental_lines was called with correct args
         mock_parse_incremental.assert_called_once_with(agent_transcript_path, 0)
@@ -251,7 +251,7 @@ class TestSubagentStopGenerationObservation:
         assert usage["input"] == 2000
         assert usage["output"] == 800
         assert usage["total"] == 2800
-        assert "cache_read" not in usage  # Should NOT be present
+        assert "cache_read_input_tokens" not in usage  # Should NOT be present
 
     @patch(
         "pacemaker.langfuse.orchestrator.incremental.parse_incremental_lines",

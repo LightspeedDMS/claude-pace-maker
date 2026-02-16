@@ -28,7 +28,7 @@ class TestVersionCommand:
             "version", "/tmp/config.json", "/tmp/db.sqlite"
         )
         assert result["success"] is True
-        assert "1.4.0" in result["message"]
+        assert "1.12.0" in result["message"]
         assert "Claude Pace Maker" in result["message"]
 
     def test_handle_user_prompt_version(self):
@@ -37,7 +37,7 @@ class TestVersionCommand:
             "pace-maker version", "/tmp/config.json", "/tmp/db.sqlite"
         )
         assert result["intercepted"] is True
-        assert "1.4.0" in result["output"]
+        assert "1.12.0" in result["output"]
 
     def test_help_includes_version_command(self):
         """Help text should document version command."""
