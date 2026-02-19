@@ -11,6 +11,7 @@ State files are stored in ~/.claude-pace-maker/langfuse_state/<session_id>.json
 """
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -93,7 +94,7 @@ class StateManager:
             True if successful, False if failed
         """
         state_file = Path(self.state_dir) / f"{session_id}.json"
-        temp_file = Path(self.state_dir) / f"{session_id}.json.tmp"
+        temp_file = Path(self.state_dir) / f"{session_id}.json.tmp.{os.getpid()}"
 
         state_data = {
             "session_id": session_id,

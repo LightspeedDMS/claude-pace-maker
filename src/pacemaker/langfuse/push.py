@@ -5,10 +5,118 @@ Langfuse trace push functionality.
 Handles submission of traces to Langfuse API with timeout and error handling.
 """
 
+import json
+import copy
 import requests
-from typing import Dict, Any
+from typing import Dict, Any, List, Tuple
 
 from ..logger import log_warning, log_info
+
+
+# Maximum payload size in bytes for Langfuse Cloud ingestion API.
+# Langfuse Cloud enforces a 1MB body limit on POST /api/public/ingestion.
+# We use 900KB to stay safely under the limit after HTTP overhead.
+MAX_BATCH_PAYLOAD_BYTES = 900_000
+
+# Minimum number of characters to preserve when truncating a field.
+# Even after aggressive truncation, keep at least this many chars of content.
+MIN_TRUNCATED_FIELD_CHARS = 100
+
+# Maximum chars per field during aggressive (second-pass) truncation.
+# Used when first-pass proportional truncation is insufficient.
+AGGRESSIVE_TRUNCATION_CHARS = 1000
+
+
+def _truncate_batch_to_fit(payload: dict, max_bytes: int) -> dict:
+    """
+    Progressively truncate string fields in batch event bodies to fit under max_bytes.
+
+    Finds all string fields named 'input', 'output', or 'text' in batch event bodies
+    and truncates them largest-first until the serialized payload fits under the limit.
+
+    Args:
+        payload: Dict with 'batch' key containing list of event dicts.
+        max_bytes: Maximum serialized size in bytes.
+
+    Returns:
+        Payload dict with truncated string fields (may be a deep copy if modified).
+    """
+    serialized = json.dumps(payload)
+    if len(serialized.encode("utf-8")) <= max_bytes:
+        return payload
+
+    # Deep copy to avoid mutating the original
+    payload = copy.deepcopy(payload)
+
+    # Collect all truncatable string fields: (event_index, field_name, current_length)
+    truncatable_fields: List[Tuple[int, str, int]] = []
+    target_field_names = {"input", "output", "text"}
+
+    for idx, event in enumerate(payload.get("batch", [])):
+        body = event.get("body", {})
+        if not isinstance(body, dict):
+            continue
+        for field_name in target_field_names:
+            if field_name in body and isinstance(body[field_name], str):
+                truncatable_fields.append((idx, field_name, len(body[field_name])))
+
+    if not truncatable_fields:
+        # No string fields to truncate - return as-is
+        return payload
+
+    # Sort by length descending (truncate largest first)
+    truncatable_fields.sort(key=lambda x: x[2], reverse=True)
+
+    # Iteratively truncate the largest field until we fit
+    for event_idx, field_name, original_length in truncatable_fields:
+        serialized = json.dumps(payload)
+        current_size = len(serialized.encode("utf-8"))
+        if current_size <= max_bytes:
+            break
+
+        # Calculate how much we need to cut
+        excess = current_size - max_bytes
+        body = payload["batch"][event_idx]["body"]
+        current_value = body[field_name]
+        current_len = len(current_value)
+
+        # Target length: cut the excess plus some margin for the truncation marker
+        marker = (
+            f"\n\n... [TRUNCATED - original size: {current_len} chars, "
+            f"limit: {current_len - excess} chars]"
+        )
+        target_len = current_len - excess - len(marker) - MIN_TRUNCATED_FIELD_CHARS
+
+        if target_len < MIN_TRUNCATED_FIELD_CHARS:
+            target_len = MIN_TRUNCATED_FIELD_CHARS
+
+        truncated = current_value[:target_len] + marker
+        body[field_name] = truncated
+
+        log_warning(
+            "langfuse_push",
+            f"Truncated batch field '{field_name}' from {current_len} to {len(truncated)} chars "
+            f"(payload was {current_size} bytes, limit {max_bytes} bytes)",
+            None,
+        )
+
+    # Final check - if still over, do more aggressive truncation
+    serialized = json.dumps(payload)
+    current_size = len(serialized.encode("utf-8"))
+    if current_size > max_bytes:
+        for event_idx, field_name, original_length in truncatable_fields:
+            body = payload["batch"][event_idx]["body"]
+            if not isinstance(body.get(field_name), str):
+                continue
+            current_value = body[field_name]
+            if len(current_value) > AGGRESSIVE_TRUNCATION_CHARS:
+                marker = (
+                    f"\n\n... [TRUNCATED - original size: {original_length} chars, "
+                    f"limit: {AGGRESSIVE_TRUNCATION_CHARS} chars]"
+                )
+                body[field_name] = current_value[:AGGRESSIVE_TRUNCATION_CHARS] + marker
+
+    return payload
 
 
 def push_trace(
@@ -103,6 +211,17 @@ def push_batch_events(
 
         # Wrap batch in required structure
         payload = {"batch": batch}
+
+        # Validate payload size and truncate if necessary
+        serialized_size = len(json.dumps(payload).encode("utf-8"))
+        if serialized_size > MAX_BATCH_PAYLOAD_BYTES:
+            log_warning(
+                "langfuse_push",
+                f"Batch payload size {serialized_size} bytes exceeds limit "
+                f"{MAX_BATCH_PAYLOAD_BYTES} bytes, truncating",
+                None,
+            )
+            payload = _truncate_batch_to_fit(payload, MAX_BATCH_PAYLOAD_BYTES)
 
         # Submit batch
         response = requests.post(

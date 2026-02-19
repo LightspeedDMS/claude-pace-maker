@@ -33,6 +33,56 @@ from ..secrets.sanitizer import sanitize_trace
 # 10 seconds provides adequate time for push while still being non-blocking
 INCREMENTAL_PUSH_TIMEOUT_SECONDS = 10
 
+# Maximum size in characters for individual fields (input, output, text) sent to Langfuse.
+# 100K chars is generous for observability but safely under per-event size limits.
+MAX_FIELD_SIZE_CHARS = 100_000
+
+
+def _truncate_field(value: Any, max_chars: int = MAX_FIELD_SIZE_CHARS) -> Any:
+    """
+    Truncate a field value if it exceeds max_chars.
+
+    Handles str, dict, and list values:
+    - str: Truncated directly with marker appended.
+    - dict/list: Serialized to JSON string, then truncated if oversized.
+      Small dicts/lists are returned unchanged (preserving type).
+    - Other types (int, float, bool, None): Returned unchanged.
+
+    Args:
+        value: The field value to potentially truncate.
+        max_chars: Maximum allowed character length (default: MAX_FIELD_SIZE_CHARS).
+
+    Returns:
+        Original value if under limit, or truncated string with marker.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        if len(value) <= max_chars:
+            return value
+        original_size = len(value)
+        marker = (
+            f"\n\n... [TRUNCATED - original size: {original_size} chars, "
+            f"limit: {max_chars} chars]"
+        )
+        return value[:max_chars] + marker
+
+    if isinstance(value, (dict, list)):
+        serialized = json.dumps(value)
+        if len(serialized) <= max_chars:
+            return value
+        # Serialize and truncate as string
+        original_size = len(serialized)
+        marker = (
+            f"\n\n... [TRUNCATED - original size: {original_size} chars, "
+            f"limit: {max_chars} chars]"
+        )
+        return serialized[:max_chars] + marker
+
+    # int, float, bool, etc. - return unchanged
+    return value
+
 
 def extract_task_tool_prompt(
     transcript_path: str, parent_observation_id: Optional[str] = None
@@ -1115,6 +1165,10 @@ def handle_post_tool_use(
             now = datetime.now(timezone.utc)
 
             # Create a tool span with full metadata (name, input, output)
+            # Truncate large fields to prevent HTTP 413 on Langfuse Cloud (1MB limit)
+            truncated_input = _truncate_field(tool_input)
+            truncated_output = _truncate_field(tool_response)
+
             span_id = f"{current_trace_id}-tool-current-{str(uuid.uuid4())[:8]}"
             span = {
                 "id": span_id,
@@ -1122,8 +1176,8 @@ def handle_post_tool_use(
                 "name": f"Tool - {tool_name}" if tool_name else "Tool Execution",
                 "startTime": now.isoformat(),
                 "endTime": now.isoformat(),
-                "input": tool_input,
-                "output": tool_response,
+                "input": truncated_input,
+                "output": truncated_output,
                 "metadata": {
                     "source": "post_tool_use_hook",
                     "tool": tool_name,
@@ -1318,6 +1372,10 @@ def handle_stop_finalize(
             trace_start_line=trace_start_line,
         )
 
+        # Truncate output to prevent HTTP 413 on Langfuse Cloud (1MB limit)
+        if "output" in trace_update:
+            trace_update["output"] = _truncate_field(trace_update["output"])
+
         # Debug: log output details
         output_content = trace_update.get("output", "")
         output_len = len(output_content)
@@ -1485,6 +1543,9 @@ def handle_subagent_stop(
             if result:
                 subagent_output = result
 
+        # Truncate subagent output to prevent HTTP 413 on Langfuse Cloud (1MB limit)
+        subagent_output = _truncate_field(subagent_output)
+
         # Create trace update with output
         # Using trace-create for upsert semantics (updates existing trace)
         now = datetime.now(timezone.utc)
@@ -1651,6 +1712,9 @@ def handle_subagent_start(
                 f"Could not extract prompt for subagent {subagent_name}, using empty string",
             )
             subagent_prompt = ""
+
+        # Truncate prompt to prevent HTTP 413 on Langfuse Cloud (1MB limit)
+        subagent_prompt = _truncate_field(subagent_prompt)
 
         # Generate unique trace_id for subagent
         # Format: parent-session-id-subagent-name-uuid
