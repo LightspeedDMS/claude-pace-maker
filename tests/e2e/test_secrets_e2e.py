@@ -97,49 +97,57 @@ class TestAC2_ParseFileSecrets:
 
     def test_parse_file_secret(self, temp_db):
         """Test parsing a file secret declaration."""
-        response = """
-        🔐 SECRET_FILE_START
-        -----BEGIN RSA PRIVATE KEY-----
-        MIIEpAIBAAKCAQEA1234567890
-        -----END RSA PRIVATE KEY-----
-        🔐 SECRET_FILE_END
-        """
+        fd, temp_path = tempfile.mkstemp(suffix=".pem")
+        try:
+            content = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA1234567890\n-----END RSA PRIVATE KEY-----"
+            os.write(fd, content.encode())
+            os.close(fd)
 
-        secrets = parse_assistant_response(response, temp_db)
+            response = f"🔐 SECRET_FILE: {temp_path}"
 
-        assert len(secrets) == 1
-        assert secrets[0]["type"] == "file"
-        assert secrets[0]["id"] > 0
+            secrets = parse_assistant_response(response, temp_db)
 
-        # Verify stored in database
-        all_secrets = get_all_secrets(temp_db)
-        assert len(all_secrets) == 1
-        assert "BEGIN RSA PRIVATE KEY" in all_secrets[0]
+            assert len(secrets) == 1
+            assert secrets[0]["type"] == "file"
+            assert secrets[0]["id"] > 0
+
+            # Verify stored in database
+            all_secrets = get_all_secrets(temp_db)
+            assert len(all_secrets) == 1
+            assert "BEGIN RSA PRIVATE KEY" in all_secrets[0]
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     def test_parse_multiple_file_secrets(self, temp_db):
         """Test parsing multiple file secret declarations."""
-        response = """
-        First file:
-        🔐 SECRET_FILE_START
-        content1
-        🔐 SECRET_FILE_END
+        fd1, path1 = tempfile.mkstemp(suffix=".txt")
+        fd2, path2 = tempfile.mkstemp(suffix=".txt")
+        try:
+            os.write(fd1, b"content1")
+            os.close(fd1)
+            os.write(fd2, b"content2")
+            os.close(fd2)
 
-        Second file:
-        🔐 SECRET_FILE_START
-        content2
-        🔐 SECRET_FILE_END
-        """
+            response = f"""
+            First file: 🔐 SECRET_FILE: {path1}
+            Second file: 🔐 SECRET_FILE: {path2}
+            """
 
-        secrets = parse_assistant_response(response, temp_db)
+            secrets = parse_assistant_response(response, temp_db)
 
-        assert len(secrets) == 2
-        assert secrets[0]["type"] == "file"
-        assert secrets[1]["type"] == "file"
+            assert len(secrets) == 2
+            assert secrets[0]["type"] == "file"
+            assert secrets[1]["type"] == "file"
 
-        # Verify stored in database
-        all_secrets = get_all_secrets(temp_db)
-        assert "content1" in all_secrets[0]
-        assert "content2" in all_secrets[1]
+            # Verify stored in database
+            all_secrets = get_all_secrets(temp_db)
+            assert "content1" in all_secrets
+            assert "content2" in all_secrets
+        finally:
+            for p in [path1, path2]:
+                if os.path.exists(p):
+                    os.remove(p)
 
 
 class TestAC3_StoreSecrets:
@@ -344,49 +352,56 @@ class TestEndToEndWorkflow:
         Note: FILE secrets mask the ENTIRE file content as a block, not individual lines.
         TEXT secrets mask each occurrence individually.
         """
-        # Step 1: Assistant declares multiple text secrets
-        assistant_response = """
-        I'll help you configure the API.
+        # Create a temp file for the file secret
+        fd, temp_path = tempfile.mkstemp(suffix=".conf")
+        try:
+            file_content = (
+                "api_key=sk-live-api-key-xyz123\napi_secret=super-secret-password"
+            )
+            os.write(fd, file_content.encode())
+            os.close(fd)
 
-        🔐 SECRET_TEXT: sk-live-api-key-xyz123
-        🔐 SECRET_TEXT: super-secret-password
+            # Step 1: Assistant declares multiple text secrets
+            assistant_response = f"""
+            I'll help you configure the API.
 
-        And here's the config file:
-        🔐 SECRET_FILE_START
-        api_key=sk-live-api-key-xyz123
-        api_secret=super-secret-password
-        🔐 SECRET_FILE_END
-        """
+            🔐 SECRET_TEXT: sk-live-api-key-xyz123
+            🔐 SECRET_TEXT: super-secret-password
 
-        # Step 2: Parse and store secrets
-        parsed = parse_assistant_response(assistant_response, temp_db)
-        assert len(parsed) == 3  # 2 text secrets + 1 file secret
+            And here's the config file:
+            🔐 SECRET_FILE: {temp_path}
+            """
 
-        # Step 3: Verify TEXT secrets are masked individually
-        test_text = (
-            "Connect with key sk-live-api-key-xyz123 and password super-secret-password"
-        )
-        secrets = get_all_secrets(temp_db)
-        masked_text, count = mask_text(test_text, secrets)
+            # Step 2: Parse and store secrets
+            parsed = parse_assistant_response(assistant_response, temp_db)
+            assert len(parsed) == 3  # 2 text secrets + 1 file secret
 
-        assert "sk-live-api-key-xyz123" not in masked_text
-        assert "super-secret-password" not in masked_text
-        assert masked_text.count("*** MASKED ***") == 2
-        assert count == 2
+            # Step 3: Verify TEXT secrets are masked individually
+            test_text = "Connect with key sk-live-api-key-xyz123 and password super-secret-password"
+            secrets = get_all_secrets(temp_db)
+            masked_text, count = mask_text(test_text, secrets)
 
-        # Step 4: Verify Langfuse trace sanitization
-        trace = [
-            {
-                "id": "trace-1",
-                "body": {
-                    "input": "Use API key: sk-live-api-key-xyz123",
-                    "output": "Connected with password: super-secret-password",
-                },
-            }
-        ]
+            assert "sk-live-api-key-xyz123" not in masked_text
+            assert "super-secret-password" not in masked_text
+            assert masked_text.count("*** MASKED ***") == 2
+            assert count == 2
 
-        sanitized = sanitize_trace(trace, temp_db)
+            # Step 4: Verify Langfuse trace sanitization
+            trace = [
+                {
+                    "id": "trace-1",
+                    "body": {
+                        "input": "Use API key: sk-live-api-key-xyz123",
+                        "output": "Connected with password: super-secret-password",
+                    },
+                }
+            ]
 
-        assert "sk-live-api-key-xyz123" not in json.dumps(sanitized)
-        assert "super-secret-password" not in json.dumps(sanitized)
-        assert "*** MASKED ***" in json.dumps(sanitized)
+            sanitized = sanitize_trace(trace, temp_db)
+
+            assert "sk-live-api-key-xyz123" not in json.dumps(sanitized)
+            assert "super-secret-password" not in json.dumps(sanitized)
+            assert "*** MASKED ***" in json.dumps(sanitized)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)

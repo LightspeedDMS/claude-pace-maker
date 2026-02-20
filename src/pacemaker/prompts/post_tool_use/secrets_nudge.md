@@ -4,11 +4,9 @@
 ```
 🔐 SECRET_TEXT: each-secret-value
 ```
-Or for multi-line:
+Or for files you read:
 ```
-🔐 SECRET_FILE_START
-the actual secret contents here
-🔐 SECRET_FILE_END
+🔐 SECRET_FILE: /path/to/sensitive/file
 ```
 
 ⚠️ **Note:** Declaring AFTER reading is a fallback. Next time, declare the FILE PATH BEFORE reading!

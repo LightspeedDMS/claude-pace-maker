@@ -6,9 +6,7 @@
 
 ⚠️ **STOP! BEFORE using Read tool on sensitive files, FIRST declare the file path:**
 ```
-🔐 SECRET_FILE_START
-/full/path/to/sensitive/file
-🔐 SECRET_FILE_END
+🔐 SECRET_FILE: /full/path/to/sensitive/file
 ```
 This registers the file so its contents are automatically masked when you read it.
 

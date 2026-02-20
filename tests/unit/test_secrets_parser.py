@@ -131,58 +131,49 @@ class TestParseTextSecret:
 
 
 class TestParseFileSecret:
-    """Test parsing file secret declarations from responses."""
+    """Test parsing file secret declarations from responses using single-line format."""
 
     def test_parse_single_file_secret(self):
         """Test parsing a single file secret declaration."""
-        response = """
-        🔐 SECRET_FILE_START
-        ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ
-        🔐 SECRET_FILE_END
-        """
+        fd, temp_path = tempfile.mkstemp(suffix=".txt")
+        try:
+            os.write(fd, b"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ")
+            os.close(fd)
 
-        secrets = parse_file_secret(response)
+            response = f"Declaring sensitive file: 🔐 SECRET_FILE: {temp_path}"
 
-        assert len(secrets) == 1
-        assert "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ" in secrets[0]
+            secrets = parse_file_secret(response)
 
-    def test_parse_file_secret_multiline_content(self):
-        """Test parsing file secret with multiple lines."""
-        response = """
-        🔐 SECRET_FILE_START
-        -----BEGIN RSA PRIVATE KEY-----
-        MIIEpAIBAAKCAQEA1234567890abcdef
-        ghijklmnopqrstuvwxyz1234567890
-        -----END RSA PRIVATE KEY-----
-        🔐 SECRET_FILE_END
-        """
-
-        secrets = parse_file_secret(response)
-
-        assert len(secrets) == 1
-        assert "-----BEGIN RSA PRIVATE KEY-----" in secrets[0]
-        assert "MIIEpAIBAAKCAQEA1234567890abcdef" in secrets[0]
-        assert "-----END RSA PRIVATE KEY-----" in secrets[0]
+            assert len(secrets) == 1
+            assert "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ" in secrets[0]
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     def test_parse_multiple_file_secrets(self):
         """Test parsing multiple file secret declarations."""
-        response = """
-        First file:
-        🔐 SECRET_FILE_START
-        content1
-        🔐 SECRET_FILE_END
+        fd1, temp_path1 = tempfile.mkstemp(suffix=".txt")
+        fd2, temp_path2 = tempfile.mkstemp(suffix=".txt")
+        try:
+            os.write(fd1, b"content1")
+            os.close(fd1)
+            os.write(fd2, b"content2")
+            os.close(fd2)
 
-        Second file:
-        🔐 SECRET_FILE_START
-        content2
-        🔐 SECRET_FILE_END
-        """
+            response = f"""
+            First file: 🔐 SECRET_FILE: {temp_path1}
+            Second file: 🔐 SECRET_FILE: {temp_path2}
+            """
 
-        secrets = parse_file_secret(response)
+            secrets = parse_file_secret(response)
 
-        assert len(secrets) == 2
-        assert any("content1" in s for s in secrets)
-        assert any("content2" in s for s in secrets)
+            assert len(secrets) == 2
+            assert any("content1" in s for s in secrets)
+            assert any("content2" in s for s in secrets)
+        finally:
+            for p in [temp_path1, temp_path2]:
+                if os.path.exists(p):
+                    os.remove(p)
 
     def test_parse_no_file_secrets(self):
         """Test parsing response with no file secrets returns empty list."""
@@ -192,54 +183,62 @@ class TestParseFileSecret:
 
         assert secrets == []
 
-    def test_parse_file_secret_preserves_formatting(self):
-        """Test that file secret content preserves indentation and formatting."""
-        response = """
-        🔐 SECRET_FILE_START
-def function():
-    return "indented"
-        🔐 SECRET_FILE_END
-        """
+    def test_parse_file_secret_strips_trailing_whitespace_from_path(self):
+        """Test that trailing whitespace is stripped from the file path."""
+        fd, temp_path = tempfile.mkstemp(suffix=".txt")
+        try:
+            os.write(fd, b"actual-content")
+            os.close(fd)
+
+            # Path has trailing spaces before newline
+            response = f"🔐 SECRET_FILE: {temp_path}   \n"
+
+            secrets = parse_file_secret(response)
+
+            assert len(secrets) == 1
+            assert secrets[0] == "actual-content"
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def test_parse_file_secret_strips_trailing_backticks_from_path(self):
+        """Test that trailing backticks from markdown are stripped from path."""
+        fd, temp_path = tempfile.mkstemp(suffix=".txt")
+        try:
+            os.write(fd, b"content-no-backtick")
+            os.close(fd)
+
+            response = f"🔐 SECRET_FILE: {temp_path}`"
+
+            secrets = parse_file_secret(response)
+
+            assert len(secrets) == 1
+            assert secrets[0] == "content-no-backtick"
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def test_parse_file_secret_inline_literal_fallback(self):
+        """Test that inline literal value (not a file path) is returned as-is."""
+        response = "🔐 SECRET_FILE: some-literal-value-not-a-path"
 
         secrets = parse_file_secret(response)
 
         assert len(secrets) == 1
-        # Content should preserve structure
-        assert "def function():" in secrets[0]
-        assert "return" in secrets[0]
-
-    def test_parse_file_secret_strips_boundary_whitespace(self):
-        """Test that leading/trailing whitespace around content is stripped."""
-        response = """
-        🔐 SECRET_FILE_START
-
-        actual-content
-
-        🔐 SECRET_FILE_END
-        """
-
-        secrets = parse_file_secret(response)
-
-        assert len(secrets) == 1
-        assert secrets[0].strip() == "actual-content"
+        assert secrets[0] == "some-literal-value-not-a-path"
 
 
 class TestParseFileSecretWithFilePaths:
-    """Test parsing file paths in SECRET_FILE_START/END markers."""
+    """Test parsing file paths in single-line SECRET_FILE: markers."""
 
     def test_parse_file_secret_with_absolute_path(self):
         """Test that absolute file paths are detected and contents read."""
-        # Create a temporary file with known content
         fd, temp_path = tempfile.mkstemp(suffix=".txt")
         try:
             os.write(fd, b"secret-from-file-content")
             os.close(fd)
 
-            response = f"""
-            🔐 SECRET_FILE_START
-            {temp_path}
-            🔐 SECRET_FILE_END
-            """
+            response = f"🔐 SECRET_FILE: {temp_path}"
 
             secrets = parse_file_secret(response)
 
@@ -252,7 +251,6 @@ class TestParseFileSecretWithFilePaths:
 
     def test_parse_file_secret_with_tilde_path(self):
         """Test that tilde paths are expanded and contents read."""
-        # Create a temporary file in home directory
         home = os.path.expanduser("~")
         temp_path = os.path.join(home, f".test_secret_{os.getpid()}.tmp")
 
@@ -260,13 +258,8 @@ class TestParseFileSecretWithFilePaths:
             with open(temp_path, "w") as f:
                 f.write("tilde-expanded-secret")
 
-            # Use tilde path in response
             tilde_path = temp_path.replace(home, "~")
-            response = f"""
-            🔐 SECRET_FILE_START
-            {tilde_path}
-            🔐 SECRET_FILE_END
-            """
+            response = f"🔐 SECRET_FILE: {tilde_path}"
 
             secrets = parse_file_secret(response)
 
@@ -285,11 +278,7 @@ class TestParseFileSecretWithFilePaths:
             os.write(fd, multiline_content.encode())
             os.close(fd)
 
-            response = f"""
-            🔐 SECRET_FILE_START
-            {temp_path}
-            🔐 SECRET_FILE_END
-            """
+            response = f"🔐 SECRET_FILE: {temp_path}"
 
             secrets = parse_file_secret(response)
 
@@ -305,54 +294,28 @@ class TestParseFileSecretWithFilePaths:
     def test_parse_file_secret_nonexistent_file_returns_path(self):
         """Test that non-existent file paths return the path itself."""
         nonexistent_path = "/tmp/this-file-does-not-exist-12345.txt"
-        response = f"""
-        🔐 SECRET_FILE_START
-        {nonexistent_path}
-        🔐 SECRET_FILE_END
-        """
+        response = f"🔐 SECRET_FILE: {nonexistent_path}"
 
         secrets = parse_file_secret(response)
 
         assert len(secrets) == 1
         assert secrets[0] == nonexistent_path  # Should return original path
 
-    def test_parse_file_secret_literal_content_not_path(self):
-        """Test that literal content (not a file path) is returned as-is."""
-        response = """
-        🔐 SECRET_FILE_START
-        This is literal content
-        not a file path at all
-        🔐 SECRET_FILE_END
-        """
-
-        secrets = parse_file_secret(response)
-
-        assert len(secrets) == 1
-        assert "This is literal content" in secrets[0]
-        assert "not a file path at all" in secrets[0]
-
     def test_parse_file_secret_permission_denied_returns_path(self):
         """Test that permission denied returns the path itself."""
-        # Create a file and make it unreadable
         fd, temp_path = tempfile.mkstemp(suffix=".txt")
         try:
             os.write(fd, b"content")
             os.close(fd)
             os.chmod(temp_path, 0o000)  # Remove all permissions
 
-            response = f"""
-            🔐 SECRET_FILE_START
-            {temp_path}
-            🔐 SECRET_FILE_END
-            """
+            response = f"🔐 SECRET_FILE: {temp_path}"
 
             secrets = parse_file_secret(response)
 
             assert len(secrets) == 1
-            # Should return the path since file can't be read
             assert temp_path in secrets[0]
         finally:
-            # Restore permissions and cleanup
             os.chmod(temp_path, 0o644)
             if os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -363,17 +326,12 @@ class TestParseFileSecretWithFilePaths:
         try:
             os.close(fd)  # Create empty file
 
-            response = f"""
-            🔐 SECRET_FILE_START
-            {temp_path}
-            🔐 SECRET_FILE_END
-            """
+            response = f"🔐 SECRET_FILE: {temp_path}"
 
             secrets = parse_file_secret(response)
 
             assert len(secrets) == 1
             assert secrets[0] == ""  # Empty file should return empty string
-
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -385,14 +343,8 @@ class TestParseFileSecretWithFilePaths:
             os.write(fd, b"content-with-whitespace-path")
             os.close(fd)
 
-            # Add extra whitespace around the path
-            response = f"""
-            🔐 SECRET_FILE_START
-
-            {temp_path}
-
-            🔐 SECRET_FILE_END
-            """
+            # Add extra whitespace after the path
+            response = f"🔐 SECRET_FILE:   {temp_path}   "
 
             secrets = parse_file_secret(response)
 
@@ -402,45 +354,12 @@ class TestParseFileSecretWithFilePaths:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
-    def test_parse_file_secret_mixed_paths_and_literals(self):
-        """Test parsing response with both file paths and literal content."""
-        fd, temp_path = tempfile.mkstemp(suffix=".txt")
-        try:
-            os.write(fd, b"file-content")
-            os.close(fd)
-
-            response = f"""
-            First is a file:
-            🔐 SECRET_FILE_START
-            {temp_path}
-            🔐 SECRET_FILE_END
-
-            Second is literal:
-            🔐 SECRET_FILE_START
-            literal-secret-value
-            🔐 SECRET_FILE_END
-            """
-
-            secrets = parse_file_secret(response)
-
-            assert len(secrets) == 2
-            assert "file-content" in secrets  # From file
-            assert "literal-secret-value" in secrets  # Literal content
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
     def test_parse_file_secret_generic_exception_returns_path(self):
         """Test that generic exceptions during file reading return the path."""
         from unittest.mock import patch
 
         fake_path = "/tmp/fake-file.txt"
-
-        response = f"""
-        🔐 SECRET_FILE_START
-        {fake_path}
-        🔐 SECRET_FILE_END
-        """
+        response = f"🔐 SECRET_FILE: {fake_path}"
 
         # Mock os.path.exists to return True, but open() to raise IOError
         with patch("os.path.exists", return_value=True):
@@ -448,7 +367,6 @@ class TestParseFileSecretWithFilePaths:
                 secrets = parse_file_secret(response)
 
                 assert len(secrets) == 1
-                # Should return the path since file couldn't be read
                 assert fake_path in secrets[0]
 
 
@@ -461,60 +379,64 @@ class TestParseAssistantResponse:
 
         results = parse_assistant_response(response, temp_db)
 
-        # Should return info about stored secrets
         assert len(results) == 1
         assert results[0]["type"] == "text"
         assert "id" in results[0]
 
-        # Verify actually stored in database
         stored_secrets = list_secrets(temp_db)
         assert len(stored_secrets) == 1
         assert stored_secrets[0]["value"] == "my-api-key-123"
 
     def test_parse_assistant_response_file_secret(self, temp_db):
         """Test that file secrets are parsed and stored in database."""
-        response = """
-        🔐 SECRET_FILE_START
-        ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ
-        🔐 SECRET_FILE_END
-        """
+        fd, temp_path = tempfile.mkstemp(suffix=".txt")
+        try:
+            os.write(fd, b"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ")
+            os.close(fd)
 
-        results = parse_assistant_response(response, temp_db)
+            response = f"Declaring key file: 🔐 SECRET_FILE: {temp_path}"
 
-        assert len(results) == 1
-        assert results[0]["type"] == "file"
+            results = parse_assistant_response(response, temp_db)
 
-        # Verify stored in database
-        stored_secrets = list_secrets(temp_db)
-        assert len(stored_secrets) == 1
-        assert "ssh-rsa" in stored_secrets[0]["value"]
+            assert len(results) == 1
+            assert results[0]["type"] == "file"
+
+            stored_secrets = list_secrets(temp_db)
+            assert len(stored_secrets) == 1
+            assert "ssh-rsa" in stored_secrets[0]["value"]
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     def test_parse_assistant_response_mixed_secrets(self, temp_db):
         """Test parsing response with both text and file secrets."""
-        response = """
-        Text secret: 🔐 SECRET_TEXT: password123
+        fd, temp_path = tempfile.mkstemp(suffix=".txt")
+        try:
+            os.write(fd, b"private-key-content")
+            os.close(fd)
 
-        File secret:
-        🔐 SECRET_FILE_START
-        private-key-content
-        🔐 SECRET_FILE_END
+            response = f"""
+            Text secret: 🔐 SECRET_TEXT: password123
 
-        Another text: 🔐 SECRET_TEXT: token-xyz
-        """
+            File secret: 🔐 SECRET_FILE: {temp_path}
 
-        results = parse_assistant_response(response, temp_db)
+            Another text: 🔐 SECRET_TEXT: token-xyz
+            """
 
-        assert len(results) == 3
+            results = parse_assistant_response(response, temp_db)
 
-        # Verify types
-        text_secrets = [r for r in results if r["type"] == "text"]
-        file_secrets = [r for r in results if r["type"] == "file"]
-        assert len(text_secrets) == 2
-        assert len(file_secrets) == 1
+            assert len(results) == 3
 
-        # Verify all stored
-        stored_secrets = list_secrets(temp_db)
-        assert len(stored_secrets) == 3
+            text_secrets = [r for r in results if r["type"] == "text"]
+            file_secrets = [r for r in results if r["type"] == "file"]
+            assert len(text_secrets) == 2
+            assert len(file_secrets) == 1
+
+            stored_secrets = list_secrets(temp_db)
+            assert len(stored_secrets) == 3
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     def test_parse_assistant_response_no_secrets(self, temp_db):
         """Test parsing response with no secrets returns empty list."""
@@ -524,7 +446,6 @@ class TestParseAssistantResponse:
 
         assert results == []
 
-        # Verify nothing stored
         stored_secrets = list_secrets(temp_db)
         assert stored_secrets == []
 
@@ -537,13 +458,9 @@ class TestParseAssistantResponse:
 
         results = parse_assistant_response(response, temp_db)
 
-        # Both parse attempts should return results
         assert len(results) == 2
-
-        # But both should have the same ID (deduplication)
         assert results[0]["id"] == results[1]["id"]
 
-        # Only one secret should be stored in database
         stored_secrets = list_secrets(temp_db)
         assert len(stored_secrets) == 1
         assert stored_secrets[0]["value"] == "same-value"
