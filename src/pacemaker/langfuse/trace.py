@@ -159,10 +159,12 @@ def finalize_trace_with_output(
     token_usage = incremental_data.get("token_usage", {})
 
     # Create trace-update event with output and token counts
+    now = datetime.now(timezone.utc)
     trace_update = {
         "id": trace_id,
         "output": output,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now.isoformat(),
+        "endTime": now.isoformat(),
         "metadata": {
             "input_tokens": token_usage.get("input_tokens", 0),
             "output_tokens": token_usage.get("output_tokens", 0),

@@ -1495,6 +1495,7 @@ def handle_subagent_stop(
     parent_transcript_path: Optional[str],
     agent_id: Optional[str] = None,
     agent_transcript_path: Optional[str] = None,
+    last_assistant_message: Optional[str] = None,
 ) -> bool:
     """
     Finalize subagent trace with output when SubagentStop fires.
@@ -1506,12 +1507,16 @@ def handle_subagent_stop(
     FALLBACK: If agent_transcript_path is None, falls back to extracting Task
     tool result from parent transcript (backward compatibility).
 
+    FINAL FALLBACK: If both transcript extractions fail, uses last_assistant_message
+    from hook data (provided by Claude Code in SubagentStop event).
+
     Args:
         config: Configuration dict with Langfuse credentials
         subagent_trace_id: Subagent trace ID to finalize
         parent_transcript_path: Path to parent transcript (used for fallback)
         agent_id: Optional agent ID to filter Task results (for fallback)
         agent_transcript_path: Optional path to subagent's own transcript (NEW)
+        last_assistant_message: Optional last assistant message from hook data (final fallback)
 
     Returns:
         True on success, False on failure or disabled
@@ -1542,6 +1547,10 @@ def handle_subagent_stop(
             result = extract_task_tool_result(parent_transcript_path, agent_id=agent_id)
             if result:
                 subagent_output = result
+
+        # FINAL FALLBACK: Use last_assistant_message from hook data if transcript extraction failed
+        if not subagent_output and last_assistant_message:
+            subagent_output = last_assistant_message
 
         # Truncate subagent output to prevent HTTP 413 on Langfuse Cloud (1MB limit)
         subagent_output = _truncate_field(subagent_output)

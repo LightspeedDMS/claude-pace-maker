@@ -570,6 +570,11 @@ def run_subagent_stop_hook():
                 hook_data.get("agent_transcript_path") if hook_data else None
             )
 
+            # Extract last_assistant_message from hook_data (fallback for output)
+            last_assistant_message = (
+                hook_data.get("last_assistant_message") if hook_data else None
+            )
+
             # Finalize subagent trace with output
             # Pass agent_transcript_path to read from subagent's own transcript
             # Pass agent_id to correctly correlate output when multiple subagents run (fallback)
@@ -579,6 +584,7 @@ def run_subagent_stop_hook():
                 parent_transcript_path=parent_transcript_path,
                 agent_id=hook_agent_id,
                 agent_transcript_path=agent_transcript_path,
+                last_assistant_message=last_assistant_message,
             )
             log_info(
                 "hook",

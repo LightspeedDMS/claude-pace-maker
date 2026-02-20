@@ -291,6 +291,105 @@ class TestHandleSubagentStop:
             event = batch[0]
             assert event["body"]["output"] == ""
 
+    def test_handle_subagent_stop_uses_last_assistant_message_as_fallback(
+        self, tmp_path
+    ):
+        """
+        Test handle_subagent_stop uses last_assistant_message when transcript extraction fails.
+
+        Given Langfuse is enabled
+        And both transcript paths fail to yield output
+        And last_assistant_message is provided
+        When handle_subagent_stop is called
+        Then it should use last_assistant_message as the trace output
+        """
+        config = {
+            "langfuse_enabled": True,
+            "langfuse_base_url": "https://langfuse.example.com",
+            "langfuse_public_key": "pk-test",
+            "langfuse_secret_key": "sk-test",
+        }
+
+        # No transcript paths provided - both extraction methods will fail
+        with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
+            mock_push_module.push_batch_events = MagicMock(return_value=(True, 1))
+
+            from pacemaker.langfuse.orchestrator import handle_subagent_stop
+
+            result = handle_subagent_stop(
+                config=config,
+                subagent_trace_id="subagent-trace-456",
+                parent_transcript_path=None,
+                agent_id=None,
+                agent_transcript_path=None,
+                last_assistant_message="Subagent completed the task successfully.",
+            )
+
+            assert result is True
+
+            mock_push_module.push_batch_events.assert_called_once()
+            args, _ = mock_push_module.push_batch_events.call_args
+            batch = args[3]
+
+            event = batch[0]
+            assert event["type"] == "trace-create"
+            assert event["body"]["id"] == "subagent-trace-456"
+            assert (
+                event["body"]["output"] == "Subagent completed the task successfully."
+            )
+
+    def test_handle_subagent_stop_prefers_transcript_over_last_assistant_message(
+        self, tmp_path
+    ):
+        """
+        Test handle_subagent_stop prefers transcript extraction over last_assistant_message.
+
+        Given agent_transcript_path yields output
+        And last_assistant_message is also provided
+        When handle_subagent_stop is called
+        Then it should use transcript output, NOT last_assistant_message
+        """
+        config = {
+            "langfuse_enabled": True,
+            "langfuse_base_url": "https://langfuse.example.com",
+            "langfuse_public_key": "pk-test",
+            "langfuse_secret_key": "sk-test",
+        }
+
+        # Create a subagent transcript with output
+        agent_transcript = tmp_path / "agent.jsonl"
+        subagent_entry = {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Output from transcript."}],
+            },
+        }
+        with open(agent_transcript, "w") as f:
+            f.write(json.dumps(subagent_entry) + "\n")
+
+        with patch("pacemaker.langfuse.orchestrator.push") as mock_push_module:
+            mock_push_module.push_batch_events = MagicMock(return_value=(True, 1))
+
+            from pacemaker.langfuse.orchestrator import handle_subagent_stop
+
+            result = handle_subagent_stop(
+                config=config,
+                subagent_trace_id="subagent-trace-789",
+                parent_transcript_path=None,
+                agent_id=None,
+                agent_transcript_path=str(agent_transcript),
+                last_assistant_message="This should NOT be used.",
+            )
+
+            assert result is True
+
+            args, _ = mock_push_module.push_batch_events.call_args
+            batch = args[3]
+            event = batch[0]
+            # Transcript output should win over last_assistant_message
+            assert event["body"]["output"] != "This should NOT be used."
+
     def test_handle_subagent_stop_with_timeout(self, tmp_path):
         """
         Test handle_subagent_stop uses 2-second timeout for push.

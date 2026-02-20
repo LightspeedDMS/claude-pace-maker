@@ -270,6 +270,39 @@ class TestTraceFinalizeWithOutput:
         finally:
             Path(transcript_path).unlink()
 
+    def test_finalize_trace_includes_end_time(self):
+        """
+        Test that trace finalization includes endTime field for latency calculation.
+
+        Langfuse uses endTime to compute trace latency/duration.
+        Both timestamp and endTime should be present and equal.
+        """
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "Hello"}]},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Hi there!"}],
+            },
+        ]
+        transcript_path = self.create_test_transcript(messages)
+
+        try:
+            trace_update = finalize_trace_with_output(
+                trace_id="test-trace-endtime",
+                transcript_path=transcript_path,
+                trace_start_line=0,
+            )
+
+            # endTime must be present for Langfuse latency calculation
+            assert "endTime" in trace_update
+            # timestamp must also be present
+            assert "timestamp" in trace_update
+            # Both should be identical ISO 8601 timestamps
+            assert trace_update["endTime"] == trace_update["timestamp"]
+
+        finally:
+            Path(transcript_path).unlink()
+
     def test_finalize_trace_includes_token_counts(self):
         """
         Test that trace finalization includes token counts in metadata.
