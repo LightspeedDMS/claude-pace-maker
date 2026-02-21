@@ -521,11 +521,16 @@ def create_generation(
         "total": total,
     }
 
-    # Add cache tokens as separate fields matching Langfuse pricing keys
+    # usageDetails carries extended token types for Langfuse cost calculation
+    # Langfuse drops unknown keys from "usage" but prices from "usageDetails"
+    usage_details: Dict[str, int] = {
+        "input": input_tokens,
+        "output": output_tokens,
+    }
     if cache_read > 0:
-        usage["cache_read_input_tokens"] = cache_read
+        usage_details["cache_read_input_tokens"] = cache_read
     if cache_creation > 0:
-        usage["cache_creation_input_tokens"] = cache_creation
+        usage_details["cache_creation_input_tokens"] = cache_creation
 
     generation = {
         "id": f"{trace_id}-gen-{str(uuid.uuid4())[:8]}",  # Unique ID for generation
@@ -534,6 +539,7 @@ def create_generation(
         "name": "claude-code-generation",
         "model": model,
         "usage": usage,
+        "usageDetails": usage_details,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

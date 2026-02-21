@@ -678,7 +678,7 @@ class TestGenerationCreation:
 
         # Cache tokens with Langfuse field names
         if incremental_data["token_usage"]["cache_read_tokens"] > 0:
-            assert generation["usage"]["cache_read_input_tokens"] == 10
+            assert generation["usageDetails"]["cache_read_input_tokens"] == 10
 
         # Model on generation
         assert generation["model"] == "claude-sonnet-4-5"
@@ -738,7 +738,7 @@ class TestGenerationCreation:
         assert gen2["usage"]["input"] == 80
         assert gen2["usage"]["output"] == 40
         assert gen2["usage"]["total"] == 128  # 80 + 40 + 8 cache_read
-        assert gen2["usage"]["cache_read_input_tokens"] == 8
+        assert gen2["usageDetails"]["cache_read_input_tokens"] == 8
 
     def test_generation_has_unique_id(self):
         """Test that generation has unique ID separate from trace."""
@@ -808,10 +808,10 @@ class TestGenerationCreation:
         assert generation["usage"]["output"] == 150
 
         # Cache read sent as separate field with Langfuse field name
-        assert generation["usage"]["cache_read_input_tokens"] == 73000
+        assert generation["usageDetails"]["cache_read_input_tokens"] == 73000
 
         # Cache creation sent as separate field with Langfuse field name
-        assert generation["usage"]["cache_creation_input_tokens"] == 15000
+        assert generation["usageDetails"]["cache_creation_input_tokens"] == 15000
 
     def test_generation_total_includes_all_tokens(self):
         """
@@ -849,8 +849,8 @@ class TestGenerationCreation:
         # Verify components are sent as separate fields
         assert generation["usage"]["input"] == 2  # Just input_tokens
         assert generation["usage"]["output"] == 200
-        assert generation["usage"]["cache_read_input_tokens"] == 75000
-        assert generation["usage"]["cache_creation_input_tokens"] == 500
+        assert generation["usageDetails"]["cache_read_input_tokens"] == 75000
+        assert generation["usageDetails"]["cache_creation_input_tokens"] == 500
 
 
 class TestBatchEventStructure:
@@ -902,8 +902,8 @@ class TestBatchEventStructure:
         assert "usage" in generation["body"]
         assert generation["body"]["usage"]["input"] == 100  # Just input_tokens
         assert generation["body"]["usage"]["output"] == 50
-        assert generation["body"]["usage"]["cache_read_input_tokens"] == 10
-        assert generation["body"]["usage"]["cache_creation_input_tokens"] == 500
+        assert generation["body"]["usageDetails"]["cache_read_input_tokens"] == 10
+        assert generation["body"]["usageDetails"]["cache_creation_input_tokens"] == 500
         assert generation["body"]["usage"]["total"] == 660  # 100 + 50 + 10 + 500
 
     def test_create_batch_event_incremental_push(self):

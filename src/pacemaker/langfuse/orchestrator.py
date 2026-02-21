@@ -1429,10 +1429,18 @@ def handle_stop_finalize(
                 + accumulated_cache
                 + accumulated_cache_creation,
             }
+            # usageDetails carries extended token types for Langfuse cost calculation
+            # Langfuse drops unknown keys from "usage" but prices from "usageDetails"
+            gen_usage_details: Dict[str, int] = {
+                "input": accumulated_input,
+                "output": accumulated_output,
+            }
             if accumulated_cache > 0:
-                gen_usage["cache_read_input_tokens"] = accumulated_cache
+                gen_usage_details["cache_read_input_tokens"] = accumulated_cache
             if accumulated_cache_creation > 0:
-                gen_usage["cache_creation_input_tokens"] = accumulated_cache_creation
+                gen_usage_details["cache_creation_input_tokens"] = (
+                    accumulated_cache_creation
+                )
 
             model_name = jsonl_parser.parse_session_metadata(transcript_path).get(
                 "model", "claude-opus-4-6"
@@ -1444,6 +1452,7 @@ def handle_stop_finalize(
                 "name": "claude-code-generation",
                 "model": model_name,
                 "usage": gen_usage,
+                "usageDetails": gen_usage_details,
                 "startTime": now,
             }
 
@@ -1596,10 +1605,17 @@ def handle_subagent_stop(
                     "output": gen_output,
                     "total": gen_input + gen_output + gen_cache + gen_cache_creation,
                 }
+                # usageDetails carries extended token types for Langfuse cost calculation
+                gen_usage_details: Dict[str, int] = {
+                    "input": gen_input,
+                    "output": gen_output,
+                }
                 if gen_cache > 0:
-                    gen_usage["cache_read_input_tokens"] = gen_cache
+                    gen_usage_details["cache_read_input_tokens"] = gen_cache
                 if gen_cache_creation > 0:
-                    gen_usage["cache_creation_input_tokens"] = gen_cache_creation
+                    gen_usage_details["cache_creation_input_tokens"] = (
+                        gen_cache_creation
+                    )
 
                 model_name = jsonl_parser.parse_session_metadata(
                     agent_transcript_path
@@ -1611,6 +1627,7 @@ def handle_subagent_stop(
                     "name": "claude-code-generation",
                     "model": model_name,
                     "usage": gen_usage,
+                    "usageDetails": gen_usage_details,
                     "startTime": now.isoformat(),
                 }
 
