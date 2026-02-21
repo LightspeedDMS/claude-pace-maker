@@ -320,8 +320,8 @@ class TestParseFileSecretWithFilePaths:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
-    def test_parse_file_secret_empty_file_returns_empty_string(self):
-        """Test that an empty file returns empty string."""
+    def test_parse_file_secret_empty_file_returns_nothing(self):
+        """Test that an empty file produces no secrets (skipped)."""
         fd, temp_path = tempfile.mkstemp(suffix=".txt")
         try:
             os.close(fd)  # Create empty file
@@ -330,8 +330,7 @@ class TestParseFileSecretWithFilePaths:
 
             secrets = parse_file_secret(response)
 
-            assert len(secrets) == 1
-            assert secrets[0] == ""  # Empty file should return empty string
+            assert len(secrets) == 0  # Empty file should be skipped entirely
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)

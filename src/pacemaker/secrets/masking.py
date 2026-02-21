@@ -24,8 +24,9 @@ def _build_secrets_pattern(secrets: List[str]) -> Optional[re.Pattern]:
     if not secrets:
         return None
 
-    # Escape special regex chars and filter empty strings
-    escaped = [re.escape(s) for s in secrets if s]
+    # Escape special regex chars, filter empty strings, sort longest first
+    # Longest-first ordering ensures longer secrets match before their substrings
+    escaped = sorted([re.escape(s) for s in secrets if s], key=len, reverse=True)
     if not escaped:
         return None
 
@@ -58,12 +59,8 @@ def mask_text(
     if pattern is None:
         return content, 0
 
-    # Count occurrences before replacement
-    matches = pattern.findall(content)
-    mask_count = len(matches)
-
-    # Replace all matches with mask placeholder
-    masked = pattern.sub("*** MASKED ***", content)
+    # Replace all matches and count in single pass
+    masked, mask_count = pattern.subn("*** MASKED ***", content)
 
     return masked, mask_count
 

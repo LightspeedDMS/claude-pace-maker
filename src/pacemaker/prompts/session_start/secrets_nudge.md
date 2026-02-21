@@ -8,7 +8,7 @@
 ```
 🔐 SECRET_FILE: /full/path/to/sensitive/file
 ```
-This registers the file so its contents are automatically masked when you read it.
+This registers the file so its contents are masked in subsequent Langfuse trace pushes.
 
 **WRONG workflow:** Read file → then declare (TOO LATE - contents already leaked!)
 **CORRECT workflow:** Declare file path → THEN read file (contents masked)

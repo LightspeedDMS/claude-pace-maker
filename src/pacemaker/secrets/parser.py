@@ -76,7 +76,8 @@ def parse_file_secret(response: str) -> List[str]:
                 if os.path.exists(expanded_path):
                     with open(expanded_path, "r") as f:
                         file_content = f.read()
-                    results.append(file_content)
+                    if file_content:  # Skip empty files
+                        results.append(file_content)
                 else:
                     logger.warning(
                         f"File path in SECRET_FILE does not exist: {expanded_path}"

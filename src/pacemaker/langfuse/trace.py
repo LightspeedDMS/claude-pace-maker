@@ -169,6 +169,7 @@ def finalize_trace_with_output(
             "input_tokens": token_usage.get("input_tokens", 0),
             "output_tokens": token_usage.get("output_tokens", 0),
             "cache_read_tokens": token_usage.get("cache_read_tokens", 0),
+            "cache_creation_tokens": token_usage.get("cache_creation_tokens", 0),
         },
     }
 

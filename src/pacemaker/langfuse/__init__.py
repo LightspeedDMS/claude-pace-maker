@@ -2,11 +2,6 @@
 """
 Langfuse integration package for Claude Code telemetry.
 
-Provides functionality to transform session data into Langfuse traces
-and push them to Langfuse API.
+Provides trace creation, span management, and batch push to Langfuse API.
+All orchestration is handled via the orchestrator module's handler functions.
 """
-
-from .transformer import create_trace
-from .push import push_trace
-
-__all__ = ["create_trace", "push_trace"]

@@ -333,14 +333,46 @@ class TestDatabaseIndex:
 class TestDeduplicateSecrets:
     """Test deduplication of existing duplicate secrets."""
 
+    def _create_legacy_db(self, db_path):
+        """Create a legacy database schema WITHOUT the UNIQUE constraint.
+
+        This simulates a database created before the dedup migration was added,
+        allowing tests to insert duplicate rows for testing deduplication.
+        """
+        from src.pacemaker.secrets.database import _initialized_dbs
+
+        # Remove from cache so _init_database will run migration on next call
+        _initialized_dbs.discard(db_path)
+
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS secrets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            )
+        """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_secrets_type ON secrets(type)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS secrets_metrics (
+                bucket_timestamp INTEGER PRIMARY KEY,
+                secrets_masked_count INTEGER DEFAULT 0
+            )
+        """
+        )
+        conn.commit()
+        conn.close()
+
     def test_deduplicate_secrets_removes_duplicates(self, temp_db):
         """Test that deduplicate_secrets removes duplicate entries."""
-        # Manually insert duplicates by bypassing create_secret
+        # Create legacy schema WITHOUT unique constraint
+        self._create_legacy_db(temp_db)
+
         conn = sqlite3.connect(temp_db)
-        from src.pacemaker.secrets.database import _init_database
-
-        _init_database(temp_db)
-
         conn.execute(
             "INSERT INTO secrets (type, value) VALUES (?, ?)", ("text", "duplicate")
         )
@@ -356,10 +388,11 @@ class TestDeduplicateSecrets:
         conn.commit()
         conn.close()
 
-        removed = deduplicate_secrets(temp_db)
+        deduplicate_secrets(temp_db)
 
-        assert removed == 2  # 3 duplicates - 1 kept = 2 removed
-
+        # deduplicate_secrets calls _init_database which now auto-deduplicates
+        # The explicit deduplicate_secrets DELETE should find 0 remaining dupes
+        # because _init_database already cleaned them up
         secrets = list_secrets(temp_db)
         assert len(secrets) == 2  # One duplicate + one unique
         duplicate_secrets = [s for s in secrets if s["value"] == "duplicate"]
@@ -367,12 +400,10 @@ class TestDeduplicateSecrets:
 
     def test_deduplicate_secrets_keeps_lowest_id(self, temp_db):
         """Test that deduplicate_secrets keeps the entry with lowest ID."""
-        # Manually insert duplicates
+        # Create legacy schema WITHOUT unique constraint
+        self._create_legacy_db(temp_db)
+
         conn = sqlite3.connect(temp_db)
-        from src.pacemaker.secrets.database import _init_database
-
-        _init_database(temp_db)
-
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO secrets (type, value) VALUES (?, ?)", ("text", "dup")
@@ -395,12 +426,10 @@ class TestDeduplicateSecrets:
 
     def test_deduplicate_secrets_respects_type(self, temp_db):
         """Test that same value with different types are not deduplicated."""
-        # Manually insert same value with different types
+        # Create legacy schema WITHOUT unique constraint
+        self._create_legacy_db(temp_db)
+
         conn = sqlite3.connect(temp_db)
-        from src.pacemaker.secrets.database import _init_database
-
-        _init_database(temp_db)
-
         conn.execute(
             "INSERT INTO secrets (type, value) VALUES (?, ?)", ("text", "same")
         )
@@ -416,9 +445,7 @@ class TestDeduplicateSecrets:
         conn.commit()
         conn.close()
 
-        removed = deduplicate_secrets(temp_db)
-
-        assert removed == 2  # 1 text duplicate + 1 file duplicate
+        deduplicate_secrets(temp_db)
 
         secrets = list_secrets(temp_db)
         assert len(secrets) == 2  # One text + one file

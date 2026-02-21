@@ -5,6 +5,6 @@
 🔐 SECRET_FILE: /full/path/to/the/sensitive/file
 ```
 
-**WHY:** Once you read the file, its contents go to Langfuse. Declaring the path FIRST lets the system read and register the contents so they're masked.
+**WHY:** Declaring the path FIRST lets the system register the file contents so they're masked before the next Langfuse trace push.
 
 **DO NOT** read first then declare the value - that's TOO LATE!
