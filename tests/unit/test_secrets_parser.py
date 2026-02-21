@@ -129,6 +129,29 @@ class TestParseTextSecret:
         assert len(secrets) == 1
         assert secrets[0] == "pass`word*123"
 
+    def test_parse_text_secret_rejects_email_addresses(self):
+        """Test that email addresses are rejected — they are identity fields, not secrets."""
+        response = "🔐 SECRET_TEXT: user@example.com"
+
+        secrets = parse_text_secret(response)
+
+        assert len(secrets) == 0
+
+    def test_parse_text_secret_rejects_email_among_real_secrets(self):
+        """Test that emails are filtered but real secrets are kept."""
+        response = (
+            "🔐 SECRET_TEXT: sk-ant-api03-real-secret\n"
+            "🔐 SECRET_TEXT: seba.battig@lightspeeddms.com\n"
+            "🔐 SECRET_TEXT: another-real-key-123"
+        )
+
+        secrets = parse_text_secret(response)
+
+        assert len(secrets) == 2
+        assert "sk-ant-api03-real-secret" in secrets
+        assert "another-real-key-123" in secrets
+        assert "seba.battig@lightspeeddms.com" not in secrets
+
 
 class TestParseFileSecret:
     """Test parsing file secret declarations from responses using single-line format."""

@@ -236,3 +236,34 @@ class TestSanitizeTrace:
         # Should return identical copy (no masking)
         assert sanitized == trace
         assert sanitized is not trace
+
+    def test_sanitize_trace_preserves_userid_in_batch_events(self, temp_db):
+        """Test that userId is NEVER masked, even if it matches a stored secret.
+
+        userId is the Langfuse trace identity field (user's email).
+        Masking it breaks Langfuse user attribution. This is a regression test.
+        """
+        # Store the user's email as a secret (simulating the bug)
+        create_secret(temp_db, "text", "user@example.com")
+
+        # Simulate a Langfuse batch: list of events with body containing userId
+        batch = [
+            {
+                "id": "event-1",
+                "type": "trace-create",
+                "body": {
+                    "id": "trace-123",
+                    "userId": "user@example.com",
+                    "input": "The key is user@example.com in the config",
+                    "name": "User prompt: hello",
+                },
+            }
+        ]
+
+        sanitized = sanitize_trace(batch, temp_db)
+
+        # userId MUST be preserved (never masked)
+        assert sanitized[0]["body"]["userId"] == "user@example.com"
+        # But other fields containing the email SHOULD be masked
+        assert "user@example.com" not in sanitized[0]["body"]["input"]
+        assert "*** MASKED ***" in sanitized[0]["body"]["input"]

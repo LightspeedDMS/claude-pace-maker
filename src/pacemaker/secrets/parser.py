@@ -17,6 +17,18 @@ from .database import create_secret
 
 logger = logging.getLogger(__name__)
 
+# Email pattern — emails are identity fields (e.g., Langfuse userId), never secrets
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _is_rejected_value(value: str) -> bool:
+    """Check if a value should be rejected from the secrets database.
+
+    Rejects values that are identity fields (not secrets), such as email addresses.
+    Email addresses are used as Langfuse userId and must never be masked.
+    """
+    return bool(_EMAIL_PATTERN.match(value))
+
 
 def parse_text_secret(response: str) -> List[str]:
     """
@@ -38,8 +50,12 @@ def parse_text_secret(response: str) -> List[str]:
     cleaned = []
     for match in matches:
         value = match.strip().rstrip("`*_")  # Remove trailing markdown chars
-        if value:  # Only add non-empty values
-            cleaned.append(value)
+        if not value:
+            continue
+        if _is_rejected_value(value):
+            logger.debug(f"Rejected identity value from secrets: {value[:10]}...")
+            continue
+        cleaned.append(value)
     return cleaned
 
 
