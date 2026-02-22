@@ -48,7 +48,18 @@ Core paths: src/, lib/, core/, source/, libraries/, kernel/
 
 If NOT in core path → Skip this check, respond: YES
 
-STEP 3: If IN core path AND NOT excluded → Check if TDD declaration or TDD skip permission exists:
+STEP 3: If IN core path AND NOT excluded:
+
+STEP 3a: Check if change is VERSION BUMP ONLY:
+If the intent declaration describes ONLY bumping/changing a version number or version string
+(e.g., VERSION = "1.15.0" → "1.16.0", updating __version__, semver bump), skip TDD check → respond: YES
+
+Version bump indicators (any of these):
+  - Intent mentions "bump version", "version bump", "update version", "bump to v..."
+  - Change is limited to a version string/number modification
+  - No functional code changes beyond the version update
+
+STEP 3b: Check if TDD declaration or TDD skip permission exists:
 
 TDD DECLARATION - Look for test coverage statement:
   ✓ "Test coverage: tests/test_auth.py::test_validate_token()"

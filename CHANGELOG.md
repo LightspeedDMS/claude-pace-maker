@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.17.0] - 2026-02-22
+
+### Added
+- **Version bump TDD bypass**: Stage 1 validation now skips TDD enforcement for version-bump-only changes to core path files, avoiding unnecessary test declarations for trivial version string updates
+
 ## [1.11.0] - 2026-02-11
 
 ### Fixed
