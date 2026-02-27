@@ -41,7 +41,8 @@ Each symbol has an EXACT value format. The parser uses regex — invalid formats
 
 ## When to Emit
 
-- **Once per user prompt** — emit as the FIRST line of your FIRST response after the user's message
+- **Once per human user prompt** — emit as the FIRST line of your FIRST response after the user's message
 - **Do NOT repeat** — never emit again in subsequent tool-use follow-up messages within the same turn
+- **Do NOT emit for non-human prompts** — NEVER emit § lines when responding to background task completions, subagent results, system notifications, or any auto-generated nudge. Only human-typed messages qualify.
 - **Partial OK** — omit fields you're unsure about
 - **Skip if no signal** — don't guess

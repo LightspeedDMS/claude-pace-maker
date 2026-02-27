@@ -1012,6 +1012,7 @@ def run_user_prompt_submit():
         state = load_state(DEFAULT_STATE_PATH)
         state["subagent_counter"] = 0
         state["in_subagent"] = False
+        state["silent_tool_nudge_count"] = 0
 
         # Only update last_user_interaction_time for actual prompts to Claude
         # NOT for pace-maker commands (which are just checking status/settings)
@@ -1062,7 +1063,8 @@ def run_user_prompt_submit():
             "§ intel: Start your FIRST response to this user prompt with § intel line. "
             "Emit ONCE only — do NOT repeat in subsequent tool-use messages within this turn. "
             "EXACT format: § △0.0-1.0 ◎surg|const|outc|expl ■bug|feat|refac|research|test|docs|debug|conf|other ◇0.0-1.0 ↻1-9 "
-            "(△◇ = decimals NOT words, ◎■ = codes NOT synonyms)"
+            "(△◇ = decimals NOT words, ◎■ = codes NOT synonyms). "
+            "NEVER emit § for background task completions, subagent results, or system notifications — ONLY for human-typed prompts."
         )
         output = {
             "hookSpecificOutput": {
@@ -1583,13 +1585,7 @@ def run_stop_hook():
         # NOTE: Trace finalization now handled by handle_stop_finalize above
         # No need for separate run_langfuse_push - span-based architecture handles everything
 
-        # NOW check tempo - if disabled, allow exit after Langfuse is handled
-        if not should_run_tempo(config, state):
-            log_debug("hook", "Tempo disabled - allow exit")
-            return {"continue": True}  # Tempo disabled - allow exit
-
-        # Debug log
-        log_debug("hook", "=== INTENT VALIDATION (Refactored) ===")
+        # Check transcript exists — needed for both silent-stop and intent validation
         log_debug("hook", f"Session ID: {session_id}")
         log_debug("hook", f"Transcript path: {transcript_path}")
 
@@ -1597,12 +1593,65 @@ def run_stop_hook():
             log_debug("hook", "No transcript - allow exit")
             return {"continue": True}
 
-        # CRITICAL: Check for context exhaustion BEFORE SDK validation
+        # CRITICAL: Check for context exhaustion BEFORE any blocking logic.
         # If conversation hit "Prompt is too long" error, compaction failed
-        # and Claude cannot respond - must allow graceful exit
+        # and Claude cannot respond - must allow graceful exit.
         if is_context_exhaustion_detected(transcript_path):
             log_debug("hook", "Allowing graceful exit due to context exhaustion")
             return {"continue": True}
+
+        # Silent tool stop detection — runs independently of tempo gate.
+        # When Claude stops immediately after a tool use without producing text,
+        # nudge it to continue rather than letting the session stall.
+        from .transcript_reader import detect_silent_tool_stop
+
+        if detect_silent_tool_stop(transcript_path):
+            nudge_count = state.get("silent_tool_nudge_count", 0)
+            max_nudges = config.get("max_silent_tool_nudges", 3)
+            log_debug(
+                "hook",
+                f"Silent tool stop detected. nudge_count={nudge_count}, max_nudges={max_nudges}",
+            )
+
+            if nudge_count < max_nudges:
+                # Load continuation nudge prompt
+                try:
+                    from .prompt_loader import PromptLoader
+
+                    loader = PromptLoader()
+                    nudge_message = loader.load_prompt(
+                        "continuation_nudge.md", subfolder="stop"
+                    )
+                except Exception as e:
+                    log_warning("hook", "Failed to load continuation nudge prompt", e)
+                    nudge_message = (
+                        "You stopped after a tool use without providing text output. "
+                        "Please continue your work."
+                    )
+
+                # Increment counter and save state
+                state["silent_tool_nudge_count"] = nudge_count + 1
+                save_state(state, DEFAULT_STATE_PATH)
+
+                log_debug(
+                    "hook",
+                    f"Blocking silent stop (nudge {nudge_count + 1}/{max_nudges})",
+                )
+                return {"decision": "block", "reason": nudge_message}
+            else:
+                # Max nudges reached — reset counter and allow exit
+                state["silent_tool_nudge_count"] = 0
+                save_state(state, DEFAULT_STATE_PATH)
+                log_debug("hook", "Max silent tool nudges reached - allowing exit")
+                return {"continue": True}
+
+        # NOW check tempo - if disabled, allow exit after silent-stop check
+        if not should_run_tempo(config, state):
+            log_debug("hook", "Tempo disabled - allow exit")
+            return {"continue": True}  # Tempo disabled - allow exit
+
+        # Debug log
+        log_debug("hook", "=== INTENT VALIDATION (Refactored) ===")
 
         # Use intent validator to check if work is complete
         from . import intent_validator

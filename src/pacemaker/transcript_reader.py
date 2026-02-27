@@ -417,6 +417,83 @@ def build_stop_hook_context(
         }
 
 
+def detect_silent_tool_stop(transcript_path: str) -> bool:
+    """
+    Detect if Claude stopped silently after a tool use without producing text output.
+
+    Reads the last ~32KB of the transcript, walks backward through JSONL lines,
+    skips progress entries and malformed JSON, and checks if the LAST non-progress
+    entry is a user message containing at least one tool_result content block.
+
+    This directly answers: "Did Claude receive a tool result but stop without
+    responding?" Claude Code writes text, tool_use, and thinking as SEPARATE JSONL
+    entries per turn, so checking the last assistant entry's content blocks is
+    unreliable (stale entries from previous turns are found). Checking for a
+    trailing user:tool_result entry is reliable because Claude always responds
+    after receiving tool results when functioning normally.
+
+    Args:
+        transcript_path: Path to JSONL transcript file
+
+    Returns:
+        True if last non-progress entry is a user message with tool_result content
+        (silent stop detected), False otherwise (Claude responded, no tool results,
+        empty/missing file)
+    """
+    try:
+        with open(transcript_path, "rb") as f:
+            f.seek(0, 2)
+            file_size = f.tell()
+
+            if file_size == 0:
+                return False
+
+            read_size = min(32000, file_size)
+            f.seek(file_size - read_size)
+            content = f.read().decode("utf-8", errors="ignore")
+
+        lines = [line.strip() for line in content.split("\n") if line.strip()]
+
+        if not lines:
+            return False
+
+        # Walk backward, skip progress entries and malformed JSON.
+        # Stop at the first valid non-progress entry and evaluate it.
+        for line in reversed(lines):
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            # Skip progress entries (by top-level type or message role)
+            if entry.get("type") == "progress":
+                continue
+            if entry.get("message", {}).get("role") == "progress":
+                continue
+
+            # This is the last meaningful entry - check if it is user:tool_result
+            message = entry.get("message", {})
+            if message.get("role") != "user":
+                return False
+
+            content_blocks = message.get("content", [])
+            if not isinstance(content_blocks, list):
+                return False
+
+            has_tool_result = any(
+                isinstance(block, dict) and block.get("type") == "tool_result"
+                for block in content_blocks
+            )
+            return has_tool_result
+
+        # No valid non-progress entries found
+        return False
+
+    except Exception as e:
+        log_warning("transcript_reader", "Failed to detect silent tool stop", e)
+        return False
+
+
 def format_stop_hook_context(context: dict) -> str:
     """
     Format the context dict into a string for the stop hook prompt.
