@@ -1,1 +1,1 @@
-💡 Consider using the Task tool to delegate work to specialized subagents (per your guidelines)
+💡 Consider using the Agent tool to delegate work to specialized subagents (per your guidelines)

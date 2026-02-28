@@ -37,6 +37,9 @@ INCREMENTAL_PUSH_TIMEOUT_SECONDS = 10
 # 100K chars is generous for observability but safely under per-event size limits.
 MAX_FIELD_SIZE_CHARS = 100_000
 
+# Tool names used to invoke subagents (Claude Code renamed "Task" -> "Agent" in 2.x+)
+SUBAGENT_TOOL_NAMES = {"Task", "Agent"}
+
 
 def _truncate_field(value: Any, max_chars: int = MAX_FIELD_SIZE_CHARS) -> Any:
     """
@@ -125,10 +128,10 @@ def extract_task_tool_prompt(
                         if not isinstance(content_item, dict):
                             continue
 
-                        # Check if this is a Task tool call
+                        # Check if this is a Task or Agent tool call
                         if (
                             content_item.get("type") == "tool_use"
-                            and content_item.get("name") == "Task"
+                            and content_item.get("name") in SUBAGENT_TOOL_NAMES
                         ):
                             # Extract prompt from tool input
                             tool_input = content_item.get("input", {})
@@ -291,8 +294,11 @@ def _find_task_results(
                     if content_item.get("type") == "tool_result":
                         tool_use_id = content_item.get("tool_use_id")
 
-                        # Check if this result is for a Task tool
-                        if tool_use_id and tool_id_to_name.get(tool_use_id) == "Task":
+                        # Check if this result is for a Task or Agent tool
+                        if (
+                            tool_use_id
+                            and tool_id_to_name.get(tool_use_id) in SUBAGENT_TOOL_NAMES
+                        ):
                             result_content = _normalize_tool_result_content(
                                 content_item.get("content")
                             )

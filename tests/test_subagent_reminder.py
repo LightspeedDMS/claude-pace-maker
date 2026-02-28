@@ -471,7 +471,7 @@ class TestReminderInjection:
         result = hook.inject_subagent_reminder(config)
 
         # Verify default message used
-        assert "Task tool" in result
+        assert "Agent tool" in result
 
     def test_inject_subagent_reminder_loads_from_external_file(self, tmp_path):
         """inject_subagent_reminder loads message from external prompt file first."""

@@ -191,7 +191,7 @@ def get_model_preference_nudge(
     lines.append(f"⚠️  MANDATORY MODEL PREFERENCE: {preferred_model.upper()}")
     lines.append("")
     lines.append(
-        f'   You MUST use model: "{preferred_model}" for ALL Task tool subagent calls.'
+        f'   You MUST use model: "{preferred_model}" for ALL Agent tool subagent calls.'
     )
     lines.append("")
     lines.append("   WHY: This is for QUOTA BALANCING, not capability.")
@@ -708,7 +708,7 @@ def inject_subagent_reminder(config: dict) -> Optional[str]:
         # Fallback to config or hardcoded message
         message = config.get(
             "subagent_reminder_message",
-            "💡 Consider using the Task tool to delegate work to specialized subagents (per your guidelines)",
+            "💡 Consider using the Agent tool to delegate work to specialized subagents (per your guidelines)",
         )
 
     # Append model preference nudge if configured (without usage stats for brevity)
