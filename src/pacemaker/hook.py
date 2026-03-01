@@ -945,7 +945,12 @@ def parse_user_prompt_input(raw_input: str) -> dict:
         hook_data = json.loads(raw_input)
         session_id = hook_data.get("session_id", f"sess-{int(time.time())}")
         prompt = hook_data.get("prompt", "")
-        return {"session_id": session_id, "prompt": prompt}
+        transcript_path = hook_data.get("transcript_path")
+        return {
+            "session_id": session_id,
+            "prompt": prompt,
+            "transcript_path": transcript_path,
+        }
     except json.JSONDecodeError:
         # Fallback to plain text - generate session ID
         return {
@@ -956,10 +961,14 @@ def parse_user_prompt_input(raw_input: str) -> dict:
 
 def get_transcript_path(session_id: str) -> Optional[str]:
     """
-    Derive transcript path from session_id and current working directory.
+    Derive transcript path from session_id and project directory.
 
     Claude Code stores transcripts at:
-    ~/.claude/projects/<cwd-with-slashes-replaced-by-dashes>/<session_id>.jsonl
+    ~/.claude/projects/<dir-with-slashes-replaced-by-dashes>/<session_id>.jsonl
+
+    Tries in order:
+    1. CLAUDE_PROJECT_DIR env var (most reliable, set by Claude Code)
+    2. Current working directory (fallback, may be a subdirectory)
 
     Args:
         session_id: Session UUID from hook data
@@ -967,21 +976,29 @@ def get_transcript_path(session_id: str) -> Optional[str]:
     Returns:
         Path to transcript file, or None if not found
     """
-    # Get current working directory
+    candidates = []
+
+    # Try CLAUDE_PROJECT_DIR first (set by Claude Code, points to project root)
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    if project_dir:
+        dir_name = project_dir.replace("/", "-")
+        candidates.append(
+            os.path.expanduser(f"~/.claude/projects/{dir_name}/{session_id}.jsonl")
+        )
+
+    # Fall back to CWD (may be a subdirectory of the project)
     cwd = os.getcwd()
-
-    # Convert to project directory name (replace / with -)
-    # /home/jsbattig/Dev/code-indexer -> -home-jsbattig-Dev-code-indexer
-    project_dir_name = cwd.replace("/", "-")
-
-    # Build transcript path
-    transcript_path = os.path.expanduser(
-        f"~/.claude/projects/{project_dir_name}/{session_id}.jsonl"
+    cwd_dir_name = cwd.replace("/", "-")
+    cwd_path = os.path.expanduser(
+        f"~/.claude/projects/{cwd_dir_name}/{session_id}.jsonl"
     )
+    if cwd_path not in candidates:
+        candidates.append(cwd_path)
 
-    # Return only if file exists
-    if os.path.exists(transcript_path):
-        return transcript_path
+    # Return first existing path
+    for path in candidates:
+        if os.path.exists(path):
+            return path
     return None
 
 
@@ -1027,8 +1044,10 @@ def run_user_prompt_submit():
             try:
                 from .langfuse import orchestrator
 
-                # Derive transcript path from session_id (Claude Code doesn't send it)
-                transcript_path = get_transcript_path(session_id)
+                # Use transcript_path from hook data, fall back to derived
+                transcript_path = parsed_data.get(
+                    "transcript_path"
+                ) or get_transcript_path(session_id)
 
                 if transcript_path:
                     config = load_config(DEFAULT_CONFIG_PATH)
@@ -1561,8 +1580,10 @@ def run_stop_hook():
         hook_data = json.loads(raw_input)
         session_id = hook_data.get("session_id")
 
-        # Derive transcript path from session_id (Claude Code doesn't send it)
-        transcript_path = get_transcript_path(session_id) if session_id else None
+        # Use transcript_path from hook_data (Claude Code provides it), fall back to derived
+        transcript_path = hook_data.get("transcript_path") or (
+            get_transcript_path(session_id) if session_id else None
+        )
 
         # Finalize current trace with Claude's output (ALWAYS runs, regardless of tempo)
         # This adds the output field to the trace before final push
@@ -1747,8 +1768,10 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         file_path = tool_input.get("file_path")
         session_id = hook_data.get("session_id")
 
-        # Derive transcript path from session_id (Claude Code doesn't send it)
-        transcript_path = get_transcript_path(session_id) if session_id else None
+        # Use transcript_path from hook_data (Claude Code provides it), fall back to derived
+        transcript_path = hook_data.get("transcript_path") or (
+            get_transcript_path(session_id) if session_id else None
+        )
 
         log_debug("hook", f"session_id: {session_id}")
         log_debug("hook", f"transcript_path: {transcript_path}")

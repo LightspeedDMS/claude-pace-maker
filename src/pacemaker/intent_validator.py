@@ -12,6 +12,7 @@ This module validates if Claude completed the user's original request by:
 
 import os
 import asyncio
+import contextlib
 from typing import Any, Dict, List
 
 from .transcript_reader import (
@@ -20,6 +21,26 @@ from .transcript_reader import (
 )
 from .constants import DEFAULT_CONFIG
 from .logger import log_warning, log_debug
+
+
+@contextlib.contextmanager
+def _clean_sdk_env():
+    """Temporarily remove env vars that prevent SDK subprocess from starting.
+
+    Claude Code sets CLAUDECODE=1 in the environment. The Claude Agent SDK copies
+    os.environ to the subprocess it spawns. If CLAUDECODE is present, the subprocess
+    CLI detects a nested session and refuses to start (exit code 1).
+
+    This context manager strips CLAUDECODE before SDK calls and restores it after.
+    """
+    removed = {}
+    for key in ("CLAUDECODE",):
+        if key in os.environ:
+            removed[key] = os.environ.pop(key)
+    try:
+        yield
+    finally:
+        os.environ.update(removed)
 
 
 def get_config(key: str) -> Any:
@@ -217,14 +238,15 @@ async def _fresh_sdk_call(prompt: str, model: str) -> str:
     # SDK may throw exception after returning result (e.g., on usage limit)
     # Capture the response before any exception
     try:
-        async for message in fresh_query(prompt=prompt, options=options):
-            log_debug(
-                "intent_validator",
-                f"_fresh_sdk_call: Got message type={type(message).__name__}",
-            )
-            if isinstance(message, FreshResult):
-                if hasattr(message, "result") and message.result:
-                    response_text = message.result.strip()
+        with _clean_sdk_env():
+            async for message in fresh_query(prompt=prompt, options=options):
+                log_debug(
+                    "intent_validator",
+                    f"_fresh_sdk_call: Got message type={type(message).__name__}",
+                )
+                if isinstance(message, FreshResult):
+                    if hasattr(message, "result") and message.result:
+                        response_text = message.result.strip()
     except Exception:
         # Exception after getting response is OK - we have what we need
         import traceback
@@ -425,10 +447,11 @@ async def _call_sdk_intent_validation_async(prompt: str) -> str:
 
     response_text = ""
     try:
-        async for message in fresh_query(prompt=prompt, options=options):
-            if isinstance(message, FreshResult):
-                if hasattr(message, "result") and message.result:
-                    response_text = message.result.strip()
+        with _clean_sdk_env():
+            async for message in fresh_query(prompt=prompt, options=options):
+                if isinstance(message, FreshResult):
+                    if hasattr(message, "result") and message.result:
+                        response_text = message.result.strip()
     except Exception as e:
         log_warning("intent_validator", "SDK intent validation call failed", e)
 
@@ -600,10 +623,11 @@ async def _call_stage1_validation_async(prompt: str) -> str:
 
     response_text = ""
     try:
-        async for message in fresh_query(prompt=prompt, options=options):
-            if isinstance(message, FreshResult):
-                if hasattr(message, "result") and message.result:
-                    response_text = message.result.strip()
+        with _clean_sdk_env():
+            async for message in fresh_query(prompt=prompt, options=options):
+                if isinstance(message, FreshResult):
+                    if hasattr(message, "result") and message.result:
+                        response_text = message.result.strip()
     except Exception as e:
         log_warning("intent_validator", "Stage 1 validation call failed", e)
 
@@ -977,10 +1001,11 @@ async def _call_unified_validation_async(prompt: str) -> str:
 
     response_text = ""
     try:
-        async for message in fresh_query(prompt=prompt, options=options):
-            if isinstance(message, FreshResult):
-                if hasattr(message, "result") and message.result:
-                    response_text = message.result.strip()
+        with _clean_sdk_env():
+            async for message in fresh_query(prompt=prompt, options=options):
+                if isinstance(message, FreshResult):
+                    if hasattr(message, "result") and message.result:
+                        response_text = message.result.strip()
     except Exception as e:
         log_warning("intent_validator", "Unified validation SDK call failed", e)
 
@@ -1004,10 +1029,11 @@ async def _call_unified_validation_async(prompt: str) -> str:
 
         response_text = ""
         try:
-            async for message in fresh_query(prompt=prompt, options=options_sonnet):
-                if isinstance(message, FreshResult):
-                    if hasattr(message, "result") and message.result:
-                        response_text = message.result.strip()
+            with _clean_sdk_env():
+                async for message in fresh_query(prompt=prompt, options=options_sonnet):
+                    if isinstance(message, FreshResult):
+                        if hasattr(message, "result") and message.result:
+                            response_text = message.result.strip()
         except Exception as e:
             log_warning(
                 "intent_validator", "Unified validation fallback to Sonnet failed", e
