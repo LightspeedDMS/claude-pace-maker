@@ -53,6 +53,20 @@ If Claude's LAST MESSAGE contains detailed analysis of bugs/problems BUT does no
 
 **RULE**: If Claude identifies critical issues in the LAST MESSAGE but doesn't claim to have fixed them → BLOCKED
 
+CRITICAL - "UNRECOVERABLE LOOP" DETECTION:
+
+If Claude's RECENT messages show a pattern of repeated failures with no forward progress:
+- Repeated "Prompt is too long" errors (context window exhausted, no recovery possible)
+- The same tool call failing repeatedly with identical errors (3+ times)
+- Claude attempting the same action over and over with the same result
+- Any pattern where Claude is stuck in a cycle and cannot make progress
+- Repeated delegation attempts (Agent tool) that all fail with the same error
+
+These are UNRECOVERABLE conditions. Claude cannot fix them by continuing — blocking will only extend the loop and waste resources. The work remains incomplete, but forcing Claude to continue will not change that.
+
+**RULE**: If recent messages show a stuck loop or repeated identical failures → APPROVED
+(Allow stoppage immediately. The user needs to intervene — e.g., /compact, model change, or fresh session.)
+
 YOUR JOB:
 
 Check if Claude's RECENT messages indicate a reasonable stopping point. You are NOT verifying ALL work was done - just checking if there's obvious unfinished work in what you CAN see.
