@@ -56,3 +56,103 @@ def test_build_intent_declaration_prompt_uses_external_template():
     # Verify template structure present
     assert "intent" in prompt.lower()
     assert "declared" in prompt.lower()
+
+
+# --- Tests for validate_intent_declared fail-open behavior ---
+
+
+def test_validate_intent_declaration_fails_open_on_empty_response():
+    """Infrastructure failure (empty response) must fail-open: intent_found=True."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_declared
+
+    with (
+        patch(
+            "pacemaker.intent_validator._call_sdk_intent_validation", return_value=""
+        ),
+        patch(
+            "pacemaker.intent_validator._build_intent_declaration_prompt",
+            return_value="dummy prompt",
+        ),
+    ):
+        result = validate_intent_declared(["some message"], "src/foo.py", "Write")
+
+    assert result["intent_found"] is True
+
+
+def test_validate_intent_declaration_fails_open_on_exception():
+    """Exception from SDK must fail-open: intent_found=True."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_declared
+
+    with (
+        patch(
+            "pacemaker.intent_validator._call_sdk_intent_validation",
+            side_effect=Exception("Connection refused"),
+        ),
+        patch(
+            "pacemaker.intent_validator._build_intent_declaration_prompt",
+            return_value="dummy prompt",
+        ),
+    ):
+        result = validate_intent_declared(["some message"], "src/foo.py", "Write")
+
+    assert result["intent_found"] is True
+
+
+def test_validate_intent_declaration_blocks_on_explicit_no():
+    """Explicit NO from LLM must block: intent_found=False."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_declared
+
+    with (
+        patch(
+            "pacemaker.intent_validator._call_sdk_intent_validation", return_value="NO"
+        ),
+        patch(
+            "pacemaker.intent_validator._build_intent_declaration_prompt",
+            return_value="dummy prompt",
+        ),
+    ):
+        result = validate_intent_declared(["some message"], "src/foo.py", "Write")
+
+    assert result["intent_found"] is False
+
+
+def test_validate_intent_declaration_passes_on_yes():
+    """YES from LLM must pass: intent_found=True."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_declared
+
+    with (
+        patch(
+            "pacemaker.intent_validator._call_sdk_intent_validation", return_value="YES"
+        ),
+        patch(
+            "pacemaker.intent_validator._build_intent_declaration_prompt",
+            return_value="dummy prompt",
+        ),
+    ):
+        result = validate_intent_declared(["some message"], "src/foo.py", "Write")
+
+    assert result["intent_found"] is True
+
+
+def test_validate_intent_declaration_blocks_on_unexpected_response():
+    """Unexpected non-empty response must block: intent_found=False."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_declared
+
+    with (
+        patch(
+            "pacemaker.intent_validator._call_sdk_intent_validation",
+            return_value="MAYBE",
+        ),
+        patch(
+            "pacemaker.intent_validator._build_intent_declaration_prompt",
+            return_value="dummy prompt",
+        ),
+    ):
+        result = validate_intent_declared(["some message"], "src/foo.py", "Write")
+
+    assert result["intent_found"] is False

@@ -15,7 +15,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "base_delay": 5,
     "max_delay": 350,
     "threshold_percent": 0,
-    "poll_interval": 60,
+    "poll_interval": 300,
     "safety_buffer_pct": 95.0,
     "preload_hours": 12.0,
     "api_timeout_seconds": 10,

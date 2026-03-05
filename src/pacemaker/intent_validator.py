@@ -500,17 +500,31 @@ def validate_intent_declared(
         response = _call_sdk_intent_validation(prompt)
 
         # Parse YES/NO response (case-insensitive)
-        response_upper = response.strip().upper()
+        response_stripped = response.strip()
+
+        # Empty response = infrastructure failure (API down, auth error, rate limit)
+        # Fail-open: don't block writes due to infrastructure issues
+        if not response_stripped:
+            log_warning(
+                "intent_validator",
+                "SDK returned empty response (infrastructure failure), failing open",
+            )
+            return {"intent_found": True}
+
+        response_upper = response_stripped.upper()
 
         if response_upper == "YES":
             return {"intent_found": True}
         else:
-            # NO or any other response = no intent found
+            # NO or any other non-empty response = no intent found
             return {"intent_found": False}
 
     except Exception as e:
-        log_warning("intent_validator", "Intent declaration validation failed", e)
-        return {"intent_found": False}
+        # Exception = infrastructure failure — fail-open
+        log_warning(
+            "intent_validator", "Intent declaration validation failed (failing open)", e
+        )
+        return {"intent_found": True}
 
 
 def extract_current_assistant_message(messages: List[str]) -> str:
