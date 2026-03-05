@@ -10,6 +10,8 @@ Handles:
 """
 
 import json
+import os
+import time
 import requests
 from datetime import datetime
 from typing import Optional, Dict
@@ -135,6 +137,18 @@ def fetch_usage(access_token: str, timeout: int = 10) -> Optional[Dict]:
 
         # Parse JSON response
         data = response.json()
+
+        # Cache raw response for shared access
+        try:
+            _cache_path = Path.home() / ".claude-pace-maker" / "usage_cache.json"
+            _cache_path.parent.mkdir(parents=True, exist_ok=True)
+            _tmp_path = _cache_path.with_suffix(f".json.tmp.{os.getpid()}")
+            _tmp_path.write_text(
+                json.dumps({"timestamp": time.time(), "response": data})
+            )
+            _tmp_path.rename(_cache_path)
+        except Exception as e:
+            log_warning("api_client", "Failed to cache usage response", e)
 
         # Parse into normalized format
         return parse_usage_response(data)
