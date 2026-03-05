@@ -1,0 +1,5 @@
+{
+  "name": "claude-pace-maker",
+  "version": "1.0.0",
+  "description": "Usage observability, adaptive pacing, and Langfuse telemetry for Claude Code"
+}
