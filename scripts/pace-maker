@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # pace-maker CLI wrapper for plugin installation.
-# Sets PYTHONPATH relative to the plugin root so the pacemaker module
-# is found regardless of where the plugin is installed.
-SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-export PYTHONPATH="${SCRIPT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+# Resolves symlinks so PYTHONPATH points to the real plugin root,
+# not the symlink location (~/.local/bin).
+REAL_SCRIPT="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
+PLUGIN_ROOT="$(cd "$(dirname "$REAL_SCRIPT")/.." && pwd)"
+export PYTHONPATH="${PLUGIN_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 exec python3 -m pacemaker.user_commands "$@"
