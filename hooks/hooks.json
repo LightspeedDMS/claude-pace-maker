@@ -3,12 +3,12 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "*",
+        "matcher": "Write|Edit",
         "hooks": [
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh pre_tool_use",
-            "timeout": 30
+            "timeout": 60
           }
         ]
       }
@@ -20,7 +20,7 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh post_tool_use",
-            "timeout": 30
+            "timeout": 360
           }
         ]
       }
@@ -31,8 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh user_prompt_submit",
-            "timeout": 30
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh user_prompt_submit"
           }
         ]
       }
@@ -44,7 +43,7 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh session_start",
-            "timeout": 15
+            "timeout": 10
           }
         ]
       }
@@ -56,7 +55,7 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh stop",
-            "timeout": 30
+            "timeout": 120
           }
         ]
       }

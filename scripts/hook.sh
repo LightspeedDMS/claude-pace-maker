@@ -36,8 +36,6 @@ find_python() {
     echo "python3"
 }
 
-PYTHON_CMD=$(find_python)
-
 # Resolve plugin root (CLAUDE_PLUGIN_ROOT is set by Claude Code for plugins)
 # Fall back to script's own location for direct testing
 if [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
@@ -46,8 +44,31 @@ else
     PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 fi
 
-# Set PYTHONPATH to include the plugin's source tree
-export PYTHONPATH="$PLUGIN_ROOT/src:$PYTHONPATH"
+# Determine which Python to use and how to invoke pacemaker
+INSTALL_MARKER="$PACEMAKER_DIR/install_source"
+
+if [ -f "$INSTALL_MARKER" ]; then
+    SOURCE_DIR=$(cat "$INSTALL_MARKER")
+
+    # Check if this is a pipx installation (has pipx in path)
+    if [[ "$SOURCE_DIR" == *"pipx"* ]]; then
+        # Pipx installation - Python is in venv/bin
+        VENV_PYTHON=$(echo "$SOURCE_DIR" | sed 's|/share/claude-pace-maker|/bin/python3|')
+        if [ -x "$VENV_PYTHON" ]; then
+            PYTHON_CMD="$VENV_PYTHON"
+        else
+            PYTHON_CMD=$(find_python)
+        fi
+    else
+        # Development installation - use PYTHONPATH
+        PYTHON_CMD=$(find_python)
+        export PYTHONPATH="$SOURCE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+    fi
+else
+    # No marker - use plugin source tree
+    PYTHON_CMD=$(find_python)
+    export PYTHONPATH="$PLUGIN_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+fi
 
 # Run the hook
 $PYTHON_CMD -m pacemaker.hook "$HOOK_TYPE" 2>> "$PACEMAKER_DIR/hook_debug.log"
