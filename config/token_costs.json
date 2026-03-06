@@ -1,0 +1,6 @@
+{
+  "5x": {"coefficient_5h": 0.0075, "coefficient_7d": 0.0011},
+  "20x": {"coefficient_5h": 0.0014, "coefficient_7d": 0.0002},
+  "generated_date": "2026-03-05",
+  "source": "regression tool v1"
+}

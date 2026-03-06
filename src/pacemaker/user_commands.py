@@ -493,7 +493,11 @@ def _count_recent_errors(hours: int = 24, log_dir: Optional[str] = None) -> int:
         return 0
 
 
-def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str, Any]:
+def _execute_status(
+    config_path: str,
+    db_path: Optional[str] = None,
+    fallback_state_path: Optional[str] = None,
+) -> Dict[str, Any]:
     """Display current pace maker status."""
     try:
         # Import here to avoid circular dependency
@@ -667,13 +671,26 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
         if db_path and os.path.exists(db_path):
             usage_data = _get_latest_usage(db_path)
 
+        # Check fallback mode state
+        from . import fallback as fallback_mod
+        from .fallback import DEFAULT_FALLBACK_STATE_PATH
+
+        _fallback_path = fallback_state_path or DEFAULT_FALLBACK_STATE_PATH
+        _fallback_state = fallback_mod.load_fallback_state(_fallback_path)
+        _in_fallback = _fallback_state.get("state") in ("fallback", "trueup")
+
         if usage_data:
             status_text += "\n\nCurrent Usage:"
+
+            # Show fallback warning when API is unavailable
+            if _in_fallback:
+                status_text += f"\n  {ANSI_YELLOW}⚠ API unavailable - using estimated pacing{ANSI_RESET}"
+
+            _est_suffix = " [est]" if _in_fallback else ""
+
             if usage_data.get("five_hour_util") is not None:
                 # API already returns as percentage (10.0 = 10%)
-                status_text += (
-                    f"\n  5-hour window: {usage_data['five_hour_util']:.1f}% used"
-                )
+                status_text += f"\n  5-hour window: {usage_data['five_hour_util']:.1f}%{_est_suffix} used"
                 if usage_data.get("five_hour_resets_at"):
                     status_text += f"\n  Resets at: {usage_data['five_hour_resets_at']}"
 
@@ -681,9 +698,7 @@ def _execute_status(config_path: str, db_path: Optional[str] = None) -> Dict[str
             seven_day_util = usage_data.get("seven_day_util")
             if seven_day_util is not None and seven_day_util > 0:
                 # API already returns as percentage
-                status_text += (
-                    f"\n  7-day window: {usage_data['seven_day_util']:.1f}% used"
-                )
+                status_text += f"\n  7-day window: {usage_data['seven_day_util']:.1f}%{_est_suffix} used"
                 if usage_data.get("seven_day_resets_at"):
                     status_text += f"\n  Resets at: {usage_data['seven_day_resets_at']}"
 
