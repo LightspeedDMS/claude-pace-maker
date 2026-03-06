@@ -1043,6 +1043,27 @@ EOF
 
 # Main installation flow
 main() {
+  # Plugin mode: when CLAUDE_PLUGIN_ROOT is set, the plugin system handles
+  # hook registration via hooks/hooks.json. Skip all settings.json manipulation.
+  if [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
+    echo "Plugin mode detected (CLAUDE_PLUGIN_ROOT is set)."
+    echo "Skipping hook registration - plugin system manages hooks via hooks/hooks.json."
+    echo ""
+    check_dependencies
+    install_python_deps
+    mkdir -p "$PACEMAKER_DIR"
+    create_config
+    init_database
+    echo ""
+    echo -e "${GREEN}Plugin mode installation completed successfully!${NC}"
+    echo ""
+    echo "Configuration: $PACEMAKER_DIR/config.json"
+    echo "Database: $PACEMAKER_DIR/usage.db"
+    echo ""
+    echo "Hooks are registered via hooks/hooks.json (plugin system)."
+    return 0
+  fi
+
   check_dependencies
   install_python_deps
   create_directories

@@ -22,20 +22,157 @@ Intelligent credit consumption throttling and code quality enforcement for Claud
 
 ## Installation
 
-**Option 1: pipx (recommended)**
+### Option 1: Claude Code Plugin (recommended)
+
+Install pace-maker as a Claude Code plugin via a marketplace for automatic hook registration and updates.
+
+**Prerequisites**: A marketplace repo that includes pace-maker (see [Setting Up a Marketplace](#setting-up-a-marketplace) below).
+
+```bash
+# One-time: add your organization's marketplace
+claude plugin marketplace add https://github.com/YourOrg/claude-plugins.git
+
+# Install pace-maker
+claude plugin install claude-pace-maker@claude-plugins
+```
+
+That's it. The first Claude Code session after installation automatically bootstraps:
+- `~/.claude-pace-maker/config.json` with production defaults
+- `~/.claude-pace-maker/source_code_extensions.json` for validation
+- `~/.local/bin/pace-maker` CLI symlink (if `~/.local/bin` is in PATH)
+
+No `install.sh` or manual `settings.json` editing required.
+
+### Option 2: pipx
 
 ```bash
 pipx install git+https://github.com/LightspeedDMS/claude-pace-maker.git
 claude-pace-maker
 ```
 
-**Option 2: From source**
+### Option 3: From source
 
 ```bash
 git clone https://github.com/LightspeedDMS/claude-pace-maker.git
 cd claude-pace-maker
 ./install.sh
 ```
+
+---
+
+## Setting Up a Marketplace
+
+To distribute pace-maker across your organization, add it as a submodule in a Claude Code marketplace repository.
+
+### 1. Create a marketplace repo
+
+```bash
+mkdir claude-plugins && cd claude-plugins
+git init
+mkdir -p .claude-plugin
+```
+
+### 2. Add the marketplace manifest
+
+Create `.claude-plugin/marketplace.json`:
+
+```json
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "your-org-plugins",
+  "description": "Internal Claude Code plugins for YourOrg",
+  "plugins": [
+    {
+      "name": "claude-pace-maker",
+      "description": "Usage observability, adaptive pacing, and Langfuse telemetry for Claude Code",
+      "category": "productivity",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/LightspeedDMS/claude-pace-maker.git"
+      },
+      "homepage": "https://github.com/LightspeedDMS/claude-pace-maker"
+    }
+  ]
+}
+```
+
+### 3. (Optional) Add as a git submodule
+
+If you prefer vendoring the plugin source instead of referencing the URL:
+
+```bash
+git submodule add https://github.com/LightspeedDMS/claude-pace-maker.git plugins/claude-pace-maker
+```
+
+Then update `marketplace.json` to use a local source:
+
+```json
+{
+  "name": "claude-pace-maker",
+  "source": "./plugins/claude-pace-maker"
+}
+```
+
+### 4. Push and distribute
+
+```bash
+git add -A && git commit -m "Add claude-pace-maker plugin"
+git remote add origin https://github.com/YourOrg/claude-plugins.git
+git push -u origin main
+```
+
+Users install with:
+
+```bash
+claude plugin marketplace add https://github.com/YourOrg/claude-plugins.git
+claude plugin install claude-pace-maker@your-org-plugins
+```
+
+### Plugin Directory Structure
+
+When installed as a plugin, pace-maker uses this structure:
+
+```
+claude-pace-maker/                    (repo root = plugin root)
+  .claude-plugin/
+    plugin.json                       (metadata: name, description, author, version)
+  hooks/
+    hooks.json                        (7 hook definitions using ${CLAUDE_PLUGIN_ROOT})
+  scripts/
+    hook.sh                           (unified entry point, lazy-init, Python dispatch)
+    pace-maker                        (CLI wrapper script, symlink target)
+  config/
+    config.defaults.json              (default config.json template)
+    source_code_extensions.json       (file extensions for validation)
+  src/pacemaker/                      (Python source code)
+```
+
+The `${CLAUDE_PLUGIN_ROOT}` variable is set by Claude Code at runtime, pointing to the plugin's installation directory. All hook commands reference this variable for portability.
+
+---
+
+## Migrating from Legacy Installation
+
+If you previously installed pace-maker via `install.sh` and want to switch to plugin mode:
+
+```bash
+# 1. Install the plugin via marketplace (see above)
+
+# 2. Run the migration script to remove legacy hooks from settings.json
+cd /path/to/claude-pace-maker
+bash migrate-to-plugin.sh
+
+# 3. Verify: settings.json should no longer contain pace-maker hook entries
+cat ~/.claude/settings.json | jq '.hooks'
+```
+
+The migration script:
+- Removes all pace-maker hook entries from `~/.claude/settings.json`
+- Deletes legacy hook scripts from `~/.claude/hooks/` (pre-tool-use.sh, post-tool-use.sh, etc.)
+- Removes the `~/.claude/hooks/pacemaker/` directory
+- Preserves all non-pace-maker hooks intact
+
+Your `~/.claude-pace-maker/config.json` and database are preserved — no reconfiguration needed.
 
 ## CLI Commands
 

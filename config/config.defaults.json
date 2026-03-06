@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "log_level": 2,
+  "langfuse_enabled": false,
+  "intent_validation_enabled": true,
+  "tdd_enabled": true,
+  "tempo_mode": "auto",
+  "five_hour_limit_enabled": true,
+  "weekly_limit_enabled": false
+}

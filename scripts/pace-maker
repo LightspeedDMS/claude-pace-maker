@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# pace-maker CLI wrapper for plugin installation.
+# Sets PYTHONPATH relative to the plugin root so the pacemaker module
+# is found regardless of where the plugin is installed.
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+export PYTHONPATH="${SCRIPT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+exec python3 -m pacemaker.user_commands "$@"
