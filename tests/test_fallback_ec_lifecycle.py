@@ -229,3 +229,4 @@ class TestFullLifecycleIntegration:
         assert state["baseline_5h"] == 60.0
         assert state["baseline_7d"] == 40.0
         assert state["accumulated_cost"] == 0.0
+        assert state["last_accumulated_usage"] is None

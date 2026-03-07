@@ -265,8 +265,8 @@ class TestConcurrentLockSkip:
             [_make_assistant_entry("claude-sonnet-4-6", 1_000_000, 0)],
         )
 
-        lock_path = Path.home() / ".claude-pace-maker" / "fallback_accumulate.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Lock path must match production code: derived from state file's parent dir
+        lock_path = tmp_path / "fallback_accumulate.lock"
 
         # Hold the lock before calling _accumulate_fallback_cost
         lock_fd = open(lock_path, "w")

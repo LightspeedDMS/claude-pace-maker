@@ -1258,12 +1258,20 @@ def _accumulate_fallback_cost(
         import fcntl
         from . import fallback as _fallback
 
+        # Fast path: avoid lock acquisition overhead when fallback is not active.
+        # If fallback exits between here and the lock, accumulate_cost() will
+        # detect NORMAL state and no-op safely.
         if not _fallback.is_fallback_active(fallback_state_path):
             return
 
         # Per-project file lock: if another parallel tool call is already
         # accumulating, skip this invocation entirely (LOCK_NB = non-blocking).
-        lock_path = Path.home() / ".claude-pace-maker" / "fallback_accumulate.lock"
+        state_dir = (
+            Path(fallback_state_path).parent
+            if fallback_state_path
+            else Path.home() / ".claude-pace-maker"
+        )
+        lock_path = state_dir / "fallback_accumulate.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_fd = open(lock_path, "w")
         try:
