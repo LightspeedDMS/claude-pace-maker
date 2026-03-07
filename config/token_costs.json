@@ -1,6 +1,6 @@
 {
   "5x": {"coefficient_5h": 0.0075, "coefficient_7d": 0.0011},
-  "20x": {"coefficient_5h": 0.0014, "coefficient_7d": 0.0002},
-  "generated_date": "2026-03-05",
-  "source": "regression tool v1"
+  "20x": {"coefficient_5h": 0.001875, "coefficient_7d": 0.000275},
+  "generated_date": "2026-03-06",
+  "source": "5x from regression, 20x = 5x / 4 (20x has 4x more capacity, so 4x less utilization per dollar)"
 }

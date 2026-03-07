@@ -254,32 +254,6 @@ class TestFullFallbackCycle:
         assert cost_after == pytest.approx(cost_before, abs=0.0001)
 
 
-class TestFallbackDisplayIndicators:
-    """Tests for display indicators - Scenario 6."""
-
-    def test_get_display_label_for_fallback_mode(self):
-        """get_fallback_display_label returns [est] suffix for fallback values."""
-        from pacemaker.fallback import get_fallback_display_label
-
-        label = get_fallback_display_label()
-
-        assert "[est]" in label or "[fallback]" in label
-
-    def test_get_fallback_status_message(self):
-        """get_fallback_status_message returns human-readable message."""
-        from pacemaker.fallback import get_fallback_status_message
-
-        message = get_fallback_status_message()
-
-        assert message is not None
-        assert len(message) > 0
-        # Message should mention API being unavailable
-        assert any(
-            word in message.lower()
-            for word in ["api", "unavailable", "estimated", "fallback"]
-        )
-
-
 class TestTokenCostsIntegration:
     """Integration tests for token_costs.json file loading."""
 

@@ -14,12 +14,12 @@ import json
 import os
 import time
 import requests
-from datetime import datetime
 from typing import Optional, Dict
 from pathlib import Path
 
 from .logger import log_warning, log_info
 from . import api_backoff
+from .fallback import parse_api_datetime
 
 
 API_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -87,24 +87,14 @@ def parse_usage_response(response_data: Dict) -> Optional[Dict]:
         result["five_hour_util"] = five_hour.get("utilization", 0.0)
 
         resets_at_str = five_hour.get("resets_at")
-        if resets_at_str:
-            result["five_hour_resets_at"] = datetime.fromisoformat(
-                resets_at_str.replace("+00:00", "")
-            )
-        else:
-            result["five_hour_resets_at"] = None
+        result["five_hour_resets_at"] = parse_api_datetime(resets_at_str)
 
         # Parse 7-day window (may be null)
         seven_day = response_data.get("seven_day")
         if seven_day is not None:
             result["seven_day_util"] = seven_day.get("utilization", 0.0)
             resets_at_str = seven_day.get("resets_at")
-            if resets_at_str:
-                result["seven_day_resets_at"] = datetime.fromisoformat(
-                    resets_at_str.replace("+00:00", "")
-                )
-            else:
-                result["seven_day_resets_at"] = None
+            result["seven_day_resets_at"] = parse_api_datetime(resets_at_str)
         else:
             result["seven_day_util"] = 0.0
             result["seven_day_resets_at"] = None
@@ -132,6 +122,8 @@ def fetch_usage(
     access_token: str,
     timeout: int = 10,
     backoff_state_path: Optional[str] = None,
+    fallback_state_path: Optional[str] = None,
+    usage_cache_path: Optional[str] = None,
 ) -> Optional[Dict]:
     """
     Fetch usage data from Claude OAuth API.
@@ -140,11 +132,14 @@ def fetch_usage(
     - Persistent exponential backoff on 429 (shared via api_backoff.json)
     - In-call retry with short delays before recording persistent backoff
     - Graceful degradation on all errors
+    - Fallback mode transitions: enter on 429 exhaustion, exit on success
 
     Args:
         access_token: OAuth access token
         timeout: Request timeout in seconds (default 10)
         backoff_state_path: Path to backoff state file (default: auto)
+        fallback_state_path: Path to fallback_state.json (default: auto from fallback module)
+        usage_cache_path: Path to usage_cache.json for fallback baselines (default: auto)
 
     Returns:
         Parsed usage data dict, or None on any error
@@ -158,6 +153,10 @@ def fetch_usage(
         )
         return None
 
+    # Resolve usage_cache_path default (needed for enter_fallback)
+    if usage_cache_path is None:
+        usage_cache_path = str(Path.home() / ".claude-pace-maker" / "usage_cache.json")
+
     headers = {**API_HEADERS, "Authorization": f"Bearer {access_token}"}
 
     for attempt in range(_MAX_RETRIES):
@@ -169,7 +168,20 @@ def fetch_usage(
                 api_backoff.record_success(backoff_state_path)
                 data = response.json()
                 _cache_usage_response(data)
-                return parse_usage_response(data)
+                parsed = parse_usage_response(data)
+                # Exit fallback mode if it was active (API recovered)
+                if parsed is not None:
+                    try:
+                        from . import fallback as _fallback
+
+                        _fallback.exit_fallback(
+                            real_5h=parsed.get("five_hour_util", 0.0),
+                            real_7d=parsed.get("seven_day_util", 0.0),
+                            state_path=fallback_state_path,
+                        )
+                    except Exception as e:
+                        log_warning("api_client", "Failed to exit fallback mode", e)
+                return parsed
 
             elif response.status_code == 429:
                 if attempt < _MAX_RETRIES - 1:
@@ -177,12 +189,21 @@ def fetch_usage(
                     delay = _RETRY_BASE_DELAY * (2**attempt)
                     time.sleep(delay)
                     continue
-                # All retries exhausted - record persistent backoff
+                # All retries exhausted - record persistent backoff and enter fallback
                 api_backoff.record_429(backoff_state_path)
+                try:
+                    from . import fallback as _fallback
+
+                    _fallback.enter_fallback(
+                        usage_cache_path=usage_cache_path,
+                        state_path=fallback_state_path,
+                    )
+                except Exception as e:
+                    log_warning("api_client", "Failed to enter fallback mode", e)
                 return None
 
             else:
-                # Non-429 error - don't touch backoff state
+                # Non-429 error - don't touch backoff state or fallback state
                 log_warning(
                     "api_client",
                     f"Usage API returned status {response.status_code}",

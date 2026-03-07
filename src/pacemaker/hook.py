@@ -863,6 +863,9 @@ def run_hook():
         if state_changed:
             save_state(state, DEFAULT_STATE_PATH)
 
+        # Accumulate token cost for fallback mode (no-op when not in fallback)
+        _accumulate_fallback_cost(transcript_path=transcript_path)
+
     except BrokenPipeError:
         log_warning(
             "hook",
@@ -1152,6 +1155,125 @@ def get_last_assistant_message(transcript_path: str) -> str:
 
 # Backwards compatibility alias for tests
 read_conversation_from_transcript = get_last_assistant_message
+
+
+def _get_last_token_usage(transcript_path: Optional[str]) -> Optional[dict]:
+    """
+    Read the last token usage entry from a JSONL transcript file.
+
+    Uses tail-read (seek to end - 64KB) to avoid loading large files
+    into memory. Parses backwards from the end to find the last assistant
+    message entry that contains a usage dict.
+
+    Args:
+        transcript_path: Path to the JSONL transcript file, or None
+
+    Returns:
+        Dict with input_tokens, output_tokens, cache_read_tokens,
+        cache_creation_tokens, model_family — or None if not found.
+    """
+    if not transcript_path:
+        return None
+
+    last_usage = None
+    last_model = ""
+
+    try:
+        import os as _os
+
+        file_size = _os.path.getsize(transcript_path)
+        tail_size = 65536
+        seek_pos = max(0, file_size - tail_size)
+
+        with open(transcript_path, "rb") as f:
+            f.seek(seek_pos)
+            raw = f.read()
+
+        # Decode, skip partial first line if we seeked into the middle
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        if seek_pos > 0 and lines:
+            lines = lines[1:]  # First line may be truncated — skip it
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                msg = obj.get("message", {})
+                if not isinstance(msg, dict):
+                    continue
+                usage = msg.get("usage")
+                if usage and isinstance(usage, dict):
+                    last_usage = usage
+                    last_model = msg.get("model", "")
+            except (json.JSONDecodeError, Exception):
+                continue
+
+        if last_usage is None:
+            return None
+
+        # Classify model family from model string
+        model_lower = last_model.lower()
+        if "opus" in model_lower:
+            family = "opus"
+        elif "haiku" in model_lower:
+            family = "haiku"
+        else:
+            family = "sonnet"
+
+        return {
+            "input_tokens": int(last_usage.get("input_tokens", 0)),
+            "output_tokens": int(last_usage.get("output_tokens", 0)),
+            "cache_read_tokens": int(last_usage.get("cache_read_input_tokens", 0)),
+            "cache_creation_tokens": int(
+                last_usage.get("cache_creation_input_tokens", 0)
+            ),
+            "model_family": family,
+        }
+
+    except OSError:
+        return None
+    except Exception as e:
+        log_warning("hook", "Failed to read last token usage from transcript", e)
+        return None
+
+
+def _accumulate_fallback_cost(
+    transcript_path: Optional[str],
+    fallback_state_path: Optional[str] = None,
+) -> None:
+    """
+    Accumulate token cost into fallback state when fallback mode is active.
+
+    Called from run_hook() on each PostToolUse. No-op when fallback is not
+    active or when transcript has no token usage. Never raises.
+
+    Args:
+        transcript_path: Path to the JSONL transcript, or None
+        fallback_state_path: Path to fallback_state.json (default: auto)
+    """
+    try:
+        from . import fallback as _fallback
+
+        if not _fallback.is_fallback_active(fallback_state_path):
+            return
+
+        token_data = _get_last_token_usage(transcript_path)
+        if not token_data:
+            return
+
+        _fallback.accumulate_cost(
+            input_tokens=token_data["input_tokens"],
+            output_tokens=token_data["output_tokens"],
+            cache_read_tokens=token_data["cache_read_tokens"],
+            cache_creation_tokens=token_data["cache_creation_tokens"],
+            model_family=token_data["model_family"],
+            state_path=fallback_state_path,
+        )
+    except Exception as e:
+        log_warning("hook", "Failed to accumulate fallback cost", e)
 
 
 def get_last_n_messages(transcript_path: str, n: int = 5) -> list:

@@ -1119,3 +1119,110 @@ class TestAdditionalCoverage:
         state = load_fallback_state(str(state_path))
         assert state["state"] == FallbackState.FALLBACK.value
         assert state["baseline_5h"] == 0.0
+
+
+class TestEnterFallbackCapturesTier:
+    """Tests for Finding 7: enter_fallback() captures tier from profile cache."""
+
+    def _write_profile_cache(self, cache_path, has_claude_max: bool) -> None:
+        """Helper: write a profile_cache.json with given max setting."""
+        import time
+
+        content = {
+            "profile": {
+                "account": {
+                    "has_claude_pro": True,
+                    "has_claude_max": has_claude_max,
+                }
+            },
+            "timestamp": time.time(),
+        }
+        cache_path.write_text(json.dumps(content))
+
+    def test_enter_fallback_captures_20x_tier_from_profile_cache(self, tmp_path):
+        """
+        enter_fallback captures '20x' tier from profile cache when user has Claude Max.
+
+        Finding 7: The tier was hardcoded to '5x' in pacing_engine.py, causing
+        over-estimation of synthetic utilization for 20x users. The fix stores
+        tier in fallback state during enter_fallback so it persists across invocations.
+        """
+        from pacemaker.fallback import enter_fallback, load_fallback_state
+        from unittest.mock import patch
+
+        usage_cache_path = tmp_path / "usage_cache.json"
+        state_path = tmp_path / "fallback_state.json"
+        profile_cache_path = tmp_path / "profile_cache.json"
+
+        usage_cache_path.write_text(
+            json.dumps(
+                {
+                    "timestamp": time.time(),
+                    "response": {
+                        "five_hour": {"utilization": 45.0, "resets_at": None},
+                        "seven_day": {"utilization": 30.0, "resets_at": None},
+                    },
+                }
+            )
+        )
+        self._write_profile_cache(profile_cache_path, has_claude_max=True)
+
+        with patch(
+            "pacemaker.profile_cache.DEFAULT_PROFILE_CACHE_PATH",
+            str(profile_cache_path),
+        ):
+            enter_fallback(str(usage_cache_path), str(state_path))
+
+        state = load_fallback_state(str(state_path))
+        assert (
+            state.get("tier") == "20x"
+        ), f"Expected tier='20x' for Claude Max user, got: {state.get('tier')}"
+
+    def test_enter_fallback_captures_5x_tier_when_no_profile_cache(self, tmp_path):
+        """
+        enter_fallback defaults to '5x' tier when no profile cache is available.
+
+        Safe default: over-estimates rather than under-estimates utilization.
+        """
+        from pacemaker.fallback import enter_fallback, load_fallback_state
+        from unittest.mock import patch
+
+        usage_cache_path = tmp_path / "usage_cache.json"
+        state_path = tmp_path / "fallback_state.json"
+        missing_profile_cache = tmp_path / "profile_cache.json"  # Does not exist
+
+        usage_cache_path.write_text(
+            json.dumps(
+                {
+                    "timestamp": time.time(),
+                    "response": {
+                        "five_hour": {"utilization": 45.0, "resets_at": None},
+                        "seven_day": {"utilization": 30.0, "resets_at": None},
+                    },
+                }
+            )
+        )
+
+        with patch(
+            "pacemaker.profile_cache.DEFAULT_PROFILE_CACHE_PATH",
+            str(missing_profile_cache),
+        ):
+            enter_fallback(str(usage_cache_path), str(state_path))
+
+        state = load_fallback_state(str(state_path))
+        assert (
+            state.get("tier") == "5x"
+        ), f"Expected tier='5x' as safe default when no profile cache, got: {state.get('tier')}"
+
+    def test_default_state_includes_tier_key(self):
+        """
+        _default_state() includes 'tier' key initialized to None.
+
+        This ensures load_fallback_state() fills in the tier key via
+        the defaults-filling logic, preventing KeyError in existing states.
+        """
+        from pacemaker.fallback import _default_state
+
+        state = _default_state()
+        assert "tier" in state, "_default_state() must include 'tier' key"
+        assert state["tier"] is None, "_default_state() 'tier' must default to None"

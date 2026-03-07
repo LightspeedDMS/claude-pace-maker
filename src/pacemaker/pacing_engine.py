@@ -9,10 +9,20 @@ Orchestrates:
 - Hybrid delay strategy
 """
 
-import sys
+import os
+import json
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, Dict
 from . import calculator, database, api_client, adaptive_throttle
+from .logger import log_warning, log_info
+
+# Path to shared usage cache file read by claude-usage monitor
+USAGE_CACHE_PATH = Path.home() / ".claude-pace-maker" / "usage_cache.json"
+
+# Separate cache path for synthetic (fallback) values — prevents race condition
+# where concurrent sessions corrupt each other's real API baselines.
+SYNTHETIC_CACHE_PATH = Path.home() / ".claude-pace-maker" / "synthetic_cache.json"
 
 
 def should_poll_api(last_poll_time: Optional[datetime], interval: int = 60) -> bool:
@@ -74,8 +84,14 @@ def calculate_pacing_decision(
         seven_day_resets_at, window_hours=168
     )  # 7 days
 
-    # Check for stale 5-hour data (sentinel value -1.0 means > 5 min past reset)
-    if five_hour_time_pct == -1.0:
+    # Mark stale windows (sentinel value -1.0 means > 5 min past reset).
+    # Stale windows are excluded from constraint calculation but the other
+    # window can still be valid and drive throttling/display.
+    five_hour_stale = five_hour_time_pct == -1.0
+    seven_day_stale = seven_day_time_pct == -1.0
+
+    # Only return early if BOTH windows are stale — nothing to calculate
+    if five_hour_stale and seven_day_stale:
         return {
             "should_throttle": False,
             "delay_seconds": 0,
@@ -90,33 +106,17 @@ def calculate_pacing_decision(
             "seven_day": {
                 "utilization": seven_day_util,
                 "target": 0,
-                "time_elapsed_pct": seven_day_time_pct,
+                "time_elapsed_pct": -1.0,
             },
             "algorithm": "stale_data_detected",
-            "error": "5-hour window data is stale (resets_at > 5min in past)",
+            "error": "Both window data is stale (resets_at > 5min in past)",
         }
 
-    # Check for stale 7-day data (sentinel value -1.0 means > 5 min past reset)
-    if seven_day_time_pct == -1.0:
-        return {
-            "should_throttle": False,
-            "delay_seconds": 0,
-            "stale_data": True,
-            "constrained_window": None,
-            "deviation_percent": 0.0,
-            "five_hour": {
-                "utilization": five_hour_util,
-                "target": 0,
-                "time_elapsed_pct": five_hour_time_pct,
-            },
-            "seven_day": {
-                "utilization": seven_day_util,
-                "target": 0,
-                "time_elapsed_pct": -1.0,
-            },
-            "algorithm": "stale_data_detected",
-            "error": "7-day window data is stale (resets_at > 5min in past)",
-        }
+    # Nullify stale window's resets_at so it's excluded from constraint calc
+    if five_hour_stale:
+        five_hour_resets_at = None
+    if seven_day_stale:
+        seven_day_resets_at = None
 
     # Get current time once for all calculations
     now = datetime.utcnow()
@@ -321,6 +321,7 @@ def run_pacing_check(
     retention_days: int = 60,
     weekly_limit_enabled: bool = True,
     five_hour_limit_enabled: bool = True,
+    fallback_state_path: Optional[str] = None,
 ) -> Dict:
     """
     Run complete pacing check cycle.
@@ -345,9 +346,11 @@ def run_pacing_check(
         cleanup_interval_hours: Hours between cleanup runs (default 24)
         retention_days: Days to keep old snapshots (default 60)
         weekly_limit_enabled: Enable weekly limit calculations (default True)
+        fallback_state_path: Path to fallback_state.json (default: auto from fallback module)
 
     Returns:
-        Dict with pacing check results
+        Dict with pacing check results. Includes is_synthetic=True and stale_data=True
+        when synthetic fallback values are used.
     """
     # Periodic cleanup: use configurable interval
     cleanup_interval_seconds = cleanup_interval_hours * 3600
@@ -362,9 +365,9 @@ def run_pacing_check(
             db_path, retention_days=retention_days
         )
         if deleted_count > 0:
-            print(
-                f"[PACING] Cleaned up {deleted_count} old database records (>{retention_days} days)",
-                file=sys.stderr,
+            log_info(
+                "pacing",
+                f"Cleaned up {deleted_count} old database records (>{retention_days} days)",
             )
 
     # Check if should poll
@@ -403,16 +406,104 @@ def run_pacing_check(
         }
 
     usage_data = api_client.fetch_usage(access_token, timeout=api_timeout_seconds)
-    if not usage_data:
-        # API failed - graceful degradation (no throttling)
-        return {
-            "polled": False,
-            "decision": {"should_throttle": False, "delay_seconds": 0},
-            "error": "API fetch failed",
-        }
+    is_synthetic = False
 
-    # Store in database
-    process_usage_update(usage_data, db_path, session_id)
+    # Populate profile cache (for tier detection during fallback) if missing
+    if usage_data:
+        try:
+            from .profile_cache import load_cached_profile, fetch_and_cache_profile
+
+            if load_cached_profile() is None:
+                fetch_and_cache_profile(access_token)
+        except Exception:
+            pass  # Non-critical — tier defaults to 5x if cache unavailable
+
+    if not usage_data:
+        # API failed - check if fallback mode is active for synthetic pacing
+        try:
+            from . import fallback as _fallback
+
+            if _fallback.is_fallback_active(fallback_state_path):
+                fb_state = _fallback.load_fallback_state(fallback_state_path)
+                token_costs = _fallback.load_token_costs()
+                # Use tier from fallback state (captured at enter_fallback from profile cache)
+                tier = fb_state.get("tier", "5x")
+
+                # Delegate all rollover logic to fallback module (P1).
+                # calculate_synthetic_with_rollover() handles window expiration,
+                # forward projection, rollover cost snapshots, and recalculation.
+                # It mutates fb_state in-place when a rollover occurs.
+                synthetic = _fallback.calculate_synthetic_with_rollover(
+                    fb_state, tier, token_costs
+                )
+                if synthetic["state_changed"]:
+                    _fallback.save_fallback_state(fb_state, fallback_state_path)
+
+                five_resets = synthetic["five_resets"]
+                seven_resets = synthetic["seven_resets"]
+
+                usage_data = {
+                    "five_hour_util": synthetic["synthetic_5h"],
+                    "five_hour_resets_at": five_resets,
+                    "seven_day_util": synthetic["synthetic_7d"],
+                    "seven_day_resets_at": seven_resets,
+                }
+                is_synthetic = True
+                # Write synthetic values to SYNTHETIC_CACHE_PATH (P2) so
+                # claude-usage monitor can display estimated utilization.
+                # Using a separate file avoids race conditions with the real
+                # API cache (usage_cache.json) written by concurrent sessions.
+                try:
+                    import time as _time
+
+                    _synthetic_cache = {
+                        "timestamp": _time.time(),
+                        "is_synthetic": True,
+                        "response": {
+                            "five_hour": {
+                                "utilization": float(synthetic["synthetic_5h"]),
+                                "resets_at": (
+                                    (five_resets.isoformat() + "+00:00")
+                                    if five_resets
+                                    else ""
+                                ),
+                            },
+                            "seven_day": {
+                                "utilization": float(synthetic["synthetic_7d"]),
+                                "resets_at": (
+                                    (seven_resets.isoformat() + "+00:00")
+                                    if seven_resets
+                                    else ""
+                                ),
+                            },
+                        },
+                    }
+                    _cache_path = SYNTHETIC_CACHE_PATH
+                    _cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    _tmp = _cache_path.with_suffix(f".json.tmp.{os.getpid()}")
+                    _tmp.write_text(json.dumps(_synthetic_cache))
+                    _tmp.rename(_cache_path)
+                except Exception as _e:
+                    log_warning("pacing", "Failed to cache synthetic values", _e)
+            else:
+                # Not in fallback - graceful degradation (no throttling)
+                return {
+                    "polled": False,
+                    "decision": {"should_throttle": False, "delay_seconds": 0},
+                    "error": "API fetch failed",
+                }
+        except Exception as e:
+            # Fallback check failed - log and graceful degradation
+            log_warning("pacing", "Fallback check failed", e)
+            return {
+                "polled": False,
+                "decision": {"should_throttle": False, "delay_seconds": 0},
+                "error": f"API fetch failed, fallback unavailable: {e}",
+            }
+
+    # Store in database (skip for synthetic data — values are estimated, not real API data)
+    if not is_synthetic:
+        process_usage_update(usage_data, db_path, session_id)
 
     # Calculate pacing decision
     decision = calculate_pacing_decision(
@@ -441,6 +532,11 @@ def run_pacing_check(
     )
 
     result = {"polled": True, "decision": decision, "poll_time": datetime.utcnow()}
+
+    # Mark synthetic results so callers know this is estimated data
+    if is_synthetic:
+        result["is_synthetic"] = True
+        result["stale_data"] = True
 
     # Include cleanup timestamp if cleanup was performed
     if should_cleanup:

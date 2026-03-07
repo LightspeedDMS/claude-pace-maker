@@ -42,8 +42,8 @@ class TestCalculateTimePercentStaleData:
 class TestPacingDecisionStaleDataHandling:
     """Tests for stale data handling in calculate_pacing_decision()."""
 
-    def test_stale_5hour_data_returns_stale_flag(self):
-        """When 5-hour resets_at is stale, should return stale_data flag."""
+    def test_stale_5hour_valid_7day_uses_7day_window(self):
+        """When 5-hour is stale but 7-day valid, 7-day window takes over."""
         from pacemaker import pacing_engine
 
         five_hour_resets_at = datetime.utcnow() - timedelta(minutes=10)
@@ -56,11 +56,13 @@ class TestPacingDecisionStaleDataHandling:
             seven_day_resets_at=seven_day_resets_at,
         )
 
-        assert result.get("stale_data") is True
-        assert result.get("should_throttle") is False
+        # Stale 5h doesn't kill the whole result — 7d takes over
+        assert result.get("stale_data") is not True
+        assert result.get("constrained_window") == "7-day"
+        assert result["seven_day"]["target"] > 0
 
-    def test_stale_7day_data_returns_stale_flag(self):
-        """When 7-day resets_at is stale, should return stale_data flag."""
+    def test_stale_7day_valid_5hour_uses_5hour_window(self):
+        """When 7-day is stale but 5-hour valid, 5-hour window takes over."""
         from pacemaker import pacing_engine
 
         five_hour_resets_at = datetime.utcnow() + timedelta(hours=2)
@@ -73,8 +75,28 @@ class TestPacingDecisionStaleDataHandling:
             seven_day_resets_at=seven_day_resets_at,
         )
 
+        # Stale 7d doesn't kill the whole result — 5h takes over
+        assert result.get("stale_data") is not True
+        assert result.get("constrained_window") == "5-hour"
+        assert result["five_hour"]["target"] > 0
+
+    def test_both_windows_stale_returns_stale_flag(self):
+        """When both 5-hour and 7-day are stale, should return stale_data flag."""
+        from pacemaker import pacing_engine
+
+        five_hour_resets_at = datetime.utcnow() - timedelta(minutes=10)
+        seven_day_resets_at = datetime.utcnow() - timedelta(minutes=10)
+
+        result = pacing_engine.calculate_pacing_decision(
+            five_hour_util=38.0,
+            five_hour_resets_at=five_hour_resets_at,
+            seven_day_util=45.0,
+            seven_day_resets_at=seven_day_resets_at,
+        )
+
         assert result.get("stale_data") is True
         assert result.get("should_throttle") is False
+        assert result.get("constrained_window") is None
 
     def test_valid_data_no_stale_flag(self):
         """When data is valid, should not set stale_data flag."""

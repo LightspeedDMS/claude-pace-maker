@@ -15,6 +15,7 @@ State is persisted in fallback_state.json for cross-invocation durability.
 import json
 import os
 import time
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -58,8 +59,33 @@ API_PRICING: Dict[str, Dict[str, float]] = {
 # Default coefficients if token_costs.json is unavailable
 _DEFAULT_TOKEN_COSTS: Dict[str, Dict[str, float]] = {
     "5x": {"coefficient_5h": 0.0075, "coefficient_7d": 0.0011},
-    "20x": {"coefficient_5h": 0.0014, "coefficient_7d": 0.0002},
+    "20x": {"coefficient_5h": 0.001875, "coefficient_7d": 0.000275},
 }
+
+
+def parse_api_datetime(s: Optional[str]) -> Optional[datetime]:
+    """
+    Parse an ISO 8601 datetime string from the Claude API into a naive UTC datetime.
+
+    Handles the common variants returned by the API:
+    - "2026-03-06T15:00:00+00:00"  -> strips +00:00 suffix
+    - "2026-03-06T15:00:00Z"       -> strips Z suffix
+    - "2026-03-06T15:00:00"        -> plain ISO, used as-is
+
+    Args:
+        s: ISO datetime string, or None/empty
+
+    Returns:
+        Timezone-naive datetime object, or None if input is None/empty/invalid.
+    """
+    if not isinstance(s, str) or not s.strip():
+        return None
+    try:
+        # Normalise: strip +00:00 and Z suffixes to get a plain naive datetime
+        normalised = s.strip().replace("+00:00", "").rstrip("Z")
+        return datetime.fromisoformat(normalised)
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 
 class FallbackState(Enum):
@@ -67,7 +93,6 @@ class FallbackState(Enum):
 
     NORMAL = "normal"
     FALLBACK = "fallback"
-    # TODO: Add TRUEUP intermediate state when hook.py integration wires enter/exit_fallback
 
 
 def _default_state() -> Dict[str, Any]:
@@ -76,7 +101,14 @@ def _default_state() -> Dict[str, Any]:
         "state": FallbackState.NORMAL.value,
         "baseline_5h": None,
         "baseline_7d": None,
+        "resets_at_5h": None,
+        "resets_at_7d": None,
         "accumulated_cost": 0.0,
+        "rollover_cost_5h": None,
+        "rollover_cost_7d": None,
+        "last_rollover_resets_5h": None,
+        "last_rollover_resets_7d": None,
+        "tier": None,
         "entered_at": None,
     }
 
@@ -169,9 +201,11 @@ def enter_fallback(
         log_info("fallback", "Already in fallback mode, not resetting accumulated_cost")
         return
 
-    # Read baselines from usage_cache.json
+    # Read baselines and resets_at from usage_cache.json
     baseline_5h = 0.0
     baseline_7d = 0.0
+    resets_at_5h = None
+    resets_at_7d = None
 
     try:
         cache_path = Path(usage_cache_path)
@@ -179,25 +213,72 @@ def enter_fallback(
             text = cache_path.read_text().strip()
             if text:
                 cache_data = json.loads(text)
-                response = cache_data.get("response", {})
 
-                five_hour = response.get("five_hour", {}) or {}
-                baseline_5h = float(five_hour.get("utilization", 0.0) or 0.0)
+                # Skip synthetic cache — it was written by another fallback
+                # session and contains unreliable data (race condition)
+                if cache_data.get("is_synthetic"):
+                    log_warning(
+                        "fallback",
+                        "usage_cache contains synthetic data, using 0.0 baselines",
+                    )
+                else:
+                    response = cache_data.get("response", {})
 
-                seven_day = response.get("seven_day") or {}
-                baseline_7d = float(seven_day.get("utilization", 0.0) or 0.0)
+                    five_hour = response.get("five_hour", {}) or {}
+                    baseline_5h = float(five_hour.get("utilization", 0.0) or 0.0)
+
+                    seven_day = response.get("seven_day") or {}
+                    baseline_7d = float(seven_day.get("utilization", 0.0) or 0.0)
+
+                    resets_at_5h = five_hour.get("resets_at")
+                    resets_at_7d = seven_day.get("resets_at")
     except Exception as e:
         log_warning(
             "fallback", "Failed to read usage_cache for baselines, using 0.0", e
         )
 
-    new_state = {
-        "state": FallbackState.FALLBACK.value,
-        "baseline_5h": baseline_5h,
-        "baseline_7d": baseline_7d,
-        "accumulated_cost": 0.0,
-        "entered_at": time.time(),
-    }
+    # Detect tier from cached profile (no max_age — use whatever we have)
+    try:
+        from .profile_cache import load_cached_profile
+
+        cached_profile = load_cached_profile()
+        tier = detect_tier(cached_profile)
+        log_info("fallback", f"Detected tier from profile cache: {tier}")
+    except Exception as e:
+        log_warning(
+            "fallback", "Could not detect tier from profile cache, defaulting to 5x", e
+        )
+        tier = "5x"
+
+    # Synthesize resets_at when null so rollover detection has valid timestamps.
+    # Without these, calculate_synthetic_with_rollover() skips rollover detection
+    # and the monitor shows "No active windows".
+    now_utc = datetime.utcnow()
+    if not resets_at_5h:
+        resets_at_5h = (now_utc + timedelta(hours=5)).strftime(
+            "%Y-%m-%dT%H:%M:%S+00:00"
+        )
+        log_info("fallback", f"Synthesized resets_at_5h: {resets_at_5h}")
+    if not resets_at_7d:
+        resets_at_7d = (now_utc + timedelta(hours=168)).strftime(
+            "%Y-%m-%dT%H:%M:%S+00:00"
+        )
+        log_info("fallback", f"Synthesized resets_at_7d: {resets_at_7d}")
+
+    # Start from _default_state() so all keys are present (P4: avoid key drift).
+    new_state = _default_state()
+    new_state.update(
+        {
+            "state": FallbackState.FALLBACK.value,
+            "baseline_5h": baseline_5h,
+            "baseline_7d": baseline_7d,
+            "resets_at_5h": resets_at_5h,
+            "resets_at_7d": resets_at_7d,
+            "accumulated_cost": 0.0,
+            "tier": tier,
+            "entered_at": time.time(),
+        }
+    )
 
     save_fallback_state(new_state, state_path)
     log_info(
@@ -230,13 +311,11 @@ def exit_fallback(
         # Already normal, nothing to do
         return
 
-    new_state = {
-        "state": FallbackState.NORMAL.value,
-        "baseline_5h": None,
-        "baseline_7d": None,
-        "accumulated_cost": 0.0,
-        "entered_at": None,
-    }
+    # Start from _default_state() so all keys are present and cleared.
+    # Override only the fields that differ from defaults.
+    new_state = _default_state()
+    new_state["state"] = FallbackState.NORMAL.value
+    # accumulated_cost is already 0.0 from _default_state(); entered_at is None.
 
     save_fallback_state(new_state, state_path)
     log_info(
@@ -368,6 +447,135 @@ def calculate_synthetic(
     }
 
 
+def _project_window(
+    raw_resets_at: Optional[str],
+    window_hours: float,
+    now: datetime,
+) -> tuple:
+    """
+    Parse a resets_at string and project it forward past *now* if the window
+    has already expired.
+
+    Args:
+        raw_resets_at: ISO 8601 resets_at string (or None/empty)
+        window_hours: Window length in hours (5 or 168)
+        now: Current UTC datetime (naive)
+
+    Returns:
+        (projected_datetime_or_None, rolled: bool)
+        - projected_datetime_or_None: The next future reset boundary, or None if unparseable
+        - rolled: True if at least one window increment was applied
+    """
+    if not raw_resets_at:
+        return None, False
+
+    parsed = parse_api_datetime(raw_resets_at)
+    if parsed is None:
+        return None, False
+
+    if parsed <= now:
+        while parsed <= now:
+            parsed += timedelta(hours=window_hours)
+        return parsed, True
+
+    return parsed, False
+
+
+def calculate_synthetic_with_rollover(
+    state: Dict[str, Any],
+    tier: str,
+    token_costs: Dict[str, Dict[str, float]],
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """
+    Calculate synthetic utilization with window rollover detection.
+
+    Extends calculate_synthetic() by detecting expired windows and projecting
+    them forward. When a window rolls over, cost accumulated before the rollover
+    is snapshotted so only tokens from the NEW window count toward utilization.
+
+    Formula for rolled windows:
+        cost_in_window = max(0.0, accumulated_cost - rollover_cost)
+        synthetic_util = min(cost_in_window * coefficient * 100.0, 100.0)
+
+    For non-rolled windows the standard formula is used (same as calculate_synthetic).
+
+    Args:
+        state: Current fallback state dict — mutated in-place if rollover occurs
+        tier: Subscription tier ("5x" or "20x")
+        token_costs: Tier coefficients (from load_token_costs)
+        now: Current UTC datetime (default: datetime.utcnow())
+
+    Returns:
+        Dict with:
+          synthetic_5h: float
+          synthetic_7d: float
+          five_resets: Optional[datetime]  — projected 5h reset boundary
+          seven_resets: Optional[datetime] — projected 7d reset boundary
+          is_synthetic: True
+          state_changed: bool  — True if state was mutated (rollover occurred)
+    """
+    if now is None:
+        now = datetime.utcnow()
+
+    tier_costs = (
+        token_costs.get(tier) or token_costs.get("5x") or _DEFAULT_TOKEN_COSTS["5x"]
+    )
+    coeff_5h = float(tier_costs.get("coefficient_5h", 0.0075))
+    coeff_7d = float(tier_costs.get("coefficient_7d", 0.0011))
+
+    accumulated_cost = float(state.get("accumulated_cost", 0.0))
+
+    # --- Project 5-hour window ---
+    five_resets, five_rolled = _project_window(
+        state.get("resets_at_5h"), window_hours=5.0, now=now
+    )
+
+    # --- Project 7-day window ---
+    seven_resets, seven_rolled = _project_window(
+        state.get("resets_at_7d"), window_hours=168.0, now=now
+    )
+
+    state_changed = False
+
+    # --- Handle 5h rollover ---
+    if five_rolled and five_resets is not None:
+        projected_str = five_resets.isoformat()
+        if state.get("last_rollover_resets_5h") != projected_str:
+            state["rollover_cost_5h"] = accumulated_cost
+            state["last_rollover_resets_5h"] = projected_str
+            state_changed = True
+        rollover_cost_5h = float(state.get("rollover_cost_5h") or 0.0)
+        cost_in_window_5h = max(0.0, accumulated_cost - rollover_cost_5h)
+        synthetic_5h = min(cost_in_window_5h * coeff_5h * 100.0, 100.0)
+    else:
+        baseline_5h = float(state.get("baseline_5h") or 0.0)
+        synthetic_5h = min(baseline_5h + (accumulated_cost * coeff_5h * 100.0), 100.0)
+
+    # --- Handle 7d rollover ---
+    if seven_rolled and seven_resets is not None:
+        projected_str = seven_resets.isoformat()
+        if state.get("last_rollover_resets_7d") != projected_str:
+            state["rollover_cost_7d"] = accumulated_cost
+            state["last_rollover_resets_7d"] = projected_str
+            state_changed = True
+        rollover_cost_7d = float(state.get("rollover_cost_7d") or 0.0)
+        cost_in_window_7d = max(0.0, accumulated_cost - rollover_cost_7d)
+        synthetic_7d = min(cost_in_window_7d * coeff_7d * 100.0, 100.0)
+    else:
+        baseline_7d = float(state.get("baseline_7d") or 0.0)
+        synthetic_7d = min(baseline_7d + (accumulated_cost * coeff_7d * 100.0), 100.0)
+
+    return {
+        "synthetic_5h": synthetic_5h,
+        "synthetic_7d": synthetic_7d,
+        "five_resets": five_resets,
+        "seven_resets": seven_resets,
+        "is_synthetic": True,
+        "state_changed": state_changed,
+    }
+
+
 def accumulate_cost(
     input_tokens: int,
     output_tokens: int,
@@ -426,27 +634,7 @@ def is_fallback_active(state_path: Optional[str] = None) -> bool:
         state_path: Path to fallback_state.json
 
     Returns:
-        True if state is FALLBACK or TRUEUP, False otherwise
+        True if state is FALLBACK, False otherwise
     """
     state = load_fallback_state(state_path)
     return state["state"] == FallbackState.FALLBACK.value
-
-
-def get_fallback_display_label() -> str:
-    """
-    Get the display label suffix for synthetic utilization values.
-
-    Returns:
-        String like "[est]" to append to utilization display values
-    """
-    return "[est]"
-
-
-def get_fallback_status_message() -> str:
-    """
-    Get human-readable status message shown when in fallback mode.
-
-    Returns:
-        String message indicating API is unavailable and estimated pacing is used
-    """
-    return "API unavailable - using estimated pacing"
