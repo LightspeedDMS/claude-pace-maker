@@ -496,7 +496,6 @@ def _count_recent_errors(hours: int = 24, log_dir: Optional[str] = None) -> int:
 def _execute_status(
     config_path: str,
     db_path: Optional[str] = None,
-    fallback_state_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Display current pace maker status."""
     try:
@@ -671,13 +670,11 @@ def _execute_status(
         if db_path and os.path.exists(db_path):
             usage_data = _get_latest_usage(db_path)
 
-        # Check fallback mode state
-        from . import fallback as fallback_mod
-        from .fallback import DEFAULT_FALLBACK_STATE_PATH
+        # Check fallback mode state via UsageModel (SQLite)
+        from .usage_model import UsageModel
 
-        _fallback_path = fallback_state_path or DEFAULT_FALLBACK_STATE_PATH
-        _fallback_state = fallback_mod.load_fallback_state(_fallback_path)
-        _in_fallback = _fallback_state.get("state") in ("fallback", "trueup")
+        _status_model = UsageModel(db_path=db_path)
+        _in_fallback = _status_model.is_fallback_active()
 
         if usage_data:
             status_text += "\n\nCurrent Usage:"

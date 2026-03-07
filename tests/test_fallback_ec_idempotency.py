@@ -19,7 +19,6 @@ Tests are TDD-first: written BEFORE production code changes.
 import json
 import time
 import sys
-import fcntl
 from pathlib import Path
 
 import pytest
@@ -255,33 +254,46 @@ class TestConcurrentLockSkip:
     must fail-fast (BlockingIOError) and return without accumulating.
     """
 
-    def test_concurrent_lock_skip(self, tmp_path):
-        from pacemaker.hook import _accumulate_fallback_cost
+    def test_accumulate_cost_with_sqlite_concurrency(self, tmp_path):
+        """_accumulate_fallback_cost accumulates cost via UsageModel (SQLite).
 
-        sp = _enter_fallback(tmp_path)
+        The old file-lock (fcntl) mechanism is gone — SQLite handles concurrency
+        internally. This test verifies the happy path: when fallback is active,
+        token cost is accumulated into the database.
+        """
+        import sqlite3
+        from unittest.mock import patch
+        from pacemaker.hook import _accumulate_fallback_cost
+        from pacemaker.usage_model import UsageModel
+
+        db_path = str(tmp_path / "usage.db")
+
+        # Set up a real UsageModel with a temp db and enter fallback
+        real_model = UsageModel(db_path=db_path)
+        real_model.store_api_response(
+            {
+                "five_hour": {"used": 10, "limit": 100},
+                "seven_day": {"used": 10, "limit": 100},
+            }
+        )
+        real_model.enter_fallback()
 
         transcript = _write_transcript(
             tmp_path,
             [_make_assistant_entry("claude-sonnet-4-6", 1_000_000, 0)],
         )
 
-        # Lock path must match production code: derived from state file's parent dir
-        lock_path = tmp_path / "fallback_accumulate.lock"
-
-        # Hold the lock before calling _accumulate_fallback_cost
-        lock_fd = open(lock_path, "w")
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)  # Blocking — we hold it
-
-            # This invocation should detect lock contention and skip
+        # Patch pacemaker.usage_model.UsageModel so _accumulate_fallback_cost
+        # uses our temp db instead of the default ~/.claude-pace-maker/usage.db
+        with patch("pacemaker.usage_model.UsageModel", return_value=real_model):
             _accumulate_fallback_cost(
                 transcript_path=str(transcript),
-                fallback_state_path=sp,
+                session_id="test",
             )
-        finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            lock_fd.close()
 
-        # No cost must have been accumulated — the call was skipped
-        state = load_fallback_state(sp)
-        assert state["accumulated_cost"] == pytest.approx(0.0)
+        # Verify a row was inserted into accumulated_costs
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute("SELECT cost_dollars FROM accumulated_costs").fetchall()
+        conn.close()
+        assert len(rows) == 1
+        assert rows[0][0] > 0.0

@@ -864,7 +864,10 @@ def run_hook():
             save_state(state, DEFAULT_STATE_PATH)
 
         # Accumulate token cost for fallback mode (no-op when not in fallback)
-        _accumulate_fallback_cost(transcript_path=transcript_path)
+        _accumulate_fallback_cost(
+            transcript_path=transcript_path,
+            session_id=session_id or "unknown",
+        )
 
     except BrokenPipeError:
         log_warning(
@@ -1242,61 +1245,40 @@ def _get_last_token_usage(transcript_path: Optional[str]) -> Optional[dict]:
 
 def _accumulate_fallback_cost(
     transcript_path: Optional[str],
-    fallback_state_path: Optional[str] = None,
+    session_id: str = "unknown",
 ) -> None:
     """
     Accumulate token cost into fallback state when fallback mode is active.
 
-    Called from run_hook() on each PostToolUse. No-op when fallback is not
-    active or when transcript has no token usage. Never raises.
+    Called from run_hook() on each PostToolUse. Uses UsageModel (SQLite)
+    for concurrency-safe accumulation. No-op when fallback is not active
+    or when transcript has no token usage. Never raises.
 
     Args:
         transcript_path: Path to the JSONL transcript, or None
-        fallback_state_path: Path to fallback_state.json (default: auto)
+        session_id: Session identifier for cost tracking
     """
     try:
-        import fcntl
-        from . import fallback as _fallback
+        from .usage_model import UsageModel
 
-        # Fast path: avoid lock acquisition overhead when fallback is not active.
-        # If fallback exits between here and the lock, accumulate_cost() will
-        # detect NORMAL state and no-op safely.
-        if not _fallback.is_fallback_active(fallback_state_path):
+        model = UsageModel()
+
+        # Fast path: no-op when fallback is not active
+        if not model.is_fallback_active():
             return
 
-        # Per-project file lock: if another parallel tool call is already
-        # accumulating, skip this invocation entirely (LOCK_NB = non-blocking).
-        state_dir = (
-            Path(fallback_state_path).parent
-            if fallback_state_path
-            else Path.home() / ".claude-pace-maker"
+        token_data = _get_last_token_usage(transcript_path)
+        if not token_data:
+            return
+
+        model.accumulate_cost(
+            input_tokens=token_data["input_tokens"],
+            output_tokens=token_data["output_tokens"],
+            cache_read_tokens=token_data["cache_read_tokens"],
+            cache_creation_tokens=token_data["cache_creation_tokens"],
+            model_family=token_data["model_family"],
+            session_id=session_id,
         )
-        lock_path = state_dir / "fallback_accumulate.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_fd = open(lock_path, "w")
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (BlockingIOError, OSError):
-            # Another invocation holds the lock — skip to avoid double-counting
-            lock_fd.close()
-            return
-
-        try:
-            token_data = _get_last_token_usage(transcript_path)
-            if not token_data:
-                return
-
-            _fallback.accumulate_cost(
-                input_tokens=token_data["input_tokens"],
-                output_tokens=token_data["output_tokens"],
-                cache_read_tokens=token_data["cache_read_tokens"],
-                cache_creation_tokens=token_data["cache_creation_tokens"],
-                model_family=token_data["model_family"],
-                state_path=fallback_state_path,
-            )
-        finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            lock_fd.close()
 
     except Exception as e:
         log_warning("hook", "Failed to accumulate fallback cost", e)

@@ -87,37 +87,38 @@ def _write_fallback_state(
 class TestExecuteStatusFallbackDisplay:
     """Tests for _execute_status() fallback display - Scenario 6."""
 
-    def _run_status(
-        self, tmp_path: Path, fallback_state: str, accumulated_cost: float = 5.0
-    ) -> dict:
+    def _run_status(self, tmp_path: Path, fallback_state: str) -> dict:
         """Helper: set up filesystem and run _execute_status."""
+        from pacemaker.usage_model import UsageModel
         from pacemaker.user_commands import _execute_status
 
         pm_dir = tmp_path / ".claude-pace-maker"
         pm_dir.mkdir()
         config_path = pm_dir / "config.json"
         db_path = pm_dir / "usage.db"
-        fallback_state_path = pm_dir / "fallback_state.json"
 
         _write_config(config_path)
         _write_usage_db(db_path)
-        _write_fallback_state(
-            fallback_state_path,
-            state=fallback_state,
-            accumulated_cost=accumulated_cost,
-        )
+
+        # Set up SQLite-based fallback state via UsageModel when needed
+        if fallback_state == "fallback":
+            model = UsageModel(db_path=str(db_path))
+            model.store_api_response(
+                {
+                    "five_hour": {"utilization": 45.0, "resets_at": None},
+                    "seven_day": {"utilization": 30.0, "resets_at": None},
+                }
+            )
+            model.enter_fallback()
 
         return _execute_status(
             str(config_path),
             str(db_path),
-            fallback_state_path=str(fallback_state_path),
         )
 
     def test_status_shows_est_indicator_when_in_fallback(self, tmp_path):
         """Status output contains '[est]' when in fallback mode."""
-        result = self._run_status(
-            tmp_path, fallback_state="fallback", accumulated_cost=5.0
-        )
+        result = self._run_status(tmp_path, fallback_state="fallback")
 
         output = result.get("message", "")
         assert (
@@ -126,9 +127,7 @@ class TestExecuteStatusFallbackDisplay:
 
     def test_status_shows_api_unavailable_when_in_fallback(self, tmp_path):
         """Status output contains 'API unavailable' message when in fallback mode."""
-        result = self._run_status(
-            tmp_path, fallback_state="fallback", accumulated_cost=5.0
-        )
+        result = self._run_status(tmp_path, fallback_state="fallback")
 
         output = result.get("message", "")
         assert any(
@@ -143,9 +142,7 @@ class TestExecuteStatusFallbackDisplay:
 
     def test_status_no_est_indicator_when_normal(self, tmp_path):
         """Status output does NOT contain '[est]' when in normal mode."""
-        result = self._run_status(
-            tmp_path, fallback_state="normal", accumulated_cost=0.0
-        )
+        result = self._run_status(tmp_path, fallback_state="normal")
 
         output = result.get("message", "")
         assert (
@@ -154,9 +151,7 @@ class TestExecuteStatusFallbackDisplay:
 
     def test_status_no_fallback_message_when_normal(self, tmp_path):
         """Status output does NOT contain 'API unavailable' when in normal mode."""
-        result = self._run_status(
-            tmp_path, fallback_state="normal", accumulated_cost=0.0
-        )
+        result = self._run_status(tmp_path, fallback_state="normal")
 
         output = result.get("message", "")
         assert (
@@ -171,7 +166,6 @@ class TestExecuteStatusFallbackDisplay:
         pm_dir.mkdir()
         config_path = pm_dir / "config.json"
         db_path = pm_dir / "usage.db"
-        fallback_state_path = pm_dir / "fallback_state.json"  # Does not exist
 
         _write_config(config_path)
         _write_usage_db(db_path)
@@ -179,7 +173,6 @@ class TestExecuteStatusFallbackDisplay:
         result = _execute_status(
             str(config_path),
             str(db_path),
-            fallback_state_path=str(fallback_state_path),
         )
 
         assert isinstance(result, dict)
@@ -187,8 +180,6 @@ class TestExecuteStatusFallbackDisplay:
 
     def test_status_success_true_when_in_fallback(self, tmp_path):
         """Status returns success=True even when in fallback mode."""
-        result = self._run_status(
-            tmp_path, fallback_state="fallback", accumulated_cost=5.0
-        )
+        result = self._run_status(tmp_path, fallback_state="fallback")
 
         assert result.get("success") is True

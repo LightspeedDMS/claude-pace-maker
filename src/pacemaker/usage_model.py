@@ -93,12 +93,7 @@ class UsageModel:
             return None
 
     def is_fallback_active(self) -> bool:
-        """Check if currently in fallback mode.
-
-        Checks SQLite fallback_state_v2 first, then falls back to JSON file
-        during the transition period (hook.py still writes JSON).
-        # APPROVED FALLBACK: Story #42 transition — remove when hook.py migrates to UsageModel.
-        """
+        """Check if currently in fallback mode (SQLite only)."""
         try:
 
             def operation(conn):
@@ -106,34 +101,118 @@ class UsageModel:
                     "SELECT state FROM fallback_state_v2 WHERE id = 1"
                 ).fetchone()
                 if row is None:
-                    return (False, False)  # No row exists
-                return (True, row[0] == FallbackState.FALLBACK.value)
-
-            has_row, is_fallback = execute_with_retry(
-                self.db_path, operation, readonly=True
-            )
-            if is_fallback:
-                return True
-
-            # APPROVED FALLBACK: During transition, hook.py still writes fallback_state.json.
-            # Only check JSON when SQLite has a row with state='normal' (possible out-of-sync).
-            # When SQLite has NO row, _get_synthetic_snapshot() can't work anyway — return False.
-            if has_row:
-                try:
-                    from .fallback import is_fallback_active as _json_is_fallback_active
-
-                    json_state_path = str(
-                        Path(self.db_path).parent / "fallback_state.json"
-                    )
-                    return _json_is_fallback_active(json_state_path)
-                except Exception:
                     return False
+                return row[0] == FallbackState.FALLBACK.value
 
-            return False
+            return execute_with_retry(self.db_path, operation, readonly=True)
 
         except Exception as e:
             log_warning("usage_model", "Failed to check fallback state", e)
             return False
+
+    # ------------------------------------------------------------------
+    # Backoff state (replaces api_backoff.py JSON)
+    # ------------------------------------------------------------------
+
+    _BACKOFF_BASE_DELAY = 300  # 5 minutes base
+    _BACKOFF_MAX_DELAY = 3600  # 60 minutes cap
+
+    def is_in_backoff(self) -> bool:
+        """Check if currently in API backoff period."""
+        try:
+
+            def operation(conn):
+                row = conn.execute(
+                    "SELECT backoff_until FROM backoff_state WHERE id = 1"
+                ).fetchone()
+                if row is None or row[0] is None:
+                    return False
+                return time.time() < row[0]
+
+            return execute_with_retry(self.db_path, operation, readonly=True)
+
+        except Exception as e:
+            log_warning("usage_model", "Failed to check backoff state", e)
+            return False
+
+    def get_backoff_remaining(self) -> float:
+        """Get seconds remaining in current backoff period, or 0.0."""
+        try:
+
+            def operation(conn):
+                row = conn.execute(
+                    "SELECT backoff_until FROM backoff_state WHERE id = 1"
+                ).fetchone()
+                if row is None or row[0] is None:
+                    return 0.0
+                return max(0.0, row[0] - time.time())
+
+            return execute_with_retry(self.db_path, operation, readonly=True)
+
+        except Exception as e:
+            log_warning("usage_model", "Failed to get backoff remaining", e)
+            return 0.0
+
+    def record_429(self) -> None:
+        """Record a 429 rate-limit response with exponential backoff."""
+        try:
+
+            def operation(conn):
+                row = conn.execute(
+                    "SELECT consecutive_429s FROM backoff_state WHERE id = 1"
+                ).fetchone()
+                old_count = row[0] if row else 0
+                new_count = old_count + 1
+                delay = min(
+                    self._BACKOFF_BASE_DELAY * (2**new_count),
+                    self._BACKOFF_MAX_DELAY,
+                )
+                backoff_until = time.time() + delay
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO backoff_state
+                    (id, consecutive_429s, backoff_until, last_success_time)
+                    VALUES (1, ?, ?, (SELECT last_success_time FROM backoff_state WHERE id = 1))
+                    """,
+                    (new_count, backoff_until),
+                )
+                return new_count, delay
+
+            new_count, delay = execute_with_retry(self.db_path, operation)
+            log_warning(
+                "usage_model",
+                f"Rate limited (429). Consecutive count: {new_count}. "
+                f"Backing off for {delay:.0f}s.",
+            )
+
+        except Exception as e:
+            log_warning("usage_model", "Failed to record 429", e)
+
+    def record_success(self) -> None:
+        """Record successful API call, reset backoff state."""
+        try:
+
+            def operation(conn):
+                row = conn.execute(
+                    "SELECT consecutive_429s FROM backoff_state WHERE id = 1"
+                ).fetchone()
+                had_backoff = row is not None and row[0] > 0
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO backoff_state
+                    (id, consecutive_429s, backoff_until, last_success_time)
+                    VALUES (1, 0, NULL, ?)
+                    """,
+                    (time.time(),),
+                )
+                return had_backoff
+
+            had_backoff = execute_with_retry(self.db_path, operation)
+            if had_backoff:
+                log_info("usage_model", "API call succeeded, backoff state reset.")
+
+        except Exception as e:
+            log_warning("usage_model", "Failed to record success", e)
 
     def enter_fallback(self, api_cache_snapshot: bool = True) -> None:
         """Transition to fallback mode, snapshots baselines from api_cache table.

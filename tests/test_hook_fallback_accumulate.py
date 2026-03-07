@@ -15,7 +15,6 @@ Integration points tested:
 """
 
 import json
-import time
 from pathlib import Path
 import sys
 import pytest
@@ -281,23 +280,41 @@ class TestGetLastTokenUsage:
         assert result["output_tokens"] == 4444
 
 
+def _get_total_cost(db_path: str) -> float:
+    """Query total accumulated cost from the test DB."""
+    from pacemaker.database import execute_with_retry
+
+    def op(conn):
+        row = conn.execute(
+            "SELECT COALESCE(SUM(cost_dollars), 0.0) FROM accumulated_costs"
+        ).fetchone()
+        return float(row[0]) if row else 0.0
+
+    return execute_with_retry(db_path, op, readonly=True)
+
+
 class TestAccumulateCostCalledDuringFallback:
-    """Tests that accumulate_cost is called from hook when fallback is active."""
+    """Tests that accumulate_cost is called from hook when fallback is active.
 
-    def _setup_fallback_state(self, tmp_path) -> str:
-        """Helper: write fallback_state.json in FALLBACK mode."""
-        from pacemaker.fallback import FallbackState, save_fallback_state
+    Uses real UsageModel with an isolated test SQLite database.
+    Patches pacemaker.hook.UsageModel so the constructor call inside
+    _accumulate_fallback_cost() returns our pre-configured test instance.
+    """
 
-        state_path = tmp_path / "fallback_state.json"
-        state = {
-            "state": FallbackState.FALLBACK.value,
-            "baseline_5h": 50.0,
-            "baseline_7d": 35.0,
-            "accumulated_cost": 0.0,
-            "entered_at": time.time() - 300,
-        }
-        save_fallback_state(state, str(state_path))
-        return str(state_path)
+    def _make_model_in_fallback(self, tmp_path):
+        """Create a real UsageModel in FALLBACK state with test DB."""
+        from pacemaker.usage_model import UsageModel
+
+        db_path = str(tmp_path / "test.db")
+        model = UsageModel(db_path=db_path)
+        model.store_api_response(
+            {
+                "five_hour": {"utilization": 50.0, "resets_at": None},
+                "seven_day": {"utilization": 35.0, "resets_at": None},
+            }
+        )
+        model.enter_fallback()
+        return model
 
     def test_accumulate_cost_called_when_fallback_active(self, tmp_path):
         """
@@ -305,9 +322,9 @@ class TestAccumulateCostCalledDuringFallback:
         accumulate_cost() must be called from the hook's token accumulation path.
         """
         from pacemaker.hook import _accumulate_fallback_cost
-        from pacemaker import fallback
+        from unittest.mock import patch
 
-        state_path = self._setup_fallback_state(tmp_path)
+        model = self._make_model_in_fallback(tmp_path)
         transcript = _write_transcript(
             tmp_path,
             [
@@ -315,15 +332,21 @@ class TestAccumulateCostCalledDuringFallback:
             ],
         )
 
-        _accumulate_fallback_cost(
-            transcript_path=str(transcript),
-            fallback_state_path=state_path,
-        )
+        with patch("pacemaker.usage_model.UsageModel", return_value=model):
+            _accumulate_fallback_cost(
+                transcript_path=str(transcript),
+                session_id="test",
+            )
 
-        state = fallback.load_fallback_state(state_path)
-        # Cost must have been accumulated (sonnet: 1000 input + 500 output)
-        expected_cost = (1000 * 3.0 + 500 * 15.0) / 1_000_000  # sonnet pricing
-        assert state["accumulated_cost"] == pytest.approx(expected_cost, rel=0.01)
+        # Verify cost was accumulated (sonnet: 1000 input * $3/1M + 500 output * $15/1M)
+        expected_cost = (1000 * 3.0 + 500 * 15.0) / 1_000_000
+        total = _get_total_cost(model.db_path)
+        assert total == pytest.approx(expected_cost, rel=0.01)
+
+        # Also verify the snapshot reflects synthetic state
+        snapshot = model.get_current_usage()
+        assert snapshot is not None
+        assert snapshot.is_synthetic is True
 
     def test_accumulate_cost_noop_when_fallback_not_active(self, tmp_path):
         """
@@ -331,10 +354,12 @@ class TestAccumulateCostCalledDuringFallback:
         No cost accumulation in NORMAL mode.
         """
         from pacemaker.hook import _accumulate_fallback_cost
-        from pacemaker import fallback
+        from pacemaker.usage_model import UsageModel
+        from unittest.mock import patch
 
-        state_path = str(tmp_path / "fallback_state.json")
-        # No state file = NORMAL state
+        db_path = str(tmp_path / "test.db")
+        model = UsageModel(db_path=db_path)
+        # Do NOT enter fallback — model stays in NORMAL state
 
         transcript = _write_transcript(
             tmp_path,
@@ -343,49 +368,61 @@ class TestAccumulateCostCalledDuringFallback:
             ],
         )
 
-        _accumulate_fallback_cost(
-            transcript_path=str(transcript),
-            fallback_state_path=state_path,
-        )
+        with patch("pacemaker.usage_model.UsageModel", return_value=model):
+            _accumulate_fallback_cost(
+                transcript_path=str(transcript),
+                session_id="test",
+            )
 
-        # State should still be NORMAL
-        state = fallback.load_fallback_state(state_path)
-        assert state["accumulated_cost"] == 0.0
+        # No costs should be accumulated
+        assert model.is_fallback_active() is False
+        assert _get_total_cost(model.db_path) == pytest.approx(0.0)
 
     def test_accumulate_fallback_cost_handles_no_transcript(self, tmp_path):
         """
         _accumulate_fallback_cost must not crash when transcript_path is None or missing.
         """
         from pacemaker.hook import _accumulate_fallback_cost
+        from unittest.mock import patch
 
-        state_path = self._setup_fallback_state(tmp_path)
+        model = self._make_model_in_fallback(tmp_path)
 
-        # Should not raise
-        _accumulate_fallback_cost(
-            transcript_path=None,
-            fallback_state_path=state_path,
-        )
+        with patch("pacemaker.usage_model.UsageModel", return_value=model):
+            # Should not raise with None transcript
+            _accumulate_fallback_cost(
+                transcript_path=None,
+                session_id="test",
+            )
 
-        _accumulate_fallback_cost(
-            transcript_path=str(tmp_path / "nonexistent.jsonl"),
-            fallback_state_path=state_path,
-        )
+            # Should not raise with missing file path
+            _accumulate_fallback_cost(
+                transcript_path=str(tmp_path / "nonexistent.jsonl"),
+                session_id="test",
+            )
+
+        # No cost should have been accumulated (no valid token data)
+        assert _get_total_cost(model.db_path) == pytest.approx(0.0)
 
     def test_accumulate_fallback_cost_handles_empty_transcript(self, tmp_path):
         """
         _accumulate_fallback_cost must not crash when transcript is empty.
         """
         from pacemaker.hook import _accumulate_fallback_cost
+        from unittest.mock import patch
 
-        state_path = self._setup_fallback_state(tmp_path)
+        model = self._make_model_in_fallback(tmp_path)
         transcript = tmp_path / "transcript.jsonl"
         transcript.write_text("")
 
-        # Should not raise
-        _accumulate_fallback_cost(
-            transcript_path=str(transcript),
-            fallback_state_path=state_path,
-        )
+        with patch("pacemaker.usage_model.UsageModel", return_value=model):
+            # Should not raise
+            _accumulate_fallback_cost(
+                transcript_path=str(transcript),
+                session_id="test",
+            )
+
+        # No cost should have been accumulated (empty transcript = no token data)
+        assert _get_total_cost(model.db_path) == pytest.approx(0.0)
 
     def test_accumulate_uses_opus_pricing_for_opus_model(self, tmp_path):
         """
@@ -393,21 +430,9 @@ class TestAccumulateCostCalledDuringFallback:
         Opus input: $15/1M tokens. 1000 tokens = $0.015.
         """
         from pacemaker.hook import _accumulate_fallback_cost
-        from pacemaker import fallback
-        from pacemaker.fallback import FallbackState, save_fallback_state
+        from unittest.mock import patch
 
-        state_path = str(tmp_path / "fallback_state.json")
-        save_fallback_state(
-            {
-                "state": FallbackState.FALLBACK.value,
-                "baseline_5h": 10.0,
-                "baseline_7d": 5.0,
-                "accumulated_cost": 0.0,
-                "entered_at": time.time(),
-            },
-            state_path,
-        )
-
+        model = self._make_model_in_fallback(tmp_path)
         transcript = _write_transcript(
             tmp_path,
             [
@@ -415,13 +440,12 @@ class TestAccumulateCostCalledDuringFallback:
             ],
         )
 
-        _accumulate_fallback_cost(
-            transcript_path=str(transcript),
-            fallback_state_path=state_path,
-        )
+        with patch("pacemaker.usage_model.UsageModel", return_value=model):
+            _accumulate_fallback_cost(
+                transcript_path=str(transcript),
+                session_id="test",
+            )
 
-        state = fallback.load_fallback_state(state_path)
         # Opus input: $15/1M tokens -> 1000 tokens = $0.015
-        assert state["accumulated_cost"] == pytest.approx(
-            1000 * 15.0 / 1_000_000, rel=0.01
-        )
+        expected_cost = 1000 * 15.0 / 1_000_000
+        assert _get_total_cost(model.db_path) == pytest.approx(expected_cost, rel=0.01)

@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from .logger import log_warning, log_info
-from . import api_backoff
 
 
 # Default path for profile cache file
@@ -111,7 +110,6 @@ def load_cached_profile(
 def fetch_and_cache_profile(
     access_token: str,
     cache_path: Optional[str] = None,
-    backoff_path: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Fetch user profile from API (if not in backoff) and cache to disk.
@@ -122,7 +120,6 @@ def fetch_and_cache_profile(
     Args:
         access_token: OAuth access token for API authentication
         cache_path: Path to profile cache file (default: auto)
-        backoff_path: Path to api_backoff.json (default: auto)
 
     Returns:
         Profile dict, or None if API unavailable and no cache
@@ -130,9 +127,12 @@ def fetch_and_cache_profile(
     if cache_path is None:
         cache_path = DEFAULT_PROFILE_CACHE_PATH
 
-    # Check if we are in backoff
-    if api_backoff.is_in_backoff(backoff_path):
-        remaining = api_backoff.get_backoff_remaining_seconds(backoff_path)
+    # Check if we are in backoff via UsageModel (SQLite)
+    from .usage_model import UsageModel
+
+    model = UsageModel()
+    if model.is_in_backoff():
+        remaining = model.get_backoff_remaining()
         log_info(
             "profile_cache",
             f"Skipping profile API call - in backoff ({remaining:.0f}s remaining)",
@@ -146,7 +146,6 @@ def fetch_and_cache_profile(
 
         profile = api_client.fetch_user_profile(
             access_token=access_token,
-            backoff_state_path=backoff_path,
         )
 
         if profile is not None:

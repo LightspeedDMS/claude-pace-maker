@@ -9,20 +9,10 @@ Orchestrates:
 - Hybrid delay strategy
 """
 
-import os
-import json
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Optional, Dict
 from . import calculator, database, api_client, adaptive_throttle
 from .logger import log_warning, log_info
-
-# Path to shared usage cache file read by claude-usage monitor
-USAGE_CACHE_PATH = Path.home() / ".claude-pace-maker" / "usage_cache.json"
-
-# Separate cache path for synthetic (fallback) values — prevents race condition
-# where concurrent sessions corrupt each other's real API baselines.
-SYNTHETIC_CACHE_PATH = Path.home() / ".claude-pace-maker" / "synthetic_cache.json"
 
 
 def should_poll_api(last_poll_time: Optional[datetime], interval: int = 60) -> bool:
@@ -321,7 +311,6 @@ def run_pacing_check(
     retention_days: int = 60,
     weekly_limit_enabled: bool = True,
     five_hour_limit_enabled: bool = True,
-    fallback_state_path: Optional[str] = None,
 ) -> Dict:
     """
     Run complete pacing check cycle.
@@ -346,7 +335,6 @@ def run_pacing_check(
         cleanup_interval_hours: Hours between cleanup runs (default 24)
         retention_days: Days to keep old snapshots (default 60)
         weekly_limit_enabled: Enable weekly limit calculations (default True)
-        fallback_state_path: Path to fallback_state.json (default: auto from fallback module)
 
     Returns:
         Dict with pacing check results. Includes is_synthetic=True and stale_data=True
@@ -405,7 +393,9 @@ def run_pacing_check(
             "error": "No access token available",
         }
 
-    usage_data = api_client.fetch_usage(access_token, timeout=api_timeout_seconds)
+    usage_data = api_client.fetch_usage(
+        access_token, timeout=api_timeout_seconds, db_path=db_path
+    )
     is_synthetic = False
 
     # Populate profile cache (for tier detection during fallback) if missing
@@ -419,81 +409,28 @@ def run_pacing_check(
             pass  # Non-critical — tier defaults to 5x if cache unavailable
 
     if not usage_data:
-        # API failed - check if fallback mode is active for synthetic pacing
+        # API failed — use UsageModel for synthetic pacing (SQLite-based)
         try:
-            from . import fallback as _fallback
+            from .usage_model import UsageModel
 
-            if _fallback.is_fallback_active(fallback_state_path):
-                fb_state = _fallback.load_fallback_state(fallback_state_path)
-                token_costs = _fallback.load_token_costs()
-                # Use tier from fallback state (captured at enter_fallback from profile cache)
-                tier = fb_state.get("tier", "5x")
-
-                # Delegate all rollover logic to fallback module (P1).
-                # calculate_synthetic_with_rollover() handles window expiration,
-                # forward projection, rollover cost snapshots, and recalculation.
-                # It mutates fb_state in-place when a rollover occurs.
-                synthetic = _fallback.calculate_synthetic_with_rollover(
-                    fb_state, tier, token_costs
-                )
-                if synthetic["state_changed"]:
-                    _fallback.save_fallback_state(fb_state, fallback_state_path)
-
-                five_resets = synthetic["five_resets"]
-                seven_resets = synthetic["seven_resets"]
-
+            model = UsageModel(db_path=db_path)
+            snapshot = model.get_current_usage()
+            if snapshot is not None:
                 usage_data = {
-                    "five_hour_util": synthetic["synthetic_5h"],
-                    "five_hour_resets_at": five_resets,
-                    "seven_day_util": synthetic["synthetic_7d"],
-                    "seven_day_resets_at": seven_resets,
+                    "five_hour_util": snapshot.five_hour_util,
+                    "five_hour_resets_at": snapshot.five_hour_resets_at,
+                    "seven_day_util": snapshot.seven_day_util,
+                    "seven_day_resets_at": snapshot.seven_day_resets_at,
                 }
-                is_synthetic = True
-                # Write synthetic values to SYNTHETIC_CACHE_PATH (P2) so
-                # claude-usage monitor can display estimated utilization.
-                # Using a separate file avoids race conditions with the real
-                # API cache (usage_cache.json) written by concurrent sessions.
-                try:
-                    import time as _time
-
-                    _synthetic_cache = {
-                        "timestamp": _time.time(),
-                        "is_synthetic": True,
-                        "response": {
-                            "five_hour": {
-                                "utilization": float(synthetic["synthetic_5h"]),
-                                "resets_at": (
-                                    (five_resets.isoformat() + "+00:00")
-                                    if five_resets
-                                    else ""
-                                ),
-                            },
-                            "seven_day": {
-                                "utilization": float(synthetic["synthetic_7d"]),
-                                "resets_at": (
-                                    (seven_resets.isoformat() + "+00:00")
-                                    if seven_resets
-                                    else ""
-                                ),
-                            },
-                        },
-                    }
-                    _cache_path = SYNTHETIC_CACHE_PATH
-                    _cache_path.parent.mkdir(parents=True, exist_ok=True)
-                    _tmp = _cache_path.with_suffix(f".json.tmp.{os.getpid()}")
-                    _tmp.write_text(json.dumps(_synthetic_cache))
-                    _tmp.rename(_cache_path)
-                except Exception as _e:
-                    log_warning("pacing", "Failed to cache synthetic values", _e)
+                is_synthetic = snapshot.is_synthetic
             else:
-                # Not in fallback - graceful degradation (no throttling)
+                # No data at all - graceful degradation (no throttling)
                 return {
                     "polled": False,
                     "decision": {"should_throttle": False, "delay_seconds": 0},
-                    "error": "API fetch failed",
+                    "error": "API fetch failed, no cached data available",
                 }
         except Exception as e:
-            # Fallback check failed - log and graceful degradation
             log_warning("pacing", "Fallback check failed", e)
             return {
                 "polled": False,

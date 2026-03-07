@@ -95,10 +95,8 @@ class TestLoggingIntegration:
         with patch("pacemaker.api_client.log_warning") as mock_log:
             from pacemaker import api_client
 
-            # Invalid datetime format will trigger exception
-            result = api_client.parse_usage_response(
-                {"five_hour": {"resets_at": "invalid-datetime-format"}}
-            )
+            # Non-dict value will trigger AttributeError on .get() call
+            result = api_client.parse_usage_response({"five_hour": "not-a-dict"})
             # Should return None and log warning
             assert result is None
             mock_log.assert_called()

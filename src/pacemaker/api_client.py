@@ -11,14 +11,12 @@ Handles:
 """
 
 import json
-import os
 import time
 import requests
 from typing import Optional, Dict
 from pathlib import Path
 
 from .logger import log_warning, log_info
-from . import api_backoff
 from .fallback import parse_api_datetime
 
 
@@ -106,56 +104,36 @@ def parse_usage_response(response_data: Dict) -> Optional[Dict]:
         return None
 
 
-def _cache_usage_response(data: Dict) -> None:
-    """Cache raw usage API response for shared access by claude-usage-reporting."""
-    try:
-        _cache_path = Path.home() / ".claude-pace-maker" / "usage_cache.json"
-        _cache_path.parent.mkdir(parents=True, exist_ok=True)
-        _tmp_path = _cache_path.with_suffix(f".json.tmp.{os.getpid()}")
-        _tmp_path.write_text(json.dumps({"timestamp": time.time(), "response": data}))
-        _tmp_path.rename(_cache_path)
-    except Exception as e:
-        log_warning("api_client", "Failed to cache usage response", e)
-
-
 def fetch_usage(
     access_token: str,
     timeout: int = 10,
-    backoff_state_path: Optional[str] = None,
-    fallback_state_path: Optional[str] = None,
-    usage_cache_path: Optional[str] = None,
+    db_path: Optional[str] = None,
 ) -> Optional[Dict]:
     """
     Fetch usage data from Claude OAuth API.
 
-    Implements:
-    - Persistent exponential backoff on 429 (shared via api_backoff.json)
-    - In-call retry with short delays before recording persistent backoff
-    - Graceful degradation on all errors
-    - Fallback mode transitions: enter on 429 exhaustion, exit on success
+    All state (backoff, cache, fallback) managed via UsageModel (SQLite).
 
     Args:
         access_token: OAuth access token
         timeout: Request timeout in seconds (default 10)
-        backoff_state_path: Path to backoff state file (default: auto)
-        fallback_state_path: Path to fallback_state.json (default: auto from fallback module)
-        usage_cache_path: Path to usage_cache.json for fallback baselines (default: auto)
+        db_path: Path to usage.db (default: auto)
 
     Returns:
         Parsed usage data dict, or None on any error
     """
+    from .usage_model import UsageModel
+
+    model = UsageModel(db_path=db_path)
+
     # Check persistent backoff state
-    if api_backoff.is_in_backoff(backoff_state_path):
-        remaining = api_backoff.get_backoff_remaining_seconds(backoff_state_path)
+    if model.is_in_backoff():
+        remaining = model.get_backoff_remaining()
         log_info(
             "api_client",
             f"Skipping usage API call - in backoff ({remaining:.0f}s remaining)",
         )
         return None
-
-    # Resolve usage_cache_path default (needed for enter_fallback)
-    if usage_cache_path is None:
-        usage_cache_path = str(Path.home() / ".claude-pace-maker" / "usage_cache.json")
 
     headers = {**API_HEADERS, "Authorization": f"Bearer {access_token}"}
 
@@ -164,20 +142,17 @@ def fetch_usage(
             response = requests.get(API_URL, headers=headers, timeout=timeout)
 
             if response.status_code == 200:
-                # Success - reset backoff and cache response
-                api_backoff.record_success(backoff_state_path)
+                # Success - reset backoff and cache response in SQLite
+                model.record_success()
                 data = response.json()
-                _cache_usage_response(data)
+                model.store_api_response(data)
                 parsed = parse_usage_response(data)
                 # Exit fallback mode if it was active (API recovered)
                 if parsed is not None:
                     try:
-                        from . import fallback as _fallback
-
-                        _fallback.exit_fallback(
+                        model.exit_fallback(
                             real_5h=parsed.get("five_hour_util", 0.0),
                             real_7d=parsed.get("seven_day_util", 0.0),
-                            state_path=fallback_state_path,
                         )
                     except Exception as e:
                         log_warning("api_client", "Failed to exit fallback mode", e)
@@ -190,14 +165,9 @@ def fetch_usage(
                     time.sleep(delay)
                     continue
                 # All retries exhausted - record persistent backoff and enter fallback
-                api_backoff.record_429(backoff_state_path)
+                model.record_429()
                 try:
-                    from . import fallback as _fallback
-
-                    _fallback.enter_fallback(
-                        usage_cache_path=usage_cache_path,
-                        state_path=fallback_state_path,
-                    )
+                    model.enter_fallback()
                 except Exception as e:
                     log_warning("api_client", "Failed to enter fallback mode", e)
                 return None
@@ -220,24 +190,28 @@ def fetch_usage(
 def fetch_user_profile(
     access_token: str,
     timeout: int = 3,
-    backoff_state_path: Optional[str] = None,
+    db_path: Optional[str] = None,
 ) -> Optional[Dict]:
     """
     Fetch user profile from Claude OAuth API.
 
-    Shares backoff state with fetch_usage (same API endpoint rate limits).
+    Shares backoff state with fetch_usage via UsageModel (SQLite).
 
     Args:
         access_token: OAuth access token
         timeout: Request timeout in seconds (default 3)
-        backoff_state_path: Path to backoff state file (default: auto)
+        db_path: Path to usage.db (default: auto)
 
     Returns:
         Profile data dict containing account info, or None on any error
     """
+    from .usage_model import UsageModel
+
+    model = UsageModel(db_path=db_path)
+
     # Check persistent backoff state
-    if api_backoff.is_in_backoff(backoff_state_path):
-        remaining = api_backoff.get_backoff_remaining_seconds(backoff_state_path)
+    if model.is_in_backoff():
+        remaining = model.get_backoff_remaining()
         log_info(
             "api_client",
             f"Skipping profile API call - in backoff ({remaining:.0f}s remaining)",
@@ -254,7 +228,7 @@ def fetch_user_profile(
             response = requests.get(PROFILE_API_URL, headers=headers, timeout=timeout)
 
             if response.status_code == 200:
-                api_backoff.record_success(backoff_state_path)
+                model.record_success()
                 return response.json()
 
             elif response.status_code == 429:
@@ -262,7 +236,7 @@ def fetch_user_profile(
                     delay = _RETRY_BASE_DELAY * (2**attempt)
                     time.sleep(delay)
                     continue
-                api_backoff.record_429(backoff_state_path)
+                model.record_429()
                 return None
 
             else:

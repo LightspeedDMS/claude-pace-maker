@@ -5,20 +5,20 @@ Tests for fallback wiring in api_client.py.
 Story #38: API returns 429 -> enter_fallback; success -> exit_fallback.
 
 Integration points tested:
-- fetch_usage() on 429 (after all retries) -> enter_fallback() called
-- fetch_usage() on 200 success -> exit_fallback() called
+- fetch_usage() on 429 (after all retries) -> model.enter_fallback() called
+- fetch_usage() on 200 success -> model.exit_fallback() called
 - fetch_usage() on non-429 error -> neither enter nor exit called
 
 NOTE: HTTP calls are mocked (unittest.mock) because this module tests the
-integration between api_client and fallback state — not the HTTP layer.
-Real HTTP calls would require a live API token.
+integration between api_client and UsageModel fallback state — not the HTTP
+layer. Real HTTP calls would require a live API token.
+
+All state management is via UsageModel (SQLite) — no JSON files.
 """
 
-import json
-import time
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -38,71 +38,27 @@ def _make_usage_response(five_hour_util: float = 40.0, seven_day_util: float = 2
     }
 
 
-def _write_usage_cache(
-    tmp_path, five_hour_util: float = 40.0, seven_day_util: float = 25.0
-) -> Path:
-    """Write a usage_cache.json file for fallback baseline reading."""
-    cache_path = tmp_path / "usage_cache.json"
-    cache_path.write_text(
-        json.dumps(
-            {
-                "timestamp": time.time(),
-                "response": {
-                    "five_hour": {"utilization": five_hour_util, "resets_at": None},
-                    "seven_day": {"utilization": seven_day_util, "resets_at": None},
-                },
-            }
-        )
-    )
-    return cache_path
-
-
 class TestFetchUsage429TriggersEnterFallback:
     """Tests that 429 response after all retries triggers enter_fallback()."""
 
     def test_429_after_all_retries_enters_fallback(self, tmp_path):
         """
-        When fetch_usage exhausts all retries on 429, enter_fallback() must be called.
-        This verifies the fallback wiring in api_client.py.
+        When fetch_usage exhausts all retries on 429, model.enter_fallback() must be called.
+        This verifies the fallback wiring in api_client.py via UsageModel.
         """
-        from pacemaker import api_client, fallback
+        from pacemaker import api_client
+        from pacemaker.usage_model import UsageModel
 
-        usage_cache_path = _write_usage_cache(tmp_path)
-        state_path = tmp_path / "fallback_state.json"
-        backoff_path = tmp_path / "api_backoff.json"
+        db_path = str(tmp_path / "test.db")
+        model = UsageModel(db_path=db_path)
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 429
-
-        with (
-            patch("pacemaker.api_client.requests.get", return_value=mock_resp),
-            patch("pacemaker.api_client.time.sleep"),
-        ):  # skip real sleeps
-
-            result = api_client.fetch_usage(
-                access_token="test-token",
-                timeout=5,
-                backoff_state_path=str(backoff_path),
-                fallback_state_path=str(state_path),
-                usage_cache_path=str(usage_cache_path),
-            )
-
-        assert result is None  # 429 must return None
-
-        # enter_fallback must have been triggered
-        assert fallback.is_fallback_active(str(state_path)) is True
-
-    def test_429_fallback_captures_baselines_from_cache(self, tmp_path):
-        """
-        When fallback is entered after 429, baseline_5h/7d are read from usage_cache.json.
-        """
-        from pacemaker import api_client, fallback
-
-        usage_cache_path = _write_usage_cache(
-            tmp_path, five_hour_util=55.0, seven_day_util=38.0
+        # Store baseline so enter_fallback() can read it from api_cache
+        model.store_api_response(
+            {
+                "five_hour": {"utilization": 55.0, "resets_at": None},
+                "seven_day": {"utilization": 38.0, "resets_at": None},
+            }
         )
-        state_path = tmp_path / "fallback_state.json"
-        backoff_path = tmp_path / "api_backoff.json"
 
         mock_resp = MagicMock()
         mock_resp.status_code = 429
@@ -111,29 +67,68 @@ class TestFetchUsage429TriggersEnterFallback:
             patch("pacemaker.api_client.requests.get", return_value=mock_resp),
             patch("pacemaker.api_client.time.sleep"),
         ):
+            result = api_client.fetch_usage(
+                access_token="test-token",
+                timeout=5,
+                db_path=db_path,
+            )
 
+        assert result is None  # 429 must return None
+
+        # enter_fallback must have been triggered — verify via a fresh model instance
+        model2 = UsageModel(db_path=db_path)
+        assert model2.is_fallback_active() is True
+
+    def test_429_fallback_captures_baselines_from_cache(self, tmp_path):
+        """
+        When fallback is entered after 429, baselines are read from api_cache table.
+        Verify via _get_synthetic_snapshot() that baseline values are preserved.
+        """
+        from pacemaker import api_client
+        from pacemaker.usage_model import UsageModel
+
+        db_path = str(tmp_path / "test.db")
+        model = UsageModel(db_path=db_path)
+
+        # Store baseline BEFORE the 429 so enter_fallback() can read it
+        model.store_api_response(
+            {
+                "five_hour": {"utilization": 55.0, "resets_at": None},
+                "seven_day": {"utilization": 38.0, "resets_at": None},
+            }
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 429
+
+        with (
+            patch("pacemaker.api_client.requests.get", return_value=mock_resp),
+            patch("pacemaker.api_client.time.sleep"),
+        ):
             api_client.fetch_usage(
                 access_token="test-token",
                 timeout=5,
-                backoff_state_path=str(backoff_path),
-                fallback_state_path=str(state_path),
-                usage_cache_path=str(usage_cache_path),
+                db_path=db_path,
             )
 
-        state = fallback.load_fallback_state(str(state_path))
-        assert state["baseline_5h"] == pytest.approx(55.0, abs=0.1)
-        assert state["baseline_7d"] == pytest.approx(38.0, abs=0.1)
+        # Verify via synthetic snapshot that baselines were captured
+        model2 = UsageModel(db_path=db_path)
+        assert model2.is_fallback_active() is True
+        snapshot = model2._get_synthetic_snapshot()
+        assert snapshot is not None
+        # Synthetic starts at baseline (no accumulated costs yet)
+        assert snapshot.five_hour_util == pytest.approx(55.0, abs=0.5)
+        assert snapshot.seven_day_util == pytest.approx(38.0, abs=0.5)
 
     def test_429_does_not_enter_fallback_on_intermediate_retry(self, tmp_path):
         """
         On first 429 retry (not the last retry), enter_fallback must NOT be called yet.
         Only after all retries are exhausted should fallback be entered.
         """
-        from pacemaker import api_client, fallback
+        from pacemaker import api_client
+        from pacemaker.usage_model import UsageModel
 
-        usage_cache_path = _write_usage_cache(tmp_path)
-        state_path = tmp_path / "fallback_state.json"
-        backoff_path = tmp_path / "api_backoff.json"
+        db_path = str(tmp_path / "test.db")
 
         call_count = {"n": 0}
         mock_200 = MagicMock()
@@ -154,19 +149,18 @@ class TestFetchUsage429TriggersEnterFallback:
             patch("pacemaker.api_client.requests.get", side_effect=side_effect),
             patch("pacemaker.api_client.time.sleep"),
         ):
-
             result = api_client.fetch_usage(
                 access_token="test-token",
                 timeout=5,
-                backoff_state_path=str(backoff_path),
-                fallback_state_path=str(state_path),
-                usage_cache_path=str(usage_cache_path),
+                db_path=db_path,
             )
 
         # Should have succeeded on second attempt
         assert result is not None
-        # Fallback should NOT be active since we recovered
-        assert fallback.is_fallback_active(str(state_path)) is False
+
+        # Fallback should NOT be active since we recovered before exhausting retries
+        model = UsageModel(db_path=db_path)
+        assert model.is_fallback_active() is False
 
 
 class TestFetchUsageSuccessExitsFallback:
@@ -176,17 +170,21 @@ class TestFetchUsageSuccessExitsFallback:
         """
         When fetch_usage succeeds (200) while fallback is active, exit_fallback() must be called.
         """
-        from pacemaker import api_client, fallback
+        from pacemaker import api_client
+        from pacemaker.usage_model import UsageModel
 
-        usage_cache_path = _write_usage_cache(
-            tmp_path, five_hour_util=45.0, seven_day_util=30.0
+        db_path = str(tmp_path / "test.db")
+        model = UsageModel(db_path=db_path)
+
+        # Pre-populate api_cache and enter fallback
+        model.store_api_response(
+            {
+                "five_hour": {"utilization": 45.0, "resets_at": None},
+                "seven_day": {"utilization": 30.0, "resets_at": None},
+            }
         )
-        state_path = tmp_path / "fallback_state.json"
-        backoff_path = tmp_path / "api_backoff.json"
-
-        # Pre-populate fallback state as FALLBACK
-        fallback.enter_fallback(str(usage_cache_path), str(state_path))
-        assert fallback.is_fallback_active(str(state_path)) is True
+        model.enter_fallback()
+        assert model.is_fallback_active() is True
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -198,27 +196,27 @@ class TestFetchUsageSuccessExitsFallback:
             result = api_client.fetch_usage(
                 access_token="test-token",
                 timeout=5,
-                backoff_state_path=str(backoff_path),
-                fallback_state_path=str(state_path),
-                usage_cache_path=str(usage_cache_path),
+                db_path=db_path,
             )
 
         assert result is not None
+
         # Fallback must have been exited
-        assert fallback.is_fallback_active(str(state_path)) is False
+        model2 = UsageModel(db_path=db_path)
+        assert model2.is_fallback_active() is False
 
     def test_success_while_already_normal_does_not_crash(self, tmp_path):
         """
         Calling exit_fallback when already in NORMAL mode is a no-op; must not crash.
         """
-        from pacemaker import api_client, fallback
+        from pacemaker import api_client
+        from pacemaker.usage_model import UsageModel
 
-        usage_cache_path = _write_usage_cache(tmp_path)
-        state_path = tmp_path / "fallback_state.json"
-        backoff_path = tmp_path / "api_backoff.json"
+        db_path = str(tmp_path / "test.db")
+        model = UsageModel(db_path=db_path)
 
         # State is NORMAL (default)
-        assert fallback.is_fallback_active(str(state_path)) is False
+        assert model.is_fallback_active() is False
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -228,35 +226,34 @@ class TestFetchUsageSuccessExitsFallback:
             result = api_client.fetch_usage(
                 access_token="test-token",
                 timeout=5,
-                backoff_state_path=str(backoff_path),
-                fallback_state_path=str(state_path),
-                usage_cache_path=str(usage_cache_path),
+                db_path=db_path,
             )
 
         assert result is not None
+
         # Still normal, no crash
-        assert fallback.is_fallback_active(str(state_path)) is False
+        model2 = UsageModel(db_path=db_path)
+        assert model2.is_fallback_active() is False
 
     def test_success_exits_fallback_with_correct_utilization_values(self, tmp_path):
         """
         exit_fallback() must be called with real 5h/7d utilization from the API response.
+        Verify by checking that fallback is exited (not still active after a 200).
         """
-        from pacemaker import api_client, fallback
+        from pacemaker import api_client
+        from pacemaker.usage_model import UsageModel
 
-        usage_cache_path = _write_usage_cache(
-            tmp_path, five_hour_util=45.0, seven_day_util=30.0
+        db_path = str(tmp_path / "test.db")
+        model = UsageModel(db_path=db_path)
+
+        # Pre-populate cache and enter fallback
+        model.store_api_response(
+            {
+                "five_hour": {"utilization": 45.0, "resets_at": None},
+                "seven_day": {"utilization": 30.0, "resets_at": None},
+            }
         )
-        state_path = tmp_path / "fallback_state.json"
-        backoff_path = tmp_path / "api_backoff.json"
-
-        fallback.enter_fallback(str(usage_cache_path), str(state_path))
-
-        exit_calls = []
-        original_exit = fallback.exit_fallback
-
-        def capturing_exit(real_5h, real_7d, state_path=None):
-            exit_calls.append({"real_5h": real_5h, "real_7d": real_7d})
-            return original_exit(real_5h, real_7d, state_path=state_path)
+        model.enter_fallback()
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -264,22 +261,20 @@ class TestFetchUsageSuccessExitsFallback:
             five_hour_util=52.0, seven_day_util=33.0
         )
 
-        with (
-            patch("pacemaker.api_client.requests.get", return_value=mock_resp),
-            patch("pacemaker.fallback.exit_fallback", side_effect=capturing_exit),
-        ):
-
-            api_client.fetch_usage(
+        with patch("pacemaker.api_client.requests.get", return_value=mock_resp):
+            result = api_client.fetch_usage(
                 access_token="test-token",
                 timeout=5,
-                backoff_state_path=str(backoff_path),
-                fallback_state_path=str(state_path),
-                usage_cache_path=str(usage_cache_path),
+                db_path=db_path,
             )
 
-        assert len(exit_calls) == 1
-        assert exit_calls[0]["real_5h"] == pytest.approx(52.0, abs=0.1)
-        assert exit_calls[0]["real_7d"] == pytest.approx(33.0, abs=0.1)
+        assert result is not None
+        assert result["five_hour_util"] == pytest.approx(52.0, abs=0.1)
+        assert result["seven_day_util"] == pytest.approx(33.0, abs=0.1)
+
+        # Fallback must be exited after successful 200
+        model2 = UsageModel(db_path=db_path)
+        assert model2.is_fallback_active() is False
 
 
 class TestFetchUsageNon429ErrorNoFallbackChange:
@@ -290,16 +285,12 @@ class TestFetchUsageNon429ErrorNoFallbackChange:
         Non-429 HTTP errors (500, 401, etc.) must NOT trigger enter_fallback().
         Only rate limit (429) triggers fallback mode.
         """
-        from pacemaker import api_client, fallback
-
-        usage_cache_path = _write_usage_cache(tmp_path)
-        state_path = tmp_path / "fallback_state.json"
-        backoff_path = tmp_path / "api_backoff.json"
+        from pacemaker import api_client
+        from pacemaker.usage_model import UsageModel
 
         for status_code in [500, 401, 403, 503]:
-            # Reset state for each test
-            if state_path.exists():
-                state_path.unlink()
+            # Use a fresh db per status code to isolate tests
+            iter_db_path = str(tmp_path / f"test_{status_code}.db")
 
             mock_resp = MagicMock()
             mock_resp.status_code = status_code
@@ -308,15 +299,15 @@ class TestFetchUsageNon429ErrorNoFallbackChange:
                 result = api_client.fetch_usage(
                     access_token="test-token",
                     timeout=5,
-                    backoff_state_path=str(backoff_path),
-                    fallback_state_path=str(state_path),
-                    usage_cache_path=str(usage_cache_path),
+                    db_path=iter_db_path,
                 )
 
             assert result is None
+
             # Non-429 must NOT trigger fallback
+            model = UsageModel(db_path=iter_db_path)
             assert (
-                fallback.is_fallback_active(str(state_path)) is False
+                model.is_fallback_active() is False
             ), f"Fallback should not be active after HTTP {status_code}"
 
     def test_connection_error_does_not_enter_fallback(self, tmp_path):
@@ -324,12 +315,11 @@ class TestFetchUsageNon429ErrorNoFallbackChange:
         Network errors (connection refused, timeout) must NOT enter fallback.
         Fallback is only for rate limiting (429), not transient network failures.
         """
-        from pacemaker import api_client, fallback
+        from pacemaker import api_client
+        from pacemaker.usage_model import UsageModel
         import requests as req
 
-        usage_cache_path = _write_usage_cache(tmp_path)
-        state_path = tmp_path / "fallback_state.json"
-        backoff_path = tmp_path / "api_backoff.json"
+        db_path = str(tmp_path / "test.db")
 
         with patch(
             "pacemaker.api_client.requests.get",
@@ -338,13 +328,13 @@ class TestFetchUsageNon429ErrorNoFallbackChange:
             result = api_client.fetch_usage(
                 access_token="test-token",
                 timeout=5,
-                backoff_state_path=str(backoff_path),
-                fallback_state_path=str(state_path),
-                usage_cache_path=str(usage_cache_path),
+                db_path=db_path,
             )
 
         assert result is None
-        assert fallback.is_fallback_active(str(state_path)) is False
+
+        model = UsageModel(db_path=db_path)
+        assert model.is_fallback_active() is False
 
 
 class TestFetchUsageBackoffSkipDoesNotChangeFallback:
@@ -356,33 +346,36 @@ class TestFetchUsageBackoffSkipDoesNotChangeFallback:
         If we entered fallback due to 429 and backoff is now active, we should stay
         in fallback until the API call actually succeeds.
         """
-        from pacemaker import api_client, fallback
+        from pacemaker import api_client
+        from pacemaker.usage_model import UsageModel
 
-        usage_cache_path = _write_usage_cache(tmp_path)
-        state_path = tmp_path / "fallback_state.json"
-        backoff_path = tmp_path / "api_backoff.json"
+        db_path = str(tmp_path / "test.db")
+        model = UsageModel(db_path=db_path)
 
-        # Set up: fallback is active
-        fallback.enter_fallback(str(usage_cache_path), str(state_path))
-        assert fallback.is_fallback_active(str(state_path)) is True
+        # Set up: store baseline, enter fallback, then trigger backoff
+        model.store_api_response(
+            {
+                "five_hour": {"utilization": 50.0, "resets_at": None},
+                "seven_day": {"utilization": 35.0, "resets_at": None},
+            }
+        )
+        model.enter_fallback()
+        assert model.is_fallback_active() is True
 
-        # Simulate active backoff (is_in_backoff returns True -> call is skipped)
-        with (
-            patch("pacemaker.api_client.api_backoff.is_in_backoff", return_value=True),
-            patch(
-                "pacemaker.api_client.api_backoff.get_backoff_remaining_seconds",
-                return_value=30.0,
-            ),
-        ):
+        # Trigger backoff by recording a 429 directly
+        model.record_429()
+        assert model.is_in_backoff() is True
 
-            result = api_client.fetch_usage(
-                access_token="test-token",
-                timeout=5,
-                backoff_state_path=str(backoff_path),
-                fallback_state_path=str(state_path),
-                usage_cache_path=str(usage_cache_path),
-            )
+        # Attempt a fetch — should be skipped due to active backoff
+        # (No HTTP mock needed since the call short-circuits before making a request)
+        result = api_client.fetch_usage(
+            access_token="test-token",
+            timeout=5,
+            db_path=db_path,
+        )
 
         assert result is None  # Skipped due to backoff
+
         # Fallback must STILL be active — backoff skip does not exit fallback
-        assert fallback.is_fallback_active(str(state_path)) is True
+        model2 = UsageModel(db_path=db_path)
+        assert model2.is_fallback_active() is True

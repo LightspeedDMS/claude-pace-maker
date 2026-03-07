@@ -15,6 +15,7 @@ import json
 import time
 from pathlib import Path
 import sys
+from unittest.mock import MagicMock, patch
 
 
 # Add src to path
@@ -223,53 +224,35 @@ class TestLoadCachedProfileWithTTL:
         assert result is None
 
 
+def _make_backoff_model(is_in_backoff: bool) -> MagicMock:
+    """Return a MagicMock that mimics UsageModel with the given backoff state."""
+    model = MagicMock()
+    model.is_in_backoff.return_value = is_in_backoff
+    model.get_backoff_remaining.return_value = 3600.0
+    return model
+
+
 class TestFetchAndCacheProfile:
     """Tests for fetch_and_cache_profile() - with backoff awareness."""
-
-    def _write_active_backoff(self, tmp_path) -> Path:
-        """Helper: write an active backoff state file."""
-        backoff_path = tmp_path / "api_backoff.json"
-        backoff_path.write_text(
-            json.dumps(
-                {
-                    "consecutive_429s": 1,
-                    "backoff_until": time.time() + 3600,  # active backoff
-                    "last_success_time": None,
-                }
-            )
-        )
-        return backoff_path
-
-    def _write_expired_backoff(self, tmp_path) -> Path:
-        """Helper: write an expired backoff state file."""
-        backoff_path = tmp_path / "api_backoff.json"
-        backoff_path.write_text(
-            json.dumps(
-                {
-                    "consecutive_429s": 0,
-                    "backoff_until": None,
-                    "last_success_time": time.time() - 60,
-                }
-            )
-        )
-        return backoff_path
 
     def test_returns_cached_profile_when_backoff_active(self, tmp_path):
         """fetch_and_cache_profile returns cached profile when in backoff."""
         from pacemaker.profile_cache import cache_profile, fetch_and_cache_profile
 
         cache_path = tmp_path / "profile_cache.json"
-        backoff_path = self._write_active_backoff(tmp_path)
 
         # Pre-populate the cache
         cached_profile = {"account": {"email": "cached@example.com"}}
         cache_profile(cached_profile, str(cache_path))
 
-        result = fetch_and_cache_profile(
-            access_token="fake_token",
-            cache_path=str(cache_path),
-            backoff_path=str(backoff_path),
-        )
+        with patch(
+            "pacemaker.usage_model.UsageModel",
+            return_value=_make_backoff_model(is_in_backoff=True),
+        ):
+            result = fetch_and_cache_profile(
+                access_token="fake_token",
+                cache_path=str(cache_path),
+            )
 
         assert result is not None
         assert result["account"]["email"] == "cached@example.com"
@@ -279,13 +262,15 @@ class TestFetchAndCacheProfile:
         from pacemaker.profile_cache import fetch_and_cache_profile
 
         cache_path = tmp_path / "profile_cache.json"  # No cache
-        backoff_path = self._write_active_backoff(tmp_path)
 
-        result = fetch_and_cache_profile(
-            access_token="fake_token",
-            cache_path=str(cache_path),
-            backoff_path=str(backoff_path),
-        )
+        with patch(
+            "pacemaker.usage_model.UsageModel",
+            return_value=_make_backoff_model(is_in_backoff=True),
+        ):
+            result = fetch_and_cache_profile(
+                access_token="fake_token",
+                cache_path=str(cache_path),
+            )
 
         assert result is None
 
@@ -294,19 +279,20 @@ class TestFetchAndCacheProfile:
         from pacemaker.profile_cache import cache_profile, fetch_and_cache_profile
 
         cache_path = tmp_path / "profile_cache.json"
-        backoff_path = self._write_active_backoff(tmp_path)
 
         cached_profile = {"account": {"email": "cached@example.com"}}
         cache_profile(cached_profile, str(cache_path))
 
         # This test verifies no API call is made by using an obviously invalid token
         # The function should return from cache without trying the API
-        # (if it tried the API with no_network=True mode, it would fail differently)
-        result = fetch_and_cache_profile(
-            access_token="fake_invalid_token",
-            cache_path=str(cache_path),
-            backoff_path=str(backoff_path),
-        )
+        with patch(
+            "pacemaker.usage_model.UsageModel",
+            return_value=_make_backoff_model(is_in_backoff=True),
+        ):
+            result = fetch_and_cache_profile(
+                access_token="fake_invalid_token",
+                cache_path=str(cache_path),
+            )
 
         # Should return cached profile, not raise an exception
         assert result is not None
@@ -352,32 +338,24 @@ class TestAdditionalProfileCacheCoverage:
     ):
         """fetch_and_cache_profile returns cached profile when API call returns None."""
         from pacemaker.profile_cache import cache_profile, fetch_and_cache_profile
-        from unittest.mock import patch
 
         cache_path = tmp_path / "profile_cache.json"
-        backoff_path = tmp_path / "api_backoff.json"
-
-        # No active backoff
-        backoff_path.write_text(
-            json.dumps(
-                {
-                    "consecutive_429s": 0,
-                    "backoff_until": None,
-                    "last_success_time": time.time(),
-                }
-            )
-        )
 
         # Pre-populate cache
         cached_profile = {"account": {"email": "cached@example.com"}}
         cache_profile(cached_profile, str(cache_path))
 
-        # Mock api_client.fetch_user_profile to return None (simulates API error)
-        with patch("pacemaker.api_client.fetch_user_profile", return_value=None):
+        # No active backoff; mock api_client.fetch_user_profile to return None
+        with (
+            patch(
+                "pacemaker.usage_model.UsageModel",
+                return_value=_make_backoff_model(is_in_backoff=False),
+            ),
+            patch("pacemaker.api_client.fetch_user_profile", return_value=None),
+        ):
             result = fetch_and_cache_profile(
                 access_token="test_token",
                 cache_path=str(cache_path),
-                backoff_path=str(backoff_path),
             )
 
         # Should return the cached profile since API returned None
@@ -387,34 +365,26 @@ class TestAdditionalProfileCacheCoverage:
     def test_fetch_and_cache_profile_caches_fresh_api_response(self, tmp_path):
         """fetch_and_cache_profile caches successful API response to disk."""
         from pacemaker.profile_cache import fetch_and_cache_profile, load_cached_profile
-        from unittest.mock import patch
 
         cache_path = tmp_path / "profile_cache.json"
-        backoff_path = tmp_path / "api_backoff.json"
-
-        # No active backoff
-        backoff_path.write_text(
-            json.dumps(
-                {
-                    "consecutive_429s": 0,
-                    "backoff_until": None,
-                    "last_success_time": time.time(),
-                }
-            )
-        )
 
         fresh_profile = {
             "account": {"email": "fresh@example.com", "has_claude_pro": True}
         }
 
-        # Mock api_client.fetch_user_profile to return fresh profile
-        with patch(
-            "pacemaker.api_client.fetch_user_profile", return_value=fresh_profile
+        # No active backoff; mock api_client.fetch_user_profile to return fresh profile
+        with (
+            patch(
+                "pacemaker.usage_model.UsageModel",
+                return_value=_make_backoff_model(is_in_backoff=False),
+            ),
+            patch(
+                "pacemaker.api_client.fetch_user_profile", return_value=fresh_profile
+            ),
         ):
             result = fetch_and_cache_profile(
                 access_token="test_token",
                 cache_path=str(cache_path),
-                backoff_path=str(backoff_path),
             )
 
         # Should return the fresh profile
@@ -429,35 +399,27 @@ class TestAdditionalProfileCacheCoverage:
     def test_fetch_and_cache_profile_exception_returns_cached(self, tmp_path):
         """fetch_and_cache_profile returns cached profile when fetch_user_profile raises."""
         from pacemaker.profile_cache import cache_profile, fetch_and_cache_profile
-        from unittest.mock import patch
 
         cache_path = tmp_path / "profile_cache.json"
-        backoff_path = tmp_path / "api_backoff.json"
-
-        # No active backoff
-        backoff_path.write_text(
-            json.dumps(
-                {
-                    "consecutive_429s": 0,
-                    "backoff_until": None,
-                    "last_success_time": time.time(),
-                }
-            )
-        )
 
         # Pre-populate cache
         cached_profile = {"account": {"email": "cached@example.com"}}
         cache_profile(cached_profile, str(cache_path))
 
-        # Make fetch_user_profile raise an exception (covers lines 160-162)
-        with patch(
-            "pacemaker.api_client.fetch_user_profile",
-            side_effect=RuntimeError("network error"),
+        # No active backoff; make fetch_user_profile raise an exception
+        with (
+            patch(
+                "pacemaker.usage_model.UsageModel",
+                return_value=_make_backoff_model(is_in_backoff=False),
+            ),
+            patch(
+                "pacemaker.api_client.fetch_user_profile",
+                side_effect=RuntimeError("network error"),
+            ),
         ):
             result = fetch_and_cache_profile(
                 access_token="test_token",
                 cache_path=str(cache_path),
-                backoff_path=str(backoff_path),
             )
 
         # Should return the cached profile as fallback
@@ -469,31 +431,23 @@ class TestAdditionalProfileCacheCoverage:
     ):
         """fetch_and_cache_profile returns None when fetch raises and no cache exists."""
         from pacemaker.profile_cache import fetch_and_cache_profile
-        from unittest.mock import patch
 
         cache_path = tmp_path / "profile_cache.json"  # No cache
-        backoff_path = tmp_path / "api_backoff.json"
 
-        # No active backoff
-        backoff_path.write_text(
-            json.dumps(
-                {
-                    "consecutive_429s": 0,
-                    "backoff_until": None,
-                    "last_success_time": time.time(),
-                }
-            )
-        )
-
-        # Make fetch_user_profile raise an exception (covers lines 160-162)
-        with patch(
-            "pacemaker.api_client.fetch_user_profile",
-            side_effect=ConnectionError("timeout"),
+        # No active backoff; make fetch_user_profile raise an exception
+        with (
+            patch(
+                "pacemaker.usage_model.UsageModel",
+                return_value=_make_backoff_model(is_in_backoff=False),
+            ),
+            patch(
+                "pacemaker.api_client.fetch_user_profile",
+                side_effect=ConnectionError("timeout"),
+            ),
         ):
             result = fetch_and_cache_profile(
                 access_token="test_token",
                 cache_path=str(cache_path),
-                backoff_path=str(backoff_path),
             )
 
         assert result is None
@@ -569,27 +523,18 @@ class TestFetchAndCacheProfileDefaultPath:
         from pacemaker.profile_cache import fetch_and_cache_profile
 
         default_path = tmp_path / "profile_cache.json"
-        backoff_path = tmp_path / "api_backoff.json"
-
         monkeypatch.setattr(pc, "DEFAULT_PROFILE_CACHE_PATH", str(default_path))
 
         # Active backoff so no API call is made — just returns cached (or None)
-        backoff_path.write_text(
-            json.dumps(
-                {
-                    "consecutive_429s": 1,
-                    "backoff_until": time.time() + 3600,
-                    "last_success_time": None,
-                }
+        with patch(
+            "pacemaker.usage_model.UsageModel",
+            return_value=_make_backoff_model(is_in_backoff=True),
+        ):
+            # cache_path=None means DEFAULT_PROFILE_CACHE_PATH is used (line 131)
+            result = fetch_and_cache_profile(
+                access_token="token",
+                cache_path=None,
             )
-        )
-
-        # cache_path=None means DEFAULT_PROFILE_CACHE_PATH is used (line 131)
-        result = fetch_and_cache_profile(
-            access_token="token",
-            cache_path=None,
-            backoff_path=str(backoff_path),
-        )
 
         # No cache exists, in backoff → returns None
         assert result is None
