@@ -174,11 +174,11 @@ class TestAccumulateCostEdgeCases:
 
     def test_cumulative_across_calls(self, tmp_path):
         sp = self._enter(tmp_path)
-        accumulate_cost(1_000_000, 0, 0, 0, "sonnet", sp)
-        accumulate_cost(1_000_000, 0, 0, 0, "sonnet", sp)
-        accumulate_cost(1_000_000, 0, 0, 0, "sonnet", sp)
+        accumulate_cost(1_000_000, 0, 0, 0, "sonnet", sp)  # $3
+        accumulate_cost(0, 1_000_000, 0, 0, "sonnet", sp)  # $15
+        accumulate_cost(1_000_000, 500_000, 0, 0, "sonnet", sp)  # $3 + $7.5
         state = load_fallback_state(sp)
-        assert state["accumulated_cost"] == pytest.approx(9.0)
+        assert state["accumulated_cost"] == pytest.approx(28.5)
 
     def test_mixed_model_families(self, tmp_path):
         sp = self._enter(tmp_path)

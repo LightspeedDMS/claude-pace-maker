@@ -38,6 +38,7 @@ class TestDefaultState:
             "last_rollover_resets_7d",
             "tier",
             "entered_at",
+            "last_accumulated_usage",
         }
         assert set(state.keys()) == expected_keys
 

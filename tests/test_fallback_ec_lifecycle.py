@@ -187,7 +187,9 @@ class TestFullLifecycleIntegration:
         save_fallback_state(state, sp)
 
         # More cost, then second rollover at t=16:00
-        accumulate_cost(1_000_000, 0, 0, 0, "sonnet", sp)
+        accumulate_cost(
+            0, 1_000_000, 0, 0, "sonnet", sp
+        )  # $15 (different from first call)
         t2 = datetime(2026, 3, 6, 16, 0, 0)
         state = load_fallback_state(sp)
         r2 = calculate_synthetic_with_rollover(state, "5x", _DEFAULT_TOKEN_COSTS, t2)
@@ -195,7 +197,7 @@ class TestFullLifecycleIntegration:
         save_fallback_state(state, sp)
 
         state = load_fallback_state(sp)
-        assert state["rollover_cost_5h"] == pytest.approx(6.0)
+        assert state["rollover_cost_5h"] == pytest.approx(18.0)
 
     @patch("pacemaker.profile_cache.load_cached_profile", return_value=None)
     def test_accumulate_noop_after_exit(self, _mock, tmp_path):

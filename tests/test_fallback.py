@@ -710,7 +710,7 @@ class TestAccumulateCost:
             state_path=str(state_path),
         )
         accumulate_cost(
-            input_tokens=1000,
+            input_tokens=2000,
             output_tokens=0,
             cache_read_tokens=0,
             cache_creation_tokens=0,
@@ -719,7 +719,7 @@ class TestAccumulateCost:
         )
 
         state = load_fallback_state(str(state_path))
-        expected = 2 * (1000 * 15.0 / 1_000_000)
+        expected = (1000 + 2000) * 15.0 / 1_000_000
         assert state["accumulated_cost"] == pytest.approx(expected, abs=0.0001)
 
     def test_noop_when_not_in_fallback(self, tmp_path):

@@ -110,6 +110,7 @@ def _default_state() -> Dict[str, Any]:
         "last_rollover_resets_7d": None,
         "tier": None,
         "entered_at": None,
+        "last_accumulated_usage": None,
     }
 
 
@@ -608,6 +609,21 @@ def accumulate_cost(
         if current_state["state"] != FallbackState.FALLBACK.value:
             return  # No-op when not in fallback
 
+        # Build usage fingerprint for deduplication
+        current_usage = {
+            "input": input_tokens,
+            "output": output_tokens,
+            "cache_read": cache_read_tokens,
+            "cache_create": cache_creation_tokens,
+            "model": model_family.lower(),
+        }
+
+        # Skip if this exact usage was already accumulated (parallel tool calls)
+        last_usage = current_state.get("last_accumulated_usage")
+        if last_usage == current_usage:
+            log_info("fallback", "Skipping duplicate usage accumulation")
+            return
+
         pricing = API_PRICING.get(model_family.lower()) or API_PRICING["sonnet"]
 
         cost = (
@@ -620,6 +636,7 @@ def accumulate_cost(
         current_state["accumulated_cost"] = (
             float(current_state.get("accumulated_cost", 0.0)) + cost
         )
+        current_state["last_accumulated_usage"] = current_usage
         save_fallback_state(current_state, state_path)
 
     except Exception as e:

@@ -1255,23 +1255,41 @@ def _accumulate_fallback_cost(
         fallback_state_path: Path to fallback_state.json (default: auto)
     """
     try:
+        import fcntl
         from . import fallback as _fallback
 
         if not _fallback.is_fallback_active(fallback_state_path):
             return
 
-        token_data = _get_last_token_usage(transcript_path)
-        if not token_data:
+        # Per-project file lock: if another parallel tool call is already
+        # accumulating, skip this invocation entirely (LOCK_NB = non-blocking).
+        lock_path = Path.home() / ".claude-pace-maker" / "fallback_accumulate.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(lock_path, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            # Another invocation holds the lock — skip to avoid double-counting
+            lock_fd.close()
             return
 
-        _fallback.accumulate_cost(
-            input_tokens=token_data["input_tokens"],
-            output_tokens=token_data["output_tokens"],
-            cache_read_tokens=token_data["cache_read_tokens"],
-            cache_creation_tokens=token_data["cache_creation_tokens"],
-            model_family=token_data["model_family"],
-            state_path=fallback_state_path,
-        )
+        try:
+            token_data = _get_last_token_usage(transcript_path)
+            if not token_data:
+                return
+
+            _fallback.accumulate_cost(
+                input_tokens=token_data["input_tokens"],
+                output_tokens=token_data["output_tokens"],
+                cache_read_tokens=token_data["cache_read_tokens"],
+                cache_creation_tokens=token_data["cache_creation_tokens"],
+                model_family=token_data["model_family"],
+                state_path=fallback_state_path,
+            )
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
     except Exception as e:
         log_warning("hook", "Failed to accumulate fallback cost", e)
 

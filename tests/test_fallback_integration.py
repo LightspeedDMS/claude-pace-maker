@@ -156,9 +156,10 @@ class TestFullFallbackCycle:
         assert state_after_first["state"] == FallbackState.FALLBACK.value
 
         # Simulate second "session": load existing state and add more cost
+        # Use different token values to avoid dedup (real API turns always differ)
         accumulate_cost(
             input_tokens=10000,
-            output_tokens=5000,
+            output_tokens=5001,
             cache_read_tokens=0,
             cache_creation_tokens=0,
             model_family="opus",
@@ -168,7 +169,7 @@ class TestFullFallbackCycle:
         state_after_second = load_fallback_state(str(state_path))
         cost_after_second = state_after_second["accumulated_cost"]
 
-        # Cost should be cumulative
+        # Cost should be cumulative (nearly doubled)
         assert cost_after_second == pytest.approx(cost_after_first * 2, rel=0.01)
 
     def test_synthetic_values_increase_with_cost(self, tmp_path):
@@ -204,8 +205,8 @@ class TestFullFallbackCycle:
         result1 = calculate_synthetic(state, tier="5x", token_costs=token_costs)
 
         accumulate_cost(
-            input_tokens=1000,
-            output_tokens=500,
+            input_tokens=2000,
+            output_tokens=1000,
             cache_read_tokens=0,
             cache_creation_tokens=0,
             model_family="sonnet",
