@@ -331,6 +331,69 @@ pace-maker intent-validation on
 - **Zero Tolerance**: Throttles immediately when over budget
 - **Adaptive Delay**: Calculates exact delay to reach 95% by window end
 
+## Resilient Fallback Mode
+
+When Anthropic's usage API becomes unavailable (HTTP 429 rate limiting), pace-maker automatically switches to **fallback mode** — synthesizing utilization estimates from accumulated token costs so that pacing continues uninterrupted.
+
+### How It Works
+
+```
+Normal Mode                        Fallback Mode
+┌──────────────┐    429 error     ┌──────────────────────┐
+│  Real API     │ ──────────────> │  Synthetic estimates  │
+│  utilization  │                 │  from token costs     │
+│  from Claude  │ <────────────── │  + baseline snapshot  │
+└──────────────┘    API recovers  └──────────────────────┘
+```
+
+1. **Entry**: When the API returns 429 or exponential backoff is active, pace-maker captures the last known utilization as a baseline and begins tracking token costs per session
+2. **During fallback**: Each hook invocation accumulates cost (input, output, cache tokens × model pricing). Synthetic utilization = baseline + accumulated_cost × coefficient. Reset windows are projected forward using the last known reset timestamp
+3. **Window rollovers**: When a 5-hour or 7-day window rolls over during fallback, the accumulated cost offset is recorded so only post-rollover costs count toward the new window
+4. **Exit**: When the API returns a successful response, pace-maker compares its synthetic prediction against the real value, calibrates the coefficient, and returns to normal mode
+
+### Coefficient Calibration
+
+The mapping from dollar cost to utilization percentage depends on your subscription tier. Pace-maker ships with default coefficients for 5x and 20x tiers, but **automatically learns better values** over time:
+
+- When the API recovers after a fallback period, the system computes: `ratio = real_utilization / synthetic_prediction`
+- The coefficient is adjusted: `new = weighted_average(old_coefficient, measured_coefficient)`
+- Calibrated coefficients are stored per tier in SQLite (`calibrated_coefficients` table) and used in preference to defaults
+- A clamp range (0.1×–10×) prevents wild swings from outlier measurements
+- Each calibration event increments a sample counter for progressively stable averaging
+
+### UsageModel — Single Source of Truth
+
+The `UsageModel` class (`src/pacemaker/usage_model.py`) is the unified access point for all usage data:
+
+```python
+from pacemaker.usage_model import UsageModel
+
+model = UsageModel()
+snapshot = model.get_current_usage()  # Returns real or synthetic
+if snapshot:
+    print(f"5h: {snapshot.five_hour_util:.1f}%")
+    print(f"Synthetic: {snapshot.is_synthetic}")
+```
+
+Key design principles:
+- **Stateless between calls**: All state lives in SQLite (WAL mode for concurrent access)
+- **Can be instantiated fresh** on every hook invocation — no in-memory state to stale
+- **Automatic mode selection**: `get_current_usage()` returns real API data in normal mode, synthetic estimates in fallback mode
+- **Concurrency-safe**: Cost accumulation uses INSERT-only pattern (no read-modify-write races)
+
+### State Storage
+
+All fallback state is stored in SQLite tables (replacing previous JSON files):
+
+| Table | Purpose |
+|-------|---------|
+| `api_cache` | Last successful API response (raw) |
+| `fallback_state_v2` | Current mode, baseline, tier, rollover offsets |
+| `accumulated_costs` | Per-session cost records (INSERT-only) |
+| `backoff_state` | Exponential backoff tracking |
+| `calibrated_coefficients` | Learned cost→utilization mappings per tier |
+| `profile_cache` | Cached profile data for tier detection |
+
 ## Langfuse Telemetry Integration
 
 Optional integration with [Langfuse](https://langfuse.com) for observability and tracing.

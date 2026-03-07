@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.18.0] - 2026-03-07
+
+### Added
+- **Resilient Fallback Mode**: When the Claude API returns 429 errors, pace-maker enters fallback mode and synthesizes utilization estimates from accumulated token costs. Includes automatic state machine transitions (NORMAL → FALLBACK → NORMAL), per-session cost tracking in SQLite, and rollover-safe window projections
+- **UsageModel — Single Source of Truth**: New `UsageModel` class (`src/pacemaker/usage_model.py`) unifies all usage data access. Stateless between calls with all state in SQLite WAL mode. Both pace-maker hooks and claude-usage monitor read from the same source
+- **Coefficient Calibration**: When the API recovers after a fallback period, compares synthetic predictions against real API values. Auto-adjusts cost-to-utilization coefficients via weighted average, stored per tier (5x/20x) in `calibrated_coefficients` SQLite table
+- **SQLite State Migration**: Fallback state, API cache, backoff state, and profile cache moved from JSON files to SQLite tables (`fallback_state_v2`, `api_cache`, `backoff_state`, `profile_cache`). Eliminates TOCTOU races between concurrent sessions
+- **Accumulated Cost Tracking**: `accumulated_costs` table with INSERT-only concurrency-safe cost accumulation (no read-modify-write). Idempotent per-session deduplication prevents double-counting
+- **Pressure Tests**: 23 new tests covering 5h/7d cycle switching, coefficient calibration, rollover handling, and edge cases
+
+### Fixed
+- **Rollover detection in synthetic mode**: Fixed production bug where `_project_window()` returned `five_rolled=False` after `get_reset_windows()` persisted the projected window. Now checks persisted `rollover_cost_5h/7d` as primary indicator
+- **Stale JSON fallback guard**: `is_fallback_active()` no longer lets stale `fallback_state.json` override empty SQLite table during transition period
+- **Tier-aware calibration**: `calibrate_on_recovery()` stores under detected tier (e.g., "20x") from profile cache, not hardcoded "5x"
+- **Per-project fallback lock**: Scoped fallback lock file path to prevent cross-project interference
+
 ## [1.17.0] - 2026-02-22
 
 ### Added

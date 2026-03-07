@@ -80,6 +80,66 @@ CREATE TABLE IF NOT EXISTS secrets_metrics (
     bucket_timestamp INTEGER PRIMARY KEY,
     secrets_masked_count INTEGER DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS api_cache (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    timestamp REAL NOT NULL,
+    five_hour_util REAL NOT NULL,
+    five_hour_resets_at TEXT,
+    seven_day_util REAL NOT NULL,
+    seven_day_resets_at TEXT,
+    raw_response TEXT
+);
+
+CREATE TABLE IF NOT EXISTS fallback_state_v2 (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    state TEXT NOT NULL DEFAULT 'normal',
+    baseline_5h REAL DEFAULT 0.0,
+    baseline_7d REAL DEFAULT 0.0,
+    resets_at_5h TEXT,
+    resets_at_7d TEXT,
+    tier TEXT DEFAULT '5x',
+    entered_at REAL,
+    rollover_cost_5h REAL,
+    rollover_cost_7d REAL,
+    last_rollover_resets_5h TEXT,
+    last_rollover_resets_7d TEXT
+);
+
+CREATE TABLE IF NOT EXISTS accumulated_costs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp REAL NOT NULL,
+    session_id TEXT NOT NULL,
+    cost_dollars REAL NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_creation_tokens INTEGER,
+    model_family TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_accum_costs_ts ON accumulated_costs(timestamp);
+
+CREATE TABLE IF NOT EXISTS backoff_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    consecutive_429s INTEGER NOT NULL DEFAULT 0,
+    backoff_until REAL,
+    last_success_time REAL
+);
+
+CREATE TABLE IF NOT EXISTS profile_cache (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    timestamp REAL NOT NULL,
+    profile_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS calibrated_coefficients (
+    tier TEXT PRIMARY KEY,
+    coefficient_5h REAL NOT NULL,
+    coefficient_7d REAL NOT NULL,
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    last_calibrated REAL
+);
 """
 
 
