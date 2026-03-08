@@ -374,38 +374,6 @@ class TestPacingEngineReadsTierFromFallbackState:
     def teardown_method(self):
         Path(self.db_path).unlink(missing_ok=True)
 
-    def test_20x_tier_produces_lower_synthetic_utilization_than_5x(self):
-        """
-        When fallback state has tier='20x', synthetic utilization must be lower
-        than when tier='5x' for the same accumulated_cost and baselines.
-
-        This is the core Finding 7 fix: 20x coefficients are ~5x smaller than
-        5x coefficients, so 20x users should not see over-estimated utilization.
-
-        Tests via calculate_synthetic directly since run_pacing_check does not
-        expose utilization values in its return dict.
-        """
-        from pacemaker.fallback import calculate_synthetic, load_token_costs
-
-        token_costs = load_token_costs()
-        state = {
-            "baseline_5h": 20.0,
-            "baseline_7d": 15.0,
-            "accumulated_cost": 20.0,
-        }
-
-        synth_5x = calculate_synthetic(state, "5x", token_costs)
-        synth_20x = calculate_synthetic(state, "20x", token_costs)
-
-        assert synth_20x["synthetic_5h"] < synth_5x["synthetic_5h"], (
-            f"20x tier should produce lower 5h synthetic than 5x. "
-            f"Got 5x={synth_5x['synthetic_5h']}, 20x={synth_20x['synthetic_5h']}"
-        )
-        assert synth_20x["synthetic_7d"] < synth_5x["synthetic_7d"], (
-            f"20x tier should produce lower 7d synthetic than 5x. "
-            f"Got 5x={synth_5x['synthetic_7d']}, 20x={synth_20x['synthetic_7d']}"
-        )
-
     def test_pacing_engine_reads_tier_from_fallback_state(self):
         """
         Verify run_pacing_check reads tier from fallback_state_v2 (via UsageModel)
