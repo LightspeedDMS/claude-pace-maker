@@ -7,8 +7,10 @@ not just return "no throttle" when polling is skipped.
 """
 
 import pytest
+import sqlite3
 import tempfile
-from datetime import datetime, timedelta
+import time
+from datetime import datetime
 from pathlib import Path
 import sys
 
@@ -32,6 +34,17 @@ class TestCachedPacingDecisions:
         """Clean up temporary database."""
         Path(self.db_path).unlink(missing_ok=True)
 
+    def _set_recent_poll(self):
+        """Set global_poll_state to indicate a recent poll (skip next poll)."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "INSERT OR REPLACE INTO global_poll_state "
+            "(id, last_poll_time, last_poll_session) VALUES (1, ?, ?)",
+            (time.time(), self.session_id),
+        )
+        conn.commit()
+        conn.close()
+
     def test_should_return_cached_decision_when_not_polling(self):
         """
         CRITICAL BUG FIX TEST:
@@ -40,12 +53,9 @@ class TestCachedPacingDecisions:
 
         This ensures throttling continues between polls.
         """
-        # Setup: First poll happens and stores a "throttle" decision
+        # Setup: Simulate a recent poll and a stored throttle decision
+        self._set_recent_poll()
         now = datetime.utcnow()
-        last_poll_time = now  # Just polled
-
-        # Simulate a throttle decision being stored in database
-        # We'll need to add a database function to store pacing decisions
         database.insert_pacing_decision(
             db_path=self.db_path,
             timestamp=now,
@@ -58,12 +68,10 @@ class TestCachedPacingDecisions:
         result = pacing_engine.run_pacing_check(
             db_path=self.db_path,
             session_id=self.session_id,
-            last_poll_time=last_poll_time,
-            poll_interval=60,
+            poll_interval=300,
         )
 
         # Assert: Should use cached decision (throttle=True, delay=30)
-        # NOT the broken behavior of returning no throttle
         assert result["polled"] is False, "Should not have polled API"
         assert (
             result["decision"]["should_throttle"] is True
@@ -77,16 +85,14 @@ class TestCachedPacingDecisions:
         When no cached decision exists (first run, or after cache expires),
         and polling is skipped, should return "no throttle" gracefully.
         """
-        # Setup: No cached decision exists
-        now = datetime.utcnow()
-        last_poll_time = now  # Just polled (but no decision stored)
+        # Setup: Recent poll but no cached decision
+        self._set_recent_poll()
 
         # Act: Try to check pacing immediately
         result = pacing_engine.run_pacing_check(
             db_path=self.db_path,
             session_id=self.session_id,
-            last_poll_time=last_poll_time,
-            poll_interval=60,
+            poll_interval=300,
         )
 
         # Assert: Should gracefully return no throttle
@@ -94,51 +100,35 @@ class TestCachedPacingDecisions:
         assert result["decision"]["should_throttle"] is False
         assert result["decision"]["delay_seconds"] == 0
 
-    def test_should_update_cached_decision_after_polling(self):
-        """
-        After polling API and calculating a new decision, the engine
-        should store that decision in the database for future use.
-        """
-        # This test will verify that pacing decisions are persisted
-        # We'll need to mock the API fetch to test this
-        # For now, this is a placeholder showing the required behavior
 
-        # Setup: Time to poll (no last poll time)
-        # Act: Run pacing check (will poll)
-        # Assert: Decision should be stored in database
-        pass  # Will implement after adding store function
+class TestGlobalPollCoordination:
+    """Test that run_pacing_check uses global poll coordination."""
 
-    def test_cached_decision_lifecycle(self):
-        """
-        Integration test: Verify complete lifecycle of cached decisions.
+    def setup_method(self):
+        self.temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.db_path = self.temp_db.name
+        database.initialize_database(self.db_path)
 
-        1. First poll: Calculate and store decision (throttle=True)
-        2. Between polls: Use cached decision
-        3. Second poll: Calculate new decision (throttle=False)
-        4. Between polls: Use new cached decision
-        """
-        # This will be an integration test once basic functionality works
-        pass
+    def teardown_method(self):
+        Path(self.db_path).unlink(missing_ok=True)
 
+    def test_run_pacing_check_has_no_last_poll_time_param(self):
+        """run_pacing_check should not accept last_poll_time parameter."""
+        import inspect
 
-class TestPacingEnginePolling:
-    """Test API polling logic."""
+        sig = inspect.signature(pacing_engine.run_pacing_check)
+        assert "last_poll_time" not in sig.parameters
 
-    def test_should_poll_on_first_run(self):
-        """Should poll API when last_poll_time is None."""
-        assert pacing_engine.should_poll_api(None, interval=60) is True
+    def test_should_poll_api_removed(self):
+        """should_poll_api function should no longer exist."""
+        assert not hasattr(pacing_engine, "should_poll_api")
 
-    def test_should_not_poll_too_soon(self):
-        """Should not poll API if interval hasn't elapsed."""
-        now = datetime.utcnow()
-        last_poll = now - timedelta(seconds=30)  # Only 30 seconds ago
-        assert pacing_engine.should_poll_api(last_poll, interval=60) is False
+    def test_poll_interval_default_is_300(self):
+        """Default poll_interval should be 300 seconds."""
+        import inspect
 
-    def test_should_poll_after_interval(self):
-        """Should poll API after interval has elapsed."""
-        now = datetime.utcnow()
-        last_poll = now - timedelta(seconds=61)  # 61 seconds ago
-        assert pacing_engine.should_poll_api(last_poll, interval=60) is True
+        sig = inspect.signature(pacing_engine.run_pacing_check)
+        assert sig.parameters["poll_interval"].default == 300
 
 
 if __name__ == "__main__":

@@ -47,7 +47,6 @@ def load_state(state_path: str = DEFAULT_STATE_PATH) -> dict:
     # Default state
     default_state = {
         "session_id": f"session-{int(time.time())}",
-        "last_poll_time": None,
         "last_cleanup_time": None,
         "in_subagent": False,
         "subagent_counter": 0,
@@ -60,10 +59,6 @@ def load_state(state_path: str = DEFAULT_STATE_PATH) -> dict:
                 data = json.load(f)
 
                 # Convert timestamp strings back to datetime
-                if data.get("last_poll_time"):
-                    data["last_poll_time"] = datetime.fromisoformat(
-                        data["last_poll_time"]
-                    )
                 if data.get("last_cleanup_time"):
                     data["last_cleanup_time"] = datetime.fromisoformat(
                         data["last_cleanup_time"]
@@ -91,8 +86,6 @@ def save_state(state: dict, state_path: str = DEFAULT_STATE_PATH):
 
         # Convert datetime to string for JSON serialization
         state_copy = state.copy()
-        if isinstance(state_copy.get("last_poll_time"), datetime):
-            state_copy["last_poll_time"] = state_copy["last_poll_time"].isoformat()
         if isinstance(state_copy.get("last_cleanup_time"), datetime):
             state_copy["last_cleanup_time"] = state_copy[
                 "last_cleanup_time"
@@ -320,18 +313,16 @@ def run_session_start_hook():
             state["session_id"] = session_id
         state["last_user_interaction_time"] = None
         state["tool_execution_count"] = 0
-        state["last_poll_time"] = None
     elif source == "resume":
         # RESUME existing session - Update session_id but preserve counters
         if session_id:
             state["session_id"] = session_id
-        # Keep: last_user_interaction_time, tool_execution_count, last_poll_time
+        # Keep: last_user_interaction_time, tool_execution_count
     elif source in ("clear", "compact"):
         # CLEAR/COMPACT - Reset counters but keep session_id
         # (session_id from stdin should match existing session_id)
         state["last_user_interaction_time"] = None
         state["tool_execution_count"] = 0
-        state["last_poll_time"] = None
         # Keep: session_id (same session continues)
 
     # Save state
@@ -776,8 +767,7 @@ def run_hook():
         result = pacing_engine.run_pacing_check(
             db_path=db_path,
             session_id=state["session_id"],
-            last_poll_time=state.get("last_poll_time"),
-            poll_interval=config.get("poll_interval", 60),
+            poll_interval=config.get("poll_interval", 300),
             last_cleanup_time=state.get("last_cleanup_time"),
             safety_buffer_pct=config.get("safety_buffer_pct", 95.0),
             preload_hours=config.get("preload_hours", 12.0),
@@ -788,11 +778,8 @@ def run_hook():
             five_hour_limit_enabled=config.get("five_hour_limit_enabled", True),
         )
 
-        # Update state if polled or cleaned up
+        # Update state if cleaned up
         state_changed = False
-        if result.get("polled"):
-            state["last_poll_time"] = result.get("poll_time")
-            state_changed = True
         if result.get("cleanup_time"):
             state["last_cleanup_time"] = result.get("cleanup_time")
             state_changed = True

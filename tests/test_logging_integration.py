@@ -190,9 +190,7 @@ class TestLoggingIntegration:
                 mock_connect.side_effect = Exception("db error")
                 from pacemaker import database
 
-                result = database.get_last_pacing_decision(
-                    "/nonexistent/path.db", "test-session"
-                )
+                result = database.get_last_pacing_decision("/nonexistent/path.db")
                 assert result is None
                 mock_log.assert_called()
 

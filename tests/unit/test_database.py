@@ -384,7 +384,7 @@ class TestAllDatabaseFunctions:
         initialize_database(temp_db)
         insert_pacing_decision(temp_db, datetime.utcnow(), True, 5, "test-session")
 
-        decision = get_last_pacing_decision(temp_db, "test-session")
+        decision = get_last_pacing_decision(temp_db)
         assert decision is not None
         assert decision["should_throttle"] is True
 

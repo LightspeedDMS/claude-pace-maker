@@ -3,7 +3,7 @@
 Pacing engine orchestration for Credit-Aware Adaptive Throttling.
 
 Orchestrates:
-- 60-second API polling throttle
+- Global API polling coordination (via SQLite singleton)
 - Usage data fetching and persistence
 - Pacing calculations
 - Hybrid delay strategy
@@ -13,24 +13,6 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict
 from . import calculator, database, api_client, adaptive_throttle
 from .logger import log_warning, log_info
-
-
-def should_poll_api(last_poll_time: Optional[datetime], interval: int = 60) -> bool:
-    """
-    Determine if enough time has passed to poll the API again.
-
-    Args:
-        last_poll_time: When we last polled, or None for first poll
-        interval: Polling interval in seconds (default 60)
-
-    Returns:
-        True if should poll now, False otherwise
-    """
-    if last_poll_time is None:
-        return True  # First poll
-
-    elapsed = (datetime.utcnow() - last_poll_time).total_seconds()
-    return elapsed >= interval
 
 
 def calculate_pacing_decision(
@@ -301,8 +283,7 @@ def process_usage_update(usage_data: Dict, db_path: str, session_id: str) -> boo
 def run_pacing_check(
     db_path: str,
     session_id: str,
-    last_poll_time: Optional[datetime] = None,
-    poll_interval: int = 60,
+    poll_interval: int = 300,
     last_cleanup_time: Optional[datetime] = None,
     safety_buffer_pct: float = 95.0,
     preload_hours: float = 0.0,
@@ -316,7 +297,7 @@ def run_pacing_check(
     Run complete pacing check cycle.
 
     Orchestrates:
-    1. Check if should poll API (60-second throttle)
+    1. Check if should poll API (global coordination via SQLite)
     2. Fetch usage data if time to poll
     3. Store in database
     4. Calculate pacing decision
@@ -326,8 +307,7 @@ def run_pacing_check(
     Args:
         db_path: Path to database
         session_id: Current session identifier
-        last_poll_time: When we last polled (or None)
-        poll_interval: Polling interval in seconds (default 60)
+        poll_interval: Polling interval in seconds (default 300)
         last_cleanup_time: When we last cleaned up old records (or None)
         safety_buffer_pct: Safety buffer percentage (default 95.0)
         preload_hours: First N weekday hours with preloaded allowance (default 0 = no preload)
@@ -358,12 +338,12 @@ def run_pacing_check(
                 f"Cleaned up {deleted_count} old database records (>{retention_days} days)",
             )
 
-    # Check if should poll
-    should_poll = should_poll_api(last_poll_time, interval=poll_interval)
+    # Check if should poll (global coordination across all sessions)
+    should_poll = database.should_poll_globally(db_path, poll_interval, session_id)
 
     if not should_poll:
-        # Too soon to poll - retrieve cached decision
-        cached_decision = database.get_last_pacing_decision(db_path, session_id)
+        # Too soon to poll - retrieve cached decision (global, any session)
+        cached_decision = database.get_last_pacing_decision(db_path)
 
         if cached_decision:
             # Return cached decision to maintain throttling between polls
@@ -468,7 +448,7 @@ def run_pacing_check(
         session_id=session_id,
     )
 
-    result = {"polled": True, "decision": decision, "poll_time": datetime.utcnow()}
+    result = {"polled": True, "decision": decision}
 
     # Mark synthetic results so callers know this is estimated data
     if is_synthetic:

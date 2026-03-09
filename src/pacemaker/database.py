@@ -140,6 +140,12 @@ CREATE TABLE IF NOT EXISTS calibrated_coefficients (
     sample_count INTEGER NOT NULL DEFAULT 0,
     last_calibrated REAL
 );
+
+CREATE TABLE IF NOT EXISTS global_poll_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_poll_time REAL NOT NULL DEFAULT 0,
+    last_poll_session TEXT
+);
 """
 
 
@@ -429,13 +435,12 @@ def insert_pacing_decision(
         return False
 
 
-def get_last_pacing_decision(db_path: str, session_id: str) -> Optional[Dict[str, Any]]:
+def get_last_pacing_decision(db_path: str) -> Optional[Dict[str, Any]]:
     """
-    Retrieve the most recent pacing decision for a session.
+    Retrieve the most recent pacing decision globally (any session).
 
     Args:
         db_path: Path to SQLite database file
-        session_id: Unique identifier for this session
 
     Returns:
         Dict with decision details, or None if no decision found
@@ -454,11 +459,9 @@ def get_last_pacing_decision(db_path: str, session_id: str) -> Optional[Dict[str
                     delay_seconds,
                     session_id
                 FROM pacing_decisions
-                WHERE session_id = ?
                 ORDER BY timestamp DESC
                 LIMIT 1
-            """,
-                (session_id,),
+            """
             )
 
             row = cursor.fetchone()
@@ -478,6 +481,65 @@ def get_last_pacing_decision(db_path: str, session_id: str) -> Optional[Dict[str
     except Exception as e:
         log_warning("database", "Failed to get last pacing decision", e)
         return None
+
+
+def should_poll_globally(
+    db_path: str, poll_interval: int = 300, session_id: str = ""
+) -> bool:
+    """Atomically check and claim the global API poll slot.
+
+    Uses SQLite BEGIN IMMEDIATE for mutual exclusion across concurrent
+    sessions/processes. Only one session can claim the poll slot per interval.
+
+    Args:
+        db_path: Path to SQLite database file
+        poll_interval: Minimum seconds between polls (default 300)
+        session_id: Identifier of the requesting session
+
+    Returns:
+        True if this session should poll the API, False if another session
+        polled recently. Returns True on error (fail-open for availability).
+    """
+    now = time.time()
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT)
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT last_poll_time FROM global_poll_state WHERE id = 1"
+            ).fetchone()
+
+            if row is None:
+                # First ever poll: insert initial row
+                conn.execute(
+                    "INSERT INTO global_poll_state "
+                    "(id, last_poll_time, last_poll_session) VALUES (1, ?, ?)",
+                    (now, session_id),
+                )
+                conn.commit()
+                return True
+
+            elapsed = now - row[0]
+            if elapsed >= poll_interval:
+                # Enough time passed: claim this poll slot
+                conn.execute(
+                    "UPDATE global_poll_state "
+                    "SET last_poll_time = ?, last_poll_session = ? WHERE id = 1",
+                    (now, session_id),
+                )
+                conn.commit()
+                return True
+            else:
+                # Too soon: another session polled recently
+                conn.commit()
+                return False
+        finally:
+            conn.close()
+    except Exception:
+        # Fail-open: allow poll on error to avoid blocking pacing entirely
+        return True
 
 
 def record_blockage(

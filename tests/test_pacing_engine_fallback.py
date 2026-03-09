@@ -105,7 +105,6 @@ class TestPacingEngineUsagesFallbackWhenAPIFails:
             result = pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         assert (
@@ -127,7 +126,6 @@ class TestPacingEngineUsagesFallbackWhenAPIFails:
             result = pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         assert result["decision"]["should_throttle"] is False
@@ -151,7 +149,6 @@ class TestPacingEngineUsagesFallbackWhenAPIFails:
             result = pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         assert result.get("is_synthetic") is True
@@ -175,7 +172,6 @@ class TestPacingEngineUsagesFallbackWhenAPIFails:
             result = pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         assert "decision" in result
@@ -206,7 +202,6 @@ class TestPacingEngineUsagesFallbackWhenAPIFails:
             result = pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         # Low utilization = no throttle even in fallback
@@ -254,7 +249,6 @@ class TestSyntheticValuesWrittenToUsageCache:
             result = pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         assert result.get("is_synthetic") is True, "Expected synthetic path"
@@ -285,7 +279,6 @@ class TestSyntheticValuesWrittenToUsageCache:
             pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         model = UsageModel(db_path=self.db_path)
@@ -314,7 +307,6 @@ class TestSyntheticValuesWrittenToUsageCache:
             pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         model = UsageModel(db_path=self.db_path)
@@ -344,7 +336,6 @@ class TestSyntheticValuesWrittenToUsageCache:
             result = pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         assert result.get("is_synthetic") is not True
@@ -394,7 +385,6 @@ class TestPacingEngineReadsTierFromFallbackState:
             result = pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         assert result.get("is_synthetic") is True, "Must be synthetic"
@@ -422,7 +412,6 @@ class TestPacingEngineReadsTierFromFallbackState:
             result = pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         # Must not crash — produce synthetic result regardless of tier
@@ -461,7 +450,6 @@ class TestPacingEngineNormalBehaviorUnchanged:
             result = pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         assert result["polled"] is True
@@ -479,7 +467,6 @@ class TestPacingEngineNormalBehaviorUnchanged:
             result = pacing_engine.run_pacing_check(
                 db_path=self.db_path,
                 session_id=self.session_id,
-                last_poll_time=None,
             )
 
         assert result["decision"]["should_throttle"] is False

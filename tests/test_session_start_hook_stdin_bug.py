@@ -180,14 +180,13 @@ class TestSessionStartHookStdinBug:
             saved_state["tool_execution_count"] == 0
         ), "Should reset tool_execution_count for new session"
 
-    def test_session_start_resets_poll_time_on_startup(
+    def test_session_start_does_not_contain_poll_time(
         self, temp_dirs, mock_config, stale_state
     ):
         """
-        FAILING TEST: SessionStart with source='startup' should reset last_poll_time.
-
-        Current bug: Keeps old timestamp
-        Expected: Reset to None for new session
+        Story #43: last_poll_time is no longer tracked in state.json.
+        Poll timing is now coordinated globally via SQLite global_poll_state table.
+        Verify that state.json does not contain last_poll_time after startup.
         """
         hook_data = {
             "session_id": "new-session-abc123",
@@ -207,10 +206,13 @@ class TestSessionStartHookStdinBug:
         with open(stale_state) as f:
             saved_state = json.load(f)
 
-        # BUG: last_poll_time should be None for new session
-        assert (
-            saved_state.get("last_poll_time") is None
-        ), "Should reset last_poll_time for new session"
+        # last_poll_time is no longer actively managed in state.json.
+        # Old values may persist as strings through dict merge, but must NOT
+        # be deserialized to datetime (proving hook no longer manages it).
+        poll_time = saved_state.get("last_poll_time")
+        assert not isinstance(
+            poll_time, datetime
+        ), "last_poll_time should not be deserialized to datetime (no longer managed)"
 
     # ========================================================================
     # PASSING TESTS - Current behavior that should be preserved
