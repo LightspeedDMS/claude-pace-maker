@@ -70,7 +70,11 @@ def load_state(state_path: str = DEFAULT_STATE_PATH) -> dict:
 
                 # Merge with defaults to ensure all required fields exist
                 # Loaded data takes precedence, defaults fill in missing fields
-                return {**default_state, **data}
+                state = {**default_state, **data}
+                state.pop(
+                    "last_poll_time", None
+                )  # Migrated to global_poll_state SQLite (Story #43)
+                return state
     except Exception as e:
         log_warning("hook", "Failed to load state, using defaults", e)
 

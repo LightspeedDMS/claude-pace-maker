@@ -500,46 +500,54 @@ def should_poll_globally(
         True if this session should poll the API, False if another session
         polled recently. Returns True on error (fail-open for availability).
     """
+    # NOTE: This function does NOT use execute_with_retry() because the entire
+    # check-and-claim operation must execute as a single BEGIN IMMEDIATE transaction
+    # for cross-process atomicity. Splitting it across retries would break mutual exclusion.
     now = time.time()
-
+    conn = None
     try:
         conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT)
         conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT last_poll_time FROM global_poll_state WHERE id = 1"
-            ).fetchone()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT last_poll_time FROM global_poll_state WHERE id = 1"
+        ).fetchone()
 
-            if row is None:
-                # First ever poll: insert initial row
-                conn.execute(
-                    "INSERT INTO global_poll_state "
-                    "(id, last_poll_time, last_poll_session) VALUES (1, ?, ?)",
-                    (now, session_id),
-                )
-                conn.commit()
-                return True
+        if row is None:
+            # First ever poll: insert initial row
+            conn.execute(
+                "INSERT INTO global_poll_state "
+                "(id, last_poll_time, last_poll_session) VALUES (1, ?, ?)",
+                (now, session_id),
+            )
+            conn.commit()
+            return True
 
-            elapsed = now - row[0]
-            if elapsed >= poll_interval:
-                # Enough time passed: claim this poll slot
-                conn.execute(
-                    "UPDATE global_poll_state "
-                    "SET last_poll_time = ?, last_poll_session = ? WHERE id = 1",
-                    (now, session_id),
-                )
-                conn.commit()
-                return True
-            else:
-                # Too soon: another session polled recently
-                conn.commit()
-                return False
-        finally:
-            conn.close()
+        elapsed = now - row[0]
+        if elapsed >= poll_interval:
+            # Enough time passed: claim this poll slot
+            conn.execute(
+                "UPDATE global_poll_state "
+                "SET last_poll_time = ?, last_poll_session = ? WHERE id = 1",
+                (now, session_id),
+            )
+            conn.commit()
+            return True
+        else:
+            # No writes needed: release lock without committing
+            conn.rollback()
+            return False
     except Exception:
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         # Fail-open: allow poll on error to avoid blocking pacing entirely
         return True
+    finally:
+        if conn:
+            conn.close()
 
 
 def record_blockage(
