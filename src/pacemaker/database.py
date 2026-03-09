@@ -146,7 +146,146 @@ CREATE TABLE IF NOT EXISTS global_poll_state (
     last_poll_time REAL NOT NULL DEFAULT 0,
     last_poll_session TEXT
 );
+
+CREATE TABLE IF NOT EXISTS activity_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp REAL NOT NULL,
+    event_code TEXT NOT NULL,
+    status TEXT NOT NULL,
+    session_id TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_events(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_code ON activity_events(event_code);
 """
+
+
+def record_activity_event(
+    db_path: str,
+    event_code: str,
+    status: str,
+    session_id: str,
+) -> bool:
+    """
+    Record a pace-maker activity event in the database.
+
+    Used for real-time activity visualization in the usage monitor.
+    Records events from all hook types (PreToolUse, Stop, PostToolUse,
+    UserPromptSubmit, SessionStart, SubagentStart, SubagentStop).
+
+    Args:
+        db_path: Path to SQLite database file
+        event_code: 2-letter event code (IV, TD, CC, ST, CX, PA, PL, LF,
+                    SS, SM, SE, SA, UP)
+        status: Event status ('green', 'red', or 'blue')
+        session_id: Unique identifier for the current session
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        timestamp = time.time()
+
+        def operation(conn: sqlite3.Connection) -> bool:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO activity_events (timestamp, event_code, status, session_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                (timestamp, event_code, status, session_id),
+            )
+            return True
+
+        return execute_with_retry(db_path, operation)
+
+    except Exception as e:
+        log_error("database", "Failed to record activity event", e)
+        return False
+
+
+def get_recent_activity(
+    db_path: str,
+    window_seconds: int = 10,
+) -> List[Dict[str, Any]]:
+    """
+    Get the most recent activity event per event_code within the time window.
+
+    Returns one entry per event_code, selecting the most recent occurrence
+    across all sessions. Used by the usage monitor to render the activity line.
+
+    Args:
+        db_path: Path to SQLite database file
+        window_seconds: How many seconds back to look (default 10)
+
+    Returns:
+        List of dicts with 'event_code' and 'status' keys,
+        one entry per unique event_code. Returns [] on error.
+    """
+    try:
+        cutoff = time.time() - window_seconds
+
+        def operation(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT event_code, status
+                FROM activity_events
+                WHERE timestamp > ?
+                  AND id IN (
+                      SELECT id FROM activity_events ae2
+                      WHERE ae2.event_code = activity_events.event_code
+                        AND ae2.timestamp > ?
+                      ORDER BY ae2.timestamp DESC
+                      LIMIT 1
+                  )
+                GROUP BY event_code
+                """,
+                (cutoff, cutoff),
+            )
+            rows = cursor.fetchall()
+            return [{"event_code": row[0], "status": row[1]} for row in rows]
+
+        return execute_with_retry(db_path, operation, readonly=True)
+
+    except Exception as e:
+        log_warning("database", "Failed to get recent activity", e)
+        return []
+
+
+def cleanup_old_activity(
+    db_path: str,
+    max_age_seconds: int = 60,
+) -> int:
+    """
+    Delete activity events older than max_age_seconds.
+
+    Called periodically to prevent unbounded table growth.
+    Events within the time window are preserved.
+
+    Args:
+        db_path: Path to SQLite database file
+        max_age_seconds: Delete events older than this (default 60)
+
+    Returns:
+        Number of records deleted, or -1 on error
+    """
+    try:
+        cutoff = time.time() - max_age_seconds
+
+        def operation(conn: sqlite3.Connection) -> int:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM activity_events WHERE timestamp < ?",
+                (cutoff,),
+            )
+            return cursor.rowcount
+
+        return execute_with_retry(db_path, operation)
+
+    except Exception as e:
+        log_error("database", "Failed to cleanup old activity events", e)
+        return -1
 
 
 @contextmanager

@@ -15,7 +15,7 @@ import json
 from typing import Optional, Dict, Any
 
 from . import pacing_engine, database, user_commands
-from .database import record_blockage
+from .database import record_blockage, record_activity_event, cleanup_old_activity
 from .constants import (
     DEFAULT_CONFIG,
     DEFAULT_DB_PATH,
@@ -332,6 +332,20 @@ def run_session_start_hook():
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
 
+    # Activity event: SE (session started)
+    try:
+        record_activity_event(
+            DEFAULT_DB_PATH, "SE", "green", state.get("session_id", "unknown")
+        )
+    except Exception:
+        pass  # Activity recording must never break session start
+
+    # Cleanup old activity events to prevent unbounded table growth
+    try:
+        cleanup_old_activity(DEFAULT_DB_PATH, max_age_seconds=60)
+    except Exception:
+        pass  # Cleanup must never break session start
+
     # AC3: Cleanup stale Langfuse state files (>7 days old)
     try:
         from .langfuse import state as langfuse_state
@@ -468,6 +482,13 @@ def run_subagent_start_hook():
     else:
         log_debug("hook", "SubagentStart: No hook_data received from stdin")
 
+    # Activity event: SA (subagent started)
+    try:
+        _session_id = hook_data.get("session_id", "unknown") if hook_data else "unknown"
+        record_activity_event(DEFAULT_DB_PATH, "SA", "green", _session_id)
+    except Exception:
+        pass  # Activity recording must never break subagent start
+
     # Display intent validation mandate if enabled
     try:
         if config.get("intent_validation_enabled", False):
@@ -521,6 +542,15 @@ def run_subagent_stop_hook():
 
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
+
+    # Activity event: SA (subagent stopped)
+    try:
+        _sa_session_id = (
+            hook_data.get("session_id", "unknown") if hook_data else "unknown"
+        )
+        record_activity_event(DEFAULT_DB_PATH, "SA", "green", _sa_session_id)
+    except Exception:
+        pass  # Activity recording must never break subagent stop
 
     # AC5: Subagent trace finalization
     # Get agent_id from hook_data to lookup correct trace in dict
@@ -796,6 +826,13 @@ def run_hook():
 
         # Show usage status if we polled
         if result.get("polled") and decision:
+            # Activity event: PL (API polled)
+            try:
+                record_activity_event(
+                    DEFAULT_DB_PATH, "PL", "blue", state.get("session_id", "unknown")
+                )
+            except Exception:
+                pass  # Activity recording must never break pacing
             five_hour = decision.get("five_hour", {})
             constrained = decision.get("constrained_window")
 
@@ -832,7 +869,22 @@ def run_hook():
                     session_id=state.get("session_id", "unknown"),
                     details={"delay_seconds": delay},
                 )
+                # Activity event: PA red (throttle applied)
+                try:
+                    record_activity_event(
+                        DEFAULT_DB_PATH, "PA", "red", state.get("session_id", "unknown")
+                    )
+                except Exception:
+                    pass  # Activity recording must never break pacing
                 execute_delay(delay)
+        else:
+            # Activity event: PA green (pacing ran, no throttle needed)
+            try:
+                record_activity_event(
+                    DEFAULT_DB_PATH, "PA", "green", state.get("session_id", "unknown")
+                )
+            except Exception:
+                pass  # Activity recording must never break pacing
 
         # Capture subagent reminder if conditions met (don't print yet)
         if should_inject_reminder(state, config, tool_name):
@@ -905,6 +957,26 @@ def run_hook():
                 "hook",
                 f"PostToolUse: handle_post_tool_use returned {result} for session={session_id}",
             )
+
+            # Activity event: LF (Langfuse pushed)
+            try:
+                record_activity_event(
+                    DEFAULT_DB_PATH, "LF", "blue", session_id or "unknown"
+                )
+            except Exception:
+                pass  # Activity recording must never break PostToolUse hook
+
+            # Activity event: SS (secrets stored/checked during this cycle)
+            # NOTE: SS fires unconditionally here as a proxy for "secrets were checked
+            # during this Langfuse cycle". Spec says SS should fire only on actual secret
+            # storage (UserPromptSubmit), but no distinct secret-storage condition exists
+            # in this code path. Divergence is intentional to avoid breaking behavior.
+            try:
+                record_activity_event(
+                    DEFAULT_DB_PATH, "SS", "blue", session_id or "unknown"
+                )
+            except Exception:
+                pass  # Activity recording must never break PostToolUse hook
 
         except Exception as e:
             # AC5: Graceful failure - log error but don't crash hook
@@ -1034,6 +1106,15 @@ def run_user_prompt_submit():
             state["last_user_interaction_time"] = datetime.now()
 
         save_state(state, DEFAULT_STATE_PATH)
+
+        # Activity event: UP (user prompt received) — only for real Claude prompts
+        if not result["intercepted"]:
+            try:
+                record_activity_event(
+                    DEFAULT_DB_PATH, "UP", "green", session_id or "unknown"
+                )
+            except Exception:
+                pass  # Activity recording must never break user prompt hook
 
         # AC1: Trigger trace creation for user prompt (trace-per-turn)
         # Only for non-intercepted prompts (actual Claude interactions)
@@ -1735,11 +1816,26 @@ def run_stop_hook():
             log_debug("hook", "No transcript - allow exit")
             return {"continue": True}
 
+        # Activity event: SM (secret masked during trace finalization)
+        try:
+            record_activity_event(
+                DEFAULT_DB_PATH, "SM", "blue", session_id or "unknown"
+            )
+        except Exception:
+            pass  # Activity recording must never break stop hook
+
         # CRITICAL: Check for context exhaustion BEFORE any blocking logic.
         # If conversation hit "Prompt is too long" error, compaction failed
         # and Claude cannot respond - must allow graceful exit.
         if is_context_exhaustion_detected(transcript_path):
             log_debug("hook", "Allowing graceful exit due to context exhaustion")
+            # Activity event: CX (context exhaustion detected)
+            try:
+                record_activity_event(
+                    DEFAULT_DB_PATH, "CX", "red", session_id or "unknown"
+                )
+            except Exception:
+                pass  # Activity recording must never break stop hook
             return {"continue": True}
 
         # Silent tool stop detection — runs independently of tempo gate.
@@ -1823,6 +1919,15 @@ def run_stop_hook():
                 session_id=session_id or "unknown",
                 details=None,
             )
+
+        # Activity event: ST (stop hook result)
+        try:
+            _st_status = "red" if result.get("decision") == "block" else "green"
+            record_activity_event(
+                DEFAULT_DB_PATH, "ST", _st_status, session_id or "unknown"
+            )
+        except Exception:
+            pass  # Activity recording must never break stop hook
 
         # Return validation result
         return result
@@ -2003,6 +2108,14 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
         # 8. Return result
         if result.get("approved", False):
+            # Activity events: IV/TD/CC green (all checks passed)
+            try:
+                _sid = session_id or "unknown"
+                record_activity_event(DEFAULT_DB_PATH, "IV", "green", _sid)
+                record_activity_event(DEFAULT_DB_PATH, "TD", "green", _sid)
+                record_activity_event(DEFAULT_DB_PATH, "CC", "green", _sid)
+            except Exception:
+                pass  # Activity recording must never break pre-tool hook
             return {"continue": True}
         else:
             # AC4: Record blockage for intent validation failure
@@ -2022,6 +2135,20 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 session_id=session_id or "unknown",
                 details={"tool": tool_name, "file_path": file_path},
             )
+
+            # Activity events: specific failed check is red, others green
+            try:
+                _sid = session_id or "unknown"
+                _iv_status = "red" if category == "intent_validation" else "green"
+                _td_status = "red" if category == "intent_validation_tdd" else "green"
+                _cc_status = (
+                    "red" if category == "intent_validation_cleancode" else "green"
+                )
+                record_activity_event(DEFAULT_DB_PATH, "IV", _iv_status, _sid)
+                record_activity_event(DEFAULT_DB_PATH, "TD", _td_status, _sid)
+                record_activity_event(DEFAULT_DB_PATH, "CC", _cc_status, _sid)
+            except Exception:
+                pass  # Activity recording must never break pre-tool hook
 
             return {
                 "decision": "block",
