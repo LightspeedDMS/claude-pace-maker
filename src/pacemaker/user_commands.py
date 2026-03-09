@@ -454,11 +454,11 @@ def _count_recent_errors(hours: int = 24, log_dir: Optional[str] = None) -> int:
     Returns:
         Count of ERROR entries within the time window
     """
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     from .logger import get_recent_log_paths
 
     try:
-        cutoff_time = datetime.now() - timedelta(hours=hours)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
         error_count = 0
 
         # Get log files for the last 2 days (covers 24-hour window)
@@ -540,13 +540,39 @@ def _execute_status(
             # State file may not exist on fresh install - use defaults (None values)
             pass
 
+        # Load active coefficients (calibrated if available, else defaults)
+        from .fallback import _DEFAULT_TOKEN_COSTS
+        from .logger import log_debug
+
+        coeff_5h_5x = _DEFAULT_TOKEN_COSTS["5x"]["coefficient_5h"]
+        coeff_5h_20x = _DEFAULT_TOKEN_COSTS["20x"]["coefficient_5h"]
+        coeff_7d_5x = _DEFAULT_TOKEN_COSTS["5x"]["coefficient_7d"]
+        coeff_7d_20x = _DEFAULT_TOKEN_COSTS["20x"]["coefficient_7d"]
+        try:
+            from .usage_model import UsageModel
+
+            model = UsageModel(db_path=db_path)
+            cal_5x = model._get_calibrated_coefficients("5x")
+            if cal_5x is not None:
+                coeff_5h_5x, coeff_7d_5x = cal_5x
+            cal_20x = model._get_calibrated_coefficients("20x")
+            if cal_20x is not None:
+                coeff_5h_20x, coeff_7d_20x = cal_20x
+        except Exception as e:
+            log_debug(
+                "_execute_status",
+                f"Failed to load calibrated coefficients, using defaults: {e}",
+            )
+
         # Build status message
         status_text = "Pace Maker: ACTIVE" if enabled else "Pace Maker: INACTIVE"
         status_text += (
             f"\nWeekly Limit: {'ENABLED' if weekly_limit_enabled else 'DISABLED'}"
+            f" (5x:{coeff_7d_5x:.4f} 20x:{coeff_7d_20x:.4f})"
         )
         status_text += (
             f"\n5-Hour Limit: {'ENABLED' if five_hour_limit_enabled else 'DISABLED'}"
+            f" (5x:{coeff_5h_5x:.4f} 20x:{coeff_5h_20x:.4f})"
         )
 
         # Show tempo status with mode details
@@ -578,10 +604,10 @@ def _execute_status(
             if last_user_interaction is None:
                 engagement_status = "ENGAGED (no interaction recorded)"
             else:
-                from datetime import datetime
+                from datetime import datetime, timezone
 
                 elapsed_minutes = (
-                    datetime.now() - last_user_interaction
+                    datetime.now(timezone.utc) - last_user_interaction
                 ).total_seconds() / 60
                 if elapsed_minutes >= threshold:
                     engagement_status = "ENGAGED (user inactive)"
