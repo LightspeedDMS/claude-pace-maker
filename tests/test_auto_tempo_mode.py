@@ -6,7 +6,7 @@ Tests should_run_tempo() logic with tempo_mode="auto" and related helper functio
 """
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 
 def test_should_run_tempo_mode_off():
@@ -51,7 +51,7 @@ def test_should_run_tempo_auto_recent_interaction():
 
     config = {"tempo_mode": "auto", "auto_tempo_threshold_minutes": 10}
     # User interacted 5 minutes ago (within threshold)
-    last_interaction = datetime.now() - timedelta(minutes=5)
+    last_interaction = datetime.now(timezone.utc) - timedelta(minutes=5)
     state = {"last_user_interaction_time": last_interaction}
 
     result = should_run_tempo(config, state)
@@ -65,7 +65,7 @@ def test_should_run_tempo_auto_stale_interaction():
 
     config = {"tempo_mode": "auto", "auto_tempo_threshold_minutes": 10}
     # User interacted 15 minutes ago (exceeds threshold)
-    last_interaction = datetime.now() - timedelta(minutes=15)
+    last_interaction = datetime.now(timezone.utc) - timedelta(minutes=15)
     state = {"last_user_interaction_time": last_interaction}
 
     result = should_run_tempo(config, state)
@@ -79,7 +79,7 @@ def test_should_run_tempo_session_override_precedence():
 
     config = {"tempo_mode": "auto", "auto_tempo_threshold_minutes": 10}
     # User inactive for 15 minutes (would normally engage)
-    last_interaction = datetime.now() - timedelta(minutes=15)
+    last_interaction = datetime.now(timezone.utc) - timedelta(minutes=15)
     # But session override says NO
     state = {
         "last_user_interaction_time": last_interaction,
@@ -97,7 +97,7 @@ def test_should_run_tempo_session_override_enabled():
 
     config = {"tempo_mode": "auto", "auto_tempo_threshold_minutes": 10}
     # User active 2 minutes ago (would normally NOT engage)
-    last_interaction = datetime.now() - timedelta(minutes=2)
+    last_interaction = datetime.now(timezone.utc) - timedelta(minutes=2)
     # But session override forces ON
     state = {
         "last_user_interaction_time": last_interaction,
@@ -115,7 +115,7 @@ def test_should_run_tempo_auto_exact_threshold():
 
     config = {"tempo_mode": "auto", "auto_tempo_threshold_minutes": 10}
     # User interacted exactly 10 minutes ago
-    last_interaction = datetime.now() - timedelta(minutes=10)
+    last_interaction = datetime.now(timezone.utc) - timedelta(minutes=10)
     state = {"last_user_interaction_time": last_interaction}
 
     result = should_run_tempo(config, state)
@@ -158,7 +158,7 @@ def test_should_run_tempo_default_mode_is_auto():
 
     config = {}  # No tempo_mode or tempo_enabled
     # User active 5 minutes ago
-    last_interaction = datetime.now() - timedelta(minutes=5)
+    last_interaction = datetime.now(timezone.utc) - timedelta(minutes=5)
     state = {"last_user_interaction_time": last_interaction}
 
     result = should_run_tempo(config, state)
@@ -181,7 +181,7 @@ def test_format_elapsed_time_seconds():
     from pacemaker.hook import format_elapsed_time
 
     # 30 seconds ago
-    timestamp = datetime.now() - timedelta(seconds=30)
+    timestamp = datetime.now(timezone.utc) - timedelta(seconds=30)
 
     result = format_elapsed_time(timestamp)
 
@@ -193,7 +193,7 @@ def test_format_elapsed_time_minutes():
     from pacemaker.hook import format_elapsed_time
 
     # 5 minutes ago
-    timestamp = datetime.now() - timedelta(minutes=5)
+    timestamp = datetime.now(timezone.utc) - timedelta(minutes=5)
 
     result = format_elapsed_time(timestamp)
 
@@ -205,7 +205,7 @@ def test_format_elapsed_time_hours():
     from pacemaker.hook import format_elapsed_time
 
     # 2.5 hours ago
-    timestamp = datetime.now() - timedelta(hours=2.5)
+    timestamp = datetime.now(timezone.utc) - timedelta(hours=2.5)
 
     result = format_elapsed_time(timestamp)
 
@@ -373,7 +373,7 @@ def test_user_prompt_submit_tracks_interaction_time():
         interaction_time = datetime.fromisoformat(interaction_time_str)
 
         # Verify timestamp is recent (within last few seconds)
-        elapsed = (datetime.now() - interaction_time).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - interaction_time).total_seconds()
         assert elapsed < 5  # Should be very recent
 
         # Verify subagent counter was reset

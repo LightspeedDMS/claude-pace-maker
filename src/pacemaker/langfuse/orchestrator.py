@@ -26,6 +26,7 @@ from ..telemetry import jsonl_parser
 from .metrics import increment_metric
 from ..constants import DEFAULT_DB_PATH, DEFAULT_STATE_PATH
 from ..secrets.sanitizer import sanitize_trace
+from ..database import record_activity_event
 
 
 # Timeout for incremental push (increased from 2s to 10s to prevent premature timeouts)
@@ -1137,10 +1138,21 @@ def handle_post_tool_use(
 
             # Get last 5 assistant messages to check for secret declarations
             recent_messages = get_last_n_assistant_messages(transcript_path, n=5)
+            secrets_stored = 0
             for msg in recent_messages:
                 if msg and "🔐" in msg:
-                    # Parse and store secrets
-                    parse_assistant_response(msg, db_path)
+                    # Parse and store secrets; result is list of stored secret dicts
+                    stored = parse_assistant_response(msg, db_path)
+                    secrets_stored += len(stored)
+
+            # Activity event: SS fires only when secrets were actually stored
+            if secrets_stored > 0:
+                try:
+                    record_activity_event(
+                        db_path, "SS", "green", session_id or "unknown"
+                    )
+                except Exception:
+                    pass  # Activity recording must never break the main flow
         except Exception as e:
             log_warning("orchestrator", "Failed to parse secrets from transcript", e)
 
@@ -1364,10 +1376,21 @@ def handle_stop_finalize(
 
             # Get last 5 assistant messages to check for secret declarations
             recent_messages = get_last_n_assistant_messages(transcript_path, n=5)
+            secrets_stored = 0
             for msg in recent_messages:
                 if msg and "🔐" in msg:
-                    # Parse and store secrets
-                    parse_assistant_response(msg, db_path)
+                    # Parse and store secrets; result is list of stored secret dicts
+                    stored = parse_assistant_response(msg, db_path)
+                    secrets_stored += len(stored)
+
+            # Activity event: SS fires only when secrets were actually stored
+            if secrets_stored > 0:
+                try:
+                    record_activity_event(
+                        db_path, "SS", "green", session_id or "unknown"
+                    )
+                except Exception:
+                    pass  # Activity recording must never break the main flow
         except Exception as e:
             log_warning("orchestrator", "Failed to parse secrets from transcript", e)
 

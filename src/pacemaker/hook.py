@@ -958,13 +958,14 @@ def run_hook():
                 f"PostToolUse: handle_post_tool_use returned {result} for session={session_id}",
             )
 
-            # Activity event: LF (Langfuse pushed)
-            try:
-                record_activity_event(
-                    DEFAULT_DB_PATH, "LF", "blue", session_id or "unknown"
-                )
-            except Exception:
-                pass  # Activity recording must never break PostToolUse hook
+            # Activity event: LF (Langfuse pushed) — only when enabled
+            if config.get("langfuse_enabled", False):
+                try:
+                    record_activity_event(
+                        DEFAULT_DB_PATH, "LF", "blue", session_id or "unknown"
+                    )
+                except Exception:
+                    pass  # Activity recording must never break PostToolUse hook
 
         except Exception as e:
             # AC5: Graceful failure - log error but don't crash hook
@@ -1444,6 +1445,9 @@ def should_run_tempo(config: dict, state: dict) -> bool:
 
         # Check if elapsed time exceeds threshold
         threshold_minutes = config.get("auto_tempo_threshold_minutes", 10)
+        # State may store naive timestamps — assume UTC
+        if hasattr(last_interaction, "tzinfo") and last_interaction.tzinfo is None:
+            last_interaction = last_interaction.replace(tzinfo=timezone.utc)
         elapsed_seconds = (
             datetime.now(timezone.utc) - last_interaction
         ).total_seconds()
@@ -1468,6 +1472,12 @@ def format_elapsed_time(last_interaction_time) -> str:
     if last_interaction_time is None:
         return "never"
 
+    # State may store naive timestamps — assume UTC
+    if (
+        hasattr(last_interaction_time, "tzinfo")
+        and last_interaction_time.tzinfo is None
+    ):
+        last_interaction_time = last_interaction_time.replace(tzinfo=timezone.utc)
     elapsed_seconds = (
         datetime.now(timezone.utc) - last_interaction_time
     ).total_seconds()
@@ -1753,6 +1763,14 @@ def run_stop_hook():
         tempo_session_override = state.get("tempo_session_override")
         last_user_interaction = state.get("last_user_interaction_time")
         if last_user_interaction:
+            # State may store naive timestamps — assume UTC
+            if (
+                hasattr(last_user_interaction, "tzinfo")
+                and last_user_interaction.tzinfo is None
+            ):
+                last_user_interaction = last_user_interaction.replace(
+                    tzinfo=timezone.utc
+                )
             elapsed = (
                 datetime.now(timezone.utc) - last_user_interaction
             ).total_seconds()
@@ -1811,12 +1829,14 @@ def run_stop_hook():
             return {"continue": True}
 
         # Activity event: SM (secret masked during trace finalization)
-        try:
-            record_activity_event(
-                DEFAULT_DB_PATH, "SM", "blue", session_id or "unknown"
-            )
-        except Exception:
-            pass  # Activity recording must never break stop hook
+        # Only fires when Langfuse is enabled — secret masking is part of trace push
+        if config.get("langfuse_enabled", False):
+            try:
+                record_activity_event(
+                    DEFAULT_DB_PATH, "SM", "blue", session_id or "unknown"
+                )
+            except Exception:
+                pass  # Activity recording must never break stop hook
 
         # CRITICAL: Check for context exhaustion BEFORE any blocking logic.
         # If conversation hit "Prompt is too long" error, compaction failed
@@ -2090,6 +2110,18 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # 6. Read last 2 messages for validation (text + tool_use are separate entries)
         messages = get_last_n_messages_for_validation(transcript_path, n=2)
 
+        # Activity events: IV/TD/CC blue (validation in-progress) — settings-aware
+        try:
+            _sid = session_id or "unknown"
+            _tdd_on = config.get("tdd_enabled", True)
+            record_activity_event(DEFAULT_DB_PATH, "IV", "blue", _sid)
+            record_activity_event(
+                DEFAULT_DB_PATH, "TD", "blue" if _tdd_on else "green", _sid
+            )
+            record_activity_event(DEFAULT_DB_PATH, "CC", "blue", _sid)
+        except Exception:
+            pass  # Activity recording must never break pre-tool hook
+
         # 7. Call unified validation via SDK
         from . import intent_validator
 
@@ -2131,10 +2163,17 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             )
 
             # Activity events: specific failed check is red, others green
+            # Settings-aware: TD shows green when tdd_enabled is off
+            # CC has no separate toggle — always active when IV is on
             try:
                 _sid = session_id or "unknown"
+                _tdd_on = config.get("tdd_enabled", True)
                 _iv_status = "red" if category == "intent_validation" else "green"
-                _td_status = "red" if category == "intent_validation_tdd" else "green"
+                _td_status = (
+                    "red"
+                    if category == "intent_validation_tdd" and _tdd_on
+                    else "green"
+                )
                 _cc_status = (
                     "red" if category == "intent_validation_cleancode" else "green"
                 )

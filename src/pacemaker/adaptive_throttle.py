@@ -358,7 +358,20 @@ def calculate_adaptive_delay(
 
     # Handle edge case: zero time remaining
     if time_remaining_hours <= 0.0:
-        # No time left - apply maximum delay
+        # No time left — only throttle if actually over budget
+        if overage_pct <= 0:
+            return {
+                "delay_seconds": 0,
+                "strategy": "none",
+                "projection": {
+                    "util_if_no_throttle": current_util,
+                    "util_if_throttled": current_util,
+                    "credits_remaining_pct": budget_remaining_pct,
+                    "allowance": allowance_pct,
+                    "safe_allowance": safe_allowance,
+                    "buffer_remaining": safe_allowance - current_util,
+                },
+            }
         return {
             "delay_seconds": max_delay,
             "strategy": "emergency",
