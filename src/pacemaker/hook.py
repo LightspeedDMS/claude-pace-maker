@@ -548,7 +548,7 @@ def run_subagent_stop_hook():
         _sa_session_id = (
             hook_data.get("session_id", "unknown") if hook_data else "unknown"
         )
-        record_activity_event(DEFAULT_DB_PATH, "SA", "green", _sa_session_id)
+        record_activity_event(DEFAULT_DB_PATH, "SA", "blue", _sa_session_id)
     except Exception:
         pass  # Activity recording must never break subagent stop
 
@@ -968,8 +968,8 @@ def run_hook():
                 f"PostToolUse: handle_post_tool_use returned {result} for session={session_id}",
             )
 
-            # Activity event: LF (Langfuse pushed) — only when enabled
-            if config.get("langfuse_enabled", False):
+            # Activity event: LF (Langfuse pushed) — only when enabled AND data was actually pushed
+            if config.get("langfuse_enabled", False) and result is True:
                 try:
                     record_activity_event(
                         DEFAULT_DB_PATH, "LF", "blue", session_id or "unknown"

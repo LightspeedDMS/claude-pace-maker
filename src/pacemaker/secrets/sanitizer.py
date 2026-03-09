@@ -44,7 +44,7 @@ def _get_cached_pattern(secrets: List[str]) -> Optional[re.Pattern]:
     return _cached_pattern
 
 
-def sanitize_trace(trace: Any, db_path: str) -> Any:
+def sanitize_trace(trace: Any, db_path: str) -> tuple:
     """
     Sanitize a trace by masking all stored secrets.
 
@@ -59,7 +59,9 @@ def sanitize_trace(trace: Any, db_path: str) -> Any:
         db_path: Path to the secrets database (also used for metrics)
 
     Returns:
-        Sanitized deep copy of the trace with all secrets masked
+        Tuple of (sanitized, mask_count) where sanitized is the deep copy with
+        all secrets masked, and mask_count is the number of masking operations
+        performed (0 means no secrets were found in the trace).
     """
     # Get all secrets from database
     secrets = get_all_secrets(db_path)
@@ -78,7 +80,7 @@ def sanitize_trace(trace: Any, db_path: str) -> Any:
     if mask_count > 0:
         increment_secrets_masked(db_path, count=mask_count)
 
-    return sanitized
+    return sanitized, mask_count
 
 
 def _restore_protected_fields(original: Any, sanitized: Any) -> None:

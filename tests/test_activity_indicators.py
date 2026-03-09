@@ -520,9 +520,9 @@ class TestSettingsGatedIndicators:
 
         mock_record = MagicMock(return_value=True)
 
-        # Build a fake langfuse module that pretends to push
+        # Build a fake langfuse module that pretends to push (returns True = data pushed)
         fake_langfuse = MagicMock()
-        fake_langfuse.orchestrator.handle_post_tool_use.return_value = {"pushed": True}
+        fake_langfuse.orchestrator.handle_post_tool_use.return_value = True
 
         with (
             patch.object(

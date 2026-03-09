@@ -1063,7 +1063,7 @@ ACTIVITY INDICATORS (Usage Console top bar):
   Code  Description              Colors
   ────  ───────────────────────  ─────────────────────────────────
   SE    Session started           green
-  SA    Subagent launched         green
+  SA    Subagent launched         green=start, blue=stop
   UP    User prompt received      green
   PL    API usage polled          blue=ok, yellow=fallback, red=error
   PA    Pacing evaluated          green=ok, red=throttled

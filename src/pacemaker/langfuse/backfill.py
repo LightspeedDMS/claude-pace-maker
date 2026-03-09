@@ -113,7 +113,7 @@ def push_session(
         )
 
         # SECURITY: Sanitize trace before pushing (mask all secrets)
-        sanitized_trace = sanitize_trace(trace, DEFAULT_DB_PATH)
+        sanitized_trace, _ = sanitize_trace(trace, DEFAULT_DB_PATH)
 
         # Push sanitized trace to Langfuse
         success = push_trace(

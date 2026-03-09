@@ -512,12 +512,13 @@ def flush_pending_trace(
     )
 
     # Sanitize the trace batch (mask all secrets)
-    sanitized_batch = sanitize_trace(pending_trace, db_path)
-    # Activity event: SM (secret masked) fires here where masking actually occurs
-    try:
-        record_activity_event(db_path, "SM", "blue", session_id or "unknown")
-    except Exception:
-        pass  # Activity recording must never break the main flow
+    sanitized_batch, sm_mask_count = sanitize_trace(pending_trace, db_path)
+    # Activity event: SM (secret masked) — only fires when masking actually occurred
+    if sm_mask_count > 0:
+        try:
+            record_activity_event(db_path, "SM", "blue", session_id or "unknown")
+        except Exception:
+            pass  # Activity recording must never break the main flow
 
     # Push sanitized trace
     success, _ = push.push_batch_events(
@@ -687,7 +688,7 @@ def run_incremental_push(
         db_path = config.get("db_path", DEFAULT_DB_PATH)
 
         # SECURITY: Sanitize batch before pushing to Langfuse (mask all secrets)
-        sanitized_batch = sanitize_trace(batch, db_path)
+        sanitized_batch, _ = sanitize_trace(batch, db_path)
 
         # Push sanitized batch to Langfuse API with timeout
         success, _ = push.push_batch_events(
@@ -1234,7 +1235,7 @@ def handle_post_tool_use(
             batch = _create_spans_from_blocks(content_blocks, current_trace_id, now)
 
         # SECURITY: Sanitize spans batch before pushing to Langfuse (mask all secrets)
-        sanitized_batch = sanitize_trace(batch, db_path)
+        sanitized_batch, _ = sanitize_trace(batch, db_path)
 
         # Push sanitized batch to Langfuse
         success, success_count = push.push_batch_events(
@@ -1507,7 +1508,7 @@ def handle_stop_finalize(
             )
 
         # SECURITY: Sanitize batch before pushing (Claude's output may contain secrets)
-        sanitized_batch = sanitize_trace(batch, db_path)
+        sanitized_batch, _ = sanitize_trace(batch, db_path)
 
         # Push sanitized batch to Langfuse
         success, _ = push.push_batch_events(
@@ -1682,7 +1683,7 @@ def handle_subagent_stop(
 
         # SECURITY: Sanitize batch before pushing (subagent output may contain secrets)
         db_path = config.get("db_path", DEFAULT_DB_PATH)
-        sanitized_batch = sanitize_trace(batch, db_path)
+        sanitized_batch, _ = sanitize_trace(batch, db_path)
 
         # Push sanitized batch to Langfuse with timeout
         success, _ = push.push_batch_events(
@@ -1810,7 +1811,7 @@ def handle_subagent_start(
 
         # SECURITY: Sanitize batch before pushing (Task prompt may contain secrets)
         db_path = config.get("db_path", DEFAULT_DB_PATH)
-        sanitized_batch = sanitize_trace(batch, db_path)
+        sanitized_batch, _ = sanitize_trace(batch, db_path)
 
         # Push sanitized batch to Langfuse
         success, _ = push.push_batch_events(
