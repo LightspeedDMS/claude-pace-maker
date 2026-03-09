@@ -824,15 +824,25 @@ def run_hook():
         # Apply throttling if needed
         decision = result.get("decision", {})
 
-        # Show usage status if we polled
-        if result.get("polled") and decision:
-            # Activity event: PL (API polled)
+        # Activity event: PL (API polled) — color reflects result quality
+        if result.get("polled"):
+            _pl_color = "yellow" if result.get("is_synthetic") else "blue"
             try:
                 record_activity_event(
-                    DEFAULT_DB_PATH, "PL", "blue", state.get("session_id", "unknown")
+                    DEFAULT_DB_PATH, "PL", _pl_color, state.get("session_id", "unknown")
                 )
             except Exception:
                 pass  # Activity recording must never break pacing
+        elif result.get("error"):
+            try:
+                record_activity_event(
+                    DEFAULT_DB_PATH, "PL", "red", state.get("session_id", "unknown")
+                )
+            except Exception:
+                pass  # Activity recording must never break pacing
+
+        # Show usage status if we polled
+        if result.get("polled") and decision:
             five_hour = decision.get("five_hour", {})
             constrained = decision.get("constrained_window")
 

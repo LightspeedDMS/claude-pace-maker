@@ -1033,6 +1033,23 @@ MODEL PREFERENCE (Quota Balancing):
   Note: Main conversation model cannot be changed mid-session.
   To change main model, restart with: claude --model opus
 
+ACTIVITY INDICATORS (Usage Console top bar):
+  Code  Description              Colors
+  ────  ───────────────────────  ─────────────────────────────────
+  SE    Session started           green
+  SA    Subagent launched         green
+  UP    User prompt received      green
+  PL    API usage polled          blue=ok, yellow=fallback, red=error
+  PA    Pacing evaluated          green=ok, red=throttled
+  IV    Intent validation         blue=checking, green=pass, red=fail
+  TD    TDD enforcement           blue=checking, green=pass/off, red=fail
+  CC    Clean code check          blue=checking, green=pass, red=fail
+  LF    Langfuse trace push       blue (only when enabled)
+  SS    Secret stored             green (only when found)
+  SM    Secret masked             blue (only when Langfuse enabled)
+  ST    Stop hook result          green=allow, red=block
+  CX    Context exhaustion        red
+
 CONFIGURATION:
   Config file: ~/.claude-pace-maker/config.json
   Database: ~/.claude-pace-maker/usage.db
