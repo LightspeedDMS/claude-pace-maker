@@ -9,7 +9,7 @@ Orchestrates:
 - Hybrid delay strategy
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
 from . import calculator, database, api_client, adaptive_throttle
 from .logger import log_warning, log_info
@@ -91,7 +91,12 @@ def calculate_pacing_decision(
         seven_day_resets_at = None
 
     # Get current time once for all calculations
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
+    # If resets_at values are naive (e.g. from parse_api_datetime / fallback path),
+    # use a naive now to keep arithmetic consistent throughout this function
+    _sample = five_hour_resets_at or seven_day_resets_at
+    if _sample is not None and _sample.tzinfo is None:
+        now = now.replace(tzinfo=None)
 
     # FIX 3 (Issue #3): Calculate 5-hour target with LINEAR pacing (not logarithmic)
     # Use continuous-time linear allowance with 30-minute preload
@@ -271,7 +276,7 @@ def process_usage_update(usage_data: Dict, db_path: str, session_id: str) -> boo
     """
     return database.insert_usage_snapshot(
         db_path=db_path,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
         five_hour_util=usage_data["five_hour_util"],
         five_hour_resets_at=usage_data["five_hour_resets_at"],
         seven_day_util=usage_data["seven_day_util"],
@@ -324,7 +329,7 @@ def run_pacing_check(
     cleanup_interval_seconds = cleanup_interval_hours * 3600
     should_cleanup = (
         last_cleanup_time is None
-        or (datetime.utcnow() - last_cleanup_time).total_seconds()
+        or (datetime.now(timezone.utc) - last_cleanup_time).total_seconds()
         >= cleanup_interval_seconds
     )
 
@@ -442,7 +447,7 @@ def run_pacing_check(
     # Store pacing decision in database for caching between polls
     database.insert_pacing_decision(
         db_path=db_path,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
         should_throttle=decision["should_throttle"],
         delay_seconds=decision["delay_seconds"],
         session_id=session_id,
@@ -457,6 +462,6 @@ def run_pacing_check(
 
     # Include cleanup timestamp if cleanup was performed
     if should_cleanup:
-        result["cleanup_time"] = datetime.utcnow()
+        result["cleanup_time"] = datetime.now(timezone.utc)
 
     return result

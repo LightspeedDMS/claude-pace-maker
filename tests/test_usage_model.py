@@ -10,7 +10,7 @@ TDD: These tests are written FIRST and define expected behavior.
 import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -809,7 +809,7 @@ class TestResetWindowProjection:
 
         # The projected window should be in the future
         assert windows.five_hour_resets_at is not None
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         assert (
             windows.five_hour_resets_at > now
         ), f"Projected 5h window {windows.five_hour_resets_at} is not in the future"
@@ -841,7 +841,7 @@ class TestResetWindowProjection:
         windows = model.get_reset_windows()
 
         assert windows.seven_day_resets_at is not None
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         assert windows.seven_day_resets_at > now
         assert windows.seven_day_stale is False
 
@@ -883,7 +883,7 @@ class TestResetWindowProjection:
         # Parsed projected values should be in the future
         from pacemaker.fallback import parse_api_datetime
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         assert parse_api_datetime(row[0]) > now
         assert parse_api_datetime(row[1]) > now
 
@@ -983,10 +983,10 @@ class TestResetWindowProjection:
         model.enter_fallback()
 
         # Set fallback state to a different (stale) time — 3 hours from now (within window)
-        future_3h = (datetime.utcnow() + timedelta(hours=3)).strftime(
+        future_3h = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime(
             "%Y-%m-%dT%H:%M:%S+00:00"
         )
-        future_7d = (datetime.utcnow() + timedelta(hours=100)).strftime(
+        future_7d = (datetime.now(timezone.utc) + timedelta(hours=100)).strftime(
             "%Y-%m-%dT%H:%M:%S+00:00"
         )
         self._set_fallback_state_v2(db_path, future_3h, future_7d)

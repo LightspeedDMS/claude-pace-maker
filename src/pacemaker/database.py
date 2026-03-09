@@ -10,7 +10,7 @@ import json
 import sqlite3
 import time
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Callable, TypeVar, Generator
 from pathlib import Path
 
@@ -318,7 +318,7 @@ def query_recent_snapshots(db_path: str, minutes: int = 60) -> List[Dict[str, An
         List of snapshot dictionaries, ordered by timestamp DESC
     """
     try:
-        cutoff_time = datetime.utcnow() - timedelta(minutes=minutes)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
 
         def operation(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
             conn.row_factory = sqlite3.Row  # Enable dict-like access
@@ -365,7 +365,7 @@ def cleanup_old_snapshots(db_path: str, retention_days: int = 60) -> int:
         Number of records deleted, or -1 on error
     """
     try:
-        cutoff_time = datetime.utcnow() - timedelta(days=retention_days)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
         def operation(conn: sqlite3.Connection) -> int:
             cursor = conn.cursor()

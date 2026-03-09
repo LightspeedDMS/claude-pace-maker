@@ -10,7 +10,7 @@ import pytest
 import sqlite3
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -55,7 +55,7 @@ class TestCachedPacingDecisions:
         """
         # Setup: Simulate a recent poll and a stored throttle decision
         self._set_recent_poll()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         database.insert_pacing_decision(
             db_path=self.db_path,
             timestamp=now,

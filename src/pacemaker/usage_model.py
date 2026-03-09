@@ -16,7 +16,7 @@ import json
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -243,7 +243,7 @@ class UsageModel:
                     resets_at_7d = cache.get("seven_day_resets_at")
 
             # Synthesize resets_at when null so rollover detection has valid timestamps
-            now_utc = datetime.utcnow()
+            now_utc = datetime.now(timezone.utc)
             if not resets_at_5h:
                 resets_at_5h = (now_utc + timedelta(hours=5)).strftime(
                     "%Y-%m-%dT%H:%M:%S+00:00"
@@ -472,11 +472,13 @@ class UsageModel:
             ResetWindows with five_hour_resets_at, seven_day_resets_at, and
             staleness flags.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
+        # parse_api_datetime returns naive datetimes; strip tzinfo for comparisons
+        now_naive = now.replace(tzinfo=None)
         stale_cutoff = timedelta(minutes=5)
 
         if self.is_fallback_active():
-            return self._get_reset_windows_fallback(now, stale_cutoff)
+            return self._get_reset_windows_fallback(now_naive, stale_cutoff)
 
         cache = self.get_api_cache()
         if cache is None:
@@ -494,8 +496,8 @@ class UsageModel:
         seven_dt = parse_api_datetime(seven_resets_str)
 
         # Stale if reset time is more than 5 minutes in the past
-        five_stale = five_dt is None or (now - five_dt) > stale_cutoff
-        seven_stale = seven_dt is None or (now - seven_dt) > stale_cutoff
+        five_stale = five_dt is None or (now_naive - five_dt) > stale_cutoff
+        seven_stale = seven_dt is None or (now_naive - seven_dt) > stale_cutoff
 
         return ResetWindows(
             five_hour_resets_at=five_dt,
@@ -717,12 +719,14 @@ class UsageModel:
             baseline_7d = float(state.get("baseline_7d") or 0.0)
 
             # Apply rollover logic using existing _project_window
-            now = datetime.utcnow()
+            # parse_api_datetime returns naive datetimes; _project_window expects naive now
+            now = datetime.now(timezone.utc)
+            now_naive = now.replace(tzinfo=None)
             five_resets, five_rolled = _project_window(
-                state.get("resets_at_5h"), window_hours=5.0, now=now
+                state.get("resets_at_5h"), window_hours=5.0, now=now_naive
             )
             seven_resets, seven_rolled = _project_window(
-                state.get("resets_at_7d"), window_hours=168.0, now=now
+                state.get("resets_at_7d"), window_hours=168.0, now=now_naive
             )
 
             # Check for previously persisted rollover first, then fresh rollover.
@@ -768,7 +772,7 @@ class UsageModel:
                 seven_day_util=synthetic_7d,
                 seven_day_resets_at=seven_resets,
                 is_synthetic=True,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
             )
 
         except Exception as e:

@@ -15,7 +15,7 @@ Integration points tested:
 """
 
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 import sys
@@ -324,9 +324,9 @@ class TestSyntheticValuesWrittenToUsageCache:
         """
         mock_usage = {
             "five_hour_util": 25.0,
-            "five_hour_resets_at": datetime.utcnow() + timedelta(hours=3),
+            "five_hour_resets_at": datetime.now(timezone.utc) + timedelta(hours=3),
             "seven_day_util": 20.0,
-            "seven_day_resets_at": datetime.utcnow() + timedelta(days=5),
+            "seven_day_resets_at": datetime.now(timezone.utc) + timedelta(days=5),
         }
 
         with (
@@ -438,9 +438,9 @@ class TestPacingEngineNormalBehaviorUnchanged:
         """
         mock_usage = {
             "five_hour_util": 20.0,
-            "five_hour_resets_at": datetime.utcnow() + timedelta(hours=3),
+            "five_hour_resets_at": datetime.now(timezone.utc) + timedelta(hours=3),
             "seven_day_util": 15.0,
-            "seven_day_resets_at": datetime.utcnow() + timedelta(days=5),
+            "seven_day_resets_at": datetime.now(timezone.utc) + timedelta(days=5),
         }
 
         with (

@@ -53,7 +53,13 @@ def count_weekday_seconds(start_dt: datetime, end_dt: datetime) -> int:
     while current < end_dt:
         # Find the end of current day or end_dt, whichever comes first
         next_day = datetime(
-            current.year, current.month, current.day, 23, 59, 59
+            current.year,
+            current.month,
+            current.day,
+            23,
+            59,
+            59,
+            tzinfo=current.tzinfo,
         ) + timedelta(seconds=1)
         segment_end = min(next_day, end_dt)
 

@@ -11,7 +11,7 @@ import sqlite3
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -47,11 +47,11 @@ class TestDatabaseConcurrency:
         # Insert a snapshot to ensure DB is initialized
         insert_usage_snapshot(
             temp_db,
-            datetime.utcnow(),
+            datetime.now(timezone.utc),
             50.0,
-            datetime.utcnow(),
+            datetime.now(timezone.utc),
             30.0,
-            datetime.utcnow(),
+            datetime.now(timezone.utc),
             "test-session",
         )
 
@@ -95,7 +95,7 @@ class TestDatabaseConcurrency:
         def attempt_insert():
             result = insert_usage_snapshot(
                 temp_db,
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
                 50.0,
                 None,
                 30.0,
@@ -148,7 +148,7 @@ class TestDatabaseConcurrency:
             # Operation should handle exception and not leak connection
             result = insert_usage_snapshot(
                 temp_db,
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
                 50.0,
                 None,
                 30.0,
@@ -181,7 +181,7 @@ class TestDatabaseConcurrency:
         def write_snapshot(session_id: str):
             success = insert_usage_snapshot(
                 temp_db,
-                datetime.utcnow(),
+                datetime.now(timezone.utc),
                 float(session_id),  # Use session_id as unique value
                 None,
                 30.0,
@@ -216,7 +216,7 @@ class TestDatabaseConcurrency:
 
         # Insert some data
         insert_usage_snapshot(
-            temp_db, datetime.utcnow(), 50.0, None, 30.0, None, "test-session"
+            temp_db, datetime.now(timezone.utc), 50.0, None, 30.0, None, "test-session"
         )
 
         # Start a write transaction that doesn't commit immediately
@@ -260,7 +260,7 @@ class TestDatabaseConcurrency:
         with patch("sqlite3.connect", side_effect=mock_connect_with_timing):
             # This will trigger retries
             result = insert_usage_snapshot(
-                temp_db, datetime.utcnow(), 50.0, None, 30.0, None, "test"
+                temp_db, datetime.now(timezone.utc), 50.0, None, 30.0, None, "test"
             )
 
             # Should eventually succeed after retries
@@ -288,7 +288,7 @@ class TestDatabaseConcurrency:
 
             # Should fail after max retries
             result = insert_usage_snapshot(
-                temp_db, datetime.utcnow(), 50.0, None, 30.0, None, "test"
+                temp_db, datetime.now(timezone.utc), 50.0, None, 30.0, None, "test"
             )
 
             # Should return False after exhausting retries
@@ -333,7 +333,7 @@ class TestAllDatabaseFunctions:
             results.append(
                 insert_usage_snapshot(
                     temp_db,
-                    datetime.utcnow(),
+                    datetime.now(timezone.utc),
                     50.0,
                     None,
                     30.0,
@@ -354,7 +354,7 @@ class TestAllDatabaseFunctions:
         """query_recent_snapshots uses proper read handling."""
         initialize_database(temp_db)
         insert_usage_snapshot(
-            temp_db, datetime.utcnow(), 50.0, None, 30.0, None, "test"
+            temp_db, datetime.now(timezone.utc), 50.0, None, 30.0, None, "test"
         )
 
         # Should complete without blocking
@@ -375,14 +375,16 @@ class TestAllDatabaseFunctions:
         initialize_database(temp_db)
 
         result = insert_pacing_decision(
-            temp_db, datetime.utcnow(), True, 5, "test-session"
+            temp_db, datetime.now(timezone.utc), True, 5, "test-session"
         )
         assert result is True
 
     def test_get_last_pacing_decision_handles_concurrency(self, temp_db):
         """get_last_pacing_decision uses proper read handling."""
         initialize_database(temp_db)
-        insert_pacing_decision(temp_db, datetime.utcnow(), True, 5, "test-session")
+        insert_pacing_decision(
+            temp_db, datetime.now(timezone.utc), True, 5, "test-session"
+        )
 
         decision = get_last_pacing_decision(temp_db)
         assert decision is not None

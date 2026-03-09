@@ -18,7 +18,7 @@ Key implementation constraints discovered from source code:
 import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -95,13 +95,13 @@ def _read_fallback_state(db_path: str) -> dict:
 
 def _past_ts(hours_ago: float) -> str:
     """Return an ISO timestamp string that is hours_ago hours in the past."""
-    dt = datetime.utcnow() - timedelta(hours=hours_ago)
+    dt = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
     return dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
 def _future_ts(hours_from_now: float) -> str:
     """Return an ISO timestamp string that is hours_from_now hours in the future."""
-    dt = datetime.utcnow() + timedelta(hours=hours_from_now)
+    dt = datetime.now(timezone.utc) + timedelta(hours=hours_from_now)
     return dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
@@ -227,7 +227,7 @@ class TestFiveHourCycleTransitions:
         assert (
             windows.five_hour_resets_at is not None
         ), "Should have projected a valid 5h reset time"
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         assert (
             windows.five_hour_resets_at > now
         ), "Projected 5h window must be in the future after multi-cycle projection"
@@ -325,7 +325,7 @@ class TestFiveHourCycleTransitions:
         model = make_model(db_path)
 
         # Set resets_at to exactly 1 second ago so it's definitively at/past the boundary
-        boundary_ts = (datetime.utcnow() - timedelta(seconds=1)).strftime(
+        boundary_ts = (datetime.now(timezone.utc) - timedelta(seconds=1)).strftime(
             "%Y-%m-%dT%H:%M:%S+00:00"
         )
 
@@ -342,7 +342,7 @@ class TestFiveHourCycleTransitions:
 
         # The window should have been projected forward (rolled over)
         assert windows.five_hour_resets_at is not None
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         assert (
             windows.five_hour_resets_at > now
         ), "Window exactly at boundary should be projected to the next cycle"
@@ -391,7 +391,7 @@ class TestSevenDayCycleTransitions:
         windows = model.get_reset_windows()
 
         assert windows.seven_day_resets_at is not None
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         assert (
             windows.seven_day_resets_at > now
         ), "7d projected window must be in the future after week-long outage"
@@ -442,7 +442,7 @@ class TestSevenDayCycleTransitions:
 
         windows = model.get_reset_windows()
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         assert windows.five_hour_resets_at is not None
         assert windows.seven_day_resets_at is not None
         assert windows.five_hour_resets_at > now
@@ -490,7 +490,7 @@ class TestSevenDayCycleTransitions:
         )
 
         windows = model.get_reset_windows()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # 5h window should have rolled
         assert windows.five_hour_resets_at is not None

@@ -10,7 +10,7 @@ Implements:
 """
 
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 
@@ -80,7 +80,10 @@ def calculate_time_percent(
         # Inactive window (NULL reset time)
         return 0.0
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
+    # If resets_at is naive (e.g. from parse_api_datetime), strip tzinfo from now
+    if resets_at.tzinfo is None:
+        now = now.replace(tzinfo=None)
 
     # Calculate time remaining until reset
     time_remaining = (resets_at - now).total_seconds()
