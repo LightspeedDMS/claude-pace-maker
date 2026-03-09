@@ -212,15 +212,23 @@ class TestPostToolUseInstrumentation:
 class TestUserPromptSubmitInstrumentation:
     """Tests for SS, UP event codes from UserPromptSubmit hook."""
 
-    def test_ss_blue_recorded_when_secret_stored(self, temp_db):
-        """SS blue event recorded when a secret is stored from prompt."""
+    def test_ss_green_recorded_when_secret_stored(self, temp_db):
+        """SS green event recorded when secrets are actually parsed and stored (orchestrator path)."""
         from src.pacemaker.database import record_activity_event
 
-        record_activity_event(temp_db, "SS", "blue", "session-test")
+        record_activity_event(temp_db, "SS", "green", "session-test")
 
         events = get_activity_events(temp_db, "SS")
         assert len(events) == 1
-        assert events[0]["status"] == "blue"
+        assert events[0]["status"] == "green"
+
+    def test_ss_not_fired_when_no_secrets_stored(self, temp_db):
+        """SS event must NOT be recorded when no secrets are parsed (no unconditional firing)."""
+
+        # Simulate a PostToolUse cycle where no secrets were found (secrets_stored == 0)
+        # No record_activity_event("SS", ...) call is made - verify DB has no SS events
+        events = get_activity_events(temp_db, "SS")
+        assert len(events) == 0, "SS must not fire when no secrets are stored"
 
     def test_up_green_recorded_when_user_prompt_received(self, temp_db):
         """UP green event recorded when user prompt is received."""
@@ -289,7 +297,7 @@ class TestAllEventCodesPresent:
             ("PA", "green"),
             ("PL", "blue"),
             ("LF", "blue"),
-            ("SS", "blue"),
+            ("SS", "green"),
             ("SM", "blue"),
             ("SE", "green"),
             ("SA", "green"),

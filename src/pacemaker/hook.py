@@ -966,18 +966,6 @@ def run_hook():
             except Exception:
                 pass  # Activity recording must never break PostToolUse hook
 
-            # Activity event: SS (secrets stored/checked during this cycle)
-            # NOTE: SS fires unconditionally here as a proxy for "secrets were checked
-            # during this Langfuse cycle". Spec says SS should fire only on actual secret
-            # storage (UserPromptSubmit), but no distinct secret-storage condition exists
-            # in this code path. Divergence is intentional to avoid breaking behavior.
-            try:
-                record_activity_event(
-                    DEFAULT_DB_PATH, "SS", "blue", session_id or "unknown"
-                )
-            except Exception:
-                pass  # Activity recording must never break PostToolUse hook
-
         except Exception as e:
             # AC5: Graceful failure - log error but don't crash hook
             log_warning("hook", "Langfuse span creation failed on PostToolUse", e)
@@ -1103,7 +1091,7 @@ def run_user_prompt_submit():
         # Only update last_user_interaction_time for actual prompts to Claude
         # NOT for pace-maker commands (which are just checking status/settings)
         if not result["intercepted"]:
-            state["last_user_interaction_time"] = datetime.now()
+            state["last_user_interaction_time"] = datetime.now(timezone.utc)
 
         save_state(state, DEFAULT_STATE_PATH)
 
@@ -1456,7 +1444,9 @@ def should_run_tempo(config: dict, state: dict) -> bool:
 
         # Check if elapsed time exceeds threshold
         threshold_minutes = config.get("auto_tempo_threshold_minutes", 10)
-        elapsed_seconds = (datetime.now() - last_interaction).total_seconds()
+        elapsed_seconds = (
+            datetime.now(timezone.utc) - last_interaction
+        ).total_seconds()
         elapsed_minutes = elapsed_seconds / 60
 
         return elapsed_minutes >= threshold_minutes
@@ -1478,7 +1468,9 @@ def format_elapsed_time(last_interaction_time) -> str:
     if last_interaction_time is None:
         return "never"
 
-    elapsed_seconds = (datetime.now() - last_interaction_time).total_seconds()
+    elapsed_seconds = (
+        datetime.now(timezone.utc) - last_interaction_time
+    ).total_seconds()
 
     if elapsed_seconds < 60:
         return f"{int(elapsed_seconds)} seconds ago"
@@ -1743,7 +1735,7 @@ def run_stop_hook():
         # === STOP HOOK ENTRY POINT ===
         log_info("hook", "=" * 70)
         log_info("hook", "STOP HOOK FIRED")
-        log_info("hook", f"Timestamp: {datetime.now().isoformat()}")
+        log_info("hook", f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
         log_info("hook", "=" * 70)
 
         # Load config and state to check if tempo should run
@@ -1761,7 +1753,9 @@ def run_stop_hook():
         tempo_session_override = state.get("tempo_session_override")
         last_user_interaction = state.get("last_user_interaction_time")
         if last_user_interaction:
-            elapsed = (datetime.now() - last_user_interaction).total_seconds()
+            elapsed = (
+                datetime.now(timezone.utc) - last_user_interaction
+            ).total_seconds()
             log_info(
                 "hook",
                 f"Auto Tempo Status: mode={tempo_mode}, "
