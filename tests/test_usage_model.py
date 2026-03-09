@@ -880,12 +880,14 @@ class TestResetWindowProjection:
         assert row[0] != past_ts, "5h window was NOT updated in DB after projection"
         assert row[1] != past_ts, "7d window was NOT updated in DB after projection"
 
-        # Parsed projected values should be in the future
+        # Parsed projected values should be in the future.
+        # parse_api_datetime() returns naive UTC datetimes (strips timezone suffix),
+        # so compare against a naive UTC reference.
         from pacemaker.fallback import parse_api_datetime
 
-        now = datetime.now(timezone.utc)
-        assert parse_api_datetime(row[0]) > now
-        assert parse_api_datetime(row[1]) > now
+        now_naive = datetime.utcnow()
+        assert parse_api_datetime(row[0]) > now_naive
+        assert parse_api_datetime(row[1]) > now_naive
 
     def test_get_reset_windows_rollover_updates_rollover_cost(self, tmp_path):
         """When 5h rollover is detected, rollover_cost_5h is updated in DB."""

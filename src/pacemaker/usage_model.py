@@ -31,6 +31,15 @@ from .fallback import (
 from .logger import log_warning, log_info
 
 
+def _ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Make a naive datetime UTC-aware; pass through aware datetimes and None."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 @dataclass
 class UsageSnapshot:
     """Current best-known usage (real API or synthetic during fallback)."""
@@ -500,8 +509,8 @@ class UsageModel:
         seven_stale = seven_dt is None or (now_naive - seven_dt) > stale_cutoff
 
         return ResetWindows(
-            five_hour_resets_at=five_dt,
-            seven_day_resets_at=seven_dt,
+            five_hour_resets_at=_ensure_utc_aware(five_dt),
+            seven_day_resets_at=_ensure_utc_aware(seven_dt),
             five_hour_stale=five_stale,
             seven_day_stale=seven_stale,
         )
@@ -539,8 +548,8 @@ class UsageModel:
             seven_stale = seven_resets is None
 
             return ResetWindows(
-                five_hour_resets_at=five_resets,
-                seven_day_resets_at=seven_resets,
+                five_hour_resets_at=_ensure_utc_aware(five_resets),
+                seven_day_resets_at=_ensure_utc_aware(seven_resets),
                 five_hour_stale=five_stale,
                 seven_day_stale=seven_stale,
             )

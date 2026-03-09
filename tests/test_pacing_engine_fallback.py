@@ -436,10 +436,13 @@ class TestPacingEngineNormalBehaviorUnchanged:
         When API succeeds (returns real usage_data), normal pacing logic runs.
         Removing fallback_state_path parameter must not affect normal path.
         """
+        # Use utilization well below the allowance for each window's current position.
+        # 5-hour: 2h elapsed of 5h = 40% allowance, util=2% -> well under target.
+        # 7-day: 2d elapsed of 7d = ~28.6% allowance, util=1% -> well under target.
         mock_usage = {
-            "five_hour_util": 20.0,
+            "five_hour_util": 2.0,
             "five_hour_resets_at": datetime.now(timezone.utc) + timedelta(hours=3),
-            "seven_day_util": 15.0,
+            "seven_day_util": 1.0,
             "seven_day_resets_at": datetime.now(timezone.utc) + timedelta(days=5),
         }
 
@@ -455,7 +458,7 @@ class TestPacingEngineNormalBehaviorUnchanged:
         assert result["polled"] is True
         assert result.get("is_synthetic") is not True
         assert "decision" in result
-        # Low utilization should not throttle
+        # Low utilization (well below allowance) should not throttle
         assert result["decision"]["should_throttle"] is False
 
     def test_no_access_token_returns_no_throttle(self):

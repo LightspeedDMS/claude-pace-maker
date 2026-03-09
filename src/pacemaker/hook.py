@@ -10,7 +10,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from typing import Optional, Dict, Any
 
@@ -62,11 +62,11 @@ def load_state(state_path: str = DEFAULT_STATE_PATH) -> dict:
                 if data.get("last_cleanup_time"):
                     data["last_cleanup_time"] = datetime.fromisoformat(
                         data["last_cleanup_time"]
-                    )
+                    ).replace(tzinfo=timezone.utc)
                 if data.get("last_user_interaction_time"):
                     data["last_user_interaction_time"] = datetime.fromisoformat(
                         data["last_user_interaction_time"]
-                    )
+                    ).replace(tzinfo=timezone.utc)
 
                 # Merge with defaults to ensure all required fields exist
                 # Loaded data takes precedence, defaults fill in missing fields

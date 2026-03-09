@@ -319,9 +319,15 @@ class TestSessionStartHookStdinBug:
             saved_state["tool_execution_count"]
             == original_state["tool_execution_count"]
         )
-        assert saved_state.get("last_user_interaction_time") == original_state.get(
-            "last_user_interaction_time"
-        )
+        # Compare parsed datetimes (save/load cycle may add +00:00 tz suffix)
+        saved_time = saved_state.get("last_user_interaction_time")
+        original_time = original_state.get("last_user_interaction_time")
+        if saved_time and original_time:
+            assert datetime.fromisoformat(saved_time).replace(
+                tzinfo=None
+            ) == datetime.fromisoformat(original_time).replace(tzinfo=None)
+        else:
+            assert saved_time == original_time
 
     def test_session_start_clear_resets_counters_but_keeps_session_id(
         self, temp_dirs, mock_config, stale_state
