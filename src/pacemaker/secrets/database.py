@@ -8,7 +8,7 @@ File permissions: 0600 (owner read/write only)
 
 import os
 import sqlite3
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 _initialized_dbs: set = set()
 
@@ -87,9 +87,9 @@ def _init_database(db_path: str) -> None:
     _initialized_dbs.add(db_path)
 
 
-def create_secret(db_path: str, secret_type: str, value: str) -> int:
+def create_secret(db_path: str, secret_type: str, value: str) -> Optional[int]:
     """
-    Create a new secret in the database, or return existing ID if duplicate.
+    Create a new secret in the database, or return None if already exists.
 
     Uses INSERT OR IGNORE with a UNIQUE constraint on (type, value) to
     atomically prevent duplicates without TOCTOU race conditions.
@@ -100,7 +100,8 @@ def create_secret(db_path: str, secret_type: str, value: str) -> int:
         value: The secret value to store
 
     Returns:
-        The ID of the newly created secret, or existing secret ID if duplicate
+        The ID of the newly created secret, or None if the secret already existed
+        (duplicate). Callers must check for None to distinguish new vs existing.
     """
     _init_database(db_path)
 
@@ -112,15 +113,10 @@ def create_secret(db_path: str, secret_type: str, value: str) -> int:
             (secret_type, value),
         )
         if cursor.rowcount == 0:
-            # Already existed — fetch the existing ID
-            cursor.execute(
-                "SELECT id FROM secrets WHERE type = ? AND value = ?",
-                (secret_type, value),
-            )
-            row = cursor.fetchone()
-            secret_id = row[0] if row else -1
-        else:
-            secret_id = cursor.lastrowid
+            # Already existed — return None to signal duplicate (not newly stored)
+            conn.commit()
+            return None
+        secret_id = cursor.lastrowid
         conn.commit()
         return secret_id
     finally:

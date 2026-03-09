@@ -1838,15 +1838,8 @@ def run_stop_hook():
             log_debug("hook", "No transcript - allow exit")
             return {"continue": True}
 
-        # Activity event: SM (secret masked during trace finalization)
-        # Only fires when Langfuse is enabled — secret masking is part of trace push
-        if config.get("langfuse_enabled", False):
-            try:
-                record_activity_event(
-                    DEFAULT_DB_PATH, "SM", "blue", session_id or "unknown"
-                )
-            except Exception:
-                pass  # Activity recording must never break stop hook
+        # NOTE: SM (secret masked) event is now fired in orchestrator.py after each
+        # sanitize_trace() call, where masking actually occurs. It is NOT fired here.
 
         # CRITICAL: Check for context exhaustion BEFORE any blocking logic.
         # If conversation hit "Prompt is too long" error, compaction failed

@@ -2649,6 +2649,11 @@ def _execute_secrets(
 
             secret_id = create_secret(db_path, "text", secret_value)
 
+            if secret_id is None:
+                return {
+                    "success": True,
+                    "message": "✓ Secret already exists (no duplicate stored)",
+                }
             return {
                 "success": True,
                 "message": f"✓ Secret added successfully (ID: {secret_id})",
@@ -2680,6 +2685,11 @@ def _execute_secrets(
 
             secret_id = create_secret(db_path, "file", file_content)
 
+            if secret_id is None:
+                return {
+                    "success": True,
+                    "message": "✓ File secret already exists (no duplicate stored)",
+                }
             return {
                 "success": True,
                 "message": f"✓ File secret added successfully (ID: {secret_id})",

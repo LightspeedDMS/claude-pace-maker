@@ -94,12 +94,13 @@ class TestCreateSecret:
         assert id2 == id1 + 1
         assert id3 == id2 + 1
 
-    def test_create_duplicate_secret_returns_existing_id(self, temp_db):
-        """Test that creating a duplicate secret returns the existing ID."""
+    def test_create_duplicate_secret_returns_none(self, temp_db):
+        """Test that creating a duplicate secret returns None (not an ID)."""
         id1 = create_secret(temp_db, "text", "duplicate-value")
         id2 = create_secret(temp_db, "text", "duplicate-value")
 
-        assert id1 == id2
+        assert id1 is not None, "First insertion must return a valid ID"
+        assert id2 is None, "Duplicate must return None to signal already-stored"
 
     def test_create_duplicate_secret_does_not_create_new_row(self, temp_db):
         """Test that duplicate secrets don't create new database rows."""

@@ -513,6 +513,11 @@ def flush_pending_trace(
 
     # Sanitize the trace batch (mask all secrets)
     sanitized_batch = sanitize_trace(pending_trace, db_path)
+    # Activity event: SM (secret masked) fires here where masking actually occurs
+    try:
+        record_activity_event(db_path, "SM", "blue", session_id or "unknown")
+    except Exception:
+        pass  # Activity recording must never break the main flow
 
     # Push sanitized trace
     success, _ = push.push_batch_events(

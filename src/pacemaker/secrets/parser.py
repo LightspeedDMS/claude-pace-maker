@@ -127,16 +127,18 @@ def parse_assistant_response(response: str, db_path: str) -> List[Dict[str, Any]
     """
     results = []
 
-    # Parse text secrets
+    # Parse text secrets — only count genuinely new ones (create_secret returns None for duplicates)
     text_secrets = parse_text_secret(response)
     for secret_value in text_secrets:
         secret_id = create_secret(db_path, "text", secret_value)
-        results.append({"id": secret_id, "type": "text"})
+        if secret_id is not None:
+            results.append({"id": secret_id, "type": "text"})
 
-    # Parse file secrets
+    # Parse file secrets — only count genuinely new ones (create_secret returns None for duplicates)
     file_secrets = parse_file_secret(response)
     for secret_value in file_secrets:
         secret_id = create_secret(db_path, "file", secret_value)
-        results.append({"id": secret_id, "type": "file"})
+        if secret_id is not None:
+            results.append({"id": secret_id, "type": "file"})
 
     return results
