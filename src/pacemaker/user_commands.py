@@ -1076,6 +1076,18 @@ ACTIVITY INDICATORS (Usage Console top bar):
   ST    Stop hook result          green=allow, red=block
   CX    Context exhaustion        red
 
+COEFFICIENTS (shown in status and monitor):
+  The values like (5x:0.0075 20x:0.0019) next to each
+  limiter show the cost-per-token conversion coefficients
+  used to estimate usage from token counts.
+
+  5x/20x = Anthropic rate limit tier (MAX 5x or 20x)
+  Each tier has different token-to-usage% ratios.
+
+  Values are calibrated automatically when real API usage
+  data is available. Otherwise, built-in defaults are used.
+  Calibrated values improve pacing accuracy over time.
+
 CONFIGURATION:
   Config file: ~/.claude-pace-maker/config.json
   Database: ~/.claude-pace-maker/usage.db

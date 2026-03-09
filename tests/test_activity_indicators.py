@@ -313,6 +313,53 @@ class TestHelpTextActivityIndicators:
 
 
 # ==============================================================================
+# Task 2b: Help text COEFFICIENTS section
+# ==============================================================================
+
+
+class TestHelpTextCoefficients:
+    """Help text must contain a COEFFICIENTS section explaining rate tier cost coefficients."""
+
+    def _get_help_text(self):
+        from pacemaker.user_commands import execute_command
+
+        result = execute_command("help", config_path="/dev/null")
+        return result.get("message", "")
+
+    def test_help_text_contains_coefficients_section(self):
+        """Help text must contain 'COEFFICIENTS' header."""
+        help_text = self._get_help_text()
+        assert "COEFFICIENTS" in help_text, "Help text missing 'COEFFICIENTS' section"
+
+    def test_help_text_coefficients_mentions_cost_per_token(self):
+        """COEFFICIENTS section must mention 'cost-per-token'."""
+        help_text = self._get_help_text()
+        assert (
+            "cost-per-token" in help_text
+        ), "COEFFICIENTS section missing 'cost-per-token' description"
+
+    def test_help_text_coefficients_mentions_calibrated_automatically(self):
+        """COEFFICIENTS section must mention 'calibrated automatically'."""
+        help_text = self._get_help_text()
+        assert (
+            "calibrated automatically" in help_text
+        ), "COEFFICIENTS section missing 'calibrated automatically'"
+
+    def test_help_text_coefficients_between_activity_indicators_and_configuration(self):
+        """COEFFICIENTS section must appear after ACTIVITY INDICATORS and before CONFIGURATION."""
+        help_text = self._get_help_text()
+        assert "ACTIVITY INDICATORS" in help_text, "Missing ACTIVITY INDICATORS"
+        assert "COEFFICIENTS" in help_text, "Missing COEFFICIENTS"
+        assert "CONFIGURATION:" in help_text, "Missing CONFIGURATION:"
+        ai_pos = help_text.index("ACTIVITY INDICATORS")
+        coeff_pos = help_text.index("COEFFICIENTS")
+        cfg_pos = help_text.index("CONFIGURATION:")
+        assert (
+            ai_pos < coeff_pos < cfg_pos
+        ), "COEFFICIENTS must appear after ACTIVITY INDICATORS and before CONFIGURATION:"
+
+
+# ==============================================================================
 # Task 3: Settings-gated indicator tests
 # ==============================================================================
 
