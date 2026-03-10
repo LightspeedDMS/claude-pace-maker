@@ -25,6 +25,16 @@ This is a separate tool that displays usage metrics in a monitor/dashboard forma
 - `pace-maker status` = CLI command from THIS repo (claude-pace-maker)
 - `claude-usage` = Monitor tool from claude-usage-reporting repo
 
+## Version Bumping
+
+**When bumping the version**, ALWAYS update BOTH files:
+- `src/pacemaker/__init__.py` — the Python package version
+- `.claude-plugin/plugin.json` — the Claude Code plugin manifest version
+
+These MUST always match. Forgetting `plugin.json` has happened before.
+
+---
+
 ## Deployment After Code Changes
 
 **CRITICAL**: After completing code changes to hook logic (`src/pacemaker/`), you MUST run the installer to deploy:
