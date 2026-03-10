@@ -102,7 +102,8 @@ def detect_git_auth(repo_host: str, repo_path: str) -> Optional[str]:
     """
     Detect which git authentication method is available.
 
-    Tries SSH first (exit code 1 from GitHub means authenticated),
+    Tries plain HTTPS first (works for public repos without auth),
+    then SSH (exit code 1 from GitHub means authenticated),
     then falls back to gh CLI token.
 
     Args:
@@ -112,7 +113,21 @@ def detect_git_auth(repo_host: str, repo_path: str) -> Optional[str]:
     Returns:
         A git URL string if auth is available, None otherwise.
     """
-    # Try SSH first
+    # Step 1: Try plain HTTPS (works for public repos, no auth needed)
+    try:
+        https_url = f"https://{repo_host}/{repo_path}"
+        ls_result = subprocess.run(
+            ["git", "ls-remote", https_url],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if ls_result.returncode == 0:
+            return https_url
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # Step 2: Try SSH
     ssh_result = subprocess.run(
         [
             "ssh",
@@ -131,7 +146,7 @@ def detect_git_auth(repo_host: str, repo_path: str) -> Optional[str]:
         # Exit 1 = GitHub authenticated (shell access denied = success for git)
         return f"ssh://git@{repo_host}/{repo_path}"
 
-    # Try gh auth token
+    # Step 3: Try gh auth token
     try:
         gh_result = subprocess.run(
             ["gh", "auth", "token"],
@@ -146,7 +161,7 @@ def detect_git_auth(repo_host: str, repo_path: str) -> Optional[str]:
         # gh CLI not installed, skip this method
         pass
 
-    # Neither method works
+    # Step 4: No method works
     return None
 
 

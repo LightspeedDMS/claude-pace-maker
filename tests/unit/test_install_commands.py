@@ -112,14 +112,189 @@ class TestHandleInstallUnknownTarget(unittest.TestCase):
 class TestDetectGitAuth(unittest.TestCase):
     """Test detect_git_auth() with mocked subprocess calls."""
 
-    def test_ssh_success_returns_ssh_url(self):
-        """AC1: SSH exit code 1 (GitHub authenticated) returns SSH URL."""
+    # ------------------------------------------------------------------
+    # New tests: plain HTTPS tried first (Step 1 in new auth order)
+    # ------------------------------------------------------------------
+
+    def test_https_public_repo_returns_https_url(self):
+        """Step 1: git ls-remote succeeds for public repo → returns plain HTTPS URL (no token)."""
         from src.pacemaker.install_commands import detect_git_auth
+
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 0  # Public repo accessible
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
+            return MagicMock(returncode=255)  # SSH/gh should NOT be called
+
+        with patch("subprocess.run", side_effect=side_effect):
+            url = detect_git_auth("github.com", "LightspeedDMS/claude-usage.git")
+
+        self.assertIsNotNone(url)
+        self.assertEqual(url, "https://github.com/LightspeedDMS/claude-usage.git")
+        # Must NOT contain any token or credentials
+        self.assertNotIn("@", url.replace("https://", ""))
+
+    def test_https_url_contains_no_token(self):
+        """Plain HTTPS URL returned by Step 1 must have no embedded credentials."""
+        from src.pacemaker.install_commands import detect_git_auth
+
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 0
+
+        with patch("subprocess.run", return_value=mock_ls_remote):
+            url = detect_git_auth("github.com", "LightspeedDMS/claude-usage.git")
+
+        # URL must be exactly https://<host>/<path> — no token embedded
+        self.assertEqual(url, "https://github.com/LightspeedDMS/claude-usage.git")
+
+    def test_https_fails_falls_back_to_ssh(self):
+        """Step 1 fails (git ls-remote non-zero) → falls through to SSH check."""
+        from src.pacemaker.install_commands import detect_git_auth
+
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128  # Git error (e.g. private repo, auth required)
+
+        mock_ssh = MagicMock()
+        mock_ssh.returncode = 1  # SSH authenticated
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
+            if cmd[0] == "ssh":
+                return mock_ssh
+            return MagicMock(returncode=255)
+
+        with patch("subprocess.run", side_effect=side_effect):
+            url = detect_git_auth("github.com", "LightspeedDMS/claude-usage.git")
+
+        self.assertIsNotNone(url)
+        self.assertIn("ssh://", url)
+        self.assertIn("git@github.com", url)
+
+    def test_https_timeout_falls_back_to_ssh(self):
+        """Step 1 times out → falls through to SSH check (no crash)."""
+        import subprocess
+        from src.pacemaker.install_commands import detect_git_auth
+
+        mock_ssh = MagicMock()
+        mock_ssh.returncode = 1  # SSH authenticated
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                raise subprocess.TimeoutExpired(cmd, 15)
+            if cmd[0] == "ssh":
+                return mock_ssh
+            return MagicMock(returncode=255)
+
+        with patch("subprocess.run", side_effect=side_effect):
+            url = detect_git_auth("github.com", "LightspeedDMS/claude-usage.git")
+
+        self.assertIsNotNone(url)
+        self.assertIn("ssh://", url)
+
+    def test_https_git_not_found_falls_back_to_ssh(self):
+        """Step 1 raises FileNotFoundError (git binary missing) → falls through to SSH."""
+        from src.pacemaker.install_commands import detect_git_auth
+
+        mock_ssh = MagicMock()
+        mock_ssh.returncode = 1  # SSH authenticated
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                raise FileNotFoundError("git not found")
+            if cmd[0] == "ssh":
+                return mock_ssh
+            return MagicMock(returncode=255)
+
+        with patch("subprocess.run", side_effect=side_effect):
+            url = detect_git_auth("github.com", "LightspeedDMS/claude-usage.git")
+
+        self.assertIsNotNone(url)
+        self.assertIn("ssh://", url)
+
+    def test_https_fails_ssh_fails_falls_back_to_gh_token(self):
+        """Step 1 and Step 2 fail → falls through to gh auth token."""
+        from src.pacemaker.install_commands import detect_git_auth
+
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128  # HTTPS failed
+
+        mock_ssh = MagicMock()
+        mock_ssh.returncode = 255  # SSH also failed
+
+        mock_gh = MagicMock()
+        mock_gh.returncode = 0
+        mock_gh.stdout = "ghp_fallbacktoken\n"
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
+            if cmd[0] == "ssh":
+                return mock_ssh
+            if cmd[0] == "gh":
+                return mock_gh
+            return MagicMock(returncode=1)
+
+        with patch("subprocess.run", side_effect=side_effect):
+            url = detect_git_auth("github.com", "LightspeedDMS/claude-usage.git")
+
+        self.assertIsNotNone(url)
+        self.assertIn("https://", url)
+        self.assertIn("ghp_fallbacktoken", url)
+        self.assertIn("github.com", url)
+
+    def test_all_three_methods_fail_returns_none(self):
+        """All three methods fail → returns None."""
+        from src.pacemaker.install_commands import detect_git_auth
+
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128
+
+        mock_ssh = MagicMock()
+        mock_ssh.returncode = 255
+
+        mock_gh = MagicMock()
+        mock_gh.returncode = 1
+        mock_gh.stdout = ""
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
+            if cmd[0] == "ssh":
+                return mock_ssh
+            if cmd[0] == "gh":
+                return mock_gh
+            return MagicMock(returncode=1)
+
+        with patch("subprocess.run", side_effect=side_effect):
+            url = detect_git_auth("github.com", "LightspeedDMS/claude-usage.git")
+
+        self.assertIsNone(url)
+
+    # ------------------------------------------------------------------
+    # Existing tests updated to account for new Step 1 (git ls-remote)
+    # ------------------------------------------------------------------
+
+    def test_ssh_success_returns_ssh_url(self):
+        """AC1: HTTPS fails, SSH exit code 1 (GitHub authenticated) returns SSH URL."""
+        from src.pacemaker.install_commands import detect_git_auth
+
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128  # HTTPS fails → fall through to SSH
 
         mock_ssh_result = MagicMock()
         mock_ssh_result.returncode = 1  # Exit 1 = GitHub SSH authenticated
 
-        with patch("subprocess.run", return_value=mock_ssh_result):
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
+            if cmd[0] == "ssh":
+                return mock_ssh_result
+            return MagicMock(returncode=255)
+
+        with patch("subprocess.run", side_effect=side_effect):
             url = detect_git_auth("github.com", "LightspeedDMS/claude-usage.git")
 
         self.assertIsNotNone(url)
@@ -128,8 +303,11 @@ class TestDetectGitAuth(unittest.TestCase):
         self.assertIn("LightspeedDMS/claude-usage.git", url)
 
     def test_ssh_failure_gh_token_success_returns_https_url(self):
-        """AC2: SSH fails (exit 255), gh auth token succeeds, returns HTTPS+token URL."""
+        """AC2: HTTPS fails, SSH fails (exit 255), gh auth token succeeds, returns HTTPS+token URL."""
         from src.pacemaker.install_commands import detect_git_auth
+
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128  # HTTPS fails
 
         mock_ssh_result = MagicMock()
         mock_ssh_result.returncode = 255  # SSH auth failed
@@ -139,6 +317,8 @@ class TestDetectGitAuth(unittest.TestCase):
         mock_gh_result.stdout = "ghp_testtoken123\n"
 
         def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
             if cmd[0] == "ssh":
                 return mock_ssh_result
             elif cmd[0] == "gh":
@@ -158,6 +338,9 @@ class TestDetectGitAuth(unittest.TestCase):
         """Token is correctly embedded in HTTPS URL format."""
         from src.pacemaker.install_commands import detect_git_auth
 
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128  # HTTPS fails
+
         mock_ssh_result = MagicMock()
         mock_ssh_result.returncode = 255
 
@@ -166,6 +349,8 @@ class TestDetectGitAuth(unittest.TestCase):
         mock_gh_result.stdout = "ghp_mytoken456"
 
         def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
             if cmd[0] == "ssh":
                 return mock_ssh_result
             elif cmd[0] == "gh":
@@ -179,8 +364,11 @@ class TestDetectGitAuth(unittest.TestCase):
         self.assertIn("ghp_mytoken456@", url)
 
     def test_both_methods_fail_returns_none(self):
-        """AC4: Both SSH and gh fail returns None."""
+        """AC4: HTTPS, SSH, and gh all fail → returns None."""
         from src.pacemaker.install_commands import detect_git_auth
+
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128  # HTTPS failed
 
         mock_ssh_result = MagicMock()
         mock_ssh_result.returncode = 255  # SSH failed
@@ -190,6 +378,8 @@ class TestDetectGitAuth(unittest.TestCase):
         mock_gh_result.stdout = ""
 
         def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
             if cmd[0] == "ssh":
                 return mock_ssh_result
             elif cmd[0] == "gh":
@@ -202,13 +392,18 @@ class TestDetectGitAuth(unittest.TestCase):
         self.assertIsNone(url)
 
     def test_gh_not_installed_returns_none(self):
-        """AC4: gh CLI not installed (FileNotFoundError) returns None."""
+        """AC4: HTTPS fails, SSH fails, gh CLI not installed (FileNotFoundError) → returns None."""
         from src.pacemaker.install_commands import detect_git_auth
+
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128  # HTTPS failed
 
         mock_ssh_result = MagicMock()
         mock_ssh_result.returncode = 255  # SSH failed
 
         def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
             if cmd[0] == "ssh":
                 return mock_ssh_result
             elif cmd[0] == "gh":
@@ -224,6 +419,9 @@ class TestDetectGitAuth(unittest.TestCase):
         """gh auth token returning empty string is treated as failure."""
         from src.pacemaker.install_commands import detect_git_auth
 
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128  # HTTPS failed
+
         mock_ssh_result = MagicMock()
         mock_ssh_result.returncode = 255
 
@@ -232,6 +430,8 @@ class TestDetectGitAuth(unittest.TestCase):
         mock_gh_result.stdout = ""  # Empty token
 
         def side_effect(cmd, **kwargs):
+            if cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
             if cmd[0] == "ssh":
                 return mock_ssh_result
             elif cmd[0] == "gh":
@@ -377,9 +577,43 @@ class TestErrorMessageWithAuthInstructions(unittest.TestCase):
 class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
     """Integration tests for full install flow via handle_install()."""
 
-    def test_full_flow_ssh_success(self):
-        """AC1: Full install with SSH auth - detects SSH, installs, verifies."""
+    def test_full_flow_https_public_repo_success(self):
+        """New AC: Full install via plain HTTPS (public repo, no auth needed)."""
         from src.pacemaker.install_commands import handle_install
+
+        # git ls-remote succeeds (public repo)
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 0
+
+        # pip install + pip show succeed
+        mock_pip = MagicMock()
+        mock_pip.returncode = 0
+        mock_pip.stdout = "Name: claude-usage\nVersion: 2.0.0\n"
+        mock_pip.stderr = ""
+
+        def side_effect(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
+            elif isinstance(cmd, list) and len(cmd) > 2 and "pip" in cmd:
+                return mock_pip
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=side_effect):
+            with patch(
+                "shutil.which", return_value="/home/user/.local/bin/claude-usage"
+            ):
+                result = handle_install("claude-usage-monitor")
+
+        self.assertTrue(result["success"])
+        self.assertIn("installed successfully", result["message"])
+
+    def test_full_flow_ssh_success(self):
+        """AC1: Full install with SSH auth - HTTPS fails, SSH succeeds, installs, verifies."""
+        from src.pacemaker.install_commands import handle_install
+
+        # git ls-remote fails (would require auth)
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128
 
         # SSH succeeds (exit 1 = GitHub authenticated)
         mock_ssh = MagicMock()
@@ -392,7 +626,9 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         mock_pip.stderr = ""
 
         def side_effect(cmd, **kwargs):
-            if isinstance(cmd, list) and cmd[0] == "ssh":
+            if isinstance(cmd, list) and cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
+            elif isinstance(cmd, list) and cmd[0] == "ssh":
                 return mock_ssh
             elif isinstance(cmd, list) and len(cmd) > 2 and "pip" in cmd:
                 return mock_pip
@@ -408,8 +644,12 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         self.assertIn("installed successfully", result["message"])
 
     def test_full_flow_gh_token_fallback(self):
-        """AC2: Full install with gh token fallback - SSH fails, gh succeeds."""
+        """AC2: Full install with gh token fallback - HTTPS fails, SSH fails, gh succeeds."""
         from src.pacemaker.install_commands import handle_install
+
+        # git ls-remote fails
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128
 
         # SSH fails
         mock_ssh = MagicMock()
@@ -427,7 +667,9 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         mock_pip.stderr = ""
 
         def side_effect(cmd, **kwargs):
-            if isinstance(cmd, list) and cmd[0] == "ssh":
+            if isinstance(cmd, list) and cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
+            elif isinstance(cmd, list) and cmd[0] == "ssh":
                 return mock_ssh
             elif isinstance(cmd, list) and cmd[0] == "gh":
                 return mock_gh
@@ -445,8 +687,12 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         self.assertIn("installed successfully", result["message"])
 
     def test_full_flow_no_auth_returns_error(self):
-        """AC4: Both auth methods fail - returns clear error with instructions."""
+        """AC4: All auth methods fail - returns clear error with instructions."""
         from src.pacemaker.install_commands import handle_install
+
+        # git ls-remote fails
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 128
 
         # SSH fails
         mock_ssh = MagicMock()
@@ -458,7 +704,9 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         mock_gh.stdout = ""
 
         def side_effect(cmd, **kwargs):
-            if isinstance(cmd, list) and cmd[0] == "ssh":
+            if isinstance(cmd, list) and cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
+            elif isinstance(cmd, list) and cmd[0] == "ssh":
                 return mock_ssh
             elif isinstance(cmd, list) and cmd[0] == "gh":
                 return mock_gh
@@ -477,9 +725,9 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         """AC6: pip install failure shows pip stderr with actionable message."""
         from src.pacemaker.install_commands import handle_install
 
-        # SSH succeeds
-        mock_ssh = MagicMock()
-        mock_ssh.returncode = 1
+        # git ls-remote succeeds (HTTPS public repo — auth detection short-circuits)
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 0
 
         # pip install FAILS
         mock_pip = MagicMock()
@@ -489,8 +737,8 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         )
 
         def side_effect(cmd, **kwargs):
-            if isinstance(cmd, list) and cmd[0] == "ssh":
-                return mock_ssh
+            if isinstance(cmd, list) and cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
             elif isinstance(cmd, list) and len(cmd) > 2 and "pip" in " ".join(cmd):
                 return mock_pip
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -506,9 +754,9 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         """AC7: Install succeeds but binary not in PATH - warning with ~/.local/bin."""
         from src.pacemaker.install_commands import handle_install
 
-        # SSH succeeds
-        mock_ssh = MagicMock()
-        mock_ssh.returncode = 1
+        # git ls-remote succeeds (HTTPS public repo — auth detection short-circuits)
+        mock_ls_remote = MagicMock()
+        mock_ls_remote.returncode = 0
 
         # pip install + pip show both succeed
         mock_pip = MagicMock()
@@ -517,8 +765,8 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         mock_pip.stderr = ""
 
         def side_effect(cmd, **kwargs):
-            if isinstance(cmd, list) and cmd[0] == "ssh":
-                return mock_ssh
+            if isinstance(cmd, list) and cmd[0] == "git" and cmd[1] == "ls-remote":
+                return mock_ls_remote
             elif isinstance(cmd, list) and len(cmd) > 2 and "pip" in cmd:
                 return mock_pip
             return MagicMock(returncode=0, stdout="", stderr="")
