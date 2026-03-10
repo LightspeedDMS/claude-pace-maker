@@ -59,13 +59,13 @@ cd ~/Dev/claude-pace-maker
 **Registers hooks in**: `~/.claude/settings.json`
 
 **Installed hooks**:
-- `SessionStart` → session-start.sh (intent validation guidance)
-- `UserPromptSubmit` → user-prompt-submit.sh (CLI commands)
+- `SessionStart` → session-start.sh (secrets detection, intel guidance, activity indicators)
+- `UserPromptSubmit` → user-prompt-submit.sh (CLI commands, activity tracking)
 - `PreToolUse` → pre-tool-use.sh (intent validation, TDD enforcement)
-- `PostToolUse` → post-tool-use.sh (credit throttling, subagent reminders)
-- `Stop` → stop.sh (session completion validation)
-- `SubagentStart` → subagent-start.sh (context tracking)
-- `SubagentStop` → subagent-stop.sh (context tracking)
+- `PostToolUse` → post-tool-use.sh (credit throttling, Langfuse telemetry, subagent reminders)
+- `Stop` → stop.sh (Langfuse trace finalization, session completion)
+- `SubagentStart` → subagent-start.sh (subagent context tracking)
+- `SubagentStop` → subagent-stop.sh (subagent trace finalization)
 
 **This is the recommended installation mode.** All pace-maker features work globally.
 
@@ -107,7 +107,7 @@ If a project has its own hooks (like tdd-guard), you need to include BOTH in the
   "hooks": {
     "PreToolUse": [
       {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "tdd-guard"}]},
-      {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "~/.claude/hooks/pre-tool-use.sh", "timeout": 120}]}
+      {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "~/.claude/hooks/pre-tool-use.sh", "timeout": 60}]}
     ],
     "PostToolUse": [
       {"hooks": [{"type": "command", "command": "~/.claude/hooks/post-tool-use.sh", "timeout": 360}]}
@@ -125,7 +125,7 @@ If a project has its own hooks (like tdd-guard), you need to include BOTH in the
         "matcher": "startup|resume|clear",
         "hooks": [
           {"type": "command", "command": "tdd-guard"},
-          {"type": "command", "command": "~/.claude/hooks/session-start.sh"}
+          {"type": "command", "command": "~/.claude/hooks/session-start.sh", "timeout": 10}
         ]
       }
     ],
@@ -133,10 +133,10 @@ If a project has its own hooks (like tdd-guard), you need to include BOTH in the
       {"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh", "timeout": 120}]}
     ],
     "SubagentStart": [
-      {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-start.sh"}]}
+      {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-start.sh", "timeout": 10}]}
     ],
     "SubagentStop": [
-      {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-stop.sh"}]}
+      {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-stop.sh", "timeout": 10}]}
     ]
   }
 }
@@ -226,10 +226,16 @@ All pace-maker features can be toggled without changing hook registration:
 ```bash
 pace-maker on|off                    # Master switch - enable/disable ALL hooks
 pace-maker intent-validation on|off  # Enable/disable pre-tool validation
+pace-maker tdd on|off                # Enable/disable TDD enforcement
 pace-maker tempo on|off              # Enable/disable session lifecycle
 pace-maker reminder on|off           # Enable/disable subagent reminders
 pace-maker 5-hour-limit on|off       # Enable/disable 5-hour throttling
 pace-maker weekly-limit on|off       # Enable/disable 7-day throttling
+pace-maker loglevel 0-4              # Set log verbosity (0=OFF, 4=DEBUG)
+pace-maker langfuse configure        # Configure Langfuse telemetry
+pace-maker langfuse status           # Check Langfuse connectivity
+pace-maker status                    # Show current configuration and usage
+pace-maker install claude-usage-monitor  # Install the usage monitor tool
 ```
 
 This allows you to install hooks globally but selectively disable features as needed.
