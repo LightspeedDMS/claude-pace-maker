@@ -477,7 +477,7 @@ def _count_recent_errors(hours: int = 24, log_dir: Optional[str] = None) -> int:
                                 timestamp_str = match.group(1)
                                 timestamp = datetime.strptime(
                                     timestamp_str, "%Y-%m-%d %H:%M:%S"
-                                )
+                                ).replace(tzinfo=timezone.utc)
                                 if timestamp >= cutoff_time:
                                     error_count += 1
                             except ValueError:

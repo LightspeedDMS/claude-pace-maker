@@ -6,7 +6,13 @@ production database at ~/.claude-pace-maker/usage.db. All tests that
 instantiate UsageModel without an explicit db_path will get a temp DB.
 """
 
+import os
+
 import pytest
+
+# Enable test mode globally — skips fsync in SQLite for 20x faster DB operations.
+# Must be set before any pacemaker imports to ensure all connections see it.
+os.environ["PACEMAKER_TEST_MODE"] = "1"
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +26,16 @@ def _guard_production_db(tmp_path, monkeypatch):
     Also sets HOME to a temp dir to prevent any Path.home() based lookups
     from hitting real config/state files.
     """
+    # Clear the DB initialization cache so each test gets a fresh state.
+    # This prevents the _initialized_dbs set in database.py from carrying
+    # over cached paths between tests (which would skip schema creation).
+    try:
+        from pacemaker.database import reset_initialized_dbs
+
+        reset_initialized_dbs()
+    except ImportError:
+        pass
+
     fake_home = tmp_path / "fake_home"
     fake_home.mkdir()
     fake_pace_maker_dir = fake_home / ".claude-pace-maker"

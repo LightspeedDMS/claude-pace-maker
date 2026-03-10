@@ -7,6 +7,7 @@ consumption rates over time.
 """
 
 import json
+import os
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -25,6 +26,20 @@ T = TypeVar("T")
 DB_TIMEOUT = 5.0  # Wait up to 5 seconds for lock
 MAX_RETRIES = 3  # Retry up to 3 times on lock
 RETRY_DELAY = 0.1  # Initial delay between retries (100ms)
+
+
+# Cache of db_paths that have already been initialized to avoid repeated
+# executescript() calls which require an exclusive lock and cause contention.
+_initialized_dbs: set = set()
+
+
+def reset_initialized_dbs() -> None:
+    """Clear the initialization cache.
+
+    Used by tests to ensure clean state between test runs. Must be called
+    before each test that relies on a fresh DB initialization.
+    """
+    _initialized_dbs.clear()
 
 
 # Database schema
@@ -309,6 +324,9 @@ def get_db_connection(
     try:
         conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT)
         conn.execute("PRAGMA journal_mode=WAL")
+        # In test mode, skip fsync for 20x faster schema creation
+        if os.environ.get("PACEMAKER_TEST_MODE"):
+            conn.execute("PRAGMA synchronous=OFF")
         if readonly:
             conn.execute("PRAGMA read_uncommitted=1")
         yield conn
@@ -366,12 +384,20 @@ def initialize_database(db_path: str) -> bool:
     """
     Initialize database with required schema.
 
+    Uses an in-memory cache (_initialized_dbs) to avoid calling
+    executescript() more than once per db_path. executescript() requires
+    an exclusive lock; repeated calls on the same path cause WAL-mode
+    contention that can hang tests indefinitely.
+
     Args:
         db_path: Path to SQLite database file
 
     Returns:
         True if successful, False otherwise
     """
+    if db_path in _initialized_dbs:
+        return True
+
     try:
         # Ensure parent directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -381,6 +407,7 @@ def initialize_database(db_path: str) -> bool:
             # Execute schema creation
             cursor.executescript(SCHEMA)
 
+        _initialized_dbs.add(db_path)
         return True
 
     except Exception as e:

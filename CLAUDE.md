@@ -35,6 +35,24 @@ These MUST always match. Forgetting `plugin.json` has happened before.
 
 ---
 
+## Running Tests
+
+**NEVER run tests as a single pytest process** (`python -m pytest tests/`). SQLite WAL contention causes hangs when multiple test files create DBs concurrently in the same process.
+
+**Always use the independent test runner:**
+
+```bash
+./scripts/run_tests.sh          # Run all tests (each file independently)
+./scripts/run_tests.sh --quick  # Skip slow e2e tests
+./scripts/run_tests.sh --tb     # Show failure tracebacks
+```
+
+**Why:** Each test file gets its own pytest process with a 30s timeout, avoiding WAL lock contention between concurrent DB teardown/setup cycles.
+
+**Test mode optimization:** `PACEMAKER_TEST_MODE=1` is set automatically by `conftest.py`, enabling `PRAGMA synchronous=OFF` for 20x faster DB operations in tests.
+
+---
+
 ## Deployment After Code Changes
 
 **CRITICAL**: After completing code changes to hook logic (`src/pacemaker/`), you MUST run the installer to deploy:
