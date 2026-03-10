@@ -1,5 +1,57 @@
 # Changelog
 
+## [2.2.0] - 2026-03-09
+
+### Added
+- **`pace-maker install claude-usage-monitor` command**: New subcommand installs the claude-usage-monitor tool from its repository (Story #45)
+- **HTTPS-first git auth detection**: `detect_git_auth()` now tries plain HTTPS before falling back to SSH, improving compatibility with public repositories
+- **Independent test runner**: `scripts/run_tests.sh` runs each test file in its own pytest process with a 30-second timeout, eliminating SQLite WAL contention hangs during test suite execution
+
+### Fixed
+- **install.sh CLI path detection**: Corrected detection of the pace-maker CLI executable path during installation
+- **Python 3.9 version checks**: All version gating now correctly handles Python 3.9 (requirement lowered from >=3.10 to >=3.9)
+- **`--version` flag verification**: Installer now verifies the deployed CLI responds correctly to `--version`
+- **SQLite WAL contention in tests**: Resolved hangs caused by concurrent test files sharing WAL-mode databases in the same pytest process
+- **Naive datetime bug**: Fixed remaining naive datetime comparisons that caused crashes when mixing timezone-aware and naive objects
+
+### Changed
+- **Minimum Python version**: Lowered from >=3.10 to >=3.9 to broaden supported environments
+
+## [2.1.0] - 2026-03-08
+
+### Fixed
+- **SA indicator color on stop**: SubagentStop now correctly shows the blue indicator instead of an incorrect color
+- **LF indicator gating**: Langfuse (LF) indicator is only shown when a trace was actually pushed, not on every hook invocation
+- **SM indicator gating**: Secrets Masking (SM) indicator is only shown when secrets were actually masked in the trace, not on every sanitize call
+
+## [2.0.0] - 2026-03-08
+
+### Added
+- **Global API poll coordination** (#43): SQLite-backed singleton ensures only one session polls the Claude API at a time, eliminating redundant concurrent requests across parallel sessions
+- **Activity events table**: New `activity_events` SQLite table records hook invocations with timestamps for activity indicator computation
+- **Hook instrumentation**: All hook entry points record activity events for accurate timing and settings-awareness
+- **Activity indicator help text**: `pace-maker help` now documents all activity indicator symbols (PL, LF, SM, SS, SA) and their color meanings
+- **PL indicator colors**: Pacing (PL) indicator uses blue/yellow/red to reflect normal/warning/critical pacing state
+- **Fallback coefficients in status**: `pace-maker status` displays the active cost-to-utilization coefficients, including calibrated fallback values
+- **COEFFICIENTS section in help**: `pace-maker help` includes an explanation of how fallback mode coefficients work and how they are calibrated
+
+### Fixed
+- **Naive/aware datetime mismatch**: Replaced all `datetime.now()` and `datetime.utcnow()` calls in `hook.py` and supporting modules with `datetime.now(timezone.utc)`, eliminating crashes in the pacing engine caused by mixing naive and aware datetime objects
+- **Activity indicator timing**: Corrected timing windows used to determine whether recent activity qualifies for indicator display
+- **SS indicator gating**: SessionStart (SS) indicator now fires only when new secrets are detected, not on every session start
+- **SM indicator placement**: Secrets Masking (SM) indicator fires in the orchestrator after `sanitize_trace()` completes, ensuring it reflects actual masking results
+- **Global poll coordination code review findings** (#43): Addressed follow-up issues identified during code review of the SQLite poll coordination feature
+
+## [1.19.0] - 2026-03-07
+
+### Added
+- **Complete JSON-to-SQLite migration**: All remaining state management (fallback state, backoff state, API cache, profile cache) migrated from JSON files to `UsageModel` SQLite tables, eliminating TOCTOU races between concurrent sessions
+- **Test safety guard**: `conftest.py` now sets `PACEMAKER_TEST_MODE=1` to prevent test runs from polluting the production SQLite database
+
+### Removed
+- **Dead `api_backoff.py` module**: Deleted legacy JSON-based backoff implementation replaced entirely by `UsageModel` SQLite in v1.18.0
+- **Dead fallback JSON code paths**: Removed all remaining read/write paths that previously fell back to JSON files for state storage
+
 ## [1.18.0] - 2026-03-07
 
 ### Added

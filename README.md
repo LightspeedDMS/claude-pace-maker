@@ -19,6 +19,9 @@ Intelligent credit consumption throttling and code quality enforcement for Claud
 - **Prompt Intelligence (Intel)**: Optional per-prompt metadata (frustration, specificity, task type, quality, iteration) attached to Langfuse traces for dashboard analytics
 - **Secrets Management**: Sanitizes sensitive data from Langfuse trace outputs
 - **Langfuse Auto-Provisioning**: Automatic API key provisioning with configurable URL
+- **Activity Indicators**: Real-time hook activity tracking (IV, TD, CC, ST, CX, PA, PL, LF, SS, SM, SE, SA, UP) with color-coded status
+- **Global API Poll Coordination**: SQLite singleton prevents redundant API polling across concurrent sessions
+- **Companion Tool Installer**: `pace-maker install claude-usage-monitor` installs the usage monitoring dashboard
 
 ## Installation
 
@@ -195,6 +198,14 @@ pace-maker core-paths remove PATH # Remove core code path
 pace-maker prefer-model opus|sonnet|haiku|auto  # Set model preference for subagents
 pace-maker langfuse on|off|status|configure  # Langfuse telemetry controls
 pace-maker loglevel 0-4           # Set log level (0=OFF, 1=ERROR, 2=WARNING, 3=INFO, 4=DEBUG)
+pace-maker excluded-paths list         # List excluded paths (skip TDD/clean code)
+pace-maker excluded-paths add PATH     # Add excluded path
+pace-maker excluded-paths remove PATH  # Remove excluded path
+pace-maker secrets add VALUE           # Declare a secret value for masking
+pace-maker secrets addfile PATH        # Declare a file as containing secrets
+pace-maker secrets list                # List declared secrets
+pace-maker blockage-stats              # Show validation blockage statistics
+pace-maker install claude-usage-monitor  # Install claude-usage-monitor companion tool
 pace-maker version                # Show version
 pace-maker help                   # Show help
 ```
@@ -545,12 +556,12 @@ When Claude attempts to stop:
 
 | Hook | Function |
 |------|----------|
-| SessionStart | Initializes state, injects intel guidance prompt |
-| UserPromptSubmit | Captures prompts, handles CLI commands |
+| SessionStart | Initializes state, injects intel guidance prompt, Langfuse session creation |
+| UserPromptSubmit | Captures prompts, handles CLI commands, deferred trace creation |
 | PreToolUse | Intent validation, TDD checks, clean code validation |
-| PostToolUse | Credit throttling, subagent reminders, intel parsing and Langfuse push |
-| Stop | Session completion validation |
-| SubagentStart/Stop | Tracks subagent context |
+| PostToolUse | Credit throttling, subagent reminders, intel parsing, Langfuse trace/span push, activity event recording |
+| Stop | Session completion validation, Langfuse trace finalization with token usage |
+| SubagentStart/Stop | Tracks subagent context, Langfuse subagent trace management |
 
 ## Configuration File
 
@@ -563,18 +574,24 @@ When Claude attempts to stop:
   "five_hour_limit_enabled": true,
   "tempo_enabled": true,
   "intent_validation_enabled": true,
+  "tdd_enabled": true,
   "subagent_reminder_enabled": true,
   "preferred_subagent_model": "auto",
   "base_delay": 5,
   "max_delay": 350,
   "safety_buffer_pct": 95.0,
-  "preload_hours": 12.0
+  "preload_hours": 12.0,
+  "log_level": 2,
+  "langfuse_enabled": false,
+  "langfuse_host": "",
+  "langfuse_public_key": "",
+  "langfuse_secret_key": ""
 }
 ```
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.9+
 - Claude Agent SDK
 - jq
 - Bash

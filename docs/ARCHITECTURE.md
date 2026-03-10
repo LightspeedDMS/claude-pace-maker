@@ -10,10 +10,16 @@
 6. [Throttling Algorithms](#throttling-algorithms)
 7. [Weekend-Aware Logic](#weekend-aware-logic)
 8. [Safety Buffer System](#safety-buffer-system)
-9. [Data Flow](#data-flow)
-10. [Configuration](#configuration)
-11. [Database Schema](#database-schema)
-12. [Error Handling](#error-handling)
+9. [Langfuse Telemetry System](#langfuse-telemetry-system)
+10. [Secrets Management](#secrets-management)
+11. [Prompt Intelligence (Intel)](#prompt-intelligence-intel)
+12. [Resilient Fallback Mode](#resilient-fallback-mode)
+13. [Activity Indicators](#activity-indicators)
+14. [Global API Poll Coordination](#global-api-poll-coordination)
+15. [Data Flow](#data-flow)
+16. [Configuration](#configuration)
+17. [Database Schema](#database-schema)
+18. [Error Handling](#error-handling)
 
 ---
 
@@ -22,7 +28,13 @@
 Claude Pace Maker is a hook-based system for Claude Code that provides:
 - **Credit throttling**: Prevents hitting API rate limits by intelligently pacing tool executions
 - **Pre-tool validation**: Enforces intent declaration, TDD for core code, and clean code standards
-- **Session lifecycle**: Prevents premature session endings via AI-powered completion validation
+- **Session lifecycle (tempo)**: Prevents premature session endings via AI-powered completion validation
+- **Langfuse telemetry**: Records sessions, traces, spans, and generation observations with token costs
+- **Secrets management**: Sanitizes declared secrets from Langfuse traces before upload
+- **Prompt intelligence (intel)**: Parses structured metadata from assistant responses (frustration, task type, quality)
+- **Resilient fallback mode**: Provides synthetic usage estimates during Claude API outages
+- **Activity indicators**: Real-time hook activity tracking visible in the usage monitor
+- **Global API poll coordination**: SQLite singleton prevents redundant API calls across concurrent hook invocations
 
 ### Architecture Diagram
 
@@ -67,9 +79,19 @@ Claude Pace Maker is a hook-based system for Claude Code that provides:
                           │              │                               │
                           │              ▼                               │
                           │  ┌─────────────────────────────────────────┐│
-                          │  │ SQLite Database                          ││
-                          │  │  - Usage snapshots                       ││
-                          │  │  - Session tracking                      ││
+                          │  │ SQLite Database (WAL mode)               ││
+                          │  │  - Usage snapshots / api_cache           ││
+                          │  │  - Fallback state + accumulated costs    ││
+                          │  │  - Langfuse metrics / secrets            ││
+                          │  │  - Activity events                       ││
+                          │  │  - Global poll coordination              ││
+                          │  └─────────────────────────────────────────┘│
+                          │              │                               │
+                          │              ▼                               │
+                          │  ┌─────────────────────────────────────────┐│
+                          │  │ Langfuse Cloud                           ││
+                          │  │  - Traces / sessions                     ││
+                          │  │  - Generation observations (costs)       ││
                           │  └─────────────────────────────────────────┘│
                           └─────────────────────────────────────────────┘
 ```
@@ -87,11 +109,18 @@ Main entry point for Claude Code hooks.
 - Manage hook state (last poll time, session ID)
 - Dispatch to appropriate hook handler
 - Execute sleep delays for throttling
+- Record activity events for all hook types
+- Coordinate Langfuse trace lifecycle (pending trace, flush on stop)
 
 **Key Functions**:
 - `run_hook()` - PostToolUse hook handler
 - `execute_delay(delay_seconds)` - Sleep for throttling (max 350s)
 - `run_user_prompt_submit()` - UserPromptSubmit hook handler
+- `run_stop_hook()` - Stop/exit hook with tempo validation and Langfuse flush
+- `run_session_start()` - SessionStart hook handler
+- `run_subagent_start_hook()` / `run_subagent_stop_hook()` - Subagent context tracking
+- `run_pre_tool_use_hook()` - Pre-tool validation dispatcher
+- `safe_print(text)` - BrokenPipeError-safe stdout write (all output uses this)
 - `load_config()` / `save_state()` - State management
 
 ### 2. Pacing Engine (`src/pacemaker/pacing_engine.py`)
@@ -183,18 +212,64 @@ Interfaces with Claude API to fetch usage data.
 - Call Claude usage API endpoint
 - Parse JSON responses
 - Handle API errors gracefully
+- Trigger fallback mode on persistent failures
 
 ### 5. Database (`src/pacemaker/database.py`)
 
-SQLite database for usage tracking.
+SQLite database for usage tracking and system coordination.
 
 **Responsibilities**:
-- Store usage snapshots
-- Track sessions
-- Support historical queries
+- Store usage snapshots and api_cache (real API responses)
+- Track sessions and pacing decisions
+- Record blockage events from pre-tool validation
+- Store langfuse and secrets metrics
+- Manage activity events for the usage monitor
+- Maintain global_poll_state singleton for API coordination
 - Daily cleanup of old data
 
-### 6. User Commands (`src/pacemaker/user_commands.py`)
+**Concurrency**: All writes use WAL (Write-Ahead Logging) mode with `execute_with_retry()` for lock-safe operations. `PACEMAKER_TEST_MODE=1` environment variable enables `PRAGMA synchronous=OFF` for 20x faster test execution.
+
+### 6. Usage Model (`src/pacemaker/usage_model.py`)
+
+Single source of truth for all usage metrics — real API data or synthetic estimates during fallback.
+
+**Responsibilities**:
+- Provide `get_current_usage()` as the single unified method for both the hook system and the usage monitor
+- Manage fallback state machine (NORMAL → FALLBACK → NORMAL)
+- Accumulate token costs during API outages (`accumulate_cost()`)
+- Store raw API responses in `api_cache` table
+- Track backoff state for rate-limit (429) responses
+- Calibrate synthetic coefficients against real values on API recovery
+
+**Key Interface**:
+```python
+class UsageModel:
+    def get_current_usage(self) -> Optional[UsageSnapshot]:
+        """Returns real or synthetic snapshot depending on fallback state."""
+
+    def is_fallback_active(self) -> bool
+    def enter_fallback(self) -> None
+    def exit_fallback(self, real_5h: float, real_7d: float) -> None
+    def accumulate_cost(self, input_tokens, output_tokens, ...) -> None
+    def store_api_response(self, response_data: Dict) -> None
+    def get_pacing_decision(self, config: Dict) -> Optional[Dict]
+```
+
+`UsageSnapshot` dataclass carries `is_synthetic: bool` to distinguish real from estimated data.
+
+### 7. Fallback Utilities (`src/pacemaker/fallback.py`)
+
+Shared primitives used by `UsageModel`.
+
+**Contents**:
+- `FallbackState` enum — `NORMAL` / `FALLBACK` states
+- `API_PRICING` — per-1M-token pricing by model family (opus, sonnet, haiku)
+- `_DEFAULT_TOKEN_COSTS` — fallback coefficients when calibration unavailable (`5x`/`20x` tiers)
+- `parse_api_datetime()` — ISO 8601 datetime parser for API response strings
+- `_project_window()` — projects an expired `resets_at` timestamp forward past `now`
+- `detect_tier()` — infers subscription tier (`"5x"` or `"20x"`) from profile dict
+
+### 8. User Commands (`src/pacemaker/user_commands.py`)
 
 Handles `pace-maker status/on/off` commands.
 
@@ -217,11 +292,13 @@ Handles `pace-maker status/on/off` commands.
 **Flow**:
 1. Check if pace-maker is enabled
 2. Increment global tool execution counter
-3. Check for cached pacing decision (avoids API spam)
-4. If no cached decision or stale, run pacing check and cache result
-5. Apply throttling delay if needed (sleeps if needed)
-6. Check if should inject subagent reminder (every 5 executions in main context)
-7. Return control to Claude Code
+3. Record activity event (event code `PA` = pacing, or `LF` = Langfuse push)
+4. Check global_poll_state for API poll coordination
+5. If poll interval elapsed, run pacing check and cache result
+6. Apply throttling delay if needed (sleeps if needed)
+7. Push incremental Langfuse trace data
+8. Check if should inject subagent reminder (every 5 executions in main context)
+9. Return control to Claude Code
 
 **Python Handler**: `src/pacemaker/hook.py:run_hook()`
 
@@ -231,25 +308,30 @@ Handles `pace-maker status/on/off` commands.
 
 **Trigger**: Before user prompt is sent to Claude
 **Script**: `~/.claude/hooks/user-prompt-submit.sh`
-**Purpose**: Intercept `pace-maker` commands
+**Purpose**: Intercept `pace-maker` commands; store pending trace for Langfuse; parse intel metadata
 
 **Flow**:
 1. Check if input starts with "pace-maker"
 2. If yes: execute command, block from reaching Claude, display output
-3. If no: pass through to Claude unchanged
+3. If no: store prompt as `pending_trace` in Langfuse state (deferred push — secrets not yet visible)
+4. Record activity event (`UP` = user prompt)
+5. Pass through to Claude unchanged
 
 **Python Handler**: `src/pacemaker/hook.py:run_user_prompt_submit()`
+
+**Deferred Push Design**: Traces are stored as `pending_trace` in Langfuse state at UserPromptSubmit, NOT pushed immediately. Secrets are only disclosed after the assistant responds, so sanitization must happen later. Pending traces are flushed in PostToolUse, Stop, and SubagentStop hooks via `flush_pending_trace()`.
 
 ### SessionStart Hook
 
 **Trigger**: When Claude Code session starts
 **Script**: `~/.claude/hooks/session-start.sh`
-**Purpose**: Show IMPLEMENTATION LIFECYCLE PROTOCOL reminder
+**Purpose**: Show IMPLEMENTATION LIFECYCLE PROTOCOL reminder; clean up stale Langfuse state files
 
 **Flow**:
 1. Check if tempo is enabled
 2. If yes: print reminder text to Claude about IMPLEMENTATION_START/COMPLETE markers
-3. If no: do nothing
+3. Clean up Langfuse state files older than 7 days
+4. Record activity event (`SS` = session start)
 
 **Python Handler**: `src/pacemaker/hook.py:run_session_start()`
 
@@ -257,15 +339,17 @@ Handles `pace-maker status/on/off` commands.
 
 **Trigger**: When Claude Code session attempts to stop/exit
 **Script**: `~/.claude/hooks/stop.sh`
-**Purpose**: Prevent premature session termination using AI-powered intent validation
+**Purpose**: Prevent premature session termination using AI-powered intent validation; flush Langfuse trace
 
 **Flow**:
-1. Check if tempo is enabled (global or session override)
-2. Read conversation transcript from JSONL file
-3. Extract user prompts and Claude's responses
-4. Call intent validator to check if work is complete
-5. SDK acts as user proxy and judges if Claude completed the original request
-6. Return APPROVED (allow exit) or BLOCKED with specific feedback
+1. Flush any pending Langfuse trace (push with generation observation)
+2. Check if tempo is enabled (global or session override)
+3. Read conversation transcript from JSONL file
+4. Extract user prompts and Claude's responses
+5. Call intent validator to check if work is complete
+6. SDK acts as user proxy and judges if Claude completed the original request
+7. Return APPROVED (allow exit) or BLOCKED with specific feedback
+8. Record activity event (`ST` = stop)
 
 **Python Handler**: `src/pacemaker/hook.py:run_stop_hook()`
 
@@ -275,13 +359,13 @@ Handles `pace-maker status/on/off` commands.
 
 **Trigger**: When entering subagent context (Task tool invoked)
 **Script**: `~/.claude/hooks/subagent-start.sh`
-**Purpose**: Track subagent context for reminder system
+**Purpose**: Track subagent context for reminder system; record activity
 
 **Flow**:
 1. Load current state
 2. Set `in_subagent` flag to True
 3. Increment `subagent_depth` counter
-4. Save state
+4. Save state; record activity event (`SA` = subagent)
 
 **Python Handler**: `src/pacemaker/hook.py:run_subagent_start_hook()`
 
@@ -289,15 +373,17 @@ Handles `pace-maker status/on/off` commands.
 
 **Trigger**: When exiting subagent context (Task tool completes)
 **Script**: `~/.claude/hooks/subagent-stop.sh`
-**Purpose**: Track subagent context for reminder system
+**Purpose**: Track subagent context; flush Langfuse subagent trace
 
 **Flow**:
-1. Load current state
+1. Flush Langfuse subagent trace (uses `subagent-<agent_id>` as session_id)
 2. Decrement `subagent_depth` counter
 3. Update `in_subagent` flag (False if depth reaches 0)
 4. Save state
 
 **Python Handler**: `src/pacemaker/hook.py:run_subagent_stop_hook()`
+
+**Agent Transcript Location**: Claude Code 2.1.39+ moved agent transcripts from `<project>/agent-*.jsonl` to `<project>/<session-id>/subagents/agent-*.jsonl`. The hook searches both locations for backward compatibility.
 
 ### PreToolUse Hook
 
@@ -316,10 +402,13 @@ Handles `pace-maker status/on/off` commands.
    - Code matches declared intent
    - No clean code violations
 6. Return empty (allow) or error message (block)
+7. Record activity event (`IV` = intent validation pass/fail)
 
 **Python Handler**: `src/pacemaker/hook.py:run_pre_tool_use_hook()`
 
 **Validation Module**: `src/pacemaker/intent_validator.py:validate_intent_and_code()`
+
+**Fails Closed**: When the validator encounters an error (e.g., SDK unavailable), the tool use is **blocked**, not allowed through. This is intentional to prevent bypassing validation during transient errors.
 
 ---
 
@@ -465,6 +554,8 @@ Write/Edit Tool Attempted
     ✓ ALLOW EDIT
 ```
 
+Note: Validation failures (SDK errors, timeouts) cause a **BLOCK** — the system fails closed, not open.
+
 ### Message Context Packaging
 
 The two-stage system uses different message extraction strategies:
@@ -482,11 +573,9 @@ The two-stage system uses different message extraction strategies:
 - Message 5 (current): Full content including tool parameters
 - Provides complete context for detecting scope creep, missing functionality, and code quality issues
 
-This dual approach optimizes for speed (Stage 1) while maintaining thoroughness (Stage 2).
-
 ### Validation Prompts
 
-The system uses two separate external prompt templates:
+The system uses external prompt templates:
 
 **Stage 1 Prompt**: `src/pacemaker/prompts/pre_tool_use/stage1_declaration_check.md`
 - Validates intent declaration format
@@ -503,6 +592,11 @@ The system uses two separate external prompt templates:
 **Common Includes**: Both prompts reference:
 - `src/pacemaker/prompts/common/intent_declaration_prompt.md` - Intent format specification
 - `src/pacemaker/prompts/common/tdd_declaration_prompt.md` - TDD requirements
+
+**Session Start Prompts** (`src/pacemaker/prompts/session_start/`):
+- `intel_guidance.md` - Prompt intelligence metadata guidance
+- `intent_validation_guidance.md` - Intent validation reminder
+- `secrets_nudge.md` - Secret declaration reminder
 
 ### SDK Integration
 
@@ -562,7 +656,7 @@ The tempo system prevents Claude from prematurely ending implementation sessions
 The system uses `~/.claude-pace-maker/state.json` to track:
 ```json
 {
-  "tempo_session_enabled": true  // Optional session override
+  "tempo_session_enabled": true
 }
 ```
 
@@ -816,6 +910,326 @@ if current_util > safe_allowance:
 
 ---
 
+## Langfuse Telemetry System
+
+The Langfuse integration provides full observability of Claude Code sessions: traces, spans, generation observations with token costs, and subagent activity.
+
+### Architecture
+
+All Langfuse logic lives in `src/pacemaker/langfuse/`:
+
+| Module | Responsibility |
+|--------|---------------|
+| `orchestrator.py` | Main lifecycle coordinator; `flush_pending_trace()` helper |
+| `state.py` | Per-session state management in JSON files |
+| `push.py` | HTTP batch event submission to Langfuse API |
+| `incremental.py` | Incremental transcript parsing for token counting |
+| `trace.py` | Trace creation and finalization |
+| `span.py` | Span and text span creation |
+| `subagent.py` | Subagent trace handling |
+| `client.py` | Langfuse API client |
+| `metrics.py` | Langfuse metric counters |
+| `filter.py` | Event filtering |
+| `transformer.py` | Data transformation utilities |
+| `cache.py` | Local caching |
+| `stats.py` | Statistics aggregation |
+| `project_context.py` | Project metadata extraction |
+| `provisioner.py` | Langfuse resource provisioning |
+| `backfill.py` | Historical data backfill |
+
+### Deferred Push Design
+
+Traces are **not pushed immediately** when a user prompt is submitted. The reason: secrets are only disclosed by Claude in the assistant response, after the prompt is processed. Pushing immediately would leak unmasked secrets.
+
+**Flow**:
+```
+UserPromptSubmit → store pending_trace in state file
+PostToolUse     → flush_pending_trace() → sanitize → push
+Stop            → flush_pending_trace() → sanitize → push
+SubagentStop    → flush_pending_trace() → sanitize → push
+```
+
+### Langfuse Hierarchy
+
+```
+Session (Claude Code session_id)
+└── Trace (one per conversation turn)
+    ├── Span (tool call or text block)
+    └── Generation (token usage observation → drives cost calculation)
+```
+
+- **Session**: Created automatically by Langfuse when a `sessionId` is set on a trace
+- **Trace**: One per conversation turn; carries token metadata
+- **Generation**: Required for Langfuse cost computation — traces and spans do NOT compute cost; only generation observations do
+- **Token types tracked**: `input`, `output`, `cache_read_input_tokens`, `cache_creation_input_tokens`
+
+### Per-Session State Files
+
+State is stored in `~/.claude-pace-maker/langfuse_state/<session_id>.json`:
+
+```json
+{
+  "session_id": "session-abc123",
+  "trace_id": "session-abc123",
+  "last_pushed_line": 0,
+  "metadata": {...},
+  "pending_trace": [...],
+  "pending_intel": {...}
+}
+```
+
+- `pending_trace`: Deferred batch events (set at UserPromptSubmit, cleared after flush)
+- `pending_intel`: Prompt intelligence metadata waiting to be attached to next trace
+- Stale files (>7 days old) are cleaned up at SessionStart
+
+### Incremental Transcript Parsing
+
+`incremental.py` implements a two-pass algorithm for efficient transcript parsing:
+
+**Pass 1**: Scan all lines to build `tool_use_id → output` mapping (from `tool_result` blocks)
+**Pass 2**: Extract content blocks from lines after `last_pushed_line`, attaching tool outputs
+
+**Token deduplication**: Claude Code writes 2-4 JSONL entries per API turn with identical `message.usage`. The parser deduplicates by comparing usage tuples — only counts when usage changes between entries.
+
+### Payload Size Management
+
+`push.py` enforces a 900KB payload limit (Langfuse Cloud enforces 1MB). Oversized payloads are progressively truncated:
+1. Fields `input`, `output`, `text` are identified and sorted by length
+2. Largest field is truncated first (with `[TRUNCATED]` marker)
+3. Second-pass aggressive truncation to 1000 chars per field if still over limit
+
+### Subagent Trace Handling
+
+Subagents use `subagent-<agent_id>` as their session_id. The SubagentStop hook flushes the subagent trace when the Task tool completes. The hook searches for agent transcripts in both:
+- `<project>/agent-*.jsonl` (Claude Code ≤ 2.1.38)
+- `<project>/<session-id>/subagents/agent-*.jsonl` (Claude Code ≥ 2.1.39)
+
+### Configuration
+
+Langfuse is configured in `~/.claude-pace-maker/config.json`:
+
+```json
+{
+  "langfuse_enabled": true,
+  "langfuse_host": "https://cloud.langfuse.com",
+  "langfuse_public_key": "pk-lf-...",
+  "langfuse_secret_key": "sk-lf-..."
+}
+```
+
+---
+
+## Secrets Management
+
+The secrets system allows users to declare sensitive values (API keys, passwords, tokens) that are automatically masked in Langfuse traces before upload.
+
+### Architecture
+
+All secrets logic lives in `src/pacemaker/secrets/`:
+
+| Module | Responsibility |
+|--------|---------------|
+| `sanitizer.py` | Top-level `sanitize_trace()` function; pattern caching |
+| `database.py` | CRUD operations for secrets in SQLite `secrets` table |
+| `masking.py` | Regex-based string masking; `mask_structure()` for deep traversal |
+| `parser.py` | Parses secret declarations from assistant messages |
+| `metrics.py` | Increments `secrets_metrics` counters |
+
+### How Sanitization Works
+
+1. User declares secrets via `pace-maker secret add <value>` command
+2. Secrets are stored in the `secrets` table in `usage.db` (file permissions: 0600)
+3. At flush time, `sanitize_trace()` is called before any Langfuse push:
+   - Loads all secrets from database
+   - Builds a compiled regex pattern (cached; only rebuilt when secrets change)
+   - Deep-copies the trace structure, masks all occurrences
+   - Restores protected fields (`userId`) that must never be masked
+   - Records masking count in `secrets_metrics`
+
+### Protected Fields
+
+`userId` in traces is always restored after masking because it contains the user's email address required for Langfuse trace identity. If the user's email happened to match a declared secret pattern, it would be incorrectly masked without this restoration step.
+
+### Session Start Nudge
+
+At each session start, a nudge message (`src/pacemaker/prompts/session_start/secrets_nudge.md`) is included in the session startup context, reminding Claude to declare secrets before they appear in tool outputs.
+
+---
+
+## Prompt Intelligence (Intel)
+
+The intel system allows Claude to embed structured metadata in responses using a compact inline format. This metadata is captured and attached to Langfuse traces.
+
+### Intel Line Format
+
+Intel lines start with the `§` marker and contain space-separated fields:
+
+```
+§ △0.8 ◎surg ■bug ◇0.7 ↻2
+```
+
+| Symbol | Field | Type | Values |
+|--------|-------|------|--------|
+| `△` | frustration | float 0.0-1.0 | User frustration estimate |
+| `◎` | specificity | enum | `surg` `const` `outc` `expl` |
+| `■` | task_type | enum | `bug` `feat` `refac` `research` `test` `docs` `debug` `conf` `other` |
+| `◇` | quality | float 0.0-1.0 | Response quality self-assessment |
+| `↻` | iteration | int 1-9 | Iteration count on this task |
+
+### Parser (`src/pacemaker/intel/parser.py`)
+
+```python
+def parse_intel_line(response: str) -> Optional[dict]:
+    """Returns dict with parsed fields, or None if no § marker found."""
+```
+
+Missing or invalid fields are excluded from the result (no defaults applied). The intel line is stripped from assistant output before it is sent to Langfuse spans.
+
+### Integration
+
+- Intel metadata is stored as `pending_intel` in the Langfuse state file
+- Attached to the next trace push as trace metadata
+- Guidance for generating intel lines is provided at session start via `src/pacemaker/prompts/session_start/intel_guidance.md`
+
+---
+
+## Resilient Fallback Mode
+
+When the Claude API becomes unavailable, the system switches to fallback mode and generates synthetic usage estimates from accumulated token costs.
+
+### State Machine
+
+```
+          API available           API fails
+ NORMAL ──────────────── ... ──────────────► FALLBACK
+   ▲                                              │
+   │         API recovers                         │
+   └──────────────────────────────────────────────┘
+   (calibrate_on_recovery() called before reset)
+```
+
+States are persisted in the `fallback_state_v2` table (singleton row, `id=1`).
+
+### Entering Fallback
+
+When `enter_fallback()` is called:
+1. Reads baseline utilization from `api_cache` (last known real values)
+2. Synthesizes `resets_at` timestamps if missing (5h → now + 5h; 7d → now + 7d)
+3. Detects subscription tier from `profile_cache` (`"5x"` or `"20x"`)
+4. Persists state to `fallback_state_v2` (idempotent — does not reset accumulated costs if already in fallback)
+
+### Synthetic Usage Calculation
+
+During fallback, `UsageModel.get_current_usage()` returns a `UsageSnapshot` with `is_synthetic=True`. The utilization estimate is:
+
+```python
+synthetic_util = baseline + accumulated_cost * coefficient * 100
+```
+
+Where:
+- `baseline` = last known real utilization from `api_cache`
+- `accumulated_cost` = sum of `accumulated_costs` rows since `entered_at`
+- `coefficient` = conversion factor from dollars to % utilization (tier-specific)
+
+**Default coefficients** (from `fallback.py`):
+- `5x` tier: `coefficient_5h=0.0075`, `coefficient_7d=0.0011`
+- `20x` tier: `coefficient_5h=0.001875`, `coefficient_7d=0.000275`
+
+### Rollover Detection
+
+`_project_window()` detects when a window has expired during fallback (e.g., the 5-hour window resets while API is down). When rollover is detected:
+- `resets_at` is projected forward by the window length
+- Current accumulated cost is saved as `rollover_cost_*`
+- Post-rollover synthetic calculation uses only costs since the rollover
+
+### Calibration on Recovery
+
+When the API recovers and `exit_fallback()` is called:
+1. `calibrate_on_recovery(real_5h, real_7d)` computes error ratio between synthetic prediction and real values
+2. New coefficient = weighted average of old coefficient and measured coefficient
+3. Calibrated coefficients are stored in `calibrated_coefficients` table
+4. Future fallback periods use calibrated coefficients (more accurate over time)
+
+### Backoff on Rate Limits
+
+`UsageModel` tracks consecutive 429 responses in the `backoff_state` table:
+- Base delay: 5 minutes, doubling with each consecutive 429, capped at 60 minutes
+- `record_429()` increments counter and sets `backoff_until` timestamp
+- `record_success()` resets counter and clears `backoff_until`
+
+---
+
+## Activity Indicators
+
+The activity indicator system records hook events to the `activity_events` table, making them visible in the usage monitor's real-time activity line.
+
+### Event Codes
+
+| Code | Meaning | Hook |
+|------|---------|------|
+| `IV` | Intent validation result | PreToolUse |
+| `TD` | TDD check result | PreToolUse |
+| `CC` | Clean code check result | PreToolUse |
+| `ST` | Session tempo (stop hook) | Stop |
+| `CX` | Context/subagent check | PostToolUse |
+| `PA` | Pacing check | PostToolUse |
+| `PL` | Poll (API call) | PostToolUse |
+| `LF` | Langfuse push | PostToolUse / Stop / SubagentStop |
+| `SS` | Session start | SessionStart |
+| `SM` | Secrets masking | PostToolUse |
+| `SE` | Secrets declaration | UserPromptSubmit |
+| `SA` | Subagent start/stop | SubagentStart / SubagentStop |
+| `UP` | User prompt submitted | UserPromptSubmit |
+
+### Status Values
+
+Each event has a status:
+- `green` — Success / allowed / passed
+- `red` — Failure / blocked / error
+- `blue` — Informational / neutral
+
+### Database Mechanics
+
+```python
+# Record an event
+record_activity_event(db_path, event_code="IV", status="green", session_id=session_id)
+
+# Query recent events (usage monitor polls this)
+events = get_recent_activity(db_path, window_seconds=10)
+# Returns: [{"event_code": "IV", "status": "green"}, ...]
+```
+
+The monitor polls `get_recent_activity()` to display a real-time indicator strip. Events older than 60 seconds are cleaned up by `cleanup_old_activity()` to prevent unbounded table growth.
+
+---
+
+## Global API Poll Coordination
+
+Multiple hook invocations can run concurrently (e.g., PostToolUse fires while a previous invocation is still sleeping). Without coordination, each would independently poll the Claude API, causing unnecessary load.
+
+### Singleton Design
+
+The `global_poll_state` table (singleton row, `id=1`) acts as a distributed lock:
+
+```sql
+CREATE TABLE IF NOT EXISTS global_poll_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_poll_time REAL NOT NULL DEFAULT 0,
+    last_poll_session TEXT
+);
+```
+
+### Poll Decision Logic
+
+Before polling the API, each hook invocation checks:
+1. Read `last_poll_time` from `global_poll_state`
+2. If `now - last_poll_time < poll_interval` (default 60s): skip poll, use cached `api_cache`
+3. If stale: update `last_poll_time` atomically (using `execute_with_retry()`), then poll
+
+This ensures at most one API call per 60 seconds across all concurrent hook invocations.
+
+---
+
 ## Data Flow
 
 ### PostToolUse Hook Execution
@@ -829,13 +1243,15 @@ if current_util > safe_allowance:
          ↓
 4. Python: src/pacemaker/hook.py:run_hook()
          ↓
-5. Check if 60s elapsed since last poll
+5. Record activity event
          ↓
-6. If yes: Poll Claude API for usage data
+6. Check global_poll_state: 60s elapsed since last poll?
          ↓
-7. Store usage snapshot in SQLite database
+7. If yes: Poll Claude API for usage data
          ↓
-8. Calculate pacing decision:
+8. Store usage snapshot in api_cache table
+         ↓
+9. Calculate pacing decision:
          ↓
    ┌──────────────────────────────────┐
    │ pacing_engine.py                 │
@@ -852,13 +1268,14 @@ if current_util > safe_allowance:
    │  - Calculate optimal delay       │
    └──────────┬───────────────────────┘
               ↓
-9. If should throttle:
+10. If should throttle:
     execute_delay(delay_seconds)  # Sleep 0-350s
          ↓
-10. Display steering message:
-    "[Remember: Say 'Mission completed.' when ALL tasks are done]"
+11. Flush pending Langfuse trace:
+    - sanitize_trace() → mask secrets
+    - push_batch_events() → POST /api/public/ingestion
          ↓
-11. Return to Claude Code
+12. Return to Claude Code
 ```
 
 ---
@@ -877,7 +1294,18 @@ if current_util > safe_allowance:
   "max_delay": 350,
   "threshold_percent": 0,
   "poll_interval": 60,
-  "safety_buffer_pct": 95.0
+  "safety_buffer_pct": 95.0,
+  "preload_hours": 12.0,
+  "tempo_enabled": true,
+  "tdd_enabled": true,
+  "intent_validation_enabled": true,
+  "log_level": 2,
+  "subagent_reminder_enabled": true,
+  "subagent_reminder_frequency": 5,
+  "langfuse_enabled": false,
+  "langfuse_host": "https://cloud.langfuse.com",
+  "langfuse_public_key": "",
+  "langfuse_secret_key": ""
 }
 ```
 
@@ -892,11 +1320,18 @@ if current_util > safe_allowance:
 | `poll_interval` | integer | `60` | API polling interval in seconds |
 | `safety_buffer_pct` | float | `95.0` | Target percentage of allowance (95% = 5% safety buffer) |
 | `preload_hours` | float | `12.0` | Weekday hours to preload (12h = 10% of 120 weekday hours) |
+| `tempo_enabled` | boolean | `true` | Enable stop-hook completion validation |
+| `tdd_enabled` | boolean | `true` | Enable TDD enforcement in pre-tool validation |
+| `intent_validation_enabled` | boolean | `true` | Enable pre-tool validation (intent, TDD, clean code) |
+| `log_level` | integer | `2` | Log verbosity: 0=off, 1=error, 2=warning, 3=info, 4=debug |
 | `subagent_reminder_enabled` | boolean | `true` | Enable/disable subagent delegation reminders |
 | `subagent_reminder_frequency` | integer | `5` | Tool executions between reminders |
 | `subagent_reminder_message` | string | (default) | Custom reminder message text |
 | `conversation_context_size` | integer | `5` | Number of messages for intent validation context |
-| `intent_validation_enabled` | boolean | `false` | Enable pre-tool validation (intent, TDD, clean code) |
+| `langfuse_enabled` | boolean | `false` | Enable Langfuse telemetry |
+| `langfuse_host` | string | `"https://cloud.langfuse.com"` | Langfuse API base URL |
+| `langfuse_public_key` | string | `""` | Langfuse public key (pk-lf-...) |
+| `langfuse_secret_key` | string | `""` | Langfuse secret key (sk-lf-...) |
 
 ### State File
 
@@ -919,34 +1354,58 @@ if current_util > safe_allowance:
 
 **Fields**:
 - `session_id`: Unique session identifier
-- `last_poll_time`: When API was last polled
+- `last_poll_time`: When API was last polled (legacy; now also tracked in `global_poll_state`)
 - `last_cleanup_time`: When database cleanup last ran
 - `tempo_session_enabled`: Session override for tempo (optional)
 - `in_subagent`: Boolean flag for subagent context
 - `subagent_depth`: Nested subagent level counter
 - `tool_execution_count`: Global tool execution counter
 
+### Langfuse State Files
+
+**Location**: `~/.claude-pace-maker/langfuse_state/<session_id>.json`
+
+**Purpose**: Per-session Langfuse push state
+
+**Schema**:
+```json
+{
+  "session_id": "session-abc123",
+  "trace_id": "session-abc123",
+  "last_pushed_line": 142,
+  "metadata": {
+    "model": "claude-opus-4-5",
+    "tool_calls": ["Read", "Write"],
+    "input_tokens": 45231,
+    "output_tokens": 3201
+  },
+  "pending_trace": null,
+  "pending_intel": null
+}
+```
+
 ---
 
 ## Database Schema
+
+All tables reside in `~/.claude-pace-maker/usage.db` (WAL mode).
 
 ### Table: usage_snapshots
 
 ```sql
 CREATE TABLE usage_snapshots (
-  timestamp INTEGER PRIMARY KEY,
-  five_hour_util REAL,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp INTEGER NOT NULL,
+  five_hour_util REAL NOT NULL,
   five_hour_resets_at TEXT,
-  seven_day_util REAL,
+  seven_day_util REAL NOT NULL,
   seven_day_resets_at TEXT,
-  session_id TEXT
+  session_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );
-
-CREATE INDEX idx_timestamp ON usage_snapshots(timestamp);
-CREATE INDEX idx_session ON usage_snapshots(session_id);
 ```
 
-**Cleanup**: Daily cleanup removes snapshots older than retention_days (default: 60)
+**Cleanup**: Daily cleanup removes snapshots older than `retention_days` (default: 60).
 
 ### Table: pacing_decisions
 
@@ -956,23 +1415,186 @@ CREATE TABLE pacing_decisions (
   timestamp INTEGER NOT NULL,
   should_throttle INTEGER NOT NULL,
   delay_seconds INTEGER NOT NULL,
-  session_id TEXT NOT NULL
+  session_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );
-
-CREATE INDEX idx_pacing_timestamp ON pacing_decisions(timestamp DESC);
-CREATE INDEX idx_pacing_session ON pacing_decisions(session_id);
 ```
 
-**Purpose**: Cache pacing decisions between API polls to enable continuous throttling without API spam.
+**Purpose**: Cache pacing decisions between API polls for continuous throttling without API spam.
 
-**Flow**:
-1. API poll happens every 60 seconds
-2. Pacing decision is calculated and stored
-3. PostToolUse hook checks for cached decision
-4. If fresh decision exists, use cached delay
-5. If stale or missing, trigger new API poll
+### Table: api_cache
 
-**Benefit**: Throttles on EVERY tool execution, not just during API polls, while avoiding excessive API calls.
+```sql
+CREATE TABLE api_cache (
+  id INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton
+  timestamp REAL NOT NULL,
+  five_hour_util REAL NOT NULL,
+  five_hour_resets_at TEXT,
+  seven_day_util REAL NOT NULL,
+  seven_day_resets_at TEXT,
+  raw_response TEXT
+);
+```
+
+**Purpose**: Stores the last successful API response. Singleton row (`id=1`). Used as baseline when entering fallback mode.
+
+### Table: fallback_state_v2
+
+```sql
+CREATE TABLE fallback_state_v2 (
+  id INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton
+  state TEXT NOT NULL DEFAULT 'normal',   -- 'normal' or 'fallback'
+  baseline_5h REAL DEFAULT 0.0,
+  baseline_7d REAL DEFAULT 0.0,
+  resets_at_5h TEXT,
+  resets_at_7d TEXT,
+  tier TEXT DEFAULT '5x',
+  entered_at REAL,
+  rollover_cost_5h REAL,
+  rollover_cost_7d REAL,
+  last_rollover_resets_5h TEXT,
+  last_rollover_resets_7d TEXT
+);
+```
+
+**Purpose**: Fallback mode state machine. Tracks baselines, rollover points, and subscription tier.
+
+### Table: accumulated_costs
+
+```sql
+CREATE TABLE accumulated_costs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp REAL NOT NULL,
+  session_id TEXT NOT NULL,
+  cost_dollars REAL NOT NULL,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cache_read_tokens INTEGER,
+  cache_creation_tokens INTEGER,
+  model_family TEXT
+);
+```
+
+**Purpose**: Token costs accumulated during fallback mode. Used to compute synthetic utilization estimates.
+
+### Table: backoff_state
+
+```sql
+CREATE TABLE backoff_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton
+  consecutive_429s INTEGER NOT NULL DEFAULT 0,
+  backoff_until REAL,
+  last_success_time REAL
+);
+```
+
+**Purpose**: Exponential backoff state for API rate-limit responses.
+
+### Table: profile_cache
+
+```sql
+CREATE TABLE profile_cache (
+  id INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton
+  timestamp REAL NOT NULL,
+  profile_json TEXT NOT NULL
+);
+```
+
+**Purpose**: Cached Claude profile (used for tier detection: `5x` vs `20x`).
+
+### Table: calibrated_coefficients
+
+```sql
+CREATE TABLE calibrated_coefficients (
+  tier TEXT PRIMARY KEY,
+  coefficient_5h REAL NOT NULL,
+  coefficient_7d REAL NOT NULL,
+  sample_count INTEGER NOT NULL DEFAULT 0,
+  last_calibrated REAL
+);
+```
+
+**Purpose**: Self-calibrating fallback coefficients, improved with each API recovery.
+
+### Table: global_poll_state
+
+```sql
+CREATE TABLE global_poll_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton
+  last_poll_time REAL NOT NULL DEFAULT 0,
+  last_poll_session TEXT
+);
+```
+
+**Purpose**: Coordinates API poll timing across concurrent hook invocations.
+
+### Table: activity_events
+
+```sql
+CREATE TABLE activity_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp REAL NOT NULL,
+  event_code TEXT NOT NULL,
+  status TEXT NOT NULL,
+  session_id TEXT NOT NULL
+);
+```
+
+**Purpose**: Real-time hook activity feed for the usage monitor. Cleaned up after 60 seconds.
+
+### Table: blockage_events
+
+```sql
+CREATE TABLE blockage_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp INTEGER NOT NULL,
+  category TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  hook_type TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  details TEXT,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+```
+
+**Purpose**: Records when pre-tool validation blocks a Write/Edit operation.
+
+### Table: langfuse_metrics
+
+```sql
+CREATE TABLE langfuse_metrics (
+  bucket_timestamp INTEGER PRIMARY KEY,
+  sessions_count INTEGER DEFAULT 0,
+  traces_count INTEGER DEFAULT 0,
+  spans_count INTEGER DEFAULT 0
+);
+```
+
+**Purpose**: Aggregated Langfuse push statistics (hourly buckets).
+
+### Table: secrets
+
+```sql
+CREATE TABLE secrets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL,
+  value TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+```
+
+**Purpose**: Declared secret values to mask before Langfuse upload. File permissions: 0600.
+
+### Table: secrets_metrics
+
+```sql
+CREATE TABLE secrets_metrics (
+  bucket_timestamp INTEGER PRIMARY KEY,
+  secrets_masked_count INTEGER DEFAULT 0
+);
+```
+
+**Purpose**: Counts of masking operations performed (hourly buckets).
 
 ---
 
@@ -980,16 +1602,35 @@ CREATE INDEX idx_pacing_session ON pacing_decisions(session_id);
 
 ### Graceful Degradation
 
-The system is designed to fail open - if something goes wrong, Claude Code continues working without throttling.
+The system is designed to fail open for **non-security-critical** paths — if throttling or telemetry fails, Claude Code continues working. However, pre-tool validation **fails closed** by design.
 
 **Examples**:
 
-1. **API Polling Fails**: Skip throttling for this invocation
-2. **Database Error**: Continue without storing snapshot
-3. **Invalid Configuration**: Use defaults
-4. **Exception in Hook**: Log error, return control to Claude Code
+| Failure | Behavior |
+|---------|----------|
+| API polling fails | Skip throttling; enter fallback mode |
+| Database error | Log and continue without storing snapshot |
+| Invalid configuration | Use defaults |
+| Langfuse push fails | Log and continue (no retry) |
+| Pre-tool validation SDK error | **BLOCK** tool use (fail closed) |
+| Exception in hook | Log error, return control to Claude Code |
 
-**Error Logging**: `~/.claude-pace-maker/hook_debug.log`
+### Error Logging
+
+Log files use daily rotation: `~/.claude-pace-maker/pace-maker-YYYY-MM-DD.log`
+
+- 15 days of logs retained (configurable)
+- Log level controlled by `log_level` config key
+- All stdout writes from hooks use `safe_print()` to avoid `BrokenPipeError`
+
+**Log levels**:
+```
+0 = OFF      - No logging
+1 = ERROR    - Errors only
+2 = WARNING  - Warnings + Errors (default)
+3 = INFO     - Info + Warnings + Errors
+4 = DEBUG    - All messages
+```
 
 ### Exception Handling
 
@@ -1009,39 +1650,52 @@ except Exception as e:
 ### API Polling
 
 - **Interval**: 60 seconds (configurable)
-- **Throttle**: Prevents API spam
-- **Cached**: State persists across hook invocations
+- **Throttle**: Global poll state prevents API spam across concurrent invocations
+- **Cached**: `api_cache` persists last real response for fallback baseline
 
 ### Database
 
-- **Size**: Auto-cleanup keeps database small (<1MB)
-- **Performance**: Indexed queries, minimal overhead
+- **Mode**: WAL (Write-Ahead Logging) — concurrent readers do not block writers
+- **Size**: Auto-cleanup keeps database small (<2MB typical)
+- **Performance**: Indexed queries, `execute_with_retry()` for lock contention
 - **No Connection Pooling**: Acceptable for hook use case (infrequent access)
+- **Test optimization**: `PACEMAKER_TEST_MODE=1` enables `PRAGMA synchronous=OFF` for 20x speedup
 
 ### Hook Execution Time
 
-- **Without Throttling**: <100ms (API poll, database write)
+- **Without Throttling**: <200ms (API poll, database writes, Langfuse push)
 - **With Throttling**: 0-350s (sleep delay)
-- **Timeout**: 360s (hooks killed after this)
+- **Timeout**: 360s (hooks killed after this; max sleep capped at 350s for safety)
 
 ---
 
 ## Security
 
-### No External Dependencies
+### External Dependencies
 
-- No pip packages required
-- All dependencies are Python stdlib or system tools (jq, curl)
+The system uses:
+- `requests` library: HTTP calls to Langfuse API
+- `anthropic` SDK: Pre-tool validation (Stage 1 and Stage 2)
+- Python stdlib: All other functionality
 
-### No Credentials Stored
+No external dependencies are required for core throttling when Langfuse and intent validation are disabled.
 
-- Uses Claude Code's existing authentication
-- No API keys in configuration
+### No Claude Code Credentials Stored
+
+- Uses Claude Code's existing authentication for usage API calls
+- No Claude API keys in pace-maker configuration
+
+### Langfuse Credentials
+
+Langfuse keys (`langfuse_public_key`, `langfuse_secret_key`) are stored in `~/.claude-pace-maker/config.json`. This file is not automatically set to 0600; users should secure it manually if needed.
+
+### Secrets Sanitization
+
+Secrets declared via `pace-maker secret add` are stored in the `secrets` table (database file has 0600 permissions). All Langfuse traces are sanitized against declared secrets before upload. The `userId` field is protected from masking to preserve trace identity.
 
 ### SQL Injection Prevention
 
-- All queries use parameterized statements
-- No string concatenation in SQL
+All queries use parameterized statements; no string concatenation in SQL.
 
 ---
 
@@ -1049,7 +1703,7 @@ except Exception as e:
 
 ### Potential Improvements
 
-1. **Machine Learning**: Learn from usage patterns to improve estimations
+1. **Machine Learning**: Learn from usage patterns to improve delay estimations
 2. **Multi-User Support**: Track different users in shared environments
 3. **Historical Analytics**: Graph usage patterns over time
 4. **Notification System**: Alert when approaching limits
@@ -1066,6 +1720,10 @@ except Exception as e:
 - **Deviation**: Difference between current usage and allowance
 - **Throttling**: Introducing delays to slow down credit consumption
 - **Weekend-Aware**: Algorithm that recognizes weekends and adjusts accordingly
+- **Fallback Mode**: Operation during API outages using synthetic usage estimates
+- **Synthetic Snapshot**: Usage estimate computed from accumulated token costs
+- **Pending Trace**: Langfuse trace stored in state file awaiting secrets sanitization before push
+- **Intel Line**: Structured metadata line (`§ △... ◎... ■...`) embedded in assistant responses
 
 ### B. File Structure
 
@@ -1074,59 +1732,120 @@ claude-pace-maker/
 ├── src/
 │   ├── pacemaker/
 │   │   ├── __init__.py
-│   │   ├── hook.py              # Hook entry point
-│   │   ├── pacing_engine.py     # Orchestration
+│   │   ├── hook.py              # Hook entry point, safe_print(), all hook handlers
+│   │   ├── pacing_engine.py     # Pacing orchestration
 │   │   ├── adaptive_throttle.py # Weekend-aware algorithm
 │   │   ├── calculator.py        # Legacy algorithms
-│   │   ├── database.py          # SQLite operations
+│   │   ├── database.py          # SQLite operations, schema, activity events
 │   │   ├── api_client.py        # Claude API client
-│   │   ├── user_commands.py     # Status/on/off commands
+│   │   ├── usage_model.py       # Single source of truth for usage data
+│   │   ├── fallback.py          # Fallback state machine primitives
+│   │   ├── profile_cache.py     # Profile caching
+│   │   ├── user_commands.py     # pace-maker status/on/off commands
 │   │   ├── intent_validator.py  # Pre-tool validation via SDK
 │   │   ├── transcript_reader.py # Message extraction from JSONL
-│   │   ├── prompts/
-│   │   │   ├── pre_tool_use/
-│   │   │   │   ├── stage1_declaration_check.md  # Stage 1 prompt
-│   │   │   │   └── stage2_code_review.md        # Stage 2 prompt
-│   │   │   ├── common/
-│   │   │   │   ├── intent_declaration_prompt.md # Intent format spec
-│   │   │   │   └── tdd_declaration_prompt.md    # TDD requirements
-│   │   │   ├── stop/
-│   │   │   │   └── stop_hook_validator_prompt.md # Tempo validation
-│   │   │   ├── session_start/
-│   │   │   │   └── session_start_message.md     # Session startup text
-│   │   │   └── user_commands/
-│   │   │       └── status_message.md            # Status command output
-│   │   └── hooks/
-│   │       └── post_tool.py     # Steering message
+│   │   ├── clean_code_rules.py  # Clean code violation definitions
+│   │   ├── code_reviewer.py     # Code review integration
+│   │   ├── core_paths.py        # Core path detection for TDD enforcement
+│   │   ├── excluded_paths.py    # Paths excluded from validation
+│   │   ├── extension_registry.py# Source code file extension registry
+│   │   ├── constants.py         # Shared constants
+│   │   ├── logger.py            # Daily-rotating logger
+│   │   ├── prompt_loader.py     # External prompt template loader
+│   │   ├── install_commands.py  # Install subcommand handlers
+│   │   ├── installer.py         # Install logic
+│   │   ├── telemetry/           # Internal telemetry utilities
+│   │   │   └── jsonl_parser.py
+│   │   ├── langfuse/            # Langfuse telemetry integration
+│   │   │   ├── __init__.py
+│   │   │   ├── orchestrator.py  # Main Langfuse logic, flush_pending_trace()
+│   │   │   ├── state.py         # Per-session state management
+│   │   │   ├── push.py          # HTTP batch event push
+│   │   │   ├── incremental.py   # Transcript parsing, token counting
+│   │   │   ├── trace.py         # Trace creation/finalization
+│   │   │   ├── span.py          # Span creation
+│   │   │   ├── subagent.py      # Subagent trace handling
+│   │   │   ├── client.py        # Langfuse API client
+│   │   │   ├── metrics.py       # Metric counters
+│   │   │   ├── filter.py        # Event filtering
+│   │   │   ├── transformer.py   # Data transformation
+│   │   │   ├── cache.py         # Local caching
+│   │   │   ├── stats.py         # Statistics
+│   │   │   ├── project_context.py # Project metadata
+│   │   │   ├── provisioner.py   # Resource provisioning
+│   │   │   └── backfill.py      # Historical backfill
+│   │   ├── secrets/             # Secrets management
+│   │   │   ├── __init__.py
+│   │   │   ├── sanitizer.py     # sanitize_trace(), pattern caching
+│   │   │   ├── database.py      # Secrets CRUD operations
+│   │   │   ├── masking.py       # Regex masking, deep traversal
+│   │   │   ├── parser.py        # Secret declaration parsing
+│   │   │   └── metrics.py       # Masking metrics
+│   │   ├── intel/               # Prompt intelligence
+│   │   │   ├── __init__.py
+│   │   │   └── parser.py        # § intel line parser
+│   │   └── prompts/             # External prompt templates
+│   │       ├── pre_tool_use/
+│   │       │   ├── stage1_declaration_check.md
+│   │       │   └── stage2_code_review.md
+│   │       ├── common/
+│   │       │   ├── intent_declaration_prompt.md
+│   │       │   └── tdd_declaration_prompt.md
+│   │       ├── stop/
+│   │       │   └── stop_hook_validator_prompt.md
+│   │       ├── session_start/
+│   │       │   ├── intel_guidance.md
+│   │       │   ├── intent_validation_guidance.md
+│   │       │   └── secrets_nudge.md
+│   │       ├── post_tool_use/
+│   │       │   └── subagent_reminder.md
+│   │       └── user_commands/
+│   │           └── status_message.md
 │   └── hooks/
-│       ├── post-tool-use.sh     # PostToolUse hook
-│       └── user-prompt-submit.sh # UserPromptSubmit hook
+│       ├── post-tool-use.sh
+│       ├── user-prompt-submit.sh
+│       ├── session-start.sh
+│       ├── stop.sh
+│       ├── pre-tool-use.sh
+│       ├── subagent-start.sh
+│       └── subagent-stop.sh
 ├── tests/                       # Test suite
 ├── docs/                        # Documentation
+├── scripts/
+│   └── run_tests.sh             # Independent test runner (avoids WAL contention)
 ├── install.sh                   # Installation script
 └── README.md                    # Quick start guide
 ```
 
 ### C. Testing
 
-Run the complete test suite:
+**IMPORTANT**: Never run tests as a single pytest process (`python -m pytest tests/`). SQLite WAL contention causes hangs when multiple test files create databases concurrently in the same process.
+
+Always use the independent test runner:
 
 ```bash
-python -m pytest tests/ -v
+./scripts/run_tests.sh          # Run all tests (each file independently)
+./scripts/run_tests.sh --quick  # Skip slow e2e tests
+./scripts/run_tests.sh --tb     # Show failure tracebacks
 ```
 
-Test coverage:
+Each test file gets its own pytest process with a 30-second timeout, avoiding WAL lock contention between concurrent database teardown/setup cycles.
+
+For coverage reports, run a specific test file directly:
 
 ```bash
-python -m pytest tests/ --cov=src/pacemaker --cov-report=html
+python -m pytest tests/test_pacing_engine.py --cov=src/pacemaker --cov-report=html
 ```
+
+**Test mode optimization**: `PACEMAKER_TEST_MODE=1` is set automatically by `conftest.py`, enabling `PRAGMA synchronous=OFF` for 20x faster database operations in tests.
 
 ---
 
-**Document Version**: 1.6
-**Last Updated**: 2025-12-09
+**Document Version**: 2.0
+**Last Updated**: 2026-03-10
 **Maintainer**: Claude Code Pace Maker Team
 **Changes**:
+- v2.0: Major update — added Langfuse Telemetry System, Secrets Management, Prompt Intelligence (Intel), Resilient Fallback Mode, Activity Indicators, Global API Poll Coordination sections; added UsageModel and fallback.py to Core Components; updated Database Schema with all current tables (api_cache, fallback_state_v2, accumulated_costs, backoff_state, profile_cache, calibrated_coefficients, global_poll_state, activity_events, blockage_events, langfuse_metrics, secrets, secrets_metrics); updated Configuration with langfuse_enabled, langfuse_host, langfuse_public_key, langfuse_secret_key, tdd_enabled, log_level; updated Security to reflect requests + anthropic SDK dependencies and secrets sanitization; updated Error Handling to reflect fail-closed validation and daily log rotation; updated Testing to reference run_tests.sh; updated File Structure to reflect current codebase; updated architecture diagram
 - v1.6: Updated Pre-Tool Validation to two-stage architecture (Stage 1: declaration check with Sonnet, Stage 2: code review with Opus/Sonnet), updated message extraction to combine last 2 messages, updated validation flow diagram, updated prompt file structure to reflect pre_tool_use/, common/, stop/, session_start/, user_commands/ organization
 - v1.5: Updated model names to versionless (claude-sonnet-4-5, claude-opus-4-5), added hookEventName to PostToolUse additionalContext
 - v1.4: Added Pre-Tool Validation System (intent declaration, Light-TDD enforcement, clean code validation), PreToolUse hook, transcript_reader module, external prompt template
