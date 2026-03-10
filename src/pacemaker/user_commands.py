@@ -322,6 +322,17 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": f"remove {match_secrets_remove.group(1)}",
         }
 
+    # Pattern 24: pace-maker install <target>
+    pattern_install = r"^pace-maker\s+install\s+(.+)$"
+    match_install = re.match(pattern_install, normalized)
+
+    if match_install:
+        return {
+            "is_pace_maker_command": True,
+            "command": "install",
+            "subcommand": match_install.group(1).strip(),
+        }
+
     return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
@@ -383,6 +394,10 @@ def execute_command(
         return _execute_langfuse(config_path, subcommand)
     elif command == "secrets":
         return _execute_secrets(db_path, subcommand)
+    elif command == "install":
+        from .install_commands import handle_install
+
+        return handle_install(subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -2847,6 +2862,7 @@ For more information, run: pace-maker help
             "prefer-model",
             "langfuse",
             "secrets",
+            "install",
         ],
         help="Command to execute",
     )
