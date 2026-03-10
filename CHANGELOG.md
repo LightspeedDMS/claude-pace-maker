@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1] - 2026-03-10
+
+### Fixed
+- **Fallback mode 5-hour window rollover** (#46): `_get_synthetic_snapshot()` now correctly filters accumulated costs by the rollover boundary timestamp, reporting only post-rollover usage instead of inflated values from the prior window
+- **Fallback rollover persistence independence** (#46): `_get_synthetic_snapshot()` now persists rollover state independently, eliminating the ordering dependency on `get_reset_windows()` being called first
+- **7-day fallback rollover** (#46): Same rollover fix applied to the 7-day window path, ensuring consistent behavior across both window types
+
 ## [2.2.0] - 2026-03-09
 
 ### Added

@@ -564,28 +564,42 @@ class UsageModel:
         five_rolled: bool,
         seven_resets: Optional[datetime],
         seven_rolled: bool,
+        old_boundary_5h: Optional[datetime] = None,
+        old_boundary_7d: Optional[datetime] = None,
     ) -> None:
         """Persist projected windows and rollover costs to fallback_state_v2.
 
-        Called when _project_window() detects a rollover. Snapshots the current
-        accumulated cost as the rollover baseline so post-rollover synthetic starts
-        fresh. Avoids double-writing if the rollover was already persisted.
+        Called when _project_window() detects a rollover. Stores the accumulated
+        cost BEFORE the last-expired boundary as the rollover offset so that
+        Branch 1 (stored_rollover_* is not None) computes only post-rollover cost:
+
+            cost_in_window = accumulated_total - rollover_cost_offset
+
+        Args:
+            state: Current fallback_state_v2 row as a dict.
+            five_resets: Projected future 5h reset boundary (from _project_window).
+            five_rolled: True if the 5h window has expired.
+            seven_resets: Projected future 7d reset boundary.
+            seven_rolled: True if the 7d window has expired.
+            old_boundary_5h: The last-expired 5h boundary (= five_resets - 5h).
+                             Costs strictly before this timestamp are pre-rollover.
+            old_boundary_7d: The last-expired 7d boundary (= seven_resets - 168h).
         """
         try:
-            # Sum current accumulated cost
             entered_at = state.get("entered_at") or 0.0
 
-            def sum_costs(conn):
-                result = conn.execute(
-                    "SELECT COALESCE(SUM(cost_dollars), 0.0) FROM accumulated_costs "
-                    "WHERE timestamp >= ?",
-                    (entered_at,),
-                ).fetchone()
-                return float(result[0]) if result else 0.0
+            def sum_costs_before(boundary_ts: float) -> float:
+                """Sum costs accumulated since entered_at but BEFORE the boundary."""
 
-            accumulated_cost = execute_with_retry(
-                self.db_path, sum_costs, readonly=True
-            )
+                def query(conn):
+                    result = conn.execute(
+                        "SELECT COALESCE(SUM(cost_dollars), 0.0) FROM accumulated_costs "
+                        "WHERE timestamp >= ? AND timestamp < ?",
+                        (entered_at, boundary_ts),
+                    ).fetchone()
+                    return float(result[0]) if result else 0.0
+
+                return execute_with_retry(self.db_path, query, readonly=True)
 
             new_resets_at_5h = state.get("resets_at_5h")
             new_rollover_cost_5h = state.get("rollover_cost_5h")
@@ -599,15 +613,49 @@ class UsageModel:
                 projected_str = five_resets.isoformat()
                 if state.get("last_rollover_resets_5h") != projected_str:
                     new_resets_at_5h = projected_str
-                    new_rollover_cost_5h = accumulated_cost
                     new_last_rollover_5h = projected_str
+                    if old_boundary_5h is not None:
+                        boundary_ts = old_boundary_5h.replace(
+                            tzinfo=timezone.utc
+                        ).timestamp()
+                        new_rollover_cost_5h = sum_costs_before(boundary_ts)
+                    else:
+                        # Fallback: use total accumulated cost (pre-existing behaviour)
+                        def sum_all(conn):
+                            result = conn.execute(
+                                "SELECT COALESCE(SUM(cost_dollars), 0.0) "
+                                "FROM accumulated_costs WHERE timestamp >= ?",
+                                (entered_at,),
+                            ).fetchone()
+                            return float(result[0]) if result else 0.0
+
+                        new_rollover_cost_5h = execute_with_retry(
+                            self.db_path, sum_all, readonly=True
+                        )
 
             if seven_rolled and seven_resets is not None:
                 projected_str = seven_resets.isoformat()
                 if state.get("last_rollover_resets_7d") != projected_str:
                     new_resets_at_7d = projected_str
-                    new_rollover_cost_7d = accumulated_cost
                     new_last_rollover_7d = projected_str
+                    if old_boundary_7d is not None:
+                        boundary_ts_7d = old_boundary_7d.replace(
+                            tzinfo=timezone.utc
+                        ).timestamp()
+                        new_rollover_cost_7d = sum_costs_before(boundary_ts_7d)
+                    else:
+
+                        def sum_all_7d(conn):
+                            result = conn.execute(
+                                "SELECT COALESCE(SUM(cost_dollars), 0.0) "
+                                "FROM accumulated_costs WHERE timestamp >= ?",
+                                (entered_at,),
+                            ).fetchone()
+                            return float(result[0]) if result else 0.0
+
+                        new_rollover_cost_7d = execute_with_retry(
+                            self.db_path, sum_all_7d, readonly=True
+                        )
 
             def update_state(conn):
                 conn.execute(
@@ -745,14 +793,48 @@ class UsageModel:
             # as the primary indicator that a rollover was previously recorded.
             stored_rollover_5h = state.get("rollover_cost_5h")
             if stored_rollover_5h is not None:
-                # Rollover was previously persisted by get_reset_windows()
+                # Rollover was previously persisted by get_reset_windows() or us
                 cost_in_window_5h = max(
                     0.0, accumulated_cost - float(stored_rollover_5h)
                 )
                 synthetic_5h = min(cost_in_window_5h * coeff_5h * 100.0, 100.0)
             elif five_rolled and five_resets is not None:
-                # Fresh rollover detected now (before get_reset_windows persists it)
-                cost_in_window_5h = accumulated_cost  # All cost is in the new window
+                # Fresh rollover detected now (before get_reset_windows persists it).
+                # Compute the last-expired boundary: five_resets is the NEXT future
+                # boundary, so the last-expired boundary = five_resets - window_size.
+                # This handles multiple consecutive rollovers correctly (e.g. if
+                # _project_window advanced by 2× window_hours, the last-expired
+                # boundary is still five_resets - 5h, not the original stored value).
+                last_expired_5h = five_resets - timedelta(hours=5.0)
+                last_expired_ts_5h = last_expired_5h.replace(
+                    tzinfo=timezone.utc
+                ).timestamp()
+
+                def sum_post_rollover_5h(conn):
+                    result = conn.execute(
+                        "SELECT COALESCE(SUM(cost_dollars), 0.0) "
+                        "FROM accumulated_costs WHERE timestamp >= ?",
+                        (last_expired_ts_5h,),
+                    ).fetchone()
+                    return float(result[0]) if result else 0.0
+
+                post_rollover_cost_5h = execute_with_retry(
+                    self.db_path, sum_post_rollover_5h, readonly=True
+                )
+
+                # Persist the rollover state (with the correct pre-boundary offset)
+                # so subsequent calls use Branch 1 (stored offset) instead of
+                # re-entering this branch.
+                self._persist_rollover(
+                    state,
+                    five_resets,
+                    five_rolled,
+                    seven_resets,
+                    False,
+                    old_boundary_5h=last_expired_5h,
+                )
+
+                cost_in_window_5h = post_rollover_cost_5h
                 synthetic_5h = min(cost_in_window_5h * coeff_5h * 100.0, 100.0)
             else:
                 synthetic_5h = min(
@@ -761,14 +843,43 @@ class UsageModel:
 
             stored_rollover_7d = state.get("rollover_cost_7d")
             if stored_rollover_7d is not None:
-                # Rollover was previously persisted by get_reset_windows()
+                # Rollover was previously persisted by get_reset_windows() or us
                 cost_in_window_7d = max(
                     0.0, accumulated_cost - float(stored_rollover_7d)
                 )
                 synthetic_7d = min(cost_in_window_7d * coeff_7d * 100.0, 100.0)
             elif seven_rolled and seven_resets is not None:
-                # Fresh rollover detected now (before get_reset_windows persists it)
-                cost_in_window_7d = accumulated_cost  # All cost is in the new window
+                # Fresh rollover detected now (before get_reset_windows persists it).
+                # Compute the last-expired 7d boundary: seven_resets - window_size.
+                last_expired_7d = seven_resets - timedelta(hours=168.0)
+                last_expired_ts_7d = last_expired_7d.replace(
+                    tzinfo=timezone.utc
+                ).timestamp()
+
+                def sum_post_rollover_7d(conn):
+                    result = conn.execute(
+                        "SELECT COALESCE(SUM(cost_dollars), 0.0) "
+                        "FROM accumulated_costs WHERE timestamp >= ?",
+                        (last_expired_ts_7d,),
+                    ).fetchone()
+                    return float(result[0]) if result else 0.0
+
+                post_rollover_cost_7d = execute_with_retry(
+                    self.db_path, sum_post_rollover_7d, readonly=True
+                )
+
+                # Persist the 7d rollover state (with the correct pre-boundary offset)
+                # so subsequent calls use Branch 1 (stored offset).
+                self._persist_rollover(
+                    state,
+                    five_resets,
+                    False,
+                    seven_resets,
+                    seven_rolled,
+                    old_boundary_7d=last_expired_7d,
+                )
+
+                cost_in_window_7d = post_rollover_cost_7d
                 synthetic_7d = min(cost_in_window_7d * coeff_7d * 100.0, 100.0)
             else:
                 synthetic_7d = min(
