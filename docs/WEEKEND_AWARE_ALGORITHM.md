@@ -351,7 +351,7 @@ count_weekday_seconds(start, end):
 ```
 
 For typical usage:
-- 5-hour window: Not used (uses legacy algorithm)
+- 5-hour window: Uses continuous-time linear pacing (not weekend-aware)
 - 7-day window: 7 iterations
 - Performance: Negligible (<1ms)
 

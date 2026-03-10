@@ -144,7 +144,6 @@ def calculate_pacing_decision(
     threshold_percent: int = 0,
     base_delay: int = 5,
     max_delay: int = 350,
-    use_adaptive: bool = True,
     safety_buffer_pct: float = 95.0
 ) -> Dict
 ```
@@ -170,7 +169,7 @@ Weekend-aware adaptive throttling algorithm with safety buffer.
 - Calculate weekend-aware allowance
 - Apply 95% safety buffer
 - Project forward to calculate optimal delay
-- Support both weekend-aware and legacy modes
+- Calculate weekend-aware allowance with safety buffer
 
 **Key Functions**:
 ```python
@@ -701,10 +700,10 @@ The subagent reminder system encourages delegation to specialized subagents in m
 
 ### Window-Specific Algorithms
 
-**5-Hour Window**: Uses legacy mode (no weekend awareness needed for short windows)
+**5-Hour Window**: Uses continuous-time linear pacing with 30-minute preload
 ```python
-# Simple time-based allowance
-allowance = (time_elapsed / total_time) * 100
+# Linear allowance with preload (30 min = 10% of 5 hours)
+allowance = calculate_continuous_allowance_pct(window_start, now, 5.0, 0.5)
 ```
 
 **7-Day Window**: Uses weekend-aware mode
@@ -1354,7 +1353,7 @@ This ensures at most one API call per 60 seconds across all concurrent hook invo
 
 **Fields**:
 - `session_id`: Unique session identifier
-- `last_poll_time`: When API was last polled (legacy; now also tracked in `global_poll_state`)
+- `last_poll_time`: When API was last polled (also tracked in `global_poll_state`)
 - `last_cleanup_time`: When database cleanup last ran
 - `tempo_session_enabled`: Session override for tempo (optional)
 - `in_subagent`: Boolean flag for subagent context
@@ -1735,7 +1734,7 @@ claude-pace-maker/
 │   │   ├── hook.py              # Hook entry point, safe_print(), all hook handlers
 │   │   ├── pacing_engine.py     # Pacing orchestration
 │   │   ├── adaptive_throttle.py # Weekend-aware algorithm
-│   │   ├── calculator.py        # Legacy algorithms
+│   │   ├── calculator.py        # Utility calculations (time percent, constrained window)
 │   │   ├── database.py          # SQLite operations, schema, activity events
 │   │   ├── api_client.py        # Claude API client
 │   │   ├── usage_model.py       # Single source of truth for usage data

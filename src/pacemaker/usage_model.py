@@ -1069,7 +1069,6 @@ class UsageModel:
             threshold_percent=config.get("threshold_percent", 0),
             base_delay=config.get("base_delay", 5),
             max_delay=config.get("max_delay", 350),
-            use_adaptive=True,
             safety_buffer_pct=config.get("safety_buffer_pct", 95.0),
             preload_hours=config.get("preload_hours", 0.0),
             weekly_limit_enabled=config.get("weekly_limit_enabled", True),

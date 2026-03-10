@@ -23,7 +23,6 @@ def calculate_pacing_decision(
     threshold_percent: int = 0,
     base_delay: int = 5,
     max_delay: int = 350,
-    use_adaptive: bool = True,
     safety_buffer_pct: float = 95.0,
     preload_hours: float = 0.0,
     weekly_limit_enabled: bool = True,
@@ -40,7 +39,6 @@ def calculate_pacing_decision(
         threshold_percent: Deviation threshold (default 0% - zero tolerance)
         base_delay: Base delay in seconds (default 5)
         max_delay: Maximum delay in seconds (default 350 = 360s timeout - 10s safety)
-        use_adaptive: Use adaptive throttling algorithm (default True)
         safety_buffer_pct: Safety buffer percentage (default 95.0)
         preload_hours: First N weekday hours with preloaded allowance (default 0 = no preload)
         weekly_limit_enabled: Enable weekly limit calculations (default True)
@@ -80,7 +78,6 @@ def calculate_pacing_decision(
                 "target": 0,
                 "time_elapsed_pct": -1.0,
             },
-            "algorithm": "stale_data_detected",
             "error": "Both window data is stale (resets_at > 5min in past)",
         }
 
@@ -98,10 +95,8 @@ def calculate_pacing_decision(
     if _sample is not None and _sample.tzinfo is None:
         now = now.replace(tzinfo=None)
 
-    # FIX 3 (Issue #3): Calculate 5-hour target with LINEAR pacing (not logarithmic)
-    # Use continuous-time linear allowance with 30-minute preload
-    if use_adaptive and five_hour_resets_at:
-        # Calculate 5-hour window with continuous-time linear pacing
+    # Calculate 5-hour target with continuous-time linear pacing (30-minute preload)
+    if five_hour_resets_at:
         five_hour_window_hours = 5.0
         five_hour_preload_hours = 0.5  # 30 minutes = 10% of 5 hours
         five_hour_window_start = five_hour_resets_at - timedelta(
@@ -117,12 +112,10 @@ def calculate_pacing_decision(
             preload_hours=five_hour_preload_hours,
         )
     else:
-        # Legacy logarithmic target
-        five_hour_target = calculator.calculate_logarithmic_target(five_hour_time_pct)
+        five_hour_target = 0.0
 
-    # Calculate 7-day target: weekend-aware if adaptive, linear if legacy
-    if use_adaptive and seven_day_resets_at:
-        # Weekend-aware target for status display
+    # Calculate 7-day target: weekend-aware adaptive algorithm
+    if seven_day_resets_at:
         window_hours = 168.0
         window_start = seven_day_resets_at - timedelta(hours=window_hours)
         seven_day_target = adaptive_throttle.calculate_allowance_pct(
@@ -132,8 +125,7 @@ def calculate_pacing_decision(
             preload_hours=preload_hours,
         )
     else:
-        # Legacy linear target
-        seven_day_target = calculator.calculate_linear_target(seven_day_time_pct)
+        seven_day_target = 0.0
 
     # Determine most constrained window
     # Only include 5-hour window if five_hour_limit_enabled is True
@@ -151,8 +143,7 @@ def calculate_pacing_decision(
         seven_day_target=seven_day_target,
     )
 
-    # Choose algorithm: adaptive (new) or legacy (old)
-    if use_adaptive and constrained["window"] is not None:
+    if constrained["window"] is not None:
         # Use new adaptive throttling algorithm with forward-looking projection
         # (now already calculated above)
 
@@ -215,21 +206,15 @@ def calculate_pacing_decision(
 
         delay_seconds = adaptive_result["delay_seconds"]
         strategy_info = {
-            "algorithm": "adaptive",
             "strategy": adaptive_result["strategy"],
             "projection": adaptive_result["projection"],
         }
     else:
-        # Use legacy algorithm (simple deviation-based)
-        delay_seconds = calculator.calculate_delay(
-            deviation_percent=constrained["deviation"],
-            base_delay=base_delay,
-            threshold=threshold_percent,
-            max_delay=max_delay,
-        )
-        strategy_info = {"algorithm": "legacy", "strategy": "legacy"}
+        # No constrained window (both limiters disabled) — no throttling
+        delay_seconds = 0
+        strategy_info = {}
 
-    return {
+    result = {
         "should_throttle": delay_seconds > 0,
         "delay_seconds": delay_seconds,
         "constrained_window": constrained["window"],
@@ -246,6 +231,21 @@ def calculate_pacing_decision(
         },
         **strategy_info,
     }
+
+    # Flag partial staleness: at least one window is stale but not both
+    # (both-stale returns early above with its own stale_data flag)
+    if five_hour_stale or seven_day_stale:
+        result["stale_data"] = True
+        stale_windows = []
+        if five_hour_stale:
+            stale_windows.append("5-hour")
+        if seven_day_stale:
+            stale_windows.append("7-day")
+        result["error"] = (
+            f"{' and '.join(stale_windows)} window data is stale (resets_at > 5min in past)"
+        )
+
+    return result
 
 
 def determine_delay_strategy(delay_seconds: int) -> Dict:

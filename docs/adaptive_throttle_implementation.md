@@ -29,8 +29,8 @@ Implemented a forward-looking adaptive throttling algorithm that intelligently c
 
 1. **`/home/jsbattig/Dev/claude-pace-maker/src/pacemaker/pacing_engine.py`**
    - Integrated adaptive throttle algorithm
-   - Added `use_adaptive` parameter (default True)
-   - Backward compatible with legacy algorithm
+   - Adaptive algorithm runs unconditionally
+   - Legacy algorithm removed (v2.3.0)
    - Increased max_delay default from 120s to 350s
 
 ## Algorithm Design
@@ -128,45 +128,19 @@ Phase 5: Determine Strategy
 
 ### Usage
 
-The adaptive algorithm is integrated into `pacing_engine.calculate_pacing_decision()` and is enabled by default:
+The adaptive algorithm runs unconditionally in `pacing_engine.calculate_pacing_decision()`:
 
 ```python
-decision = calculate_pacing_decision(
-    five_hour_util=56.0,
-    five_hour_resets_at=reset_time,
-    seven_day_util=60.0,
-    seven_day_resets_at=reset_time,
-    use_adaptive=True  # Default True
+result = calculate_pacing_decision(
+    five_hour_util=current_5h,
+    five_hour_resets_at=resets_5h,
+    seven_day_util=current_7d,
+    seven_day_resets_at=resets_7d,
 )
-
-# Returns:
-{
-    'should_throttle': True,
-    'delay_seconds': 266,
-    'algorithm': 'adaptive',
-    'strategy': 'aggressive',
-    'projection': {
-        'util_if_no_throttle': 180.6,
-        'util_if_throttled': 90.0,
-        'tools_remaining_estimate': 34,
-        'credits_remaining_pct': 44.0
-    },
-    'constrained_window': '5-hour',
-    'deviation_percent': 24.0,
-    ...
-}
+# Returns: strategy, projection (no 'algorithm' key)
 ```
 
-### Backward Compatibility
-
-Legacy algorithm is still available via `use_adaptive=False`:
-
-```python
-decision = calculate_pacing_decision(
-    ...,
-    use_adaptive=False  # Use old formula
-)
-```
+> **Note**: The `use_adaptive` parameter and legacy algorithm were removed in v2.3.0. The adaptive algorithm is now the only algorithm.
 
 ## Current Real Situation Analysis
 
@@ -224,7 +198,7 @@ User's actual scenario: **56% utilization at 31% elapsed time**
 ✅ **Intelligent delays** - Graduated response based on severity and time pressure
 ✅ **Current situation** - Calculates 266s delay for 56% util @ 31% elapsed
 ✅ **Integration** - Cleanly integrated with existing pacing_engine
-✅ **Backward compatible** - Legacy algorithm still available
+✅ **Clean implementation** - Legacy algorithm removed in v2.3.0
 
 ## Evidence of Intelligent Calculation
 

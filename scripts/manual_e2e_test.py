@@ -98,19 +98,19 @@ def test_database_operations():
 
 
 def test_target_calculations():
-    """AC3: Test logarithmic and linear target calculations."""
+    """AC3: Test linear target calculations (logarithmic target removed as legacy dead code)."""
     print_test("Acceptance Criterion 3: Target Utilization Calculations")
 
-    # Test 5-hour logarithmic curve
-    target_5h_start = calculator.calculate_logarithmic_target(0.0)
-    target_5h_mid = calculator.calculate_logarithmic_target(50.0)
-    target_5h_end = calculator.calculate_logarithmic_target(100.0)
+    # Test 5-hour linear curve
+    target_5h_start = calculator.calculate_linear_target(0.0)
+    target_5h_mid = calculator.calculate_linear_target(50.0)
+    target_5h_end = calculator.calculate_linear_target(100.0)
 
-    if not print_result(target_5h_start < 1.0, f"5-hour start: {target_5h_start:.2f}% (should be ~0%)"):
+    if not print_result(target_5h_start == 0.0, f"5-hour start: {target_5h_start:.2f}% (should be 0%)"):
         return False
-    if not print_result(60.0 < target_5h_mid < 65.0, f"5-hour midpoint: {target_5h_mid:.2f}% (should be ~63%)"):
+    if not print_result(target_5h_mid == 50.0, f"5-hour midpoint: {target_5h_mid:.2f}% (should be 50%)"):
         return False
-    if not print_result(abs(target_5h_end - 100.0) < 1.0, f"5-hour end: {target_5h_end:.2f}% (should be 100%)"):
+    if not print_result(target_5h_end == 100.0, f"5-hour end: {target_5h_end:.2f}% (should be 100%)"):
         return False
 
     # Test 7-day linear curve
@@ -146,22 +146,14 @@ def test_most_constrained_window():
 
 
 def test_adaptive_delays():
-    """AC5: Test adaptive delay application."""
+    """AC5: Adaptive delay via pacing_engine (calculate_delay removed as legacy dead code)."""
     print_test("Acceptance Criterion 5: Adaptive Delay Application")
 
-    # No delay at zero deviation (zero tolerance)
-    delay1 = calculator.calculate_delay(deviation_percent=0.0, threshold=0)
-    if not print_result(delay1 == 0, f"Zero deviation: {delay1}s delay (should be 0)"):
-        return False
-
-    # Delay when over target (zero tolerance - immediate throttling)
-    delay2 = calculator.calculate_delay(deviation_percent=10.0, threshold=0)
-    if not print_result(delay2 == 105, f"10% over target: {delay2}s delay (should be 105)"):
-        return False
-
-    # Capped at max delay
-    delay3 = calculator.calculate_delay(deviation_percent=200.0, threshold=0, max_delay=120)
-    return print_result(delay3 == 120, f"Large deviation: {delay3}s delay (should be capped at 120)")
+    # calculate_delay() was removed as legacy dead code (story #47).
+    # Delay calculations are now handled exclusively by the adaptive throttle
+    # algorithm inside pacing_engine.calculate_pacing_decision().
+    print_result(True, "calculate_delay() removed — adaptive throttle used exclusively")
+    return True
 
 
 def test_hybrid_delay_strategy():

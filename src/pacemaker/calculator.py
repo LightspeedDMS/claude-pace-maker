@@ -3,45 +3,12 @@
 Pacing calculation algorithms for Credit-Aware Adaptive Throttling.
 
 Implements:
-- Logarithmic curve for 5-hour window target utilization
 - Linear curve for 7-day window target utilization
 - Most constrained window determination
-- Adaptive delay calculation based on deviation
 """
 
-import math
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
-
-
-def calculate_logarithmic_target(time_percent: float) -> float:
-    """
-    Calculate target utilization for 5-hour window using logarithmic curve.
-
-    Formula: target = 100 * ln(1 + (time_pct/100) * (e - 1))
-
-    This creates a curve that starts slow and accelerates, allowing more
-    aggressive use early in the window while conserving credits toward the end.
-
-    Args:
-        time_percent: Percentage of time elapsed in the window (0-100)
-
-    Returns:
-        Target utilization percentage (0-100)
-    """
-    if time_percent <= 0:
-        return 0.0
-    if time_percent >= 100:
-        return 100.0
-
-    # Convert to 0-1 range
-    time_fraction = time_percent / 100.0
-
-    # Apply logarithmic formula
-    # target = 100 * ln(1 + time_fraction * (e - 1))
-    target = 100.0 * math.log(1.0 + time_fraction * (math.e - 1.0))
-
-    return target
 
 
 def calculate_linear_target(time_percent: float) -> float:
@@ -158,45 +125,3 @@ def determine_most_constrained_window(
             return {"window": "5-hour", "deviation": five_hour_deviation}
         else:
             return {"window": "7-day", "deviation": seven_day_deviation}
-
-
-def calculate_delay(
-    deviation_percent: float,
-    base_delay: int = 5,
-    threshold: int = 0,
-    max_delay: int = 120,
-) -> int:
-    """
-    Calculate adaptive delay based on deviation from target.
-
-    Formula: delay = base_delay * (1 + 2 * excess_deviation)
-    Where excess_deviation = max(0, deviation - threshold) as percentage points
-
-    Zero-tolerance throttling: By default (threshold=0), throttling activates
-    IMMEDIATELY when actual usage exceeds the target curve by any amount.
-
-    Args:
-        deviation_percent: How far actual is above target (%)
-        base_delay: Base delay in seconds (default 5)
-        threshold: Deviation threshold before throttling kicks in (default 0% - zero tolerance)
-        max_delay: Maximum delay cap in seconds (default 120)
-
-    Returns:
-        Delay in seconds (0 if at or under threshold, capped at max_delay)
-    """
-    # No delay if under threshold
-    if deviation_percent <= threshold:
-        return 0
-
-    # Calculate excess deviation (in percentage points, not fraction)
-    excess = deviation_percent - threshold
-
-    # Apply formula: delay = base * (1 + 2 * excess)
-    # For small deviations this gives gradual increase
-    # For large deviations it quickly hits the cap
-    delay = base_delay * (1.0 + 2.0 * excess)
-
-    # Enforce bounds: minimum 5s, maximum max_delay
-    delay = int(max(5, min(delay, max_delay)))
-
-    return delay

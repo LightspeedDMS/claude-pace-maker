@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.0] - 2026-03-10
+
+### Removed
+- **Legacy pacing algorithm**: Removed `calculate_logarithmic_target()` and `calculate_delay()` from calculator module — adaptive algorithm now runs unconditionally
+- **`use_adaptive` parameter**: Removed from `calculate_pacing_decision()` signature — no longer needed since adaptive is the only algorithm
+- **`algorithm` key from pacing decisions**: Return dict no longer contains `"algorithm": "adaptive"` or `"algorithm": "legacy"` — the Algorithm display line in claude-usage-reporting monitor is removed
+
+### Added
+- **20 acceptance tests**: `test_legacy_removal.py` validates all legacy code paths are removed and adaptive runs unconditionally
+
 ## [2.2.1] - 2026-03-10
 
 ### Fixed
