@@ -62,10 +62,11 @@ def _guard_production_db(tmp_path, monkeypatch):
     # Guard the hook's DEFAULT_DB_PATH too
     try:
         import pacemaker.hook as hook
+        from pacemaker.database import initialize_database
 
         if hasattr(hook, "DEFAULT_DB_PATH"):
-            monkeypatch.setattr(
-                hook, "DEFAULT_DB_PATH", str(fake_pace_maker_dir / "usage.db")
-            )
+            fake_db_path = str(fake_pace_maker_dir / "usage.db")
+            monkeypatch.setattr(hook, "DEFAULT_DB_PATH", fake_db_path)
+            initialize_database(fake_db_path)
     except ImportError:
         pass

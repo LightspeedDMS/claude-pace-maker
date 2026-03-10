@@ -299,6 +299,36 @@ class TestLogFunctions:
         assert "[DEBUG]" in lines[0]
 
 
+class TestTestModeSuppression:
+    """Test that PACEMAKER_TEST_MODE suppresses log output."""
+
+    def test_test_mode_suppresses_all_logging(self, temp_log_dir, monkeypatch):
+        """When PACEMAKER_TEST_MODE=1, log() should write nothing to the log file."""
+        write_config(temp_log_dir["config_path"], LOG_LEVEL_DEBUG)
+        monkeypatch.setenv("PACEMAKER_TEST_MODE", "1")
+
+        log_error("test", "error in test mode")
+        log_warning("test", "warning in test mode")
+        log_info("test", "info in test mode")
+        log_debug("test", "debug in test mode")
+
+        lines = read_log_lines(temp_log_dir["log_path"])
+        assert (
+            len(lines) == 0
+        ), "No log entries should be written when PACEMAKER_TEST_MODE=1"
+
+    def test_normal_mode_still_logs(self, temp_log_dir, monkeypatch):
+        """When PACEMAKER_TEST_MODE is unset, logging should work normally."""
+        write_config(temp_log_dir["config_path"], LOG_LEVEL_ERROR)
+        monkeypatch.delenv("PACEMAKER_TEST_MODE", raising=False)
+
+        log_error("test", "error in normal mode")
+
+        lines = read_log_lines(temp_log_dir["log_path"])
+        assert len(lines) == 1
+        assert "[ERROR]" in lines[0]
+
+
 class TestLogRobustness:
     """Test logging robustness and error handling."""
 

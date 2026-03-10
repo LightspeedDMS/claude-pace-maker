@@ -11,7 +11,7 @@ setup(
     author="Lightspeed DMS",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
-    python_requires=">=3.10",
+    python_requires=">=3.9",
     install_requires=[
         "requests>=2.31.0",
         "claude-agent-sdk>=0.1.0",

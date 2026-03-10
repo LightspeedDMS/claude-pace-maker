@@ -828,6 +828,10 @@ def _format_blockage_stats(db_path: Optional[str]) -> str:
     result = "\n\nBlockages (last hour):"
 
     try:
+        if db_path is None:
+            result += "\n  (no database path)"
+            return result
+
         stats = database.get_hourly_blockage_stats(db_path)
         total = 0
 

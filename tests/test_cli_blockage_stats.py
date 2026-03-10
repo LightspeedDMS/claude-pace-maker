@@ -427,6 +427,15 @@ class TestStatusCommandDatabaseErrors:
         finally:
             Path(db_path).unlink(missing_ok=True)
 
+    def test_format_blockage_stats_none_db_path_returns_no_database_path(self):
+        """_format_blockage_stats(None) should return '(no database path)' without raising TypeError."""
+        from pacemaker.user_commands import _format_blockage_stats
+
+        result = _format_blockage_stats(None)
+
+        assert "(no database path)" in result
+        assert "Blockages (last hour):" in result
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
