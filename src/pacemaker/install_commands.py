@@ -167,19 +167,40 @@ def detect_git_auth(repo_host: str, repo_path: str) -> Optional[str]:
 
 def verify_installation() -> Dict[str, Any]:
     """
-    Verify the claude-usage installation using shutil.which and pip show.
+    Verify the claude-usage installation by running ``claude-usage --version``.
 
-    The claude-usage CLI does not support --version; use pip show to get
-    the installed version instead.
+    The primary check runs the actual binary to prove it executes correctly.
+    Falls back to ``pip show`` if the binary is not in PATH.
 
     Returns:
         Dictionary with:
-        - success=True + version message if binary found in PATH and pip show succeeds
+        - success=True + version message if ``claude-usage --version`` succeeds
         - success=True + PATH warning if binary NOT in PATH but pip show succeeds
-        - success=False + error if pip show fails (installation did not complete)
+        - success=False + error if neither method confirms installation
     """
     binary_path = shutil.which("claude-usage")
 
+    if binary_path is not None:
+        # Primary verification: actually run the binary
+        try:
+            version_result = subprocess.run(
+                ["claude-usage", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if version_result.returncode == 0 and version_result.stdout.strip():
+                version = version_result.stdout.strip()
+                return {
+                    "success": True,
+                    "message": (
+                        f"claude-usage-monitor installed successfully. {version}"
+                    ),
+                }
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+    # Fallback: pip show (binary not in PATH or --version failed)
     pip_result = subprocess.run(
         [sys.executable, "-m", "pip", "show", "claude-usage"],
         capture_output=True,
@@ -201,10 +222,11 @@ def verify_installation() -> Dict[str, Any]:
             break
 
     if binary_path is not None:
+        # Binary found but --version failed; still report success from pip
         return {
             "success": True,
             "message": (
-                f"claude-usage-monitor installed successfully. " f"Version: {version}"
+                f"claude-usage-monitor installed successfully. Version: {version}"
             ),
         }
     else:

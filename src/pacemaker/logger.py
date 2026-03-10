@@ -139,6 +139,11 @@ def log(level: int, component: str, message: str, exc: Optional[Exception] = Non
         message: Log message
         exc: Optional exception to include
     """
+    # Suppress all logging during test runs to prevent test noise from
+    # polluting the production log file.
+    if os.environ.get("PACEMAKER_TEST_MODE"):
+        return
+
     current_level = _get_log_level()
 
     if current_level == LOG_LEVEL_OFF or level > current_level:

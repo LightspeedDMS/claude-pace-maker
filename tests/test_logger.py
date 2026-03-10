@@ -39,6 +39,10 @@ def temp_log_dir(monkeypatch):
         monkeypatch.setattr("src.pacemaker.logger.DEFAULT_LOG_DIR", tmpdir)
         monkeypatch.setattr("src.pacemaker.logger.DEFAULT_CONFIG_PATH", config_path)
 
+        # Allow log writes in logger tests — conftest sets PACEMAKER_TEST_MODE=1
+        # globally, which would suppress all logging. Logger tests need real writes.
+        monkeypatch.delenv("PACEMAKER_TEST_MODE", raising=False)
+
         # Get today's log file path using the new API
         from src.pacemaker.logger import get_current_log_path
 

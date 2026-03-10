@@ -119,7 +119,7 @@ check_python_version() {
   local major=$(echo "$version" | cut -d. -f1)
   local minor=$(echo "$version" | cut -d. -f2)
 
-  if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
+  if [ "$major" -ge 3 ] && [ "$minor" -ge 9 ]; then
     echo "$version"
     return 0
   fi
@@ -127,10 +127,10 @@ check_python_version() {
   return 1
 }
 
-# Find best available Python 3.10+ command
+# Find best available Python 3.9+ command
 find_python_command() {
-  # Try python3.11, python3.10, python3 in order
-  for cmd in python3.11 python3.10 python3; do
+  # Try python3.11, python3.10, python3.9, python3 in order
+  for cmd in python3.11 python3.10 python3.9 python3; do
     if version=$(check_python_version "$cmd"); then
       echo "$cmd"
       return 0
@@ -259,7 +259,7 @@ check_dependencies() {
     # Python exists but version is too old, or doesn't exist
     if command -v python3 >/dev/null 2>&1; then
       current_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")' 2>/dev/null || echo "unknown")
-      echo -e "${YELLOW}⚠ Python $current_version found, but 3.10+ is required${NC}"
+      echo -e "${YELLOW}⚠ Python $current_version found, but 3.9+ is required${NC}"
       python_needs_upgrade=1
     fi
   fi
@@ -392,7 +392,7 @@ check_dependencies() {
     echo ""
     if ! upgrade_python "$pkg_manager"; then
       echo -e "${YELLOW}⚠ Warning: Python upgrade failed${NC}"
-      echo -e "${YELLOW}  Some features may not work without Python 3.10+${NC}"
+      echo -e "${YELLOW}  Some features may not work without Python 3.9+${NC}"
       echo -e "${YELLOW}  Continuing with existing Python version...${NC}"
       # Don't return 1 - allow installation to continue with warning
     fi
@@ -406,13 +406,13 @@ install_python_deps() {
   echo ""
   echo "Installing Python dependencies..."
 
-  # Find best Python command (3.10+)
+  # Find best Python command (3.9+)
   local python_cmd
   if python_cmd=$(find_python_command); then
     echo "Using $python_cmd for package installation"
   else
     # Fallback to python3 if no 3.10+ found
-    echo -e "${YELLOW}⚠ Python 3.10+ not found, using python3${NC}"
+    echo -e "${YELLOW}⚠ Python 3.9+ not found, using python3${NC}"
     python_cmd="python3"
   fi
 
@@ -602,9 +602,11 @@ install_cli() {
   # Ensure ~/.local/bin exists
   mkdir -p "$HOME/.local/bin"
 
-  # Detect CLI source (dev: bin/pace-maker, pipx: pace-maker)
+  # Detect CLI source (dev: scripts/pace-maker or bin/pace-maker, pipx: pace-maker)
   if [ -f "$SCRIPT_DIR/bin/pace-maker" ]; then
     CLI_SOURCE="$SCRIPT_DIR/bin/pace-maker"
+  elif [ -f "$SCRIPT_DIR/scripts/pace-maker" ]; then
+    CLI_SOURCE="$SCRIPT_DIR/scripts/pace-maker"
   elif [ -f "$SCRIPT_DIR/pace-maker" ]; then
     CLI_SOURCE="$SCRIPT_DIR/pace-maker"
   else

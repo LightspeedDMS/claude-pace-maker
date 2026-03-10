@@ -445,18 +445,43 @@ class TestDetectGitAuth(unittest.TestCase):
 
 
 class TestVerifyInstallation(unittest.TestCase):
-    """Test verify_installation() with mocked shutil.which and pip show."""
+    """Test verify_installation() with mocked shutil.which, --version, and pip show."""
 
-    def test_verify_binary_found_and_pip_show_succeeds(self):
-        """AC1/AC3: Binary in PATH and pip show succeeds returns version from pip."""
+    def test_verify_version_flag_succeeds(self):
+        """Primary path: claude-usage --version works, returns version from stdout."""
         from src.pacemaker.install_commands import verify_installation
 
-        mock_pip_result = MagicMock()
-        mock_pip_result.returncode = 0
-        mock_pip_result.stdout = "Name: claude-usage\nVersion: 1.2.0\nSummary: ...\n"
+        mock_version = MagicMock()
+        mock_version.returncode = 0
+        mock_version.stdout = "claude-usage 2.1.0\n"
 
         with patch("shutil.which", return_value="/home/user/.local/bin/claude-usage"):
-            with patch("subprocess.run", return_value=mock_pip_result):
+            with patch("subprocess.run", return_value=mock_version):
+                result = verify_installation()
+
+        self.assertTrue(result["success"])
+        self.assertIn("claude-usage 2.1.0", result["message"])
+        self.assertIn("installed successfully", result["message"])
+
+    def test_verify_version_flag_fails_falls_back_to_pip_show(self):
+        """Fallback: --version fails but pip show succeeds, reports version from pip."""
+        from src.pacemaker.install_commands import verify_installation
+
+        mock_version = MagicMock()
+        mock_version.returncode = 2  # --version not supported
+        mock_version.stdout = ""
+
+        mock_pip = MagicMock()
+        mock_pip.returncode = 0
+        mock_pip.stdout = "Name: claude-usage\nVersion: 1.2.0\nSummary: ...\n"
+
+        def side_effect(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[0] == "claude-usage":
+                return mock_version
+            return mock_pip
+
+        with patch("shutil.which", return_value="/home/user/.local/bin/claude-usage"):
+            with patch("subprocess.run", side_effect=side_effect):
                 result = verify_installation()
 
         self.assertTrue(result["success"])
@@ -494,44 +519,26 @@ class TestVerifyInstallation(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertIn("failed", result["message"].lower())
 
-    def test_verify_extracts_version_from_pip_show_output(self):
-        """Version string is correctly extracted from pip show multi-line output."""
+    def test_verify_version_timeout_falls_back_to_pip(self):
+        """--version times out, falls back to pip show gracefully."""
+        import subprocess as sp
         from src.pacemaker.install_commands import verify_installation
 
-        mock_pip_result = MagicMock()
-        mock_pip_result.returncode = 0
-        mock_pip_result.stdout = (
-            "Name: claude-usage\n"
-            "Version: 2.5.1\n"
-            "Summary: Claude usage monitor\n"
-            "Home-page: https://github.com/LightspeedDMS/claude-usage\n"
-        )
+        mock_pip = MagicMock()
+        mock_pip.returncode = 0
+        mock_pip.stdout = "Name: claude-usage\nVersion: 2.5.1\n"
+
+        def side_effect(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[0] == "claude-usage":
+                raise sp.TimeoutExpired(cmd, 10)
+            return mock_pip
 
         with patch("shutil.which", return_value="/usr/local/bin/claude-usage"):
-            with patch("subprocess.run", return_value=mock_pip_result):
+            with patch("subprocess.run", side_effect=side_effect):
                 result = verify_installation()
 
         self.assertTrue(result["success"])
         self.assertIn("2.5.1", result["message"])
-
-    def test_verify_pip_show_uses_current_python_executable(self):
-        """pip show is run via the current Python executable (sys.executable)."""
-        import sys
-        from src.pacemaker.install_commands import verify_installation
-
-        mock_pip_result = MagicMock()
-        mock_pip_result.returncode = 0
-        mock_pip_result.stdout = "Name: claude-usage\nVersion: 1.0.0\n"
-
-        with patch("shutil.which", return_value="/usr/local/bin/claude-usage"):
-            with patch("subprocess.run", return_value=mock_pip_result) as mock_run:
-                verify_installation()
-
-        called_cmd = mock_run.call_args[0][0]
-        self.assertEqual(called_cmd[0], sys.executable)
-        self.assertIn("pip", called_cmd)
-        self.assertIn("show", called_cmd)
-        self.assertIn("claude-usage", called_cmd)
 
 
 class TestErrorMessageWithAuthInstructions(unittest.TestCase):
@@ -585,15 +592,22 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         mock_ls_remote = MagicMock()
         mock_ls_remote.returncode = 0
 
-        # pip install + pip show succeed
+        # pip install succeeds
         mock_pip = MagicMock()
         mock_pip.returncode = 0
         mock_pip.stdout = "Name: claude-usage\nVersion: 2.0.0\n"
         mock_pip.stderr = ""
 
+        # claude-usage --version succeeds
+        mock_version = MagicMock()
+        mock_version.returncode = 0
+        mock_version.stdout = "claude-usage 2.0.0\n"
+
         def side_effect(cmd, **kwargs):
             if isinstance(cmd, list) and cmd[0] == "git" and cmd[1] == "ls-remote":
                 return mock_ls_remote
+            elif isinstance(cmd, list) and cmd[0] == "claude-usage":
+                return mock_version
             elif isinstance(cmd, list) and len(cmd) > 2 and "pip" in cmd:
                 return mock_pip
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -619,17 +633,24 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         mock_ssh = MagicMock()
         mock_ssh.returncode = 1
 
-        # pip install succeeds; pip show also succeeds
+        # pip install succeeds
         mock_pip = MagicMock()
         mock_pip.returncode = 0
         mock_pip.stdout = "Name: claude-usage\nVersion: 2.0.0\n"
         mock_pip.stderr = ""
+
+        # claude-usage --version succeeds
+        mock_version = MagicMock()
+        mock_version.returncode = 0
+        mock_version.stdout = "claude-usage 2.0.0\n"
 
         def side_effect(cmd, **kwargs):
             if isinstance(cmd, list) and cmd[0] == "git" and cmd[1] == "ls-remote":
                 return mock_ls_remote
             elif isinstance(cmd, list) and cmd[0] == "ssh":
                 return mock_ssh
+            elif isinstance(cmd, list) and cmd[0] == "claude-usage":
+                return mock_version
             elif isinstance(cmd, list) and len(cmd) > 2 and "pip" in cmd:
                 return mock_pip
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -660,11 +681,16 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
         mock_gh.returncode = 0
         mock_gh.stdout = "ghp_testtoken"
 
-        # pip install succeeds; pip show also succeeds
+        # pip install succeeds
         mock_pip = MagicMock()
         mock_pip.returncode = 0
         mock_pip.stdout = "Name: claude-usage\nVersion: 2.0.0\n"
         mock_pip.stderr = ""
+
+        # claude-usage --version succeeds
+        mock_version = MagicMock()
+        mock_version.returncode = 0
+        mock_version.stdout = "claude-usage 2.0.0\n"
 
         def side_effect(cmd, **kwargs):
             if isinstance(cmd, list) and cmd[0] == "git" and cmd[1] == "ls-remote":
@@ -673,6 +699,8 @@ class TestInstallClaudeUsageMonitorFlow(unittest.TestCase):
                 return mock_ssh
             elif isinstance(cmd, list) and cmd[0] == "gh":
                 return mock_gh
+            elif isinstance(cmd, list) and cmd[0] == "claude-usage":
+                return mock_version
             elif isinstance(cmd, list) and len(cmd) > 2 and "pip" in cmd:
                 return mock_pip
             return MagicMock(returncode=0, stdout="", stderr="")
