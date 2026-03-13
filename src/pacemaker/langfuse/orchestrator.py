@@ -1602,11 +1602,27 @@ def handle_subagent_stop(
         # Create trace update with output
         # Using trace-create for upsert semantics (updates existing trace)
         now = datetime.now(timezone.utc)
-        trace_update = {
+
+        # Pre-compute token counts if agent_transcript_path is available so we can
+        # include them in BOTH trace.metadata (bug #48) AND the generation observation.
+        trace_token_metadata: Dict[str, int] = {}
+        if agent_transcript_path:
+            _token_data = incremental.parse_incremental_lines(agent_transcript_path, 0)
+            _token_usage = _token_data.get("token_usage", {})
+            trace_token_metadata = {
+                "input_tokens": _token_usage.get("input_tokens", 0),
+                "output_tokens": _token_usage.get("output_tokens", 0),
+                "cache_read_tokens": _token_usage.get("cache_read_tokens", 0),
+                "cache_creation_tokens": _token_usage.get("cache_creation_tokens", 0),
+            }
+
+        trace_update: Dict[str, Any] = {
             "id": subagent_trace_id,
             "output": subagent_output,
             "endTime": now.isoformat(),  # BUG FIX #2: Add explicit endTime for latency calculation
         }
+        if trace_token_metadata:
+            trace_update["metadata"] = trace_token_metadata
 
         # Build batch event
         event_id = f"finalize-{subagent_trace_id}-{str(uuid.uuid4())[:8]}"
@@ -1620,13 +1636,12 @@ def handle_subagent_stop(
         ]
 
         # Create generation observation for subagent cost tracking
+        # Reuse trace_token_metadata computed above (avoid duplicate transcript parse)
         if agent_transcript_path:
-            token_data = incremental.parse_incremental_lines(agent_transcript_path, 0)
-            token_usage = token_data.get("token_usage", {})
-            gen_input = token_usage.get("input_tokens", 0)
-            gen_output = token_usage.get("output_tokens", 0)
-            gen_cache = token_usage.get("cache_read_tokens", 0)
-            gen_cache_creation = token_usage.get("cache_creation_tokens", 0)
+            gen_input = trace_token_metadata.get("input_tokens", 0)
+            gen_output = trace_token_metadata.get("output_tokens", 0)
+            gen_cache = trace_token_metadata.get("cache_read_tokens", 0)
+            gen_cache_creation = trace_token_metadata.get("cache_creation_tokens", 0)
 
             # Send each token type as separate field for Langfuse pricing
             if (
@@ -1777,6 +1792,12 @@ def handle_subagent_start(
         # Truncate prompt to prevent HTTP 413 on Langfuse Cloud (1MB limit)
         subagent_prompt = _truncate_field(subagent_prompt)
 
+        # Extract userId, model, and project context (bug #48: these were missing)
+        user_id = jsonl_parser.extract_user_id(parent_transcript_path)
+        session_metadata = jsonl_parser.parse_session_metadata(parent_transcript_path)
+        model = session_metadata.get("model")
+        project_context = get_project_context()
+
         # Generate unique trace_id for subagent
         # Format: parent-session-id-subagent-name-uuid
         now = datetime.now(timezone.utc)
@@ -1784,19 +1805,30 @@ def handle_subagent_start(
             f"{parent_session_id}-subagent-{subagent_name}-{str(uuid.uuid4())[:8]}"
         )
 
+        # Build trace metadata with project context, model, and subagent identifiers
+        trace_metadata: Dict[str, Any] = {
+            "subagent_session_id": subagent_session_id,
+            "subagent_name": subagent_name,
+        }
+        if project_context:
+            trace_metadata["project_path"] = project_context.get("project_path")
+            trace_metadata["project_name"] = project_context.get("project_name")
+            trace_metadata["git_remote"] = project_context.get("git_remote")
+            trace_metadata["git_branch"] = project_context.get("git_branch")
+        if model:
+            trace_metadata["model"] = model
+
         # Create trace for subagent (NOT a span)
         # Use sessionId to link to parent session (this is how Langfuse links related sessions)
         trace = {
             "id": subagent_trace_id,
             "name": f"subagent:{subagent_name}",
             "sessionId": parent_session_id,  # Links to parent session
+            "userId": user_id or "unknown",  # Bug #48: include userId
             "input": subagent_prompt,  # The Task tool prompt
             "timestamp": now.isoformat(),
             "startTime": now.isoformat(),  # BUG FIX #2: Add explicit startTime for latency calculation
-            "metadata": {
-                "subagent_session_id": subagent_session_id,
-                "subagent_name": subagent_name,
-            },
+            "metadata": trace_metadata,
         }
 
         # Build batch event with trace-create (NOT span-create)
