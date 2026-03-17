@@ -2283,7 +2283,7 @@ def _langfuse_provision(
 
         # Provision keys from Lambda
         if verbose:
-            print(f"Provisioning keys for {user_email}...")
+            print(f"Provisioning keys{f' for {user_email}' if user_email else ''}...")
         keys = provisioner.provision(oauth_token, admin_api_key, user_email)
 
         # Save to config

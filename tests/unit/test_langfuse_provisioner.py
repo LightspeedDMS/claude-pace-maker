@@ -45,9 +45,8 @@ class TestLangfuseProvisionerInit:
 class TestCollectCredentials:
     """Test credential collection from Claude credentials file."""
 
-    def test_collect_credentials_success(self, tmp_path):
-        """Should successfully collect OAuth token and admin API key."""
-        # Create mock credentials file in the structure expected
+    def test_collect_credentials_oauth_and_api_key(self, tmp_path):
+        """Should collect OAuth token, API key, and email when all are available."""
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         credentials = {
@@ -59,56 +58,26 @@ class TestCollectCredentials:
         creds_file = claude_dir / ".credentials.json"
         creds_file.write_text(json.dumps(credentials))
 
-        # Mock admin API key in environment and Path.home
         with (
-            mock.patch.dict(os.environ, {"ANTHROPIC_ADMIN_API_KEY": "admin_key_456"}),
+            mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}),
             mock.patch(
                 "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
             ),
         ):
             provisioner = LangfuseProvisioner()
-            oauth_token, admin_key, email = provisioner.collect_credentials()
+            oauth_token, api_key, email = provisioner.collect_credentials()
 
         assert oauth_token == "oauth_token_123"
-        assert admin_key == "admin_key_456"
+        assert api_key == "sk-ant-key-456"
         assert email == "user@example.com"
 
-    def test_collect_credentials_missing_file(self, tmp_path):
-        """Should raise CredentialsNotFoundError if credentials file missing."""
-        provisioner = LangfuseProvisioner()
-        with mock.patch(
-            "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
-        ):
-            with pytest.raises(
-                CredentialsNotFoundError, match="OAuth credentials not found"
-            ):
-                provisioner.collect_credentials()
-
-    def test_collect_credentials_missing_oauth_token(self, tmp_path):
-        """Should raise error if OAuth token missing from credentials."""
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        credentials = {"claudeAiOauth": {"email": "user@example.com"}}
-        creds_file = claude_dir / ".credentials.json"
-        creds_file.write_text(json.dumps(credentials))
-
-        provisioner = LangfuseProvisioner()
-        with mock.patch(
-            "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
-        ):
-            with pytest.raises(
-                CredentialsNotFoundError, match="OAuth access token not found"
-            ):
-                provisioner.collect_credentials()
-
-    def test_collect_credentials_missing_admin_key(self, tmp_path):
-        """Should raise error if admin API key not in environment."""
+    def test_collect_credentials_oauth_only(self, tmp_path):
+        """Should succeed with only OAuth token (subscription users)."""
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         credentials = {
             "claudeAiOauth": {
                 "accessToken": "oauth_token_123",
-                "email": "user@example.com",
             }
         }
         creds_file = claude_dir / ".credentials.json"
@@ -121,42 +90,117 @@ class TestCollectCredentials:
             ),
         ):
             provisioner = LangfuseProvisioner()
-            with pytest.raises(
-                CredentialsNotFoundError,
-                match="Anthropic admin API key not found",
-            ):
-                provisioner.collect_credentials()
+            oauth_token, api_key, email = provisioner.collect_credentials()
 
-    def test_collect_credentials_missing_email(self, tmp_path):
-        """Should raise error if email missing from credentials."""
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        credentials = {"claudeAiOauth": {"accessToken": "oauth_token_123"}}
-        creds_file = claude_dir / ".credentials.json"
-        creds_file.write_text(json.dumps(credentials))
+        assert oauth_token == "oauth_token_123"
+        assert api_key is None
+        assert email is None
 
+    def test_collect_credentials_api_key_only_no_creds_file(self, tmp_path):
+        """Should succeed with only ANTHROPIC_API_KEY when no credentials file exists (console/token users)."""
         with (
-            mock.patch.dict(os.environ, {"ANTHROPIC_ADMIN_API_KEY": "admin_key_456"}),
+            mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True),
             mock.patch(
                 "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
             ),
         ):
             provisioner = LangfuseProvisioner()
-            with pytest.raises(CredentialsNotFoundError, match="User email not found"):
-                provisioner.collect_credentials()
+            oauth_token, api_key, email = provisioner.collect_credentials()
 
-    def test_collect_credentials_corrupted_json(self, tmp_path):
-        """Should raise error if credentials file is corrupted."""
+        assert oauth_token is None
+        assert api_key == "sk-ant-key-456"
+        assert email is None
+
+    def test_collect_credentials_admin_api_key_fallback(self, tmp_path):
+        """Should fall back to ANTHROPIC_ADMIN_API_KEY when ANTHROPIC_API_KEY is not set."""
+        with (
+            mock.patch.dict(os.environ, {"ANTHROPIC_ADMIN_API_KEY": "admin_key_789"}, clear=True),
+            mock.patch(
+                "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
+            ),
+        ):
+            provisioner = LangfuseProvisioner()
+            oauth_token, api_key, email = provisioner.collect_credentials()
+
+        assert oauth_token is None
+        assert api_key == "admin_key_789"
+        assert email is None
+
+    def test_collect_credentials_api_key_with_corrupted_creds_file(self, tmp_path):
+        """Should fall through corrupted credentials file and use API key."""
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         creds_file = claude_dir / ".credentials.json"
         creds_file.write_text("{ invalid json }")
 
-        provisioner = LangfuseProvisioner()
-        with mock.patch(
-            "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
+        with (
+            mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True),
+            mock.patch(
+                "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
+            ),
         ):
-            with pytest.raises(CredentialsNotFoundError, match="corrupted"):
+            provisioner = LangfuseProvisioner()
+            oauth_token, api_key, email = provisioner.collect_credentials()
+
+        assert oauth_token is None
+        assert api_key == "sk-ant-key-456"
+        assert email is None
+
+    def test_collect_credentials_no_oauth_token_in_file_with_api_key(self, tmp_path):
+        """Should succeed via API key when credentials file exists but has no token."""
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        credentials = {"claudeAiOauth": {"email": "user@example.com"}}
+        creds_file = claude_dir / ".credentials.json"
+        creds_file.write_text(json.dumps(credentials))
+
+        with (
+            mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True),
+            mock.patch(
+                "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
+            ),
+        ):
+            provisioner = LangfuseProvisioner()
+            oauth_token, api_key, email = provisioner.collect_credentials()
+
+        assert oauth_token is None
+        assert api_key == "sk-ant-key-456"
+        assert email == "user@example.com"
+
+    def test_collect_credentials_nothing_available(self, tmp_path):
+        """Should raise error when neither OAuth token nor API key is available."""
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch(
+                "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
+            ),
+        ):
+            provisioner = LangfuseProvisioner()
+            with pytest.raises(
+                CredentialsNotFoundError,
+                match="No authentication credentials found",
+            ):
+                provisioner.collect_credentials()
+
+    def test_collect_credentials_nothing_available_with_empty_creds(self, tmp_path):
+        """Should raise error when credentials file exists but has no token, and no API key."""
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        credentials = {"claudeAiOauth": {}}
+        creds_file = claude_dir / ".credentials.json"
+        creds_file.write_text(json.dumps(credentials))
+
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch(
+                "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
+            ),
+        ):
+            provisioner = LangfuseProvisioner()
+            with pytest.raises(
+                CredentialsNotFoundError,
+                match="No authentication credentials found",
+            ):
                 provisioner.collect_credentials()
 
 
@@ -164,9 +208,8 @@ class TestProvision:
     """Test Lambda provisioning service invocation."""
 
     @responses.activate
-    def test_provision_success(self):
-        """Should successfully invoke Lambda and return keys."""
-        # Mock Lambda response
+    def test_provision_success_all_fields(self):
+        """Should successfully invoke Lambda and return keys with all fields."""
         responses.add(
             responses.POST,
             "http://localhost:3000/provision",
@@ -195,6 +238,55 @@ class TestProvision:
         assert request_body["oauthToken"] == "oauth_123"
         assert request_body["adminApiKey"] == "admin_456"
         assert request_body["userEmail"] == "user@example.com"
+
+    @responses.activate
+    def test_provision_api_key_only(self):
+        """Should succeed with only API key — no OAuth token (console/token users)."""
+        responses.add(
+            responses.POST,
+            "http://localhost:3000/provision",
+            json={
+                "publicKey": "pk_test_123",
+                "secretKey": "sk_test_456",
+                "host": "https://langfuse.example.com",
+            },
+            status=200,
+        )
+
+        provisioner = LangfuseProvisioner()
+        result = provisioner.provision(admin_api_key="sk-ant-key-456")
+
+        assert result["publicKey"] == "pk_test_123"
+
+        request_body = json.loads(responses.calls[0].request.body)
+        assert request_body["adminApiKey"] == "sk-ant-key-456"
+        assert "oauthToken" not in request_body
+        assert "userEmail" not in request_body
+
+    @responses.activate
+    def test_provision_oauth_only(self):
+        """Should succeed with only OAuth token — no admin key or email."""
+        responses.add(
+            responses.POST,
+            "http://localhost:3000/provision",
+            json={
+                "publicKey": "pk_test_123",
+                "secretKey": "sk_test_456",
+                "host": "https://langfuse.example.com",
+            },
+            status=200,
+        )
+
+        provisioner = LangfuseProvisioner()
+        result = provisioner.provision(oauth_token="oauth_123")
+
+        assert result["publicKey"] == "pk_test_123"
+
+        # Verify only oauthToken sent in payload
+        request_body = json.loads(responses.calls[0].request.body)
+        assert request_body["oauthToken"] == "oauth_123"
+        assert "adminApiKey" not in request_body
+        assert "userEmail" not in request_body
 
     @responses.activate
     def test_provision_custom_endpoint(self):
@@ -428,15 +520,14 @@ class TestEndToEndProvisioning:
     """End-to-end tests for complete provisioning flow."""
 
     @responses.activate
-    def test_full_provisioning_workflow(self, tmp_path):
-        """Should complete full provisioning workflow successfully."""
-        # Setup mock credentials
+    def test_full_provisioning_workflow_oauth_only(self, tmp_path):
+        """Should complete full workflow with only OAuth token (typical user flow)."""
+        # Setup mock credentials — no email, no admin key
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         credentials = {
             "claudeAiOauth": {
                 "accessToken": "oauth_token_123",
-                "email": "user@example.com",
             }
         }
         creds_file = claude_dir / ".credentials.json"
@@ -462,16 +553,20 @@ class TestEndToEndProvisioning:
             mock.patch(
                 "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
             ),
-            mock.patch.dict(os.environ, {"ANTHROPIC_ADMIN_API_KEY": "admin_key_456"}),
+            mock.patch.dict(os.environ, {}, clear=True),
         ):
-            # Collect credentials
             oauth_token, admin_key, email = provisioner.collect_credentials()
+            assert admin_key is None
+            assert email is None
 
-            # Provision keys
             keys = provisioner.provision(oauth_token, admin_key, email)
-
-            # Save to config
             provisioner.save_to_config(keys, str(config_path))
+
+        # Verify only oauthToken was sent
+        request_body = json.loads(responses.calls[0].request.body)
+        assert "oauthToken" in request_body
+        assert "adminApiKey" not in request_body
+        assert "userEmail" not in request_body
 
         # Verify final config
         with open(config_path) as f:
@@ -480,4 +575,97 @@ class TestEndToEndProvisioning:
         assert config["langfuse_public_key"] == "pk_test_123"
         assert config["langfuse_secret_key"] == "sk_test_456"
         assert config["langfuse_base_url"] == "https://langfuse.example.com"
+        assert config["langfuse_enabled"] is True
+
+    @responses.activate
+    def test_full_provisioning_workflow_api_key_only(self, tmp_path):
+        """Should complete full workflow with only API key (console/token-based users)."""
+        # No credentials file — user authenticates via ANTHROPIC_API_KEY
+        responses.add(
+            responses.POST,
+            "http://localhost:3000/provision",
+            json={
+                "publicKey": "pk_test_123",
+                "secretKey": "sk_test_456",
+                "host": "https://langfuse.example.com",
+            },
+            status=200,
+        )
+
+        config_path = tmp_path / "config.json"
+        provisioner = LangfuseProvisioner()
+
+        with (
+            mock.patch(
+                "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
+            ),
+            mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True),
+        ):
+            oauth_token, api_key, email = provisioner.collect_credentials()
+            assert oauth_token is None
+            assert api_key == "sk-ant-key-456"
+
+            keys = provisioner.provision(oauth_token, api_key, email)
+            provisioner.save_to_config(keys, str(config_path))
+
+        # Verify only adminApiKey was sent
+        request_body = json.loads(responses.calls[0].request.body)
+        assert "oauthToken" not in request_body
+        assert request_body["adminApiKey"] == "sk-ant-key-456"
+        assert "userEmail" not in request_body
+
+        with open(config_path) as f:
+            config = json.load(f)
+
+        assert config["langfuse_public_key"] == "pk_test_123"
+        assert config["langfuse_enabled"] is True
+
+    @responses.activate
+    def test_full_provisioning_workflow_with_admin_key(self, tmp_path):
+        """Should complete full workflow with all credentials (agent flow)."""
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        credentials = {
+            "claudeAiOauth": {
+                "accessToken": "oauth_token_123",
+                "email": "user@example.com",
+            }
+        }
+        creds_file = claude_dir / ".credentials.json"
+        creds_file.write_text(json.dumps(credentials))
+
+        responses.add(
+            responses.POST,
+            "http://localhost:3000/provision",
+            json={
+                "publicKey": "pk_test_123",
+                "secretKey": "sk_test_456",
+                "host": "https://langfuse.example.com",
+            },
+            status=200,
+        )
+
+        config_path = tmp_path / "config.json"
+        provisioner = LangfuseProvisioner()
+
+        with (
+            mock.patch(
+                "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
+            ),
+            mock.patch.dict(os.environ, {"ANTHROPIC_ADMIN_API_KEY": "admin_key_456"}),
+        ):
+            oauth_token, admin_key, email = provisioner.collect_credentials()
+            keys = provisioner.provision(oauth_token, admin_key, email)
+            provisioner.save_to_config(keys, str(config_path))
+
+        # Verify all fields sent
+        request_body = json.loads(responses.calls[0].request.body)
+        assert request_body["oauthToken"] == "oauth_token_123"
+        assert request_body["adminApiKey"] == "admin_key_456"
+        assert request_body["userEmail"] == "user@example.com"
+
+        with open(config_path) as f:
+            config = json.load(f)
+
+        assert config["langfuse_public_key"] == "pk_test_123"
         assert config["langfuse_enabled"] is True

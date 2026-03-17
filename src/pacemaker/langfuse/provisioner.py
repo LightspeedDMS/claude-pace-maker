@@ -46,71 +46,71 @@ class LangfuseProvisioner:
             "LANGFUSE_PROVISION_ENDPOINT", "http://localhost:3000/provision"
         )
 
-    def collect_credentials(self) -> Tuple[str, str, str]:
+    def collect_credentials(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
-        Collect OAuth token and admin API key from Claude credentials.
+        Collect authentication credentials for provisioning.
+
+        Tries two paths in order:
+          1. OAuth token from ~/.claude/.credentials.json (subscription users)
+          2. ANTHROPIC_API_KEY from environment (console/token-based users)
+
+        At least one must be available. The provisioning server accepts either.
 
         Returns:
-            Tuple of (oauth_token, admin_api_key, user_email)
+            Tuple of (oauth_token_or_none, api_key_or_none, user_email_or_none)
 
         Raises:
-            CredentialsNotFoundError: If credentials are missing or invalid
+            CredentialsNotFoundError: If neither OAuth token nor API key is found
         """
-        # Read from ~/.claude/.credentials.json
+        oauth_token = None
+        user_email = None
+        api_key = None
+
+        # Try OAuth credentials first (subscription users)
         home = Path.home()
         creds_path = home / ".claude" / ".credentials.json"
 
-        if not creds_path.exists():
+        if creds_path.exists():
+            try:
+                with open(creds_path) as f:
+                    credentials = json.load(f)
+                oauth_data = credentials.get("claudeAiOauth", {})
+                oauth_token = oauth_data.get("accessToken")
+                user_email = oauth_data.get("email")
+            except json.JSONDecodeError:
+                pass  # Fall through to API key check
+
+        # Check for API key in environment (console/token-based users, agents)
+        api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get(
+            "ANTHROPIC_ADMIN_API_KEY"
+        )
+
+        # Need at least one auth method
+        if not oauth_token and not api_key:
             raise CredentialsNotFoundError(
-                "OAuth credentials not found at ~/.claude/.credentials.json\n"
-                "Please authenticate with Claude Code first."
+                "No authentication credentials found.\n"
+                "Either authenticate with Claude Code (creates ~/.claude/.credentials.json)\n"
+                "or set ANTHROPIC_API_KEY environment variable."
             )
 
-        try:
-            with open(creds_path) as f:
-                credentials = json.load(f)
-        except json.JSONDecodeError as e:
-            raise CredentialsNotFoundError(
-                f"OAuth credentials file is corrupted: {e}\n"
-                f"Please re-authenticate with Claude Code."
-            )
+        return oauth_token, api_key, user_email
 
-        # Extract OAuth token
-        oauth_data = credentials.get("claudeAiOauth", {})
-        oauth_token = oauth_data.get("accessToken")
-        if not oauth_token:
-            raise CredentialsNotFoundError(
-                "OAuth access token not found in credentials file.\n"
-                "Please re-authenticate with Claude Code."
-            )
-
-        # Extract user email
-        user_email = oauth_data.get("email")
-        if not user_email:
-            raise CredentialsNotFoundError(
-                "User email not found in credentials file.\n"
-                "Please re-authenticate with Claude Code."
-            )
-
-        # Get admin API key from environment
-        admin_api_key = os.environ.get("ANTHROPIC_ADMIN_API_KEY")
-        if not admin_api_key:
-            raise CredentialsNotFoundError(
-                "Anthropic admin API key not found in environment.\n"
-                "Please set ANTHROPIC_ADMIN_API_KEY environment variable.\n"
-                "Contact your Anthropic administrator to obtain an admin API key."
-            )
-
-        return oauth_token, admin_api_key, user_email
-
-    def provision(self, oauth_token: str, admin_api_key: str, user_email: str) -> Dict:
+    def provision(
+        self,
+        oauth_token: Optional[str] = None,
+        admin_api_key: Optional[str] = None,
+        user_email: Optional[str] = None,
+    ) -> Dict:
         """
         Invoke Lambda provisioning service.
 
+        The server requires at least one of oauthToken or adminApiKey.
+        userEmail is optional — the server extracts it from the auth token.
+
         Args:
-            oauth_token: Claude OAuth access token
-            admin_api_key: Anthropic admin API key
-            user_email: User's email address
+            oauth_token: Claude OAuth access token (subscription users)
+            admin_api_key: Anthropic API key (console/token-based users, agents)
+            user_email: User's email address (optional, for cross-validation)
 
         Returns:
             Dictionary with keys: publicKey, secretKey, host
@@ -118,11 +118,13 @@ class LangfuseProvisioner:
         Raises:
             ProvisioningError: On HTTP error or invalid response
         """
-        payload = {
-            "oauthToken": oauth_token,
-            "adminApiKey": admin_api_key,
-            "userEmail": user_email,
-        }
+        payload: Dict = {}
+        if oauth_token:
+            payload["oauthToken"] = oauth_token
+        if admin_api_key:
+            payload["adminApiKey"] = admin_api_key
+        if user_email:
+            payload["userEmail"] = user_email
 
         try:
             response = requests.post(
