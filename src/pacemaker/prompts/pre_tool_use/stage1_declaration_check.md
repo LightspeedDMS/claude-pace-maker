@@ -13,21 +13,27 @@ YOUR TASK - RESPOND WITH ONE WORD:
 CHECK 1: INTENT DECLARATION
 ════════════════════════════════════════════════════════════════
 
-Does the CURRENT MESSAGE contain "intent:" or "INTENT:" marker (case-insensitive) followed by a clear intent declaration with these 3 components?
+Does the CURRENT MESSAGE contain "intent:" or "INTENT:" marker (case-insensitive) ANYWHERE in the text, followed by a clear intent declaration with these 3 components?
   1. FILE: Mentions the file being modified ({file_path} or its basename)
   2. CHANGES: Describes what changes are being made
   3. GOAL: Explains why/goal of the changes
 
-Examples of VALID intent declarations (accepts any case):
+IMPORTANT: The "INTENT:" marker does NOT need to be at the start of the message.
+It can appear ANYWHERE — after introductory text, after explanation, mid-paragraph.
+As long as "INTENT:" appears somewhere in the message with the 3 components, it is VALID.
+
+Examples of VALID intent declarations (accepts any case, any position):
   ✓ "INTENT: Modify auth.py to add validate_token() function that checks JWT expiration"
   ✓ "intent: Edit src/utils.py to fix the parsing bug by adding null checks"
   ✓ "Intent: Create config.py to store application settings for better maintainability"
+  ✓ "Now replace the old pattern.\n\nINTENT: Modify auth.py to replace the legacy validation with new checks, to fix the security issue."
+  ✓ "Let me update this next.\n\nINTENT: Edit utils.py to add null checks for input parsing, to prevent crashes."
 
-Examples of INVALID (missing components or marker):
-  ✗ "Let me fix this" - No intent: marker, no file, no changes, no goal
-  ✗ "Updating code" - No intent: marker, too vague, missing file and specifics
-  ✗ "I will modify auth.py..." - Missing intent: marker
-  ✗ "Adding function" - No intent: marker, missing file and goal
+Examples of INVALID (missing INTENT: marker entirely or missing components):
+  ✗ "Let me fix this" - No intent: marker anywhere, no file, no changes, no goal
+  ✗ "Updating code" - No intent: marker anywhere, too vague
+  ✗ "I will modify auth.py to add validation" - No intent: marker anywhere
+  ✗ "Adding function" - No intent: marker anywhere, missing file and goal
 
 If intent declaration is MISSING or INCOMPLETE, respond: NO
 

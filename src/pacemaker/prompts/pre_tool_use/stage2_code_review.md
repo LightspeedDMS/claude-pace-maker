@@ -55,7 +55,7 @@ If ALL checks passed (no violations):
   Return exactly: APPROVED
 
 If violations found:
-  Return detailed feedback listing each violation:
+  Return detailed feedback listing each violation, then add a CLASSIFICATION line:
 
   ⛔ Code Review Violations Found
 
@@ -64,7 +64,18 @@ If violations found:
   - Where in the code
   - How to fix it
 
+  CLASSIFICATION: CLEAN_CODE
+
   Be specific and actionable. Help the assistant fix the issues.
+
+CLASSIFICATION VALUES (required for all rejections):
+
+  CLEAN_CODE     — Use for ALL stage 2 rejections: style violations, quality issues,
+                   scope creep, missing functionality, unauthorized changes, or any
+                   mismatch between intent and code. Stage 2 IS the code review stage,
+                   so every stage 2 rejection is a code review issue.
+
+  INTENT_MISMATCH — Reserved for future use. Do not use unless explicitly instructed.
 
 RESPONSE FORMAT - Choose EXACTLY one:
 
@@ -74,3 +85,5 @@ OR
 
 ⛔ Code Review Violations Found
 [detailed feedback]
+
+CLASSIFICATION: CLEAN_CODE

@@ -798,6 +798,36 @@ def generate_validation_prompt(
     return prompt
 
 
+def _parse_stage2_classification(feedback: str) -> bool:
+    """Parse the structured CLASSIFICATION line from a stage 2 rejection response.
+
+    Returns True (clean_code_failure) when the rejection is a code review issue,
+    False when it is an intent/functionality mismatch.
+
+    Stage 2 IS the code review stage, so the default for any stage 2 rejection
+    is clean_code_failure=True. Only an explicit CLASSIFICATION: INTENT_MISMATCH
+    overrides this to False.
+
+    Expected format in response (anywhere in text):
+        CLASSIFICATION: CLEAN_CODE       → clean_code_failure = True
+        CLASSIFICATION: INTENT_MISMATCH  → clean_code_failure = False
+
+    If the CLASSIFICATION line is absent or contains an unrecognised value,
+    defaults to True (safe default: all stage 2 rejections are code-review issues).
+    """
+    for line in feedback.splitlines():
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper.startswith("CLASSIFICATION:"):
+            value = upper[len("CLASSIFICATION:") :].strip()
+            if value == "INTENT_MISMATCH":
+                return False
+            # CLEAN_CODE or any unknown value → default clean_code_failure=True
+            return True
+    # No CLASSIFICATION line found → default to True
+    return True
+
+
 def validate_intent_and_code(
     messages: List[str], code: str, file_path: str, tool_name: str
 ) -> dict:
@@ -951,26 +981,10 @@ CRITICAL: Quote must reference actual user words from recent context.""",
             # Any other response = blocked with feedback
             log_debug("intent_validator", "=== STAGE 2 BLOCKED (has feedback) ===")
 
-            # Detect if this is a clean code violation
-            feedback_lower = stage2_feedback.lower()
-            clean_code_keywords = [
-                "clean code",
-                "hardcoded secret",
-                "sql injection",
-                "bare except",
-                "swallowed exception",
-                "commented-out code",
-                "magic number",
-                "mutable default",
-                "god class",
-                "long method",
-                "deeply nested",
-                "code smell",
-                "code violation",
-            ]
-            is_clean_code_failure = any(
-                kw in feedback_lower for kw in clean_code_keywords
-            )
+            # Parse structured CLASSIFICATION line from stage 2 response.
+            # Stage 2 IS the code review stage, so all rejections default to
+            # clean_code_failure=True unless explicitly classified as INTENT_MISMATCH.
+            is_clean_code_failure = _parse_stage2_classification(stage2_feedback)
 
             return {
                 "approved": False,

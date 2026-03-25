@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.4.0] - 2026-03-24
+
+### Fixed
+- **Stage 2 rejection categorization non-deterministic** (#51): Replaced fragile keyword matching (`clean_code_keywords` list) with deterministic `CLASSIFICATION:` structured output parsing from stage 2 code review responses. All stage 2 rejections now correctly categorize as `intent_validation_cleancode` instead of being silently miscategorized as `intent_validation`
+- **Stage 1 intent validation false rejections**: Softened the stage 1 declaration check prompt to accept `INTENT:` marker anywhere in the message, not just at the start. Added explicit guidance and valid examples showing mid-message intent declarations
+
 ## [2.3.0] - 2026-03-10
 
 ### Removed
