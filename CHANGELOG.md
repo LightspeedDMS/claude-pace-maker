@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.5.0] - 2026-03-26
+
+### Added
+- **8 new Messi-derived clean code rules**: `mock-in-e2e`, `over-engineering`, `code-duplication`, `orphan-code`, `unbounded-loops`, `missing-invariants`, `excessive-indirection`, `hidden-magic` — total rules now 25 (was 17)
+- **16 new unit tests** for Messi rules including rule ID uniqueness guard
+
+### Changed
+- **Enhanced 4 existing rule descriptions**: `undeclared-fallbacks` (covers alternative code paths, "just in case" logic), `swallowed-exceptions` (covers unchecked return values, explicit handling strategies), `over-mocking` (focused on unit test scope), `large-files` (specific thresholds: Scripts >200, Classes >300, Modules >500)
+
 ## [2.4.0] - 2026-03-24
 
 ### Fixed

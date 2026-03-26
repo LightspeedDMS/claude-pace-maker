@@ -392,3 +392,199 @@ def test_load_rules_non_strict_mode_returns_defaults_on_invalid_yaml():
         # Assert: Returns default rules (fallback behavior)
         default_rules = get_default_rules()
         assert rules == default_rules
+
+
+# ============================================================================
+# Tests for Messi rules enhancements
+# ============================================================================
+
+
+def test_default_rules_total_count_is_25():
+    """Test that get_default_rules returns exactly 25 rules after Messi rules additions."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+
+    assert len(rules) == 25, f"Expected 25 rules, got {len(rules)}"
+
+
+def test_enhanced_undeclared_fallbacks_description():
+    """Test that undeclared-fallbacks rule has enhanced description."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "undeclared-fallbacks"), None)
+
+    assert rule is not None, "Rule 'undeclared-fallbacks' not found"
+    assert "alternative code paths" in rule["description"]
+    assert "just in case" in rule["description"]
+    assert "graceful failure over forced success" in rule["description"]
+
+
+def test_enhanced_swallowed_exceptions_description():
+    """Test that swallowed-exceptions rule has enhanced description covering return values."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "swallowed-exceptions"), None)
+
+    assert rule is not None, "Rule 'swallowed-exceptions' not found"
+    assert "unchecked return values" in rule["description"]
+    assert "LOG+THROW" in rule["description"]
+
+
+def test_enhanced_over_mocking_description():
+    """Test that over-mocking rule has enhanced description covering E2E and integration tests."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "over-mocking"), None)
+
+    assert rule is not None, "Rule 'over-mocking' not found"
+    assert "core area being tested" in rule["description"]
+    assert "external dependencies" in rule["description"]
+
+
+def test_enhanced_large_files_description():
+    """Test that large-files rule has enhanced description with size thresholds."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "large-files"), None)
+
+    assert rule is not None, "Rule 'large-files' not found"
+    assert "200" in rule["description"]
+    assert "300" in rule["description"]
+    assert "500" in rule["description"]
+
+
+def test_new_rule_mock_in_e2e_present():
+    """Test that mock-in-e2e rule is present with correct id and name."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "mock-in-e2e"), None)
+
+    assert rule is not None, "Rule 'mock-in-e2e' not found"
+    assert rule["name"] == "No Mocking in E2E/Integration Tests"
+    assert "E2E" in rule["description"]
+    assert "integration tests" in rule["description"]
+
+
+def test_new_rule_over_engineering_present():
+    """Test that over-engineering rule is present with correct id and name."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "over-engineering"), None)
+
+    assert rule is not None, "Rule 'over-engineering' not found"
+    assert rule["name"] == "No Over-Engineering"
+    assert "3 moving parts" in rule["description"]
+
+
+def test_new_rule_code_duplication_present():
+    """Test that code-duplication rule is present with correct id and name."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "code-duplication"), None)
+
+    assert rule is not None, "Rule 'code-duplication' not found"
+    assert rule["name"] == "No Code Duplication"
+    assert "Three-strike" in rule["description"]
+
+
+def test_new_rule_orphan_code_present():
+    """Test that orphan-code rule is present with correct id and name."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "orphan-code"), None)
+
+    assert rule is not None, "Rule 'orphan-code' not found"
+    assert rule["name"] == "No Orphan Code"
+    assert "call site" in rule["description"]
+
+
+def test_new_rule_unbounded_loops_present():
+    """Test that unbounded-loops rule is present with correct id and name."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "unbounded-loops"), None)
+
+    assert rule is not None, "Rule 'unbounded-loops' not found"
+    assert rule["name"] == "No Unbounded Loops"
+    assert "termination" in rule["description"]
+
+
+def test_new_rule_missing_invariants_present():
+    """Test that missing-invariants rule is present with correct id and name."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "missing-invariants"), None)
+
+    assert rule is not None, "Rule 'missing-invariants' not found"
+    assert rule["name"] == "No Missing Invariants"
+    assert "precondition" in rule["description"]
+
+
+def test_new_rule_excessive_indirection_present():
+    """Test that excessive-indirection rule is present with correct id and name."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "excessive-indirection"), None)
+
+    assert rule is not None, "Rule 'excessive-indirection' not found"
+    assert rule["name"] == "No Excessive Indirection"
+    assert "3 jumps" in rule["description"]
+
+
+def test_new_rule_hidden_magic_present():
+    """Test that hidden-magic rule is present with correct id and name."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule = next((r for r in rules if r["id"] == "hidden-magic"), None)
+
+    assert rule is not None, "Rule 'hidden-magic' not found"
+    assert rule["name"] == "No Hidden Magic"
+    assert "eval" in rule["description"]
+    assert "Metaprogramming" in rule["description"]
+
+
+def test_all_new_rule_ids_present():
+    """Test that all 8 new Messi rule IDs are present in default rules."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule_ids = {r["id"] for r in rules}
+
+    new_rule_ids = {
+        "mock-in-e2e",
+        "over-engineering",
+        "code-duplication",
+        "orphan-code",
+        "unbounded-loops",
+        "missing-invariants",
+        "excessive-indirection",
+        "hidden-magic",
+    }
+
+    missing = new_rule_ids - rule_ids
+    assert not missing, f"Missing rule IDs: {missing}"
+
+
+def test_default_rule_ids_are_unique():
+    """Test that all rule IDs in default rules are unique."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    ids = [r["id"] for r in rules]
+
+    assert len(ids) == len(
+        set(ids)
+    ), f"Duplicate rule IDs: {[id for id in ids if ids.count(id) > 1]}"

@@ -99,7 +99,9 @@ class TestCollectCredentials:
     def test_collect_credentials_api_key_only_no_creds_file(self, tmp_path):
         """Should succeed with only ANTHROPIC_API_KEY when no credentials file exists (console/token users)."""
         with (
-            mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True),
+            mock.patch.dict(
+                os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True
+            ),
             mock.patch(
                 "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
             ),
@@ -114,7 +116,9 @@ class TestCollectCredentials:
     def test_collect_credentials_admin_api_key_fallback(self, tmp_path):
         """Should fall back to ANTHROPIC_ADMIN_API_KEY when ANTHROPIC_API_KEY is not set."""
         with (
-            mock.patch.dict(os.environ, {"ANTHROPIC_ADMIN_API_KEY": "admin_key_789"}, clear=True),
+            mock.patch.dict(
+                os.environ, {"ANTHROPIC_ADMIN_API_KEY": "admin_key_789"}, clear=True
+            ),
             mock.patch(
                 "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
             ),
@@ -134,7 +138,9 @@ class TestCollectCredentials:
         creds_file.write_text("{ invalid json }")
 
         with (
-            mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True),
+            mock.patch.dict(
+                os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True
+            ),
             mock.patch(
                 "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
             ),
@@ -155,7 +161,9 @@ class TestCollectCredentials:
         creds_file.write_text(json.dumps(credentials))
 
         with (
-            mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True),
+            mock.patch.dict(
+                os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True
+            ),
             mock.patch(
                 "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
             ),
@@ -599,7 +607,9 @@ class TestEndToEndProvisioning:
             mock.patch(
                 "pacemaker.langfuse.provisioner.Path.home", return_value=tmp_path
             ),
-            mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True),
+            mock.patch.dict(
+                os.environ, {"ANTHROPIC_API_KEY": "sk-ant-key-456"}, clear=True
+            ),
         ):
             oauth_token, api_key, email = provisioner.collect_credentials()
             assert oauth_token is None

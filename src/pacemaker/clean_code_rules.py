@@ -44,7 +44,7 @@ def get_default_rules() -> List[Dict[str, str]]:
         {
             "id": "swallowed-exceptions",
             "name": "No Swallowed Exceptions",
-            "description": "Silently swallowed exceptions (must log or re-raise)",
+            "description": "Silently swallowed exceptions (must log or re-raise). Also: unchecked return values from non-void functions. Every error must be explicitly handled — LOG+THROW, LOG+RECOVER, or EXPLICIT DISCARD",
         },
         {
             "id": "commented-code",
@@ -84,17 +84,17 @@ def get_default_rules() -> List[Dict[str, str]]:
         {
             "id": "undeclared-fallbacks",
             "name": "No Undeclared Fallbacks",
-            "description": "Introduction of undeclared and/or undesireable fallbacks. Remember the golden rule: graceful failure over forced success",
+            "description": "Introduction of undeclared fallbacks: alternative code paths, 'just in case' logic, legacy support without explicit approval. Golden rule: graceful failure over forced success",
         },
         {
             "id": "over-mocking",
             "name": "Avoid Over-Mocking Tests",
-            "description": "When writing tests, we don't want the core area being tested to be mocked.",
+            "description": "When writing tests, the core area being tested must not be mocked. Mocking should only wrap external dependencies, never the system under test",
         },
         {
             "id": "large-files",
             "name": "No Large Files",
-            "description": "Large files. No more than ~500 lines per source code file.",
+            "description": "Large files. Scripts >200 lines, Classes >300 lines, Modules >500 lines",
         },
         {
             "id": "large-blobs",
@@ -110,6 +110,46 @@ def get_default_rules() -> List[Dict[str, str]]:
             "id": "too-many-units",
             "name": "No Too Many Units At Once",
             "description": "Too many units/pieces of code written at a time (more than three methods, more than one class)",
+        },
+        {
+            "id": "mock-in-e2e",
+            "name": "No Mocking in E2E/Integration Tests",
+            "description": "Mocking in E2E or integration tests where real systems should be used. Production code must never contain mock behaviors, development flags, or simulated execution paths",
+        },
+        {
+            "id": "over-engineering",
+            "name": "No Over-Engineering",
+            "description": "Over-engineered solutions with >3 moving parts without justification. Question solutions >50 lines when <20 might work. No unnecessary abstraction layers or premature generalization",
+        },
+        {
+            "id": "code-duplication",
+            "name": "No Code Duplication",
+            "description": "Copy-pasted or near-identical code patterns appearing 3+ times. Three-strike rule: any pattern repeated 3+ times must be abstracted immediately",
+        },
+        {
+            "id": "orphan-code",
+            "name": "No Orphan Code",
+            "description": "New functions, classes, or handlers with no call site or integration point. Every new capability must be reachable from the main execution path",
+        },
+        {
+            "id": "unbounded-loops",
+            "name": "No Unbounded Loops",
+            "description": "Loops without provable termination: while(true), while(condition) without max iterations, unbounded recursion, polling without timeout. All loops must have statically verifiable upper bounds",
+        },
+        {
+            "id": "missing-invariants",
+            "name": "No Missing Invariants",
+            "description": "Critical functions lacking precondition validation or postcondition assertions. Assert at domain boundaries, state transitions, security-critical paths, and data integrity points",
+        },
+        {
+            "id": "excessive-indirection",
+            "name": "No Excessive Indirection",
+            "description": "More than 3 jumps from call site to actual work. Wrapper pyramids, single-implementation interfaces, and abstraction layers that exist without justification",
+        },
+        {
+            "id": "hidden-magic",
+            "name": "No Hidden Magic",
+            "description": "Metaprogramming that obscures control flow: eval/exec, >2 stacked decorators, metaclass abuse, monkey patching, convention-based auto-discovery. Every code path must be traceable by reading source",
         },
     ]
 

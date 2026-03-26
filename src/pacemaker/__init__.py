@@ -1,3 +1,3 @@
 """Claude Pace Maker - Credit-Aware Adaptive Throttling."""
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
