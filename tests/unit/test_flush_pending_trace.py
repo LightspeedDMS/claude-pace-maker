@@ -196,7 +196,7 @@ class TestFlushPendingTrace:
         existing_state = self._create_state_with_pending(session_id, pending_trace)
 
         with patch("pacemaker.langfuse.orchestrator.sanitize_trace") as mock_sanitize:
-            mock_sanitize.return_value = pending_trace  # Pass through
+            mock_sanitize.return_value = (pending_trace, 0)  # Pass through
 
             flush_pending_trace(
                 config=self.config,

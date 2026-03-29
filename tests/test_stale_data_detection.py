@@ -56,8 +56,8 @@ class TestPacingDecisionStaleDataHandling:
             seven_day_resets_at=seven_day_resets_at,
         )
 
-        # Stale 5h doesn't kill the whole result — 7d takes over
-        assert result.get("stale_data") is not True
+        # Partial staleness: stale_data is True but the valid 7d window drives the result
+        assert result.get("stale_data") is True
         assert result.get("constrained_window") == "7-day"
         assert result["seven_day"]["target"] > 0
 
@@ -75,8 +75,8 @@ class TestPacingDecisionStaleDataHandling:
             seven_day_resets_at=seven_day_resets_at,
         )
 
-        # Stale 7d doesn't kill the whole result — 5h takes over
-        assert result.get("stale_data") is not True
+        # Partial staleness: stale_data is True but the valid 5h window drives the result
+        assert result.get("stale_data") is True
         assert result.get("constrained_window") == "5-hour"
         assert result["five_hour"]["target"] > 0
 

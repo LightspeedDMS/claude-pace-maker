@@ -43,7 +43,9 @@ class TestCountRecentErrorsDatetimeBug:
         now_utc = datetime.now(timezone.utc)
         recent = now_utc - timedelta(hours=1)
 
-        log_file = tmp_path / "pace-maker-2026-03-09.log"
+        # Use today's date in filename to match get_recent_log_paths() pattern
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        log_file = tmp_path / f"pace-maker-{today_str}.log"
         log_file.write_text(_make_log_line(recent, "ERROR", "Something went wrong"))
 
         # Must not raise TypeError
@@ -57,7 +59,8 @@ class TestCountRecentErrorsDatetimeBug:
         now_utc = datetime.now(timezone.utc)
         one_hour_ago = now_utc - timedelta(hours=1)
 
-        log_file = tmp_path / "pace-maker-2026-03-09.log"
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        log_file = tmp_path / f"pace-maker-{today_str}.log"
         log_file.write_text(
             _make_log_line(one_hour_ago, "ERROR", "Error within window")
             + _make_log_line(
@@ -75,7 +78,8 @@ class TestCountRecentErrorsDatetimeBug:
         now_utc = datetime.now(timezone.utc)
         two_days_ago = now_utc - timedelta(hours=49)
 
-        log_file = tmp_path / "pace-maker-2026-03-09.log"
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        log_file = tmp_path / f"pace-maker-{today_str}.log"
         log_file.write_text(
             _make_log_line(two_days_ago, "ERROR", "Old error outside window")
         )
@@ -90,7 +94,8 @@ class TestCountRecentErrorsDatetimeBug:
         now_utc = datetime.now(timezone.utc)
         recent = now_utc - timedelta(hours=1)
 
-        log_file = tmp_path / "pace-maker-2026-03-09.log"
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        log_file = tmp_path / f"pace-maker-{today_str}.log"
         log_file.write_text(
             _make_log_line(recent, "INFO", "Info message")
             + _make_log_line(recent, "WARNING", "Warning message")
@@ -111,7 +116,8 @@ class TestCountRecentErrorsDatetimeBug:
         """
         A log file that exists but is empty must return 0.
         """
-        log_file = tmp_path / "pace-maker-2026-03-09.log"
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        log_file = tmp_path / f"pace-maker-{today_str}.log"
         log_file.write_text("")
 
         result = _count_recent_errors(hours=24, log_dir=str(tmp_path))
@@ -125,7 +131,8 @@ class TestCountRecentErrorsDatetimeBug:
         recent = now_utc - timedelta(hours=2)
         old = now_utc - timedelta(hours=48)
 
-        log_file = tmp_path / "pace-maker-2026-03-09.log"
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        log_file = tmp_path / f"pace-maker-{today_str}.log"
         log_file.write_text(
             _make_log_line(recent, "ERROR", "Recent error")
             + _make_log_line(old, "ERROR", "Old error")

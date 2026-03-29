@@ -69,7 +69,7 @@ class TestStopGenerationObservation:
     @patch("pacemaker.langfuse.orchestrator.finalize_trace_with_output")
     @patch(
         "pacemaker.langfuse.orchestrator.sanitize_trace",
-        side_effect=lambda batch, db_path: batch,
+        side_effect=lambda batch, db_path: (batch, 0),
     )
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     @patch("pacemaker.langfuse.orchestrator.flush_pending_trace")
@@ -182,7 +182,7 @@ class TestStopGenerationObservation:
     @patch("pacemaker.langfuse.orchestrator.finalize_trace_with_output")
     @patch(
         "pacemaker.langfuse.orchestrator.sanitize_trace",
-        side_effect=lambda batch, db_path: batch,
+        side_effect=lambda batch, db_path: (batch, 0),
     )
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     @patch("pacemaker.langfuse.orchestrator.flush_pending_trace")
@@ -267,7 +267,7 @@ class TestStopGenerationObservation:
     @patch("pacemaker.langfuse.orchestrator.finalize_trace_with_output")
     @patch(
         "pacemaker.langfuse.orchestrator.sanitize_trace",
-        side_effect=lambda batch, db_path: batch,
+        side_effect=lambda batch, db_path: (batch, 0),
     )
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     @patch("pacemaker.langfuse.orchestrator.flush_pending_trace")

@@ -351,7 +351,7 @@ class TestSubagentStateIsolation(unittest.TestCase):
         mock_get_msgs.return_value = []
 
         # Mock sanitize to pass through unchanged
-        mock_sanitize.side_effect = lambda x, db: x
+        mock_sanitize.side_effect = lambda x, db: (x, 0)
 
         # Mock push success (returns tuple)
         mock_push.return_value = (True, 1)
@@ -466,7 +466,7 @@ class TestSubagentStateIsolation(unittest.TestCase):
         mock_get_msgs.return_value = []
 
         # Mock sanitize to pass through unchanged
-        mock_sanitize.side_effect = lambda x, db: x
+        mock_sanitize.side_effect = lambda x, db: (x, 0)
 
         # Mock push success (returns tuple)
         mock_push.return_value = (True, 1)
@@ -603,7 +603,7 @@ class TestTimeoutHandling(unittest.TestCase):
         mock_extract_user.return_value = "user@example.com"
 
         # Mock sanitize to pass through unchanged
-        mock_sanitize.side_effect = lambda x, db: x
+        mock_sanitize.side_effect = lambda x, db: (x, 0)
 
         # SIMULATE TIMEOUT: push_batch_events returns (False, 0)
         mock_push.return_value = (False, 0)
@@ -702,7 +702,7 @@ class TestTimeoutHandling(unittest.TestCase):
         mock_get_msgs.return_value = []
 
         # Mock sanitize to pass through unchanged
-        mock_sanitize.side_effect = lambda x, db: x
+        mock_sanitize.side_effect = lambda x, db: (x, 0)
 
         # SIMULATE TIMEOUT: push_batch_events returns (False, 0)
         mock_push.return_value = (False, 0)

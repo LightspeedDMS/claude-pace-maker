@@ -294,8 +294,8 @@ class TestLoggingIntegration:
                 result = intent_validator.validate_intent_declared(
                     ["message 1"], "/fake/file.py", "Write"
                 )
-                # Should return False and log warning
-                assert result["intent_found"] is False
+                # Should fail open (return True) and log warning
+                assert result["intent_found"] is True
                 mock_log.assert_called()
 
     def test_user_commands_get_latest_usage_logs_on_error(self):

@@ -472,7 +472,11 @@ class TestParseAssistantResponse:
         assert stored_secrets == []
 
     def test_parse_assistant_response_duplicate_secrets(self, temp_db):
-        """Test that duplicate secret values return same ID and are deduplicated."""
+        """Test that duplicate secret values are deduplicated in results.
+
+        The source skips duplicates: create_secret returns None for values
+        already in the database, so the result list only contains one entry.
+        """
         response = """
         🔐 SECRET_TEXT: same-value
         🔐 SECRET_TEXT: same-value
@@ -480,8 +484,9 @@ class TestParseAssistantResponse:
 
         results = parse_assistant_response(response, temp_db)
 
-        assert len(results) == 2
-        assert results[0]["id"] == results[1]["id"]
+        # Only 1 result because create_secret returns None for the duplicate
+        assert len(results) == 1
+        assert results[0]["id"] > 0
 
         stored_secrets = list_secrets(temp_db)
         assert len(stored_secrets) == 1

@@ -195,12 +195,14 @@ class TestInitializeDatabaseCache:
 class TestConfTestIntegration:
     """Verify conftest correctly resets the cache between tests."""
 
-    def test_cache_starts_empty_due_to_conftest(self):
+    def test_cache_reset_by_conftest(self):
         """
         The conftest _guard_production_db fixture calls reset_initialized_dbs()
-        before each test, so _initialized_dbs must be empty at test start.
+        before each test, then calls initialize_database(fake_db_path) to guard
+        the hook's DEFAULT_DB_PATH. This means the cache will contain exactly
+        one entry (the conftest-initialized fake DB path).
         """
         from pacemaker import database
 
-        # After conftest fixture runs reset_initialized_dbs(), cache should be empty
-        assert len(database._initialized_dbs) == 0
+        # After conftest fixture runs, cache contains exactly the conftest fake DB
+        assert len(database._initialized_dbs) == 1

@@ -68,15 +68,20 @@ class TestValidateIntentDeclared:
 
     @patch("pacemaker.intent_validator._call_sdk_intent_validation")
     def test_handles_sdk_exception_gracefully(self, mock_sdk):
-        """Should return False when SDK call fails."""
+        """Should fail open (return True) when SDK call fails.
+
+        Infrastructure failures (API down, auth error, rate limit) should not
+        block writes. The function fails open to avoid blocking due to
+        infrastructure issues outside the developer's control.
+        """
         mock_sdk.side_effect = Exception("SDK error")
 
         result = validate_intent_declared(
             messages=["test"], file_path="/test.py", tool_name="Write"
         )
 
-        # Should fail open (return False = no intent found)
-        assert result["intent_found"] is False
+        # Should fail open (return True = allow write despite infrastructure failure)
+        assert result["intent_found"] is True
 
     @patch("pacemaker.intent_validator._call_sdk_intent_validation")
     def test_case_insensitive_yes_no_parsing(self, mock_sdk):

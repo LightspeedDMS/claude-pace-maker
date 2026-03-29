@@ -47,7 +47,7 @@ class TestSubagentStopGenerationObservation:
     @patch("pacemaker.langfuse.orchestrator.extract_subagent_output")
     @patch(
         "pacemaker.langfuse.orchestrator.sanitize_trace",
-        side_effect=lambda batch, db_path: batch,
+        side_effect=lambda batch, db_path: (batch, 0),
     )
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     def test_subagent_stop_creates_generation_with_tokens(
@@ -131,7 +131,7 @@ class TestSubagentStopGenerationObservation:
     @patch("pacemaker.langfuse.orchestrator.extract_subagent_output")
     @patch(
         "pacemaker.langfuse.orchestrator.sanitize_trace",
-        side_effect=lambda batch, db_path: batch,
+        side_effect=lambda batch, db_path: (batch, 0),
     )
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     def test_subagent_stop_no_generation_when_no_agent_transcript(
@@ -203,7 +203,7 @@ class TestSubagentStopGenerationObservation:
     @patch("pacemaker.langfuse.orchestrator.extract_subagent_output")
     @patch(
         "pacemaker.langfuse.orchestrator.sanitize_trace",
-        side_effect=lambda batch, db_path: batch,
+        side_effect=lambda batch, db_path: (batch, 0),
     )
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     def test_subagent_stop_generation_omits_cache_read_when_zero(
@@ -274,7 +274,7 @@ class TestSubagentStopGenerationObservation:
     @patch("pacemaker.langfuse.orchestrator.extract_subagent_output")
     @patch(
         "pacemaker.langfuse.orchestrator.sanitize_trace",
-        side_effect=lambda batch, db_path: batch,
+        side_effect=lambda batch, db_path: (batch, 0),
     )
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     def test_subagent_stop_skips_generation_when_no_tokens(

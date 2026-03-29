@@ -38,10 +38,13 @@ def test_cli_clean_code_add_command_with_custom_config():
     """
     Test that 'pace-maker clean-code add' adds a rule to config file.
 
-    Tests CLI execution with custom config path and verifies file modification.
+    Tests the add command logic and verifies file modification.
+    Uses Python function directly because subprocess runs with real HOME
+    while conftest overrides HOME to a fake path.
     """
     from pacemaker.constants import DEFAULT_CLEAN_CODE_RULES_PATH
     from pacemaker.clean_code_rules import load_rules, _write_rules
+    from pacemaker.user_commands import _execute_clean_code
     import shutil
 
     # Setup: Backup original config and create test config
@@ -63,20 +66,17 @@ def test_cli_clean_code_add_command_with_custom_config():
             ],
         )
 
-        # Execute: Add rule via CLI (subcommand is a single string)
-        result = subprocess.run(
-            [
-                "pace-maker",
-                "clean-code",
-                'add --id cli-test-rule --name "CLI Test Rule" --description "Rule added via CLI test"',
-            ],
-            capture_output=True,
-            text=True,
+        # Execute: Add rule via Python function
+        result = _execute_clean_code(
+            'add --id cli-test-rule --name "CLI Test Rule" --description "Rule added via CLI test"'
         )
 
         # Assert: Command succeeds
-        assert result.returncode == 0
-        assert "added successfully" in result.stdout.lower() or "✓" in result.stdout
+        assert result["success"] is True
+        assert (
+            "added successfully" in result["message"].lower()
+            or "\u2713" in result["message"]
+        )
 
         # Assert: Rule was actually added to file
         rules = load_rules(DEFAULT_CLEAN_CODE_RULES_PATH)
@@ -118,10 +118,13 @@ def test_cli_clean_code_modify_command():
     """
     Test that 'pace-maker clean-code modify' updates an existing rule.
 
-    Tests CLI modification with real file I/O.
+    Tests the modify command logic with real file I/O.
+    Uses Python function directly because subprocess runs with real HOME
+    while conftest overrides HOME to a fake path.
     """
     from pacemaker.constants import DEFAULT_CLEAN_CODE_RULES_PATH
     from pacemaker.clean_code_rules import load_rules, _write_rules
+    from pacemaker.user_commands import _execute_clean_code
     import shutil
 
     # Setup: Backup original config and create test config
@@ -143,20 +146,17 @@ def test_cli_clean_code_modify_command():
             ],
         )
 
-        # Execute: Modify rule via CLI (subcommand is a single string)
-        result = subprocess.run(
-            [
-                "pace-maker",
-                "clean-code",
-                'modify --id modify-test --description "Updated via CLI test"',
-            ],
-            capture_output=True,
-            text=True,
+        # Execute: Modify rule via Python function
+        result = _execute_clean_code(
+            'modify --id modify-test --description "Updated via CLI test"'
         )
 
         # Assert: Command succeeds
-        assert result.returncode == 0
-        assert "modified successfully" in result.stdout.lower() or "✓" in result.stdout
+        assert result["success"] is True
+        assert (
+            "modified successfully" in result["message"].lower()
+            or "\u2713" in result["message"]
+        )
 
         # Assert: Rule was actually modified in file
         rules = load_rules(DEFAULT_CLEAN_CODE_RULES_PATH)
@@ -176,10 +176,13 @@ def test_cli_clean_code_remove_command():
     """
     Test that 'pace-maker clean-code remove' deletes a rule.
 
-    Tests CLI deletion with real file I/O.
+    Tests the remove command logic with real file I/O.
+    Uses Python function directly because subprocess runs with real HOME
+    while conftest overrides HOME to a fake path.
     """
     from pacemaker.constants import DEFAULT_CLEAN_CODE_RULES_PATH
     from pacemaker.clean_code_rules import load_rules, _write_rules
+    from pacemaker.user_commands import _execute_clean_code
     import shutil
 
     # Setup: Backup original config and create test config
@@ -202,20 +205,15 @@ def test_cli_clean_code_remove_command():
             ],
         )
 
-        # Execute: Remove rule via CLI (subcommand is a single string)
-        result = subprocess.run(
-            [
-                "pace-maker",
-                "clean-code",
-                "remove --id remove-rule",
-            ],
-            capture_output=True,
-            text=True,
-        )
+        # Execute: Remove rule via Python function
+        result = _execute_clean_code("remove --id remove-rule")
 
         # Assert: Command succeeds
-        assert result.returncode == 0
-        assert "removed successfully" in result.stdout.lower() or "✓" in result.stdout
+        assert result["success"] is True
+        assert (
+            "removed successfully" in result["message"].lower()
+            or "\u2713" in result["message"]
+        )
 
         # Assert: Rule was actually removed from file
         rules = load_rules(DEFAULT_CLEAN_CODE_RULES_PATH)
@@ -233,11 +231,16 @@ def test_cli_clean_code_remove_command():
 
 def test_cli_clean_code_list_shows_error_on_invalid_yaml():
     """
-    Test that 'pace-maker clean-code list' shows explicit error on invalid YAML.
+    Test that clean-code list shows explicit error on invalid YAML.
 
     Tests that CLI does NOT silently fall back to defaults when YAML is invalid.
     Acceptance Criteria: Show explicit error, do NOT use defaults silently.
+
+    Note: Uses the Python function directly rather than subprocess because
+    subprocess runs with real HOME while conftest overrides HOME to a fake path,
+    making it impossible to write test fixtures that the subprocess can read.
     """
+    from pacemaker.user_commands import _execute_clean_code
     from pacemaker.constants import DEFAULT_CLEAN_CODE_RULES_PATH
     import shutil
 
@@ -256,19 +259,14 @@ def test_cli_clean_code_list_shows_error_on_invalid_yaml():
             f.write("    name: Test\n")
             f.write("  invalid yaml here [[[")  # Invalid YAML syntax
 
-        # Execute: Run pace-maker clean-code list
-        result = subprocess.run(
-            ["pace-maker", "clean-code", "list"],
-            capture_output=True,
-            text=True,
-        )
+        # Execute: Call Python function directly
+        result = _execute_clean_code("list")
 
         # Assert: Command fails with explicit error message
-        assert result.returncode != 0 or "error" in result.stdout.lower()
-        output = result.stdout + result.stderr
-        assert "error" in output.lower()
+        assert result["success"] is False
+        assert "error" in result["message"].lower()
         # Should NOT show default rules (no silent fallback)
-        assert "hardcoded-secrets" not in output.lower()
+        assert "hardcoded-secrets" not in result["message"].lower()
 
     finally:
         # Cleanup: Restore original config

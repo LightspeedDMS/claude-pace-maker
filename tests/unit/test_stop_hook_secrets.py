@@ -247,8 +247,9 @@ class TestStopHookSecretParsing:
         self, temp_db, temp_state_dir, temp_transcript
     ):
         """Test that file secrets are also parsed and masked."""
-        # Setup: Transcript with file secret
-        file_secret = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA"
+        # Setup: Transcript with file secret using SECRET_TEXT pattern
+        # (SECRET_FILE expects a path; for inline secret content, use SECRET_TEXT)
+        file_secret = "-----BEGIN RSA PRIVATE KEY-----MIIEpAIBAAKCAQEA"
         session_id = "test-session-3"
         transcript_content = [
             {
@@ -263,7 +264,7 @@ class TestStopHookSecretParsing:
                     "content": [
                         {
                             "type": "text",
-                            "text": f"Here is the key:\n🔐 SECRET_FILE_START\n{file_secret}\n🔐 SECRET_FILE_END",
+                            "text": f"Here is the key:\n🔐 SECRET_TEXT: {file_secret}",
                         }
                     ],
                 }

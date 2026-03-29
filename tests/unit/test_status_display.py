@@ -7,7 +7,7 @@ Tests for:
 - 24-hour error count with color coding
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 from pacemaker.user_commands import (
     _execute_status,
@@ -21,10 +21,9 @@ class TestErrorCounting:
     def test_count_errors_no_errors(self, tmp_path):
         """Test counting when there are no errors in last 24 hours."""
         # Create log file with no ERROR entries using daily rotation naming
-        from datetime import datetime
-
+        # Use UTC timestamps since _count_recent_errors() treats parsed timestamps as UTC
         log_file = tmp_path / f"pace-maker-{datetime.now().strftime('%Y-%m-%d')}.log"
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         log_file.write_text(
             f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] [INFO] [module] Some info message\n"
             f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] [WARNING] [module] Some warning\n"
@@ -35,7 +34,7 @@ class TestErrorCounting:
 
     def test_count_errors_within_24_hours(self, tmp_path):
         """Test counting errors within the last 24 hours."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Create log with 3 errors in last 24h
@@ -53,7 +52,7 @@ class TestErrorCounting:
 
     def test_count_errors_ignores_old_errors(self, tmp_path):
         """Test that errors older than 24h are ignored."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Create log with 2 recent errors and 3 old errors
@@ -88,7 +87,7 @@ class TestErrorCounting:
 
     def test_count_errors_empty_log_file(self, tmp_path):
         """Test counting when log file is empty."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
         log_file.write_text("")
 
@@ -97,7 +96,7 @@ class TestErrorCounting:
 
     def test_count_errors_malformed_timestamps(self, tmp_path):
         """Test handling of malformed timestamp entries."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Mix of valid and invalid entries
@@ -113,7 +112,7 @@ class TestErrorCounting:
 
     def test_count_errors_custom_hours(self, tmp_path):
         """Test counting with custom hour threshold."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Create errors at different time intervals

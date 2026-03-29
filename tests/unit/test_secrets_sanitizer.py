@@ -32,10 +32,11 @@ class TestSanitizeTrace:
         """Test sanitizing an empty trace."""
         trace = {}
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         assert sanitized == {}
         assert sanitized is not trace  # Should be a copy
+        assert count == 0
 
     def test_sanitize_trace_no_secrets(self, temp_db):
         """Test sanitizing trace when database has no secrets."""
@@ -45,12 +46,13 @@ class TestSanitizeTrace:
             "output": {"response": "hi there"},
         }
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         # Should be deep copy with same content
         assert sanitized == trace
         assert sanitized is not trace
         assert sanitized["input"] is not trace["input"]
+        assert count == 0
 
     def test_sanitize_trace_masks_text_secret(self, temp_db):
         """Test that text secrets in trace are masked."""
@@ -63,7 +65,7 @@ class TestSanitizeTrace:
             "output": {"response": "I used api-key-12345"},
         }
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         # Original should be unchanged
         assert "api-key-12345" in trace["input"]["prompt"]
@@ -74,6 +76,7 @@ class TestSanitizeTrace:
         assert "api-key-12345" not in sanitized["output"]["response"]
         assert "*** MASKED ***" in sanitized["input"]["prompt"]
         assert "*** MASKED ***" in sanitized["output"]["response"]
+        assert count > 0
 
     def test_sanitize_trace_masks_file_secret(self, temp_db):
         """Test that file secrets in trace are masked."""
@@ -84,13 +87,14 @@ class TestSanitizeTrace:
             "tool": {"input": {"file_path": "/tmp/key.pem"}, "output": file_content}
         }
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         # Original unchanged
         assert trace["tool"]["output"] == file_content
 
         # Sanitized should mask entire value
         assert sanitized["tool"]["output"] == "*** MASKED ***"
+        assert count > 0
 
     def test_sanitize_trace_masks_multiple_secrets(self, temp_db):
         """Test masking multiple different secrets in trace."""
@@ -106,7 +110,7 @@ class TestSanitizeTrace:
             ]
         }
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         # All secrets should be masked
         assert sanitized["steps"][0]["password"] == "*** MASKED ***"
@@ -115,6 +119,7 @@ class TestSanitizeTrace:
 
         # Original unchanged
         assert trace["steps"][0]["password"] == "password123"
+        assert count > 0
 
     def test_sanitize_trace_deeply_nested_structure(self, temp_db):
         """Test sanitization of deeply nested trace structures."""
@@ -126,13 +131,14 @@ class TestSanitizeTrace:
             }
         }
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         assert "secret" not in sanitized["level1"]["level2"]["level3"]["level4"]["data"]
         assert (
             "*** MASKED ***"
             in sanitized["level1"]["level2"]["level3"]["level4"]["data"]
         )
+        assert count > 0
 
     def test_sanitize_trace_with_lists(self, temp_db):
         """Test sanitization of traces containing lists."""
@@ -142,12 +148,13 @@ class TestSanitizeTrace:
             "items": ["normal value", "contains secret123 here", "another normal value"]
         }
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         assert sanitized["items"][0] == "normal value"
         assert "secret123" not in sanitized["items"][1]
         assert "*** MASKED ***" in sanitized["items"][1]
         assert sanitized["items"][2] == "another normal value"
+        assert count > 0
 
     def test_sanitize_trace_preserves_non_string_types(self, temp_db):
         """Test that non-string values are preserved correctly."""
@@ -161,13 +168,14 @@ class TestSanitizeTrace:
             "list": [1, 2, 3],
         }
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         assert sanitized["number"] == 42
         assert sanitized["boolean"] is True
         assert sanitized["null"] is None
         assert sanitized["float"] == 3.14
         assert sanitized["list"] == [1, 2, 3]
+        assert count == 0
 
     def test_sanitize_trace_with_tuples(self, temp_db):
         """Test sanitization preserves tuples."""
@@ -175,12 +183,13 @@ class TestSanitizeTrace:
 
         trace = {"tuple_data": ("normal", "has secret in it", "normal")}
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         assert isinstance(sanitized["tuple_data"], tuple)
         assert sanitized["tuple_data"][0] == "normal"
         assert "secret" not in sanitized["tuple_data"][1]
         assert sanitized["tuple_data"][2] == "normal"
+        assert count > 0
 
     def test_sanitize_trace_realistic_langfuse_structure(self, temp_db):
         """Test sanitization of realistic Langfuse trace structure."""
@@ -194,7 +203,7 @@ class TestSanitizeTrace:
             "metadata": {"user_id": "user-456", "session": "sess-789"},
         }
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         # Metadata should be unchanged
         assert sanitized["id"] == "trace-123"
@@ -204,6 +213,7 @@ class TestSanitizeTrace:
         assert "sk-proj-abc123" not in sanitized["input"]["prompt"]
         assert "sk-proj-abc123" not in sanitized["output"]["response"]
         assert "*** MASKED ***" in sanitized["input"]["prompt"]
+        assert count > 0
 
     def test_sanitize_trace_secret_in_tool_io(self, temp_db):
         """Test masking secrets in tool input/output."""
@@ -219,11 +229,12 @@ class TestSanitizeTrace:
             ]
         }
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         assert "token-abc" not in sanitized["spans"][0]["input"]["command"]
         assert "token-abc" not in sanitized["spans"][0]["output"]["result"]
         assert "*** MASKED ***" in sanitized["spans"][0]["input"]["command"]
+        assert count > 0
 
     def test_sanitize_trace_empty_database(self, temp_db):
         """Test sanitization when database is empty (no secrets stored)."""
@@ -231,11 +242,12 @@ class TestSanitizeTrace:
 
         trace = {"data": "this could be a secret but isn't in database"}
 
-        sanitized = sanitize_trace(trace, temp_db)
+        sanitized, count = sanitize_trace(trace, temp_db)
 
         # Should return identical copy (no masking)
         assert sanitized == trace
         assert sanitized is not trace
+        assert count == 0
 
     def test_sanitize_trace_preserves_userid_in_batch_events(self, temp_db):
         """Test that userId is NEVER masked, even if it matches a stored secret.
@@ -260,10 +272,11 @@ class TestSanitizeTrace:
             }
         ]
 
-        sanitized = sanitize_trace(batch, temp_db)
+        sanitized, count = sanitize_trace(batch, temp_db)
 
         # userId MUST be preserved (never masked)
         assert sanitized[0]["body"]["userId"] == "user@example.com"
         # But other fields containing the email SHOULD be masked
         assert "user@example.com" not in sanitized[0]["body"]["input"]
         assert "*** MASKED ***" in sanitized[0]["body"]["input"]
+        assert count > 0

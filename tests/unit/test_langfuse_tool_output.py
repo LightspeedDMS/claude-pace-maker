@@ -24,10 +24,12 @@ class TestToolOutputCapture(unittest.TestCase):
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     @patch("pacemaker.langfuse.orchestrator.incremental.extract_content_blocks")
     @patch("pacemaker.langfuse.orchestrator.state.StateManager")
+    @patch("pacemaker.transcript_reader.get_last_n_assistant_messages", return_value=[])
     @patch("builtins.open")
     def test_tool_name_and_input_from_hook_used_in_span(
         self,
         mock_open,
+        mock_get_msgs,
         mock_state_manager_class,
         mock_extract,
         mock_push,
@@ -67,7 +69,7 @@ class TestToolOutputCapture(unittest.TestCase):
         mock_extract.return_value = []
 
         # Mock sanitize to pass through
-        mock_sanitize.side_effect = lambda x, db: x
+        mock_sanitize.side_effect = lambda x, db: (x, 0)
 
         # Mock push success
         mock_push.return_value = (True, 1)
@@ -134,10 +136,12 @@ class TestToolOutputCapture(unittest.TestCase):
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     @patch("pacemaker.langfuse.orchestrator.incremental.extract_content_blocks")
     @patch("pacemaker.langfuse.orchestrator.state.StateManager")
+    @patch("pacemaker.transcript_reader.get_last_n_assistant_messages", return_value=[])
     @patch("builtins.open")
     def test_tool_response_from_hook_used_in_span(
         self,
         mock_open,
+        mock_get_msgs,
         mock_state_manager_class,
         mock_extract,
         mock_push,
@@ -177,7 +181,7 @@ class TestToolOutputCapture(unittest.TestCase):
         mock_extract.return_value = []
 
         # Mock sanitize to pass through
-        mock_sanitize.side_effect = lambda x, db: x
+        mock_sanitize.side_effect = lambda x, db: (x, 0)
 
         # Mock push success
         mock_push.return_value = (True, 1)
@@ -229,10 +233,12 @@ class TestToolOutputCapture(unittest.TestCase):
     @patch("pacemaker.langfuse.orchestrator.push.push_batch_events")
     @patch("pacemaker.langfuse.orchestrator.incremental.extract_content_blocks")
     @patch("pacemaker.langfuse.orchestrator.state.StateManager")
+    @patch("pacemaker.transcript_reader.get_last_n_assistant_messages", return_value=[])
     @patch("builtins.open")
     def test_tool_response_none_uses_transcript_parsing(
         self,
         mock_open,
+        mock_get_msgs,
         mock_state_manager_class,
         mock_extract,
         mock_push,
@@ -274,7 +280,7 @@ class TestToolOutputCapture(unittest.TestCase):
         ]
 
         # Mock sanitize to pass through
-        mock_sanitize.side_effect = lambda x, db: x
+        mock_sanitize.side_effect = lambda x, db: (x, 0)
 
         # Mock push success
         mock_push.return_value = (True, 1)

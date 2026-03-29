@@ -28,6 +28,212 @@ ANSI_YELLOW = "\033[33m"
 ANSI_RED = "\033[31m"
 ANSI_RESET = "\033[0m"
 
+# Comprehensive help text used by both 'pace-maker help' and 'pace-maker --help'
+HELP_TEXT = """\
+Pace Maker - Credit-Aware Adaptive Throttling
+
+COMMANDS:
+  pace-maker on                   Enable pace maker throttling
+  pace-maker off                  Disable pace maker throttling
+  pace-maker status               Show current status and usage
+  pace-maker version              Show version information
+  pace-maker help                 Show this help message
+  pace-maker weekly-limit on      Enable weekly (7-day) limit throttling
+  pace-maker weekly-limit off     Disable weekly limit throttling
+  pace-maker 5-hour-limit on      Enable 5-hour limit throttling
+  pace-maker 5-hour-limit off     Disable 5-hour limit throttling
+  pace-maker tempo on             Enable session lifecycle tracking (global, always on)
+  pace-maker tempo off            Disable session lifecycle tracking (global, always off)
+  pace-maker tempo auto           Enable auto mode (engages after inactivity threshold)
+  pace-maker tempo session on     Enable tempo for this session only
+  pace-maker tempo session off    Disable tempo for this session only
+  pace-maker reminder on          Enable subagent reminder (Write/Edit nudge)
+  pace-maker reminder off         Disable subagent reminder
+  pace-maker intent-validation on Enable intent validation before code changes
+  pace-maker intent-validation off Disable intent validation
+  pace-maker tdd on               Enable TDD enforcement for core code changes
+  pace-maker tdd off              Disable TDD enforcement
+  pace-maker loglevel [0-4]      Set log level (0=OFF to 4=DEBUG)
+  pace-maker clean-code list                    List all clean code validation rules
+  pace-maker clean-code add --id ID --name NAME --description DESC
+                                                Add a new validation rule
+  pace-maker clean-code modify --id ID [--name NAME] [--description DESC]
+                                                Modify an existing rule
+  pace-maker clean-code remove --id ID         Remove a validation rule
+  pace-maker core-paths list                   List all TDD-enforced core paths
+  pace-maker core-paths add PATH               Add a new core path
+  pace-maker core-paths remove PATH            Remove a core path
+  pace-maker excluded-paths list               List all folders excluded from TDD
+  pace-maker excluded-paths add PATH           Add a new excluded path
+  pace-maker excluded-paths remove PATH        Remove an excluded path
+  pace-maker prefer-model opus                 Prefer Opus model for subagents
+  pace-maker prefer-model sonnet               Prefer Sonnet model for subagents
+  pace-maker prefer-model haiku                Prefer Haiku model for subagents
+  pace-maker prefer-model auto                 Use default model selection (no preference)
+  pace-maker langfuse config <url> <public_key> <secret_key>
+                                               Configure Langfuse credentials manually
+  pace-maker langfuse provision [--force] [--verbose]
+                                               Auto-provision Langfuse keys from Lambda service
+  pace-maker langfuse provision-url [<url>|reset]
+                                               Show/set/reset auto-provisioning endpoint URL
+  pace-maker langfuse on                       Enable Langfuse telemetry (auto-provisions if needed)
+  pace-maker langfuse off                      Disable Langfuse telemetry collection
+  pace-maker langfuse status                   Show Langfuse configuration and connection status
+
+LOG LEVELS:
+  0 = OFF      - No logging
+  1 = ERROR    - Errors only
+  2 = WARNING  - Warnings + Errors (default)
+  3 = INFO     - Info + Warnings + Errors
+  4 = DEBUG    - All messages including SDK calls
+
+  Logs: ~/.claude-pace-maker/pace-maker.log
+
+WEEKLY LIMIT:
+  The weekly limiter uses weekend-aware throttling to pace your usage
+  over 7-day windows. When enabled, it will slow down tool usage on
+  weekends if you're ahead of the target pace.
+
+5-HOUR LIMIT:
+  The 5-hour limiter paces your usage within the rolling 5-hour window.
+  When enabled, it will slow down tool usage if you're ahead of the
+  target pace. When disabled, only the 7-day limit applies (if enabled).
+
+TEMPO TRACKING:
+  Session lifecycle tracking prevents Claude from prematurely ending
+  implementation sessions. When Claude says IMPLEMENTATION_START,
+  the Stop hook will require Claude to declare IMPLEMENTATION_COMPLETE
+  before allowing the session to end.
+
+  Modes:
+  - ON: Tempo always engaged (validates every session exit)
+  - OFF: Tempo disabled (allows all exits without validation)
+  - AUTO: Tempo engages only after user inactivity (DEFAULT)
+    * Tracks last user interaction via UserPromptSubmit hook
+    * Engages after configurable threshold (default: 10 minutes)
+    * Active users get uninterrupted conversations
+    * Unattended operations get automatic protection
+
+  Global Control: 'pace-maker tempo on/off/auto' sets mode for all sessions
+  Session Control: 'pace-maker tempo session on/off' overrides the global
+                   setting for the current session only
+
+SUBAGENT REMINDER:
+  When enabled, using Write or Edit tools in main context will trigger
+  a reminder to delegate code changes to subagents (tdd-engineer,
+  code-surgeon, etc). Also triggers every N tool executions (default: 5).
+
+INTENT VALIDATION:
+  When enabled, Claude must declare intent before modifying source code files.
+  The pre-tool hook blocks Write/Edit operations on source files unless Claude
+  has clearly stated: (1) what file is being modified, (2) what changes are
+  being made, and (3) why/goal of the changes.
+
+  Source code extensions are configured in:
+  ~/.claude-pace-maker/source_code_extensions.json
+
+TDD ENFORCEMENT:
+  TDD enforcement is a sub-feature of intent validation. When both intent
+  validation AND TDD are enabled, Claude must declare test coverage before
+  modifying core code files (src/, core/, lib/, etc).
+
+  TDD can be toggled independently from intent validation using:
+  - 'pace-maker tdd on' to enable
+  - 'pace-maker tdd off' to disable
+
+  Note: TDD enforcement only works when intent validation is also enabled.
+
+CLEAN CODE RULES:
+  Manage validation rules that Claude checks before modifying source code.
+  Rules are stored in: ~/.claude-pace-maker/clean_code_rules.yaml
+  When intent validation is enabled, these rules are checked against all
+  code changes to ensure quality standards are met.
+
+CORE PATHS:
+  Manage paths that require TDD enforcement. When both intent validation
+  and TDD enforcement are enabled, files under these paths require test
+  declarations before modification.
+
+  Default paths: src/, lib/, core/, source/, libraries/, kernel/
+  Config file: ~/.claude-pace-maker/core_paths.yaml
+
+  Users can customize which paths trigger TDD requirements using:
+  - 'pace-maker core-paths list' to see current paths
+  - 'pace-maker core-paths add custom/' to add a new path
+  - 'pace-maker core-paths remove lib/' to remove a path
+
+EXCLUDED PATHS:
+  Manage folders excluded from TDD enforcement. Files in excluded paths
+  skip TDD requirements but still require intent declaration.
+
+  Default exclusions: .tmp/, test/, tests/, fixtures/, __pycache__/,
+                      node_modules/, vendor/, dist/, build/, .git/
+  Config file: ~/.claude-pace-maker/excluded_paths.yaml
+
+  Users can customize excluded paths using:
+  - 'pace-maker excluded-paths list' to see current exclusions
+  - 'pace-maker excluded-paths add .generated/' to add a new exclusion
+  - 'pace-maker excluded-paths remove .tmp/' to remove an exclusion
+
+  Use cases: Temporary files, generated code, test fixtures, build artifacts
+
+MODEL PREFERENCE (Quota Balancing):
+  Control which model Claude prefers for subagent Task tool calls.
+  Use this to balance quota usage between Opus and Sonnet.
+
+  Example scenario:
+  - 7-day usage at 82%, Sonnet usage at 96%
+  - Set 'pace-maker prefer-model opus' to use more Opus tokens
+  - This helps sync quota consumption across models
+
+  Modes:
+  - opus: Nudge to use model: "opus" in Task tool calls
+  - sonnet: Nudge to use model: "sonnet" in Task tool calls
+  - haiku: Nudge to use model: "haiku" in Task tool calls
+  - auto: No preference, use default behavior (DEFAULT)
+
+  Nudges appear in:
+  - Session start message (with usage stats)
+  - Post-tool subagent reminders
+
+  Note: Main conversation model cannot be changed mid-session.
+  To change main model, restart with: claude --model opus
+
+ACTIVITY INDICATORS (Usage Console top bar):
+  Code  Description              Colors
+  ────  ───────────────────────  ─────────────────────────────────
+  SE    Session started           green
+  SA    Subagent launched         green=start, blue=stop
+  UP    User prompt received      green
+  PL    API usage polled          blue=ok, yellow=fallback, red=error
+  PA    Pacing evaluated          green=ok, red=throttled
+  IV    Intent validation         blue=checking, green=pass, red=fail
+  TD    TDD enforcement           blue=checking, green=pass/off, red=fail
+  CC    Clean code check          blue=checking, green=pass, red=fail
+  LF    Langfuse trace push       blue (only when enabled)
+  SS    Secret stored             green (only when found)
+  SM    Secret masked             blue (only when Langfuse enabled)
+  ST    Stop hook result          green=allow, red=block
+  CX    Context exhaustion        red
+
+COEFFICIENTS (shown in status and monitor):
+  The values like (5x:0.0075 20x:0.0019) next to each
+  limiter show the cost-per-token conversion coefficients
+  used to estimate usage from token counts.
+
+  5x/20x = Anthropic rate limit tier (MAX 5x or 20x)
+  Each tier has different token-to-usage% ratios.
+
+  Values are calibrated automatically when real API usage
+  data is available. Otherwise, built-in defaults are used.
+  Calibrated values improve pacing accuracy over time.
+
+CONFIGURATION:
+  Config file: ~/.claude-pace-maker/config.json
+  Database: ~/.claude-pace-maker/usage.db
+
+For more information, see the project documentation."""
+
 
 # Load messages on module import
 _prompt_loader = PromptLoader()
@@ -909,211 +1115,7 @@ def _execute_version() -> Dict[str, Any]:
 
 def _execute_help(config_path: str) -> Dict[str, Any]:
     """Display help text."""
-    help_text = """Pace Maker - Credit-Aware Adaptive Throttling
-
-COMMANDS:
-  pace-maker on                   Enable pace maker throttling
-  pace-maker off                  Disable pace maker throttling
-  pace-maker status               Show current status and usage
-  pace-maker version              Show version information
-  pace-maker help                 Show this help message
-  pace-maker weekly-limit on      Enable weekly (7-day) limit throttling
-  pace-maker weekly-limit off     Disable weekly limit throttling
-  pace-maker 5-hour-limit on      Enable 5-hour limit throttling
-  pace-maker 5-hour-limit off     Disable 5-hour limit throttling
-  pace-maker tempo on             Enable session lifecycle tracking (global, always on)
-  pace-maker tempo off            Disable session lifecycle tracking (global, always off)
-  pace-maker tempo auto           Enable auto mode (engages after inactivity threshold)
-  pace-maker tempo session on     Enable tempo for this session only
-  pace-maker tempo session off    Disable tempo for this session only
-  pace-maker reminder on          Enable subagent reminder (Write/Edit nudge)
-  pace-maker reminder off         Disable subagent reminder
-  pace-maker intent-validation on Enable intent validation before code changes
-  pace-maker intent-validation off Disable intent validation
-  pace-maker tdd on               Enable TDD enforcement for core code changes
-  pace-maker tdd off              Disable TDD enforcement
-  pace-maker loglevel [0-4]      Set log level (0=OFF to 4=DEBUG)
-  pace-maker clean-code list                    List all clean code validation rules
-  pace-maker clean-code add --id ID --name NAME --description DESC
-                                                Add a new validation rule
-  pace-maker clean-code modify --id ID [--name NAME] [--description DESC]
-                                                Modify an existing rule
-  pace-maker clean-code remove --id ID         Remove a validation rule
-  pace-maker core-paths list                   List all TDD-enforced core paths
-  pace-maker core-paths add PATH               Add a new core path
-  pace-maker core-paths remove PATH            Remove a core path
-  pace-maker excluded-paths list               List all folders excluded from TDD
-  pace-maker excluded-paths add PATH           Add a new excluded path
-  pace-maker excluded-paths remove PATH        Remove an excluded path
-  pace-maker prefer-model opus                 Prefer Opus model for subagents
-  pace-maker prefer-model sonnet               Prefer Sonnet model for subagents
-  pace-maker prefer-model haiku                Prefer Haiku model for subagents
-  pace-maker prefer-model auto                 Use default model selection (no preference)
-  pace-maker langfuse config <url> <public_key> <secret_key>
-                                               Configure Langfuse credentials manually
-  pace-maker langfuse provision [--force] [--verbose]
-                                               Auto-provision Langfuse keys from Lambda service
-  pace-maker langfuse provision-url [<url>|reset]
-                                               Show/set/reset auto-provisioning endpoint URL
-  pace-maker langfuse on                       Enable Langfuse telemetry (auto-provisions if needed)
-  pace-maker langfuse off                      Disable Langfuse telemetry collection
-  pace-maker langfuse status                   Show Langfuse configuration and connection status
-
-LOG LEVELS:
-  0 = OFF      - No logging
-  1 = ERROR    - Errors only
-  2 = WARNING  - Warnings + Errors (default)
-  3 = INFO     - Info + Warnings + Errors
-  4 = DEBUG    - All messages including SDK calls
-
-  Logs: ~/.claude-pace-maker/pace-maker.log
-
-WEEKLY LIMIT:
-  The weekly limiter uses weekend-aware throttling to pace your usage
-  over 7-day windows. When enabled, it will slow down tool usage on
-  weekends if you're ahead of the target pace.
-
-5-HOUR LIMIT:
-  The 5-hour limiter paces your usage within the rolling 5-hour window.
-  When enabled, it will slow down tool usage if you're ahead of the
-  target pace. When disabled, only the 7-day limit applies (if enabled).
-
-TEMPO TRACKING:
-  Session lifecycle tracking prevents Claude from prematurely ending
-  implementation sessions. When Claude says IMPLEMENTATION_START,
-  the Stop hook will require Claude to declare IMPLEMENTATION_COMPLETE
-  before allowing the session to end.
-
-  Modes:
-  - ON: Tempo always engaged (validates every session exit)
-  - OFF: Tempo disabled (allows all exits without validation)
-  - AUTO: Tempo engages only after user inactivity (DEFAULT)
-    * Tracks last user interaction via UserPromptSubmit hook
-    * Engages after configurable threshold (default: 10 minutes)
-    * Active users get uninterrupted conversations
-    * Unattended operations get automatic protection
-
-  Global Control: 'pace-maker tempo on/off/auto' sets mode for all sessions
-  Session Control: 'pace-maker tempo session on/off' overrides the global
-                   setting for the current session only
-
-SUBAGENT REMINDER:
-  When enabled, using Write or Edit tools in main context will trigger
-  a reminder to delegate code changes to subagents (tdd-engineer,
-  code-surgeon, etc). Also triggers every N tool executions (default: 5).
-
-INTENT VALIDATION:
-  When enabled, Claude must declare intent before modifying source code files.
-  The pre-tool hook blocks Write/Edit operations on source files unless Claude
-  has clearly stated: (1) what file is being modified, (2) what changes are
-  being made, and (3) why/goal of the changes.
-
-  Source code extensions are configured in:
-  ~/.claude-pace-maker/source_code_extensions.json
-
-TDD ENFORCEMENT:
-  TDD enforcement is a sub-feature of intent validation. When both intent
-  validation AND TDD are enabled, Claude must declare test coverage before
-  modifying core code files (src/, core/, lib/, etc).
-
-  TDD can be toggled independently from intent validation using:
-  - 'pace-maker tdd on' to enable
-  - 'pace-maker tdd off' to disable
-
-  Note: TDD enforcement only works when intent validation is also enabled.
-
-CLEAN CODE RULES:
-  Manage validation rules that Claude checks before modifying source code.
-  Rules are stored in: ~/.claude-pace-maker/clean_code_rules.yaml
-  When intent validation is enabled, these rules are checked against all
-  code changes to ensure quality standards are met.
-
-CORE PATHS:
-  Manage paths that require TDD enforcement. When both intent validation
-  and TDD enforcement are enabled, files under these paths require test
-  declarations before modification.
-
-  Default paths: src/, lib/, core/, source/, libraries/, kernel/
-  Config file: ~/.claude-pace-maker/core_paths.yaml
-
-  Users can customize which paths trigger TDD requirements using:
-  - 'pace-maker core-paths list' to see current paths
-  - 'pace-maker core-paths add custom/' to add a new path
-  - 'pace-maker core-paths remove lib/' to remove a path
-
-EXCLUDED PATHS:
-  Manage folders excluded from TDD enforcement. Files in excluded paths
-  skip TDD requirements but still require intent declaration.
-
-  Default exclusions: .tmp/, test/, tests/, fixtures/, __pycache__/,
-                      node_modules/, vendor/, dist/, build/, .git/
-  Config file: ~/.claude-pace-maker/excluded_paths.yaml
-
-  Users can customize excluded paths using:
-  - 'pace-maker excluded-paths list' to see current exclusions
-  - 'pace-maker excluded-paths add .generated/' to add a new exclusion
-  - 'pace-maker excluded-paths remove .tmp/' to remove an exclusion
-
-  Use cases: Temporary files, generated code, test fixtures, build artifacts
-
-MODEL PREFERENCE (Quota Balancing):
-  Control which model Claude prefers for subagent Task tool calls.
-  Use this to balance quota usage between Opus and Sonnet.
-
-  Example scenario:
-  - 7-day usage at 82%, Sonnet usage at 96%
-  - Set 'pace-maker prefer-model opus' to use more Opus tokens
-  - This helps sync quota consumption across models
-
-  Modes:
-  - opus: Nudge to use model: "opus" in Task tool calls
-  - sonnet: Nudge to use model: "sonnet" in Task tool calls
-  - haiku: Nudge to use model: "haiku" in Task tool calls
-  - auto: No preference, use default behavior (DEFAULT)
-
-  Nudges appear in:
-  - Session start message (with usage stats)
-  - Post-tool subagent reminders
-
-  Note: Main conversation model cannot be changed mid-session.
-  To change main model, restart with: claude --model opus
-
-ACTIVITY INDICATORS (Usage Console top bar):
-  Code  Description              Colors
-  ────  ───────────────────────  ─────────────────────────────────
-  SE    Session started           green
-  SA    Subagent launched         green=start, blue=stop
-  UP    User prompt received      green
-  PL    API usage polled          blue=ok, yellow=fallback, red=error
-  PA    Pacing evaluated          green=ok, red=throttled
-  IV    Intent validation         blue=checking, green=pass, red=fail
-  TD    TDD enforcement           blue=checking, green=pass/off, red=fail
-  CC    Clean code check          blue=checking, green=pass, red=fail
-  LF    Langfuse trace push       blue (only when enabled)
-  SS    Secret stored             green (only when found)
-  SM    Secret masked             blue (only when Langfuse enabled)
-  ST    Stop hook result          green=allow, red=block
-  CX    Context exhaustion        red
-
-COEFFICIENTS (shown in status and monitor):
-  The values like (5x:0.0075 20x:0.0019) next to each
-  limiter show the cost-per-token conversion coefficients
-  used to estimate usage from token counts.
-
-  5x/20x = Anthropic rate limit tier (MAX 5x or 20x)
-  Each tier has different token-to-usage% ratios.
-
-  Values are calibrated automatically when real API usage
-  data is available. Otherwise, built-in defaults are used.
-  Calibrated values improve pacing accuracy over time.
-
-CONFIGURATION:
-  Config file: ~/.claude-pace-maker/config.json
-  Database: ~/.claude-pace-maker/usage.db
-
-For more information, see the project documentation.
-"""
-    return {"success": True, "message": help_text}
+    return {"success": True, "message": HELP_TEXT}
 
 
 def _execute_weekly_limit(
@@ -2826,22 +2828,15 @@ def main():
     import sys
     import argparse
 
+    # Handle --help/-h to produce identical output to 'pace-maker help'
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(HELP_TEXT)
+        sys.exit(0)
+
     parser = argparse.ArgumentParser(
         prog="pace-maker",
         description="Claude Pace Maker - Credit-Aware Adaptive Throttling",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  pace-maker on                      Enable pace maker throttling
-  pace-maker off                     Disable pace maker throttling
-  pace-maker status                  Show current status and usage
-  pace-maker weekly-limit on         Enable weekly (7-day) limit throttling
-  pace-maker tempo session on        Enable tempo for current session only
-  pace-maker reminder off            Disable subagent reminder
-  pace-maker intent-validation on    Enable intent validation
-
-For more information, run: pace-maker help
-        """,
+        add_help=False,
     )
 
     # Main commands
