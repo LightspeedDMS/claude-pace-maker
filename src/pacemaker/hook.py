@@ -2031,15 +2031,47 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             f"All CLAUDE_ env vars: {[k for k in os_module.environ.keys() if 'CLAUDE' in k.upper()]}",
         )
 
-        # Check if we're in a subagent context by matching tool_use_id
+        # Check if we're in a subagent context and resolve transcript path
+        agent_id = hook_data.get("agent_id")
         tool_use_id = hook_data.get("tool_use_id")
-        if transcript_path and "/agent-" not in transcript_path and tool_use_id:
-            # Main context transcript - search for agent transcript with this tool_use_id
+
+        # Primary: Use agent_id to construct direct path (deterministic, no timing dependency)
+        if agent_id and transcript_path:
+            projects_dir = os.path.dirname(transcript_path)
+            # Claude Code 2.1.39+ structure: <session_id>/subagents/agent-<agent_id>.jsonl
+            if session_id:
+                direct_path = os.path.join(
+                    projects_dir, session_id, "subagents", f"agent-{agent_id}.jsonl"
+                )
+                if os.path.exists(direct_path):
+                    log_debug(
+                        "hook",
+                        f"Resolved subagent transcript via agent_id: {direct_path}",
+                    )
+                    transcript_path = direct_path
+                else:
+                    # Legacy flat structure: agent-<agent_id>.jsonl in projects dir
+                    legacy_path = os.path.join(projects_dir, f"agent-{agent_id}.jsonl")
+                    if os.path.exists(legacy_path):
+                        log_debug(
+                            "hook",
+                            f"Resolved subagent transcript via agent_id (legacy): {legacy_path}",
+                        )
+                        transcript_path = legacy_path
+                    else:
+                        log_warning(
+                            "hook",
+                            f"Subagent transcript not found for agent_id={agent_id} "
+                            f"(tried {direct_path} and {legacy_path})",
+                            None,
+                        )
+
+        # Fallback: Search by tool_use_id if agent_id not available (older Claude Code versions)
+        elif transcript_path and "/agent-" not in transcript_path and tool_use_id:
             import glob
 
             projects_dir = os.path.dirname(transcript_path)
             agent_transcripts = glob.glob(os.path.join(projects_dir, "agent-*.jsonl"))
-            # Also search new Claude Code 2.1.39+ nested structure: <session_id>/subagents/agent-*.jsonl
             if session_id:
                 agent_transcripts += glob.glob(
                     os.path.join(projects_dir, session_id, "subagents", "agent-*.jsonl")
@@ -2052,14 +2084,12 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
             log_debug(
                 "hook",
-                f"Searching {len(recent_agents)} recent agent transcripts for tool_use_id: {tool_use_id}",
+                f"Fallback: Searching {len(recent_agents)} recent agent transcripts for tool_use_id: {tool_use_id}",
             )
 
-            # Search for the agent transcript containing this tool_use_id
             for agent_path in recent_agents:
                 try:
                     with open(agent_path, "r") as f:
-                        # Search from end of file (most recent entries)
                         for line in f:
                             if tool_use_id in line:
                                 log_debug(
@@ -2069,7 +2099,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 transcript_path = agent_path
                                 break
                     if transcript_path == agent_path:
-                        break  # Found it, stop searching
+                        break
                 except Exception as e:
                     log_debug("hook", f"Error searching {agent_path}: {e}")
 
