@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.6.0] - 2026-03-30
+
+### Added
+- **Governance event feed** (#52): New `governance_events` SQLite table records intent validation rejections (IV), TDD enforcement failures (TD), and clean code violations (CC) with full feedback text, project name, and session ID
+- **`record_governance_event()`**: Writes governance events to SQLite with WAL mode and 5s timeout, returns True/False (never raises)
+- **`cleanup_old_governance_events()`**: Purges events older than 24h, called from SessionStart hook
+- **Hook integration**: Governance events recorded at all 3 rejection paths alongside existing `record_blockage()` calls
+- **13 new unit tests**: `test_governance_events.py` covering table creation, IV/TD/CC insertion, success/error returns, concurrent writes, and cleanup
+
 ## [2.5.0] - 2026-03-26
 
 ### Added

@@ -15,7 +15,13 @@ import json
 from typing import Optional, Dict, Any
 
 from . import pacing_engine, database, user_commands
-from .database import record_blockage, record_activity_event, cleanup_old_activity
+from .database import (
+    record_blockage,
+    record_activity_event,
+    cleanup_old_activity,
+    record_governance_event,
+    cleanup_old_governance_events,
+)
 from .constants import (
     DEFAULT_CONFIG,
     DEFAULT_DB_PATH,
@@ -343,6 +349,12 @@ def run_session_start_hook():
     # Cleanup old activity events to prevent unbounded table growth
     try:
         cleanup_old_activity(DEFAULT_DB_PATH, max_age_seconds=60)
+    except Exception:
+        pass  # Cleanup must never break session start
+
+    # Cleanup old governance events (24h retention)
+    try:
+        cleanup_old_governance_events(DEFAULT_DB_PATH, max_age_seconds=86400)
     except Exception:
         pass  # Cleanup must never break session start
 
@@ -2194,6 +2206,25 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 session_id=session_id or "unknown",
                 details={"tool": tool_name, "file_path": file_path},
             )
+
+            # Record governance event for live event feed
+            try:
+                _category_to_event_type = {
+                    "intent_validation": "IV",
+                    "intent_validation_tdd": "TD",
+                    "intent_validation_cleancode": "CC",
+                }
+                _event_type = _category_to_event_type.get(category, "IV")
+                _project_name = os.path.basename(os.getcwd())
+                record_governance_event(
+                    db_path=DEFAULT_DB_PATH,
+                    event_type=_event_type,
+                    project_name=_project_name,
+                    session_id=session_id or "unknown",
+                    feedback_text=result.get("feedback", "Validation failed"),
+                )
+            except Exception:
+                pass  # Governance recording must never break pre-tool hook
 
             # Activity events: specific failed check is red, others green
             # Settings-aware: TD shows green when tdd_enabled is off

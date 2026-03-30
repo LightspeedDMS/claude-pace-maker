@@ -172,6 +172,18 @@ CREATE TABLE IF NOT EXISTS activity_events (
 
 CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_events(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_code ON activity_events(event_code);
+
+CREATE TABLE IF NOT EXISTS governance_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp REAL NOT NULL,
+    event_type TEXT NOT NULL,
+    project_name TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    feedback_text TEXT NOT NULL,
+    created_at INTEGER DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_governance_timestamp ON governance_events(timestamp DESC);
 """
 
 
@@ -216,6 +228,50 @@ def record_activity_event(
 
     except Exception as e:
         log_error("database", "Failed to record activity event", e)
+        return False
+
+
+def record_governance_event(
+    db_path: str,
+    event_type: str,
+    project_name: str,
+    session_id: str,
+    feedback_text: str,
+) -> bool:
+    """
+    Record a governance event (IV/TD/CC rejection) in the database.
+
+    Used for real-time governance event feed in the usage monitor.
+
+    Args:
+        db_path: Path to SQLite database file
+        event_type: Event type code ("IV", "TD", or "CC")
+        project_name: Project name extracted from working directory
+        session_id: Unique identifier for the current session
+        feedback_text: Full rejection/feedback message
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        timestamp = time.time()
+
+        def operation(conn: sqlite3.Connection) -> bool:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO governance_events
+                    (timestamp, event_type, project_name, session_id, feedback_text)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (timestamp, event_type, project_name, session_id, feedback_text),
+            )
+            return True
+
+        return execute_with_retry(db_path, operation)
+
+    except Exception as e:
+        log_error("database", "Failed to record governance event", e)
         return False
 
 
@@ -300,6 +356,41 @@ def cleanup_old_activity(
 
     except Exception as e:
         log_error("database", "Failed to cleanup old activity events", e)
+        return -1
+
+
+def cleanup_old_governance_events(
+    db_path: str,
+    max_age_seconds: int = 86400,
+) -> int:
+    """
+    Delete governance events older than max_age_seconds.
+
+    Called periodically (e.g., from SessionStart) to prevent unbounded
+    table growth. Default retention is 24 hours.
+
+    Args:
+        db_path: Path to SQLite database file
+        max_age_seconds: Delete events older than this (default 86400 = 24h)
+
+    Returns:
+        Number of records deleted, or -1 on error
+    """
+    try:
+        cutoff = time.time() - max_age_seconds
+
+        def operation(conn: sqlite3.Connection) -> int:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM governance_events WHERE timestamp < ?",
+                (cutoff,),
+            )
+            return cursor.rowcount
+
+        return execute_with_retry(db_path, operation)
+
+    except Exception as e:
+        log_error("database", "Failed to cleanup old governance events", e)
         return -1
 
 
