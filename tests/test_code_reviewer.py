@@ -5,7 +5,7 @@ Unit tests for code_reviewer module.
 
 import tempfile
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from pacemaker import code_reviewer
 
 
@@ -45,22 +45,24 @@ class TestBuildReviewPrompt:
 class TestCallSdkReview:
     """Test call_sdk_review() function."""
 
-    @patch("pacemaker.code_reviewer._call_sdk_review_async")
-    def test_calls_sdk_with_prompt(self, mock_async):
-        """Should call SDK with provided prompt."""
-        mock_async.return_value = "Looks good"
+    @patch("pacemaker.code_reviewer.resolve_and_call")
+    def test_calls_sdk_with_prompt(self, mock_resolve):
+        """Should call provider abstraction with provided prompt."""
+        mock_resolve.return_value = "Looks good"
         prompt = "Review this code"
 
         code_reviewer.call_sdk_review(prompt)
 
-        # Verify async function was called with prompt
-        assert mock_async.called
+        # Verify resolve_and_call was called with prompt
+        assert mock_resolve.called
+        call_kwargs = mock_resolve.call_args[1]
+        assert call_kwargs["prompt"] == prompt
 
-    @patch("pacemaker.code_reviewer._call_sdk_review_async")
-    def test_returns_sdk_response(self, mock_async):
-        """Should return SDK response text."""
+    @patch("pacemaker.code_reviewer.resolve_and_call")
+    def test_returns_sdk_response(self, mock_resolve):
+        """Should return provider response text."""
         expected = "Code matches intent"
-        mock_async.return_value = expected
+        mock_resolve.return_value = expected
 
         result = code_reviewer.call_sdk_review("test prompt")
 
@@ -180,17 +182,17 @@ class TestValidateCodeAgainstIntent:
 
 
 class TestSdkIntegration:
-    """Test SDK integration patterns."""
+    """Test SDK integration via provider abstraction."""
 
-    @patch("pacemaker.code_reviewer.asyncio")
-    def test_uses_event_loop_for_async_call(self, mock_asyncio):
-        """Should use asyncio event loop for SDK calls."""
-        mock_loop = MagicMock()
-        mock_loop.is_running.return_value = False
-        mock_loop.run_until_complete.return_value = "response"
-        mock_asyncio.get_event_loop.return_value = mock_loop
+    @patch("pacemaker.code_reviewer.resolve_and_call")
+    def test_uses_provider_abstraction(self, mock_resolve):
+        """Should use resolve_and_call provider abstraction for SDK calls."""
+        mock_resolve.return_value = "response"
 
         code_reviewer.call_sdk_review("test")
 
-        # Verify event loop was used
-        assert mock_loop.run_until_complete.called
+        # Verify provider abstraction was used with correct call_context
+        assert mock_resolve.called
+        call_kwargs = mock_resolve.call_args[1]
+        assert call_kwargs["call_context"] == "code_review"
+        assert call_kwargs["hook_model"] == "auto"

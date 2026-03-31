@@ -88,9 +88,7 @@ class TestStage1DeclarationCheck:
         with (
             patch("pacemaker.intent_validator.SDK_AVAILABLE", True),
             patch("pacemaker.intent_validator._call_stage1_validation") as mock_s1,
-            patch(
-                "pacemaker.intent_validator._call_unified_validation_async"
-            ) as mock_s2,
+            patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2,
         ):
             mock_s1.return_value = "YES"
             mock_s2.return_value = "APPROVED"  # Explicit approval required
@@ -127,9 +125,7 @@ def risky_function():
         with (
             patch("pacemaker.intent_validator.SDK_AVAILABLE", True),
             patch("pacemaker.intent_validator._call_stage1_validation") as mock_s1,
-            patch(
-                "pacemaker.intent_validator._call_unified_validation_async"
-            ) as mock_s2,
+            patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2,
         ):
             mock_s1.return_value = "YES"
             mock_s2.return_value = "Clean code violation: Bare except clause found"
@@ -154,9 +150,7 @@ def risky_function():
         with (
             patch("pacemaker.intent_validator.SDK_AVAILABLE", True),
             patch("pacemaker.intent_validator._call_stage1_validation") as mock_s1,
-            patch(
-                "pacemaker.intent_validator._call_unified_validation_async"
-            ) as mock_s2,
+            patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2,
         ):
             mock_s1.return_value = "YES"
             mock_s2.return_value = "APPROVED"  # Explicit approval required
@@ -213,7 +207,7 @@ class TestPerformanceAndTokenEfficiency:
                 return ""
 
             with patch(
-                "pacemaker.intent_validator._call_unified_validation_async",
+                "pacemaker.intent_validator._call_stage2_validation",
                 side_effect=fast_response,
             ):
                 start = time.time()
@@ -245,9 +239,7 @@ class TestPerformanceAndTokenEfficiency:
         ):
             mock_s1.return_value = "YES"
 
-            with patch(
-                "pacemaker.intent_validator._call_unified_validation_async"
-            ) as mock_s2:
+            with patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2:
                 mock_s2.return_value = "APPROVED"
 
                 intent_validator.validate_intent_and_code(
@@ -276,9 +268,7 @@ class TestShortCircuitBehavior:
         with (
             patch("pacemaker.intent_validator.SDK_AVAILABLE", True),
             patch("pacemaker.intent_validator._call_stage1_validation") as mock_s1,
-            patch(
-                "pacemaker.intent_validator._call_unified_validation_async"
-            ) as mock_s2,
+            patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2,
         ):
             mock_s1.return_value = "NO"  # Stage 1 fails
 

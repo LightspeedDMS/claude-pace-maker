@@ -30,9 +30,7 @@ class TestStage2ClassificationParsing:
         with (
             patch("pacemaker.intent_validator.SDK_AVAILABLE", True),
             patch("pacemaker.intent_validator._call_stage1_validation") as mock_s1,
-            patch(
-                "pacemaker.intent_validator._call_unified_validation_async"
-            ) as mock_s2,
+            patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2,
         ):
             mock_s1.return_value = "YES"
             mock_s2.return_value = stage2_response
@@ -215,9 +213,7 @@ CLASSIFICATION: CLEAN_CODE"""
         with (
             patch("pacemaker.intent_validator.SDK_AVAILABLE", True),
             patch("pacemaker.intent_validator._call_stage1_validation") as mock_s1,
-            patch(
-                "pacemaker.intent_validator._call_unified_validation_async"
-            ) as mock_s2,
+            patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2,
         ):
             mock_s1.return_value = "YES"
             mock_s2.return_value = stage2_response
@@ -247,9 +243,7 @@ CLASSIFICATION: CLEAN_CODE"""
         with (
             patch("pacemaker.intent_validator.SDK_AVAILABLE", True),
             patch("pacemaker.intent_validator._call_stage1_validation") as mock_s1,
-            patch(
-                "pacemaker.intent_validator._call_unified_validation_async"
-            ) as mock_s2,
+            patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2,
         ):
             mock_s1.return_value = "YES"
             mock_s2.return_value = "APPROVED"

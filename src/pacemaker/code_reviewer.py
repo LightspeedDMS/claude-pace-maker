@@ -6,10 +6,10 @@ This module provides post-tool validation by calling the Claude Agent SDK to
 review if modified code matches the intent Claude declared before making changes.
 """
 
-import asyncio
 from typing import List
 
 from .logger import log_warning, log_info
+from .inference import resolve_and_call
 
 # Try to import Claude Agent SDK
 try:
@@ -134,25 +134,24 @@ async def _call_sdk_review_async(prompt: str) -> str:
     return response_text
 
 
-def call_sdk_review(prompt: str) -> str:
+def call_sdk_review(prompt: str, hook_model: str = "auto") -> str:
     """
-    Synchronous wrapper for SDK code review call.
-
-    Uses Sonnet with 4000 thinking tokens for detailed review.
-    Falls back to Opus on usage limit.
+    Synchronous SDK code review via provider abstraction.
 
     Args:
         prompt: Review prompt
+        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5"
 
     Returns:
         SDK response text (feedback or empty string)
     """
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    return loop.run_until_complete(_call_sdk_review_async(prompt))
+    return resolve_and_call(
+        hook_model=hook_model,
+        prompt=prompt,
+        system_prompt="You are a code reviewer. Provide feedback only if code doesn't match intent. Return empty response if code is correct.",
+        call_context="code_review",
+        max_thinking_tokens=4000,
+    )
 
 
 def _extract_intent_from_messages(messages: List[str]) -> str:

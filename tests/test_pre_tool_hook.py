@@ -196,6 +196,7 @@ class TestPreToolHook:
             code="new code",
             file_path="/path/to/config.py",
             tool_name="Edit",
+            hook_model="auto",
         )
 
     @patch("pacemaker.hook.load_config")

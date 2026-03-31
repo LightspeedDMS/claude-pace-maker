@@ -32,6 +32,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "stop_hook_first_n_pairs": 10,
     "log_level": 2,  # Default: WARNING level
     "preferred_subagent_model": "auto",  # Model preference: "opus", "sonnet", "haiku", "auto"
+    "hook_model": "auto",  # Hook inference model: "auto", "sonnet", "opus", "gpt-5"
 }
 
 # Default file paths

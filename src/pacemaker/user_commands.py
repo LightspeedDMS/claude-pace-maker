@@ -70,6 +70,10 @@ COMMANDS:
   pace-maker prefer-model sonnet               Prefer Sonnet model for subagents
   pace-maker prefer-model haiku                Prefer Haiku model for subagents
   pace-maker prefer-model auto                 Use default model selection (no preference)
+  pace-maker hook-model auto                   Use auto model selection for hook inference
+  pace-maker hook-model sonnet                 Use Sonnet for hook inference
+  pace-maker hook-model opus                   Use Opus for hook inference
+  pace-maker hook-model gpt-5                  Use GPT-5 (via Codex CLI) for hook inference
   pace-maker langfuse config <url> <public_key> <secret_key>
                                                Configure Langfuse credentials manually
   pace-maker langfuse provision [--force] [--verbose]
@@ -484,7 +488,18 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_prefer_model.group(1),
         }
 
-    # Pattern 20: pace-maker langfuse (config|on|off|status) [args...]
+    # Pattern 20: pace-maker hook-model (auto|sonnet|opus|gpt-5)
+    pattern_hook_model = r"^pace-maker\s+hook-model\s+(auto|sonnet|opus|gpt-5)$"
+    match_hook_model = re.match(pattern_hook_model, normalized)
+
+    if match_hook_model:
+        return {
+            "is_pace_maker_command": True,
+            "command": "hook-model",
+            "subcommand": match_hook_model.group(1),
+        }
+
+    # Pattern 21: pace-maker langfuse (config|on|off|status) [args...]
     pattern_langfuse = r"^pace-maker\s+langfuse\s+(.+)$"
     match_langfuse = re.match(pattern_langfuse, normalized)
 
@@ -596,6 +611,8 @@ def execute_command(
         return _execute_excluded_paths(subcommand)
     elif command == "prefer-model":
         return _execute_prefer_model(config_path, subcommand)
+    elif command == "hook-model":
+        return _execute_hook_model(config_path, subcommand)
     elif command == "langfuse":
         return _execute_langfuse(config_path, subcommand)
     elif command == "secrets":
@@ -734,6 +751,7 @@ def _execute_status(
         intent_validation_enabled = config.get("intent_validation_enabled", False)
         tdd_enabled = config.get("tdd_enabled", True)
         preferred_model = config.get("preferred_subagent_model", "auto")
+        hook_model = config.get("hook_model", "auto")
         log_level = config.get("log_level", 2)
         level_names = {0: "OFF", 1: "ERROR", 2: "WARNING", 3: "INFO", 4: "DEBUG"}
 
@@ -854,6 +872,7 @@ def _execute_status(
         status_text += f"\nIntent Validation: {'ENABLED' if intent_validation_enabled else 'DISABLED'}"
         status_text += f"\nTDD Enforcement: {'ENABLED' if tdd_enabled else 'DISABLED'}"
         status_text += f"\nModel Preference: {preferred_model.upper()}"
+        status_text += f"\nHook Model: {hook_model.upper()}"
         status_text += (
             f"\nLog Level: {log_level} ({level_names.get(log_level, 'UNKNOWN')})"
         )
@@ -1478,6 +1497,45 @@ def _execute_prefer_model(
         return {
             "success": False,
             "message": f"Error setting model preference: {str(e)}",
+        }
+
+
+def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
+    """Set hook inference model for intent validation and code review."""
+    valid_models = ["auto", "sonnet", "opus", "gpt-5"]
+
+    if subcommand not in valid_models:
+        return {
+            "success": False,
+            "message": f"Invalid model: {subcommand}\nUsage: pace-maker hook-model [auto|sonnet|opus|gpt-5]",
+        }
+
+    try:
+        config = _load_config(config_path)
+        config["hook_model"] = subcommand
+        _write_config_atomic(config, config_path)
+
+        if subcommand == "auto":
+            message = (
+                "✓ Hook model set to AUTO\n"
+                "Hook inference will use per-call-site defaults (sonnet for stage1, opus for stage2)."
+            )
+        elif subcommand == "gpt-5":
+            message = (
+                "✓ Hook model set to GPT-5\n"
+                "Hook inference will use Codex CLI (OpenAI GPT-5) with Anthropic fallback.\n"
+                "Requires: codex CLI installed and authenticated."
+            )
+        else:
+            message = (
+                f"✓ Hook model set to {subcommand.upper()}\n"
+                f"All hook inference calls (intent validation, code review, stop hook) will use {subcommand}."
+            )
+        return {"success": True, "message": message}
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error setting hook model: {str(e)}",
         }
 
 
@@ -2859,6 +2917,7 @@ def main():
             "core-paths",
             "excluded-paths",
             "prefer-model",
+            "hook-model",
             "langfuse",
             "secrets",
             "install",

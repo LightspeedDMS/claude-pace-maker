@@ -1934,6 +1934,7 @@ def run_stop_hook():
             session_id=session_id,
             transcript_path=transcript_path,
             conversation_context_size=conversation_context_size,
+            hook_model=config.get("hook_model", "auto"),
         )
 
         log_debug("hook", f"Intent validation result: {result}")
@@ -2175,6 +2176,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             code=proposed_code,
             file_path=file_path,
             tool_name=tool_name,
+            hook_model=config.get("hook_model", "auto"),
         )
 
         # 8. Return result

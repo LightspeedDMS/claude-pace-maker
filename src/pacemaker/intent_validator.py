@@ -11,7 +11,6 @@ This module validates if Claude completed the user's original request by:
 """
 
 import os
-import asyncio
 import contextlib
 from typing import Any, Dict, List
 
@@ -289,32 +288,38 @@ async def call_sdk_validation_async(conversation_context: str) -> str:
     return response
 
 
-def call_sdk_validation(conversation_context: str) -> str:
+def call_sdk_validation(conversation_context: str, hook_model: str = "auto") -> str:
     """
-    Synchronous wrapper for SDK validation call.
+    Synchronous SDK validation call via provider abstraction.
 
     Args:
         conversation_context: Formatted conversation context from format_stop_hook_context()
+        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5"
 
     Returns:
         SDK response text
-
-    Raises:
-        Exception if SDK call fails
     """
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        # Create new loop if already in async context
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    if not SDK_AVAILABLE and hook_model in ("auto", "sonnet", "opus", "haiku"):
+        raise ImportError("Claude Agent SDK not available")
 
-    return loop.run_until_complete(call_sdk_validation_async(conversation_context))
+    prompt = build_validation_prompt(conversation_context)
+
+    from .inference import resolve_and_call
+
+    return resolve_and_call(
+        hook_model=hook_model,
+        prompt=prompt,
+        system_prompt="You are acting as the user who originally made this request. Judge if Claude delivered what you asked for.",
+        call_context="stop_hook",
+        max_thinking_tokens=4000,
+    )
 
 
 def validate_intent(
     session_id: str,
     transcript_path: str,
     conversation_context_size: int = 5,
+    hook_model: str = "auto",
 ) -> Dict[str, Any]:
     """
     Validate if Claude completed user's original intent.
@@ -362,7 +367,7 @@ def validate_intent(
         formatted_context = format_stop_hook_context(context)
 
         # Call SDK for validation
-        sdk_response = call_sdk_validation(formatted_context)
+        sdk_response = call_sdk_validation(formatted_context, hook_model=hook_model)
 
         # Log raw SDK response for debugging
         log_debug(
@@ -458,22 +463,29 @@ async def _call_sdk_intent_validation_async(prompt: str) -> str:
     return response_text
 
 
-def _call_sdk_intent_validation(prompt: str) -> str:
+def _call_sdk_intent_validation(prompt: str, hook_model: str = "auto") -> str:
     """
-    Synchronous wrapper for SDK intent validation.
+    Synchronous SDK intent validation via provider abstraction.
 
     Args:
         prompt: Validation prompt
+        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5"
 
     Returns:
         SDK response text (YES or NO)
     """
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    if not SDK_AVAILABLE and hook_model in ("auto", "sonnet", "opus", "haiku"):
+        raise ImportError("Claude Agent SDK not available")
 
-    return loop.run_until_complete(_call_sdk_intent_validation_async(prompt))
+    from .inference import resolve_and_call
+
+    return resolve_and_call(
+        hook_model=hook_model,
+        prompt=prompt,
+        system_prompt="You are validating if intent was declared. Respond with YES or NO only.",
+        call_context="intent_validation",
+        max_thinking_tokens=2000,
+    )
 
 
 def validate_intent_declared(
@@ -648,22 +660,51 @@ async def _call_stage1_validation_async(prompt: str) -> str:
     return response_text
 
 
-def _call_stage1_validation(prompt: str) -> str:
+def _call_stage1_validation(prompt: str, hook_model: str = "auto") -> str:
     """
-    Synchronous wrapper for Stage 1 validation.
+    Synchronous Stage 1 validation via provider abstraction.
 
     Args:
         prompt: Stage 1 validation prompt
+        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5"
 
     Returns:
         SDK response text (YES, NO, or NO_TDD)
     """
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    if not SDK_AVAILABLE and hook_model in ("auto", "sonnet", "opus", "haiku"):
+        raise ImportError("Claude Agent SDK not available")
 
-    return loop.run_until_complete(_call_stage1_validation_async(prompt))
+    from .inference import resolve_and_call
+
+    return resolve_and_call(
+        hook_model=hook_model,
+        prompt=prompt,
+        system_prompt="You are validating intent declarations. Respond with YES, NO, or NO_TDD only.",
+        call_context="stage1",
+        max_thinking_tokens=1024,
+    )
+
+
+def _call_stage2_validation(prompt: str, hook_model: str = "auto") -> str:
+    """
+    Synchronous Stage 2 validation via provider abstraction.
+
+    Args:
+        prompt: Stage 2 validation prompt
+        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5"
+
+    Returns:
+        SDK response text (feedback or empty/APPROVED)
+    """
+    from .inference import resolve_and_call
+
+    return resolve_and_call(
+        hook_model=hook_model,
+        prompt=prompt,
+        system_prompt="You are a strict code validator. Return empty response ONLY if all checks pass. Otherwise return detailed feedback.",
+        call_context="stage2_unified",
+        max_thinking_tokens=4000,
+    )
 
 
 def _build_stage2_prompt(
@@ -829,7 +870,11 @@ def _parse_stage2_classification(feedback: str) -> bool:
 
 
 def validate_intent_and_code(
-    messages: List[str], code: str, file_path: str, tool_name: str
+    messages: List[str],
+    code: str,
+    file_path: str,
+    tool_name: str,
+    hook_model: str = "auto",
 ) -> dict:
     """
     Two-stage pre-tool validation with short-circuit logic.
@@ -854,8 +899,8 @@ def validate_intent_and_code(
         {"approved": True} if all checks pass
         {"approved": False, "feedback": "..."} if violations found
     """
-    if not SDK_AVAILABLE:
-        # Fail closed when SDK unavailable - no fallback validation
+    if not SDK_AVAILABLE and hook_model in ("auto", "sonnet", "opus", "haiku"):
+        # Fail closed when SDK unavailable and using Anthropic models
         return {
             "approved": False,
             "feedback": """⛔ Intent Validation Unavailable
@@ -895,7 +940,7 @@ System failing closed to prevent bypassing intent declaration requirements.""",
         log_debug("intent_validator", "END OF STAGE 1 PROMPT")
         log_debug("intent_validator", "=" * 80)
 
-        stage1_response = _call_stage1_validation(stage1_prompt)
+        stage1_response = _call_stage1_validation(stage1_prompt, hook_model=hook_model)
         log_debug("intent_validator", f"Stage 1 SDK response: '{stage1_response}'")
 
         # Parse Stage 1 response
@@ -963,7 +1008,7 @@ CRITICAL: Quote must reference actual user words from recent context.""",
             "intent_validator", f"Stage 2 prompt length: {len(stage2_prompt)} chars"
         )
 
-        stage2_feedback = asyncio.run(_call_unified_validation_async(stage2_prompt))
+        stage2_feedback = _call_stage2_validation(stage2_prompt, hook_model=hook_model)
         log_debug(
             "intent_validator",
             f"Stage 2 SDK response length: {len(stage2_feedback)} chars",
