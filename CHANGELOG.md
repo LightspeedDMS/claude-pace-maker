@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.7.0] - 2026-03-30
+
+### Added
+- **Multi-model inference provider abstraction** (#53): New `src/pacemaker/inference/` package enabling non-Anthropic models for hook validation
+- **`InferenceProvider` abstract base class** with `ProviderError` exception for provider-agnostic inference
+- **`AnthropicProvider`**: Wraps existing `claude_agent_sdk` calls with automatic sonnet↔opus fallback on usage limits
+- **`CodexProvider`**: Shells out to OpenAI Codex CLI (`codex exec`) for GPT-5 inference with 120s timeout
+- **Provider registry**: `get_provider()` factory, `resolve_model_for_call()` for per-call-site defaults, `resolve_and_call()` orchestrator with cross-vendor fallback chain (selected provider → auto/Anthropic → fail-open)
+- **`hook_model` config setting**: New setting separate from `preferred_subagent_model` — controls which model pace-maker uses for its own inference (intent validation, code review, stop hook)
+- **`pace-maker hook-model` CLI command**: Set hook inference model via `pace-maker hook-model [auto|sonnet|opus|gpt-5]` (both real CLI and pseudo-CLI)
+- **Hook model in status/help**: `hook_model` value displayed in `pace-maker status` and `pace-maker --help`
+- **29 new unit tests**: `test_inference_provider.py` covering provider contracts, CodexProvider subprocess handling, registry routing, resolve_and_call fallback chain, and config defaults
+
+### Changed
+- **Refactored all 5 inference call sites** to use `resolve_and_call()` provider abstraction:
+  - `intent_validator.py`: stop hook validation, intent declaration check, stage 1 validation, stage 2 unified validation
+  - `code_reviewer.py`: code review validation
+- **Sync wrappers bypass async functions**: Refactored sync wrappers (`call_sdk_validation`, `_call_sdk_intent_validation`, `_call_stage1_validation`, `_call_stage2_validation`) to call `resolve_and_call()` directly, avoiding nested event loop errors
+- **claude-usage display**: Relabeled "Model:" to "Subagent:" for `preferred_subagent_model`, added new "Hook Model:" line showing `hook_model` value
+
 ## [2.6.0] - 2026-03-30
 
 ### Added
