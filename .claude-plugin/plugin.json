@@ -1,7 +1,7 @@
 {
   "name": "claude-pace-maker",
   "description": "Usage observability, adaptive pacing, and Langfuse telemetry for Claude Code",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "author": {
     "name": "LightspeedDMS"
   }

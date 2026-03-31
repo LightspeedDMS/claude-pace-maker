@@ -156,3 +156,60 @@ def test_validate_intent_declaration_blocks_on_unexpected_response():
         result = validate_intent_declared(["some message"], "src/foo.py", "Write")
 
     assert result["intent_found"] is False
+
+
+def test_stop_hook_prompt_contains_e2e_enforcement_for_story_epic():
+    """Stop hook prompt must enforce E2E testing for story/epic implementations."""
+    from pacemaker.intent_validator import get_prompt_template
+
+    template = get_prompt_template()
+
+    # Must mention story/epic detection
+    assert "story" in template.lower() or "epic" in template.lower()
+    # Must mention E2E testing requirement
+    assert "e2e" in template.lower() or "end-to-end" in template.lower()
+    # Must block when missing
+    assert "BLOCKED" in template
+
+
+def test_stop_hook_prompt_requires_e2e_declaration_for_story_epic():
+    """Stop hook prompt must demand declaration of E2E approach for story/epic work."""
+    from pacemaker.intent_validator import get_prompt_template
+
+    template = get_prompt_template()
+
+    # Must mention manual-test-executor or equivalent real-world execution method
+    assert (
+        "manual-test-executor" in template
+        or "execute-e2e" in template
+        or "end-to-end" in template.lower()
+    )
+
+
+def test_stop_hook_prompt_excludes_coded_tests_as_e2e_evidence():
+    """Stop hook prompt must explicitly state coded tests (pytest/unit tests) do NOT
+    satisfy E2E validation, and must require real application execution with no mocks."""
+    import re
+    from pacemaker.intent_validator import get_prompt_template
+
+    template = get_prompt_template()
+
+    # Pytest/unit tests must be explicitly negated — negation must appear near "pytest"
+    assert re.search(
+        r"(not|does not|do not|NOT)\b.{0,80}\bpytest\b",
+        template,
+        re.IGNORECASE | re.DOTALL,
+    ), "Prompt must explicitly state pytest does NOT satisfy E2E requirement"
+
+    # Must prohibit mocks with explicit NO language
+    assert re.search(
+        r"\bNO\s+mocks?\b",
+        template,
+    ), "Prompt must contain 'NO mocks' to prohibit mock-based validation"
+
+    # Must require executing the real application (not test code)
+    assert re.search(
+        r"actually\s+(EXECUTE|run|invoke)\b.{0,60}\b(application|feature|system)\b",
+        template,
+        re.IGNORECASE | re.DOTALL,
+    ), "Prompt must require actually executing the real application/system"
