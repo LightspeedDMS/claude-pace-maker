@@ -188,7 +188,8 @@ def test_stop_hook_prompt_requires_e2e_declaration_for_story_epic():
 
 def test_stop_hook_prompt_excludes_coded_tests_as_e2e_evidence():
     """Stop hook prompt must explicitly state coded tests (pytest/unit tests) do NOT
-    satisfy E2E validation, and must require real application execution with no mocks."""
+    satisfy E2E validation, and must require real application execution with no mocks.
+    """
     import re
     from pacemaker.intent_validator import get_prompt_template
 
