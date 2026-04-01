@@ -10,6 +10,29 @@ RECENT CONTEXT (last 4 messages):
 PROPOSED CODE:
 {code}
 
+⚠️  PARTIAL CONTEXT WARNING (Edit operations)
+════════════════════════════════════════════════════════════════
+When the tool is Edit (not Write), PROPOSED CODE above shows ONLY the changed
+fragment (old string → new string), NOT the complete file.
+
+This means patterns that appear "missing" from the fragment may already exist
+elsewhere in the file. Common false-positive triggers to watch for:
+
+  • Exit code propagation — `exit "$CODE"` may appear later in the script
+  • Error handling / null checks — may be handled in calling code or surrounding blocks
+  • Return value checks — the caller (outside the fragment) may check them
+  • Resource cleanup / teardown — may exist in a finally block or trap elsewhere
+
+RULE: Only flag a violation if the problematic pattern is CLEARLY present (or
+CLEARLY absent) within the provided fragment itself. If the issue could be
+resolved by code that exists outside the fragment, give benefit of the doubt
+and return APPROVED.
+
+If you are genuinely uncertain whether a required pattern exists elsewhere in
+the file, prefer APPROVED over a false rejection. A missed issue is recoverable;
+a false block wastes developer time and erodes trust in the review system.
+════════════════════════════════════════════════════════════════
+
 YOUR TASK - TWO VALIDATION CHECKS:
 
 ════════════════════════════════════════════════════════════════
