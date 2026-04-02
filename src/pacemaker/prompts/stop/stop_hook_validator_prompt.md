@@ -35,7 +35,7 @@ If the user is asking about tempo system status, liveliness, or checking if you'
 
 CRITICAL - "AGENT/SLASH COMMAND STILL RUNNING" FALLACY:
 
-⚠️ THIS IS ALWAYS A LIE ⚠️
+⚠️ THIS IS ALMOST ALWAYS A LIE ⚠️
 
 If Claude claims in its LAST MESSAGE that a subagent or slash command is "running" or "in progress":
 - **THIS IS IMPOSSIBLE** - The stop hook ONLY triggers when Claude has FINISHED its response
@@ -43,6 +43,20 @@ If Claude claims in its LAST MESSAGE that a subagent or slash command is "runnin
 - **BLOCK THE STOPPAGE** - This is Claude avoiding the completion check
 
 **RULE**: If the stop hook is executing, NO agent or slash command can be running. Period.
+
+**EXCEPTION - BACKGROUND TASKS ARE REAL**:
+
+Claude Code supports `run_in_background=True` for Bash and Agent tool calls. These background jobs
+genuinely continue running after Claude finishes its response. When a background job completes,
+Claude is re-awakened automatically — so early stoppage is NOT a problem.
+
+If Claude's LAST MESSAGE explicitly says it launched a background task and is awaiting its results:
+- Keywords: "running in background", "background job", "I'll be notified when it completes",
+  "waiting for background", "run_in_background", "background process"
+- **ALLOW THE STOPPAGE** - The background job will wake Claude when done
+- This is NOT Claude avoiding work — this is legitimate asynchronous operation
+
+**RULE**: If Claude claims a *background task* is running and awaiting results → APPROVED
 
 CRITICAL - "ANALYSIS PARALYSIS" DETECTION:
 
@@ -128,7 +142,7 @@ WHEN TO BLOCK (strict criteria - need CLEAR evidence):
 - Claude's LAST MESSAGE shows work actively in progress (not summarizing)
 - Claude identified a bug/problem in LAST MESSAGE but took no action
 - The MOST RECENT user request (in recent messages) is clearly unanswered
-- Claude claims an agent is "still running" (impossible - see above)
+- Claude claims an agent/slash command is "still running" (impossible - see above, unless it's a background task)
 
 RESPONSE FORMAT - Choose EXACTLY one:
 
