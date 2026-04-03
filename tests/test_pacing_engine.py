@@ -100,6 +100,109 @@ class TestCachedPacingDecisions:
         assert result["decision"]["should_throttle"] is False
         assert result["decision"]["delay_seconds"] == 0
 
+    # Constant: poll_interval that guarantees the cached code path is taken
+    CACHED_PATH_POLL_INTERVAL = 300
+
+    def _insert_cached_throttle(self, delay_seconds: int):
+        """Set up: simulate recent poll and store a throttle decision in the DB."""
+        self._set_recent_poll()
+        database.insert_pacing_decision(
+            db_path=self.db_path,
+            timestamp=datetime.now(timezone.utc),
+            should_throttle=True,
+            delay_seconds=delay_seconds,
+            session_id=self.session_id,
+        )
+
+    def _run_cached_check(
+        self, weekly_limit_enabled: bool, five_hour_limit_enabled: bool
+    ):
+        """Run pacing check on the cached code path with the given limit flags."""
+        return pacing_engine.run_pacing_check(
+            db_path=self.db_path,
+            session_id=self.session_id,
+            poll_interval=self.CACHED_PATH_POLL_INTERVAL,
+            weekly_limit_enabled=weekly_limit_enabled,
+            five_hour_limit_enabled=five_hour_limit_enabled,
+        )
+
+    def test_both_limits_disabled_ignores_cached_throttle(self):
+        """
+        BUG FIX TEST:
+        When both weekly_limit_enabled and five_hour_limit_enabled are False,
+        a cached throttle decision must be overridden to should_throttle=False.
+
+        Disabling limits must take effect immediately without waiting for next poll.
+        result["cached"]=True means the cached code path was executed (not that the
+        cached throttle value was applied unchanged).
+        """
+        self._insert_cached_throttle(delay_seconds=60)
+
+        result = self._run_cached_check(
+            weekly_limit_enabled=False, five_hour_limit_enabled=False
+        )
+
+        assert result["polled"] is False
+        assert result["cached"] is True
+        assert (
+            result["decision"]["should_throttle"] is False
+        ), "Both limits disabled: cached throttle must be overridden to False"
+        assert (
+            result["decision"]["delay_seconds"] == 0
+        ), "Both limits disabled: delay must be overridden to 0"
+
+    def test_only_weekly_limit_disabled_cached_decision_still_applies(self):
+        """
+        When only weekly_limit_enabled is False (five_hour still enabled),
+        cached throttle must still apply because five_hour limit is active.
+        """
+        self._insert_cached_throttle(delay_seconds=45)
+
+        result = self._run_cached_check(
+            weekly_limit_enabled=False, five_hour_limit_enabled=True
+        )
+
+        assert result["polled"] is False
+        assert result["cached"] is True
+        assert (
+            result["decision"]["should_throttle"] is True
+        ), "five_hour limit still enabled: cached throttle must apply"
+        assert result["decision"]["delay_seconds"] == 45
+
+    def test_only_five_hour_limit_disabled_cached_decision_still_applies(self):
+        """
+        When only five_hour_limit_enabled is False (weekly still enabled),
+        cached throttle must still apply because weekly limit is active.
+        """
+        self._insert_cached_throttle(delay_seconds=20)
+
+        result = self._run_cached_check(
+            weekly_limit_enabled=True, five_hour_limit_enabled=False
+        )
+
+        assert result["polled"] is False
+        assert result["cached"] is True
+        assert (
+            result["decision"]["should_throttle"] is True
+        ), "weekly limit still enabled: cached throttle must apply"
+        assert result["decision"]["delay_seconds"] == 20
+
+    def test_both_limits_enabled_cached_decision_applies_normally(self):
+        """
+        When both limits are enabled (default), existing cached decision
+        behavior is preserved: cached throttle applies unchanged.
+        """
+        self._insert_cached_throttle(delay_seconds=30)
+
+        result = self._run_cached_check(
+            weekly_limit_enabled=True, five_hour_limit_enabled=True
+        )
+
+        assert result["polled"] is False
+        assert result["cached"] is True
+        assert result["decision"]["should_throttle"] is True
+        assert result["decision"]["delay_seconds"] == 30
+
 
 class TestGlobalPollCoordination:
     """Test that run_pacing_check uses global poll coordination."""

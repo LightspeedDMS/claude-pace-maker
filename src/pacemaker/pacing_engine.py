@@ -351,6 +351,14 @@ def run_pacing_check(
         cached_decision = database.get_last_pacing_decision(db_path)
 
         if cached_decision:
+            # If both limits are disabled, ignore cached throttle decisions
+            # so disabling limits takes effect immediately without waiting for next poll
+            if not weekly_limit_enabled and not five_hour_limit_enabled:
+                return {
+                    "polled": False,
+                    "decision": {"should_throttle": False, "delay_seconds": 0},
+                    "cached": True,
+                }
             # Return cached decision to maintain throttling between polls
             return {
                 "polled": False,
