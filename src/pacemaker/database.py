@@ -184,6 +184,16 @@ CREATE TABLE IF NOT EXISTS governance_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_governance_timestamp ON governance_events(timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS codex_usage (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    primary_used_pct REAL NOT NULL,
+    secondary_used_pct REAL NOT NULL,
+    primary_resets_at INTEGER,
+    secondary_resets_at INTEGER,
+    plan_type TEXT,
+    timestamp REAL NOT NULL
+);
 """
 
 

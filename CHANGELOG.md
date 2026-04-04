@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.10.0] - 2026-04-04
+
+### Added
+- **Codex GPT-5 usage tracking** (#57): New `src/pacemaker/codex_usage.py` module extracts subscription rate limits from Codex session JSONL files (`~/.codex/sessions/YYYY/MM/DD/*.jsonl`) after each codex subagent run
+- **`codex_usage` SQLite table**: Single deterministic record (`id=1`, `INSERT OR REPLACE`) in `usage.db` storing `primary_used_pct`, `secondary_used_pct`, `primary_resets_at`, `secondary_resets_at`, `plan_type`, and `timestamp` — same pattern as `api_cache` and `backoff_state`
+- **SubagentStop hook integration**: Automatically captures codex rate limits when `hook_model` contains "gpt" or "codex"; wrapped in isolated try/except to never break existing hook logic
+- **18 new unit tests**: `tests/test_codex_usage.py` covering JSONL parser (valid data, missing fields, malformed JSON, no sessions, historical fallback, mtime-based file selection) and SQLite read/write (single record, overwrite, DB errors)
+
 ## [2.7.0] - 2026-03-30
 
 ### Added

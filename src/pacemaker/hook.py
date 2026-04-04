@@ -678,6 +678,25 @@ def run_subagent_stop_hook():
     elif not trace_info:
         log_debug("hook", "SubagentStop: No subagent trace_id to finalize")
 
+    # Codex usage capture: extract rate limits from latest session file.
+    # Only runs when hook_model indicates a GPT/Codex model is in use.
+    try:
+        hook_model = config.get("hook_model", "auto")
+        if "gpt" in hook_model.lower() or "codex" in hook_model.lower():
+            from .codex_usage import get_latest_codex_usage, write_codex_usage
+
+            usage = get_latest_codex_usage()
+            if usage:
+                write_codex_usage(DEFAULT_DB_PATH, usage)
+                log_debug(
+                    "hook",
+                    f"SubagentStop: Captured codex usage:"
+                    f" primary={usage['primary_used_pct']}%,"
+                    f" secondary={usage['secondary_used_pct']}%",
+                )
+    except Exception as e:
+        log_warning("hook", "SubagentStop: Failed to capture codex usage", e)
+
 
 def should_inject_reminder(
     state: dict, config: dict, tool_name: Optional[str] = None
