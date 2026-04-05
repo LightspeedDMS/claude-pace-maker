@@ -1,0 +1,229 @@
+# Default danger bash rules — shipped with pace-maker
+# Two categories:
+#   work_destruction (WD): destroying code, commits, branches, stashes
+#   system_destruction (SD): destroying files, processes, infrastructure
+
+rules:
+  # Category 1: Work Destruction (WD) — 25 rules
+  - id: WD-001
+    pattern: 'git\s+checkout\s+--'
+    category: work_destruction
+    description: "git checkout -- (revert files)"
+  - id: WD-002
+    pattern: 'git\s+checkout\s+\.'
+    category: work_destruction
+    description: "git checkout . (revert all)"
+  - id: WD-003
+    pattern: 'git\s+checkout\s+HEAD\s+--'
+    category: work_destruction
+    description: "git checkout HEAD -- (revert to HEAD)"
+  - id: WD-004
+    pattern: 'git\s+restore\s'
+    category: work_destruction
+    description: "git restore (discard changes)"
+  - id: WD-005
+    pattern: 'git\s+reset\s+--hard'
+    category: work_destruction
+    description: "git reset --hard"
+  - id: WD-006
+    pattern: 'git\s+reset\s+HEAD[~^]'
+    category: work_destruction
+    description: "git reset HEAD~ or HEAD^"
+  - id: WD-007
+    pattern: 'git\s+clean\s+-[a-zA-Z]*f'
+    category: work_destruction
+    description: "git clean -f (delete untracked)"
+  - id: WD-008
+    pattern: 'git\s+stash'
+    category: work_destruction
+    description: "git stash (ALL operations)"
+  - id: WD-009
+    pattern: 'git\s+push\s+.*--force'
+    category: work_destruction
+    description: "git push --force"
+  - id: WD-010
+    pattern: 'git\s+push\s+-f\b'
+    category: work_destruction
+    description: "git push -f"
+  - id: WD-011
+    pattern: 'git\s+push\s+.*--delete'
+    category: work_destruction
+    description: "git push --delete"
+  - id: WD-012
+    pattern: 'git\s+push\s+\S+\s+:\S'
+    category: work_destruction
+    description: "git push origin :branch (old delete syntax)"
+  - id: WD-013
+    pattern: 'git\s+branch\s+-[dD]\s'
+    category: work_destruction
+    description: "git branch delete"
+  - id: WD-014
+    pattern: 'git\s+rebase'
+    category: work_destruction
+    description: "git rebase"
+  - id: WD-015
+    pattern: 'git\s+commit\s+.*--amend'
+    category: work_destruction
+    description: "git commit --amend"
+  - id: WD-016
+    pattern: 'git\s+filter-branch'
+    category: work_destruction
+    description: "git filter-branch"
+  - id: WD-017
+    pattern: 'git\s+filter-repo'
+    category: work_destruction
+    description: "git filter-repo"
+  - id: WD-018
+    pattern: 'git\s+tag\s+-d\s'
+    category: work_destruction
+    description: "git tag delete"
+  - id: WD-019
+    pattern: 'git\s+worktree\s+remove'
+    category: work_destruction
+    description: "git worktree remove"
+  - id: WD-020
+    pattern: 'git\s+worktree\s+prune'
+    category: work_destruction
+    description: "git worktree prune"
+  - id: WD-021
+    pattern: '(psql|mysql|sqlite3).*DROP\s+(DATABASE|TABLE)'
+    category: work_destruction
+    description: "Database DROP"
+  - id: WD-022
+    pattern: 'mongosh.*dropDatabase|redis-cli\s+FLUSH(ALL|DB)'
+    category: work_destruction
+    description: "MongoDB/Redis wipe"
+  - id: WD-023
+    pattern: 'make\s+(clean|distclean|mrproper)\b'
+    category: work_destruction
+    description: "Build system clean"
+  - id: WD-024
+    pattern: 'bazel\s+clean\s+--expunge'
+    category: work_destruction
+    description: "Bazel expunge"
+  - id: WD-025
+    pattern: 'npm\s+unpublish'
+    category: work_destruction
+    description: "npm unpublish"
+
+  # Category 2: System/Equipment Destruction (SD) — 30 rules
+  - id: SD-001
+    pattern: 'rm\s+-[a-zA-Z]*r[a-zA-Z]*f|rm\s+-[a-zA-Z]*f[a-zA-Z]*r'
+    category: system_destruction
+    description: "rm -rf / rm -fr"
+  - id: SD-002
+    pattern: 'rm\s+-[a-zA-Z]*r\b'
+    category: system_destruction
+    description: "rm -r (recursive)"
+  - id: SD-003
+    pattern: 'rm\s+.*\*'
+    category: system_destruction
+    description: "rm with wildcards"
+  - id: SD-004
+    pattern: 'rm\s+--recursive|rm\s+--force'
+    category: system_destruction
+    description: "rm long flags"
+  - id: SD-005
+    pattern: 'rm\s+--no-preserve-root'
+    category: system_destruction
+    description: "rm --no-preserve-root"
+  - id: SD-006
+    pattern: '(\\\\rm|command\s+rm|env\s+rm)'
+    category: system_destruction
+    description: "rm alias bypass"
+  - id: SD-007
+    pattern: 'xargs\s+rm'
+    category: system_destruction
+    description: "xargs rm (amplified deletion)"
+  - id: SD-008
+    pattern: 'kill\s+-9'
+    category: system_destruction
+    description: "kill -9"
+  - id: SD-009
+    pattern: 'killall\s'
+    category: system_destruction
+    description: "killall"
+  - id: SD-010
+    pattern: 'pkill\s'
+    category: system_destruction
+    description: "pkill"
+  - id: SD-011
+    pattern: 'chmod\s+-R|chmod\s+.*777|chmod\s+.*000'
+    category: system_destruction
+    description: "Dangerous chmod"
+  - id: SD-012
+    pattern: 'chown\s+-R'
+    category: system_destruction
+    description: "Recursive chown"
+  - id: SD-013
+    pattern: 'mkfs\.|fdisk\s|dd\s+if=|wipefs\s|sgdisk\s.*-Z'
+    category: system_destruction
+    description: "Disk/partition ops"
+  - id: SD-014
+    pattern: 'shutdown|reboot|halt|poweroff'
+    category: system_destruction
+    description: "System shutdown/reboot"
+  - id: SD-015
+    pattern: 'systemctl\s+(stop|disable|mask)'
+    category: system_destruction
+    description: "Service disruption"
+  - id: SD-016
+    pattern: 'iptables\s+-F|ufw\s+disable'
+    category: system_destruction
+    description: "Firewall manipulation"
+  - id: SD-017
+    pattern: 'docker\s+(rm|rmi|system\s+prune|volume\s+rm|network\s+rm)'
+    category: system_destruction
+    description: "Docker destructive"
+  - id: SD-018
+    pattern: 'docker[\s-]+compose\s+down\s+-v'
+    category: system_destruction
+    description: "Docker compose down -v"
+  - id: SD-019
+    pattern: 'podman\s+(rm|rmi|system\s+prune)'
+    category: system_destruction
+    description: "Podman destructive"
+  - id: SD-020
+    pattern: 'ssh\s.*rm\b|ssh\s.*shutdown|ssh\s.*reboot'
+    category: system_destruction
+    description: "Remote destructive via SSH"
+  - id: SD-021
+    pattern: 'terraform\s+destroy|terraform\s+apply\s+.*-destroy'
+    category: system_destruction
+    description: "Terraform destroy"
+  - id: SD-022
+    pattern: 'kubectl\s+delete\s+(namespace|all|pv|pvc)|kubectl\s+delete\s+.*--all'
+    category: system_destruction
+    description: "Kubernetes destructive"
+  - id: SD-023
+    pattern: 'helm\s+uninstall'
+    category: system_destruction
+    description: "Helm uninstall"
+  - id: SD-024
+    pattern: 'aws\s+s3\s+(rm|sync.*--delete)|aws\s+ec2\s+terminate|aws\s+rds\s+delete'
+    category: system_destruction
+    description: "AWS destructive"
+  - id: SD-025
+    pattern: 'gcloud\s+.*delete|gsutil\s+rm\s+-r|gcloud\s+projects\s+delete'
+    category: system_destruction
+    description: "GCP destructive"
+  - id: SD-026
+    pattern: 'az\s+.*delete|az\s+group\s+delete'
+    category: system_destruction
+    description: "Azure destructive"
+  - id: SD-027
+    pattern: 'crontab\s+-r'
+    category: system_destruction
+    description: "Crontab remove all"
+  - id: SD-028
+    pattern: 'curl\s.*\|\s*(ba)?sh|wget\s.*\|\s*(ba)?sh'
+    category: system_destruction
+    description: "Pipe URL to shell"
+  - id: SD-029
+    pattern: 'python3?\s+-c\s+.*shutil\.rmtree|python3?\s+-c\s+.*os\.remove'
+    category: system_destruction
+    description: "Python one-liner destruction"
+  - id: SD-030
+    pattern: '>\s*\.env|truncate\s+.*-s\s*0'
+    category: system_destruction
+    description: "Secrets/file truncation"

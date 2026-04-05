@@ -566,6 +566,15 @@ install_hook_modules() {
     fi
   done
 
+  # Copy YAML config files (e.g., danger_bash_rules_default.yaml)
+  for yamlfile in "$PACEMAKER_SOURCE_DIR"/*.yaml; do
+    if [ -f "$yamlfile" ]; then
+      filename=$(basename "$yamlfile")
+      echo "  Copying $filename..."
+      cp "$yamlfile" "$HOOKS_PACEMAKER_DIR/"
+    fi
+  done
+
   # Copy subdirectories: delete target first to remove stale files, then copy fresh
   _copy_subdir() {
     local dirname="$1"

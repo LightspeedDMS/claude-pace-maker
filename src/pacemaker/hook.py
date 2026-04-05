@@ -2146,7 +2146,194 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 except Exception as e:
                     log_debug("hook", f"Error searching {agent_path}: {e}")
 
-        # 2a. Only validate Write/Edit tools
+        # 2a. Danger Bash validation (before Write/Edit check)
+        if tool_name == "Bash":
+            try:
+                bash_config = load_config(DEFAULT_CONFIG_PATH)
+                if (
+                    bash_config.get("enabled", True)
+                    and bash_config.get("intent_validation_enabled", False)
+                    and bash_config.get("danger_bash_enabled", True)
+                ):
+                    command = tool_input.get("command", "")
+                    description = tool_input.get("description", "")
+
+                    from .danger_bash_rules import load_rules, match_command
+
+                    db_rules_path = os.path.expanduser(
+                        "~/.claude-pace-maker/danger_bash_rules.yaml"
+                    )
+                    rules = load_rules(db_rules_path)
+                    matched = match_command(command, rules)
+
+                    if matched:
+                        matched_ids = [m["id"] for m in matched]
+                        log_debug(
+                            "hook",
+                            f"Danger bash rules matched: {matched_ids} for command: {command[:100]}",
+                        )
+
+                        # Phase 1: Check for INTENT: marker (fast reject, no LLM)
+                        messages = get_last_n_messages_for_validation(
+                            transcript_path, n=2
+                        )
+                        current_message = messages[-1] if messages else ""
+
+                        from .intent_validator import _has_intent_marker
+
+                        if not _has_intent_marker(current_message):
+                            # Phase 1 BLOCKED — no intent declared
+                            _sid = session_id or "unknown"
+                            record_blockage(
+                                db_path=DEFAULT_DB_PATH,
+                                category="intent_validation",
+                                reason=(
+                                    f"Dangerous Bash command detected but no INTENT: declaration found. "
+                                    f"Matched rules: {matched_ids}. You must declare INTENT: before "
+                                    f"running dangerous commands."
+                                ),
+                                hook_type="pre_tool_use",
+                                session_id=_sid,
+                                details={
+                                    "tool": "Bash",
+                                    "command": command[:500],
+                                    "matched_rules": matched_ids,
+                                    "reviewer": "unknown",
+                                },
+                            )
+                            try:
+                                record_activity_event(
+                                    DEFAULT_DB_PATH, "IV", "red", _sid
+                                )
+                                record_activity_event(
+                                    DEFAULT_DB_PATH, "DB", "red", _sid
+                                )
+                                _project_name = os.path.basename(os.getcwd())
+                                record_governance_event(
+                                    db_path=DEFAULT_DB_PATH,
+                                    event_type="IV",
+                                    project_name=_project_name,
+                                    session_id=_sid,
+                                    feedback_text=(
+                                        f"Dangerous Bash command blocked (no INTENT:). "
+                                        f"Rules: {matched_ids}. Command: {command[:200]}"
+                                    ),
+                                )
+                            except Exception:
+                                pass
+                            return {
+                                "decision": "block",
+                                "reason": (
+                                    f"⛔ Dangerous Bash command detected — no INTENT: declaration\n\n"
+                                    f"Matched danger rules: {matched_ids}\n"
+                                    f"Command: {command[:300]}\n\n"
+                                    f"You must declare INTENT: specifying exactly what this command "
+                                    f"will do before executing dangerous Bash operations."
+                                ),
+                            }
+
+                        # Phase 2: LLM validates intent-to-command alignment
+                        try:
+                            _sid = session_id or "unknown"
+                            record_activity_event(DEFAULT_DB_PATH, "DB", "blue", _sid)
+                        except Exception:
+                            pass
+
+                        from .inference import resolve_and_call_with_reviewer
+
+                        matched_descriptions = ", ".join(
+                            f"{m['id']}: {m['description']}" for m in matched
+                        )
+                        bash_prompt = (
+                            f"You are validating if the declared intent matches "
+                            f"what a Bash command will actually do.\n\n"
+                            f"ASSISTANT MESSAGE (contains intent declaration):\n"
+                            f"{current_message[:3000]}\n\n"
+                            f"BASH COMMAND:\n{command}\n\n"
+                            f"BASH DESCRIPTION FIELD:\n{description}\n\n"
+                            f"MATCHED DANGER RULES:\n{matched_descriptions}\n\n"
+                            f"VALIDATE:\n"
+                            f"1. Does the INTENT: declaration SPECIFICALLY describe "
+                            f"what this command does?\n"
+                            f"2. Does the command scope match the intent scope?\n"
+                            f"3. Is the description field honest about the effect?\n"
+                            f"4. Are there undeclared side effects?\n\n"
+                            f"If the intent declaration appears to be for a DIFFERENT "
+                            f"tool call earlier in the message, treat as mismatch.\n\n"
+                            f"Respond with ONLY 'APPROVED' if intent matches command. "
+                            f"Otherwise respond with detailed feedback explaining the mismatch."
+                        )
+
+                        response, reviewer = resolve_and_call_with_reviewer(
+                            hook_model=bash_config.get("hook_model", "auto"),
+                            prompt=bash_prompt,
+                            system_prompt=(
+                                "You are validating Bash command intent alignment. "
+                                "Respond APPROVED if intent matches, or detailed feedback if not."
+                            ),
+                            call_context="intent_validation",
+                            max_thinking_tokens=2000,
+                        )
+
+                        if response.strip().upper() == "APPROVED":
+                            # Phase 2 passed
+                            try:
+                                record_activity_event(
+                                    DEFAULT_DB_PATH, "DB", "green", _sid
+                                )
+                            except Exception:
+                                pass
+                            log_debug("hook", "Danger bash Phase 2: APPROVED")
+                        else:
+                            # Phase 2 BLOCKED — intent mismatch
+                            _sid = session_id or "unknown"
+                            _feedback = response
+                            _reviewer = reviewer
+                            if _reviewer:
+                                _feedback = f"[REVIEWER:{_reviewer}] {_feedback}"
+                            record_blockage(
+                                db_path=DEFAULT_DB_PATH,
+                                category="intent_validation_dangerbash",
+                                reason=response[:500],
+                                hook_type="pre_tool_use",
+                                session_id=_sid,
+                                details={
+                                    "tool": "Bash",
+                                    "command": command[:500],
+                                    "matched_rules": matched_ids,
+                                    "reviewer": reviewer,
+                                },
+                            )
+                            try:
+                                record_activity_event(
+                                    DEFAULT_DB_PATH, "DB", "red", _sid
+                                )
+                                _project_name = os.path.basename(os.getcwd())
+                                record_governance_event(
+                                    db_path=DEFAULT_DB_PATH,
+                                    event_type="IV",
+                                    project_name=_project_name,
+                                    session_id=_sid,
+                                    feedback_text=_feedback[:1000],
+                                )
+                            except Exception:
+                                pass
+                            return {
+                                "decision": "block",
+                                "reason": (
+                                    f"⛔ Dangerous Bash command — intent mismatch\n\n"
+                                    f"Matched danger rules: {matched_ids}\n"
+                                    f"Reviewer: {reviewer}\n\n"
+                                    f"{response[:500]}"
+                                ),
+                            }
+            except Exception as e:
+                log_warning("hook", f"Danger bash validation error: {e}")
+                # Fail open on unexpected errors — don't block all Bash commands
+
+            return {"continue": True}
+
+        # 2b. Only validate Write/Edit tools beyond this point
         if tool_name not in ["Write", "Edit"]:
             return {"continue": True}
 
