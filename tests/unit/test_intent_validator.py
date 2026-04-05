@@ -1033,3 +1033,21 @@ def test_stage1_gate_yes_calls_stage2():
 
     assert result["approved"] is True
     mock_stage2.assert_called_once()
+
+
+def test_regex_tdd_word_boundary_prevents_latest():
+    """'laTEST:' should not be detected as TDD declaration."""
+    result = _check(
+        "INTENT: Modify src/auth.py to add the laTEST: version of the code.\nsrc/auth.py",
+        "src/auth.py",
+    )
+    assert result == "NO_TDD"
+
+
+def test_regex_ac12_version_bump_across_newline():
+    """Version bump with newline before digit should still bypass TDD requirement."""
+    result = _check(
+        "INTENT: Modify __init__.py to bump version to\n2.12.0\n__init__.py",
+        "src/pacemaker/__init__.py",
+    )
+    assert result == "YES"

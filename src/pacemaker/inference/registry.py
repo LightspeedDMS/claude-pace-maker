@@ -9,7 +9,6 @@ from ..logger import log_warning
 _AUTO_DEFAULTS = {
     "stop_hook": "sonnet",  # call_sdk_validation_async: tries sonnet first
     "intent_validation": "sonnet",  # _call_sdk_intent_validation_async
-    "stage1": "sonnet",  # _call_stage1_validation_async
     "stage2_unified": "opus",  # _call_unified_validation_async: tries opus first
     "code_review": "sonnet",  # _call_sdk_review_async: tries sonnet first
 }
@@ -50,7 +49,7 @@ def resolve_model_for_call(hook_model: str, call_context: str) -> str:
     Args:
         hook_model: Config value - "auto", "sonnet", "opus", "gpt-5"
         call_context: Identifies the call site - "stop_hook", "intent_validation",
-                      "stage1", "stage2_unified", "code_review"
+                      "stage2_unified", "code_review"
 
     Returns:
         Model hint string for the provider

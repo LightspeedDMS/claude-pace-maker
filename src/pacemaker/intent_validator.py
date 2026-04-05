@@ -593,15 +593,17 @@ def _is_core_path(file_path: str) -> bool:
 def _is_version_bump(intent_text: str) -> bool:
     """Return True if intent_text describes a version bump with a digit."""
     if re.search(
-        r"(?i)(bump|update|change|set)\s+(the\s+)?version\b.*?\d", intent_text
+        r"(?i)(bump|update|change|set)\s+(the\s+)?version\b.*?\d",
+        intent_text,
+        re.DOTALL,
     ):
         return True
-    return bool(re.search(r"(?i)version\s+bump\b.*?\d", intent_text))
+    return bool(re.search(r"(?i)version\s+bump\b.*?\d", intent_text, re.DOTALL))
 
 
 def _has_tdd_declaration(intent_text: str) -> bool:
     """Return True if a structured TDD or skip-TDD declaration is present."""
-    if re.search(r"(?i)(test\s+coverage|covered\s+by|test\s*:)\s*\S+", intent_text):
+    if re.search(r"(?i)(test\s+coverage|covered\s+by|\btest\s*:)\s*\S+", intent_text):
         return True
     return bool(re.search(r"(?i)user\s+permission\s+(to\s+)?skip\s+tdd", intent_text))
 
@@ -838,15 +840,17 @@ def validate_intent_and_code(
     """
     Two-stage pre-tool validation with short-circuit logic.
 
-    Stage 1: Fast declaration check (CURRENT message only)
-      - Checks intent declaration exists in CURRENT message
-      - Checks TDD declaration exists for core paths
-      - Uses Haiku for speed (<500ms)
+    Stage 1: Fast regex structural check (CURRENT message only)
+      - Checks INTENT: marker exists anywhere in message
+      - Checks file name is mentioned
+      - Checks TDD declaration for core paths
+      - Pure regex, no LLM call (~0ms)
 
     Stage 2: Comprehensive code review (only if Stage 1 passes)
+      - Validates intent specificity (not vague)
       - Validates code matches declared intent
       - Checks for clean code violations
-      - Uses Opus for quality
+      - Uses LLM for quality
 
     Args:
         messages: Last 4 assistant messages (current + 3 before)
@@ -858,22 +862,6 @@ def validate_intent_and_code(
         {"approved": True} if all checks pass
         {"approved": False, "feedback": "..."} if violations found
     """
-    if not SDK_AVAILABLE and hook_model in ("auto", "sonnet", "opus", "haiku"):
-        # Fail closed when SDK unavailable and using Anthropic models
-        return {
-            "approved": False,
-            "feedback": """⛔ Intent Validation Unavailable
-
-Claude Agent SDK is not available for intent validation.
-
-This is a REQUIRED dependency for intent validation to function.
-Please install the SDK or disable intent validation in config:
-
-  pace-maker tdd off
-
-System failing closed to prevent bypassing intent declaration requirements.""",
-        }
-
     try:
         # STAGE 1: Fast declaration check (CURRENT message only)
         current_message = extract_current_assistant_message(messages)
@@ -953,6 +941,22 @@ CRITICAL: Quote must reference actual user words from recent context.""",
 
         # Stage 1 passed - proceed to Stage 2
         log_debug("intent_validator", "=== STAGE 1 PASSED - PROCEEDING TO STAGE 2 ===")
+
+        # SDK availability check — fail closed for Stage 2 LLM call
+        if not SDK_AVAILABLE and hook_model in ("auto", "sonnet", "opus", "haiku"):
+            return {
+                "approved": False,
+                "feedback": """⛔ Intent Validation Unavailable
+
+Claude Agent SDK is not available for Stage 2 code review.
+
+This is a REQUIRED dependency for intent validation to function.
+Please install the SDK or disable intent validation in config:
+
+  pace-maker tdd off
+
+System failing closed to prevent bypassing intent declaration requirements.""",
+            }
 
         # STAGE 2: Comprehensive code review
         stage2_prompt = _build_stage2_prompt(messages, code, file_path, tool_name)

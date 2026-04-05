@@ -417,14 +417,15 @@ Two-stage AI-powered validation system that enforces code quality, intent transp
 
 ### Two-Stage Validation Architecture
 
-**Stage 1: Fast Declaration Check** (~2-4 seconds)
-- **Model**: `claude-sonnet-4-5` (generic alias, auto-updates to latest)
-- **Purpose**: Lightweight validation of intent declaration
+**Stage 1: Fast Declaration Check** (~0ms, pure regex — no LLM call)
+- **Model**: None (regex-based, no inference required)
+- **Purpose**: Lightweight structural validation of intent declaration
 - **Validates**:
-  - Intent declaration exists with all 3 required components
-  - TDD declarations for core code paths
+  - `INTENT:` marker present in current message
+  - File name mentioned in current message
+  - TDD declarations for core code paths (or excluded path bypass)
 - **Returns**: `YES`, `NO`, or `NO_TDD`
-- **Prompt**: `src/pacemaker/prompts/pre_tool_use/stage1_declaration_check.md`
+- **Implementation**: `_regex_stage1_check()` in `src/pacemaker/intent_validator.py`
 
 **Stage 2: Comprehensive Code Review** (~10-15 seconds)
 - **Model**: `claude-opus-4-5` (primary), `claude-sonnet-4-5` (fallback on rate limits)
@@ -560,11 +561,10 @@ Note: Validation failures (SDK errors, timeouts) cause a **BLOCK** — the syste
 The two-stage system uses different message extraction strategies:
 
 **Stage 1 (Fast Declaration Check)**:
-- Extracts last 2 messages and combines them
-- Addresses Claude Code's behavior of splitting text and tool calls into separate transcript entries
-- Message N-1: Intent declaration text
-- Message N: Tool call parameters
-- Combined into single string for validation
+- Pure regex check — no LLM call, no message packaging overhead
+- Uses `extract_current_assistant_message()` to locate the current message
+- Searches back up to 3 messages for an `intent:` marker (handles split tool calls)
+- Only the located current message is passed to `_regex_stage1_check()`
 
 **Stage 2 (Comprehensive Code Review)**:
 - Extracts last 5 messages for full context
@@ -576,10 +576,10 @@ The two-stage system uses different message extraction strategies:
 
 The system uses external prompt templates:
 
-**Stage 1 Prompt**: `src/pacemaker/prompts/pre_tool_use/stage1_declaration_check.md`
-- Validates intent declaration format
-- Checks TDD requirements for core paths
-- Fast, focused validation
+**Stage 1 (Regex)**: `_regex_stage1_check()` in `src/pacemaker/intent_validator.py`
+- No prompt file — pure regex, no LLM call
+- Validates `INTENT:` marker and file mention in current message
+- Checks TDD requirements for core paths (bypassed for excluded paths)
 - Returns: `YES`, `NO`, or `NO_TDD`
 
 **Stage 2 Prompt**: `src/pacemaker/prompts/pre_tool_use/stage2_code_review.md`
@@ -602,10 +602,10 @@ The system uses external prompt templates:
 The two-stage validator uses Claude Agent SDK with different models for each stage:
 
 **Stage 1 (Declaration Check)**:
-- **Model**: `claude-sonnet-4-5` (generic alias, auto-updates)
-- **Thinking tokens**: 1024 (API minimum)
-- **Purpose**: Fast intent detection with capable model
-- **No fallback**: Single model for speed
+- **Model**: None — pure regex, no SDK or API call
+- **Latency**: ~0ms (no network I/O)
+- **Purpose**: Structural validation of intent marker and TDD declaration
+- **No fallback needed**: Deterministic regex, never fails due to rate limits
 
 **Stage 2 (Code Review)**:
 - **Primary**: `claude-opus-4-5` (highest quality analysis)
@@ -1674,7 +1674,7 @@ except Exception as e:
 
 The system uses:
 - `requests` library: HTTP calls to Langfuse API
-- `anthropic` SDK: Pre-tool validation (Stage 1 and Stage 2)
+- `anthropic` SDK: Pre-tool validation (Stage 2 only — Stage 1 is regex-based)
 - Python stdlib: All other functionality
 
 No external dependencies are required for core throttling when Langfuse and intent validation are disabled.
@@ -1785,7 +1785,6 @@ claude-pace-maker/
 │   │   │   └── parser.py        # § intel line parser
 │   │   └── prompts/             # External prompt templates
 │   │       ├── pre_tool_use/
-│   │       │   ├── stage1_declaration_check.md
 │   │       │   └── stage2_code_review.md
 │   │       ├── common/
 │   │       │   ├── intent_declaration_prompt.md

@@ -17,22 +17,29 @@ from pacemaker import intent_validator
 
 
 class TestStage2ClassificationParsing:
-    """Test Stage 2 structured CLASSIFICATION line parsing."""
+    """Test Stage 2 structured CLASSIFICATION line parsing.
+
+    Stage 1 is driven via real regex logic by crafting messages that satisfy
+    INTENT: + file mention on a non-core path (no TDD declaration required).
+    Only the external LLM call (_call_stage2_validation) is mocked.
+    """
 
     def _make_stage2_result(self, stage2_response: str) -> dict:
-        """Helper: run validate_intent_and_code with a mocked stage 2 response."""
-        current_message = "INTENT: Modify utils.py to add helper function. Test coverage: tests/test_utils.py - test_helper()"
+        """Helper: run validate_intent_and_code with a mocked stage 2 LLM response.
+
+        Stage 1 passes naturally: non-core path (helpers/utils.py has no
+        src/lib/core prefix), INTENT: marker present, basename mentioned.
+        Only Stage 2 (external LLM call) is mocked.
+        """
+        # Non-core path: no src/lib/core/source/libraries/kernel prefix
+        # Stage 1 regex: INTENT: present + "utils.py" mentioned → YES
+        current_message = "INTENT: Modify helpers/utils.py to add helper function."
         messages = [current_message]
-        file_path = "/home/project/utils.py"
+        file_path = "helpers/utils.py"
         tool_name = "Write"
         code = "def helper(): return True"
 
-        with (
-            patch("pacemaker.intent_validator.SDK_AVAILABLE", True),
-            patch("pacemaker.intent_validator._call_stage1_validation") as mock_s1,
-            patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2,
-        ):
-            mock_s1.return_value = "YES"
+        with patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2:
             mock_s2.return_value = stage2_response
 
             return intent_validator.validate_intent_and_code(
@@ -40,6 +47,7 @@ class TestStage2ClassificationParsing:
                 code=code,
                 file_path=file_path,
                 tool_name=tool_name,
+                hook_model="gpt-5",  # bypass SDK_AVAILABLE gate for Stage 2
             )
 
     def test_approved_response_is_approved(self):
@@ -176,22 +184,27 @@ CLASSIFICATION: UNKNOWN_FUTURE_VALUE"""
         assert result.get("clean_code_failure") is True
 
 
-class TestStage2ClassificationIntegration:
-    """Integration tests for end-to-end rejection categorization."""
+class TestStage2RejectionCategorization:
+    """Unit tests for end-to-end rejection categorization via Stage 2 response parsing.
+
+    Stage 1 is driven via real regex: non-core paths with INTENT: + file mention,
+    or core paths with full TDD declaration. Only Stage 2 (external LLM) is mocked.
+    """
 
     def test_missing_functionality_categorized_as_cleancode(self):
-        """End-to-end: missing functionality rejection maps to clean_code_failure=True.
+        """Missing functionality rejection maps to clean_code_failure=True.
 
         This was the original bug: 'MISSING FUNCTIONALITY' didn't match keyword list
-        so it was miscategorized as intent_validation instead of intent_validation_cleancode.
+        so it was miscategorized. Now CLASSIFICATION line drives the result.
         """
+        # Core path (src/) with TDD declaration → Stage 1 returns YES via real regex
         current_message = (
             "INTENT: Modify src/config.py to add OntapConfig dataclass, "
             "add it as Optional field on ServerConfig, and add dict-to-dataclass conversion. "
             "Test coverage: tests/test_config.py - test_ontap_config()"
         )
         messages = [current_message]
-        file_path = "/home/project/src/config.py"
+        file_path = "src/config.py"
         tool_name = "Edit"
         code = """
 @dataclass
@@ -199,7 +212,6 @@ class OntapConfig:
     host: str
     port: int
 """
-        # Only 1 of 3 declared changes present — stage 2 correctly rejects
         stage2_response = """⛔ Code Review Violations Found
 
 CHECK 1: MISSING FUNCTIONALITY
@@ -210,12 +222,7 @@ The intent declares three changes but only one is present in the proposed code:
 
 CLASSIFICATION: CLEAN_CODE"""
 
-        with (
-            patch("pacemaker.intent_validator.SDK_AVAILABLE", True),
-            patch("pacemaker.intent_validator._call_stage1_validation") as mock_s1,
-            patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2,
-        ):
-            mock_s1.return_value = "YES"
+        with patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2:
             mock_s2.return_value = stage2_response
 
             result = intent_validator.validate_intent_and_code(
@@ -223,6 +230,7 @@ CLASSIFICATION: CLEAN_CODE"""
                 code=code,
                 file_path=file_path,
                 tool_name=tool_name,
+                hook_model="gpt-5",  # bypass SDK_AVAILABLE gate
             )
 
         assert result["approved"] is False
@@ -233,19 +241,12 @@ CLASSIFICATION: CLEAN_CODE"""
 
     def test_approved_has_no_clean_code_failure_flag(self):
         """Approved result does not have clean_code_failure key."""
-        current_message = (
-            "INTENT: Modify utils.py to add helper. "
-            "Test coverage: tests/test_utils.py - test_helper()"
-        )
+        # Non-core path with INTENT: + file mention → Stage 1 YES via real regex
+        current_message = "INTENT: Modify helpers/utils.py to add helper."
         messages = [current_message]
-        file_path = "/home/project/utils.py"
+        file_path = "helpers/utils.py"
 
-        with (
-            patch("pacemaker.intent_validator.SDK_AVAILABLE", True),
-            patch("pacemaker.intent_validator._call_stage1_validation") as mock_s1,
-            patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2,
-        ):
-            mock_s1.return_value = "YES"
+        with patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2:
             mock_s2.return_value = "APPROVED"
 
             result = intent_validator.validate_intent_and_code(
@@ -253,6 +254,7 @@ CLASSIFICATION: CLEAN_CODE"""
                 code="def helper(): return True",
                 file_path=file_path,
                 tool_name="Write",
+                hook_model="gpt-5",  # bypass SDK_AVAILABLE gate
             )
 
         assert result["approved"] is True
