@@ -148,8 +148,8 @@ def _parse_last_token_count(jsonl_file: Path) -> Optional[Dict[str, Any]]:
     if last_rate_limits is None:
         return None
 
-    primary = last_rate_limits.get("primary", {})
-    secondary = last_rate_limits.get("secondary", {})
+    primary = last_rate_limits.get("primary") or {}
+    secondary = last_rate_limits.get("secondary") or {}
 
     return {
         "primary_used_pct": float(primary.get("used_percent", 0.0)),
@@ -157,8 +157,32 @@ def _parse_last_token_count(jsonl_file: Path) -> Optional[Dict[str, Any]]:
         "primary_resets_at": primary.get("resets_at"),
         "secondary_resets_at": secondary.get("resets_at"),
         "plan_type": last_rate_limits.get("plan_type"),
+        "limit_id": last_rate_limits.get("limit_id"),
         "timestamp": time.time(),
     }
+
+
+def migrate_codex_usage_schema(db_path: str) -> None:
+    """Add limit_id column to codex_usage table if it does not already exist.
+
+    Safe to call multiple times — OperationalError from duplicate column is
+    caught and ignored. Creates the DB file and table if missing.
+
+    Args:
+        db_path: Path to the SQLite database.
+    """
+
+    def operation(conn: sqlite3.Connection) -> None:
+        try:
+            conn.execute("ALTER TABLE codex_usage ADD COLUMN limit_id TEXT")
+        except sqlite3.OperationalError:
+            # Column already exists — idempotent, no action needed.
+            pass
+
+    try:
+        execute_with_retry(db_path, operation)
+    except Exception as e:
+        log_warning("codex_usage", "Failed to migrate codex_usage schema", e)
 
 
 def write_codex_usage(db_path: str, usage_data: Dict[str, Any]) -> None:
@@ -186,8 +210,9 @@ def write_codex_usage(db_path: str, usage_data: Dict[str, Any]) -> None:
             """
             INSERT OR REPLACE INTO codex_usage
                 (id, primary_used_pct, secondary_used_pct,
-                 primary_resets_at, secondary_resets_at, plan_type, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 primary_resets_at, secondary_resets_at, plan_type, limit_id,
+                 timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 SINGLETON_ID,
@@ -196,6 +221,7 @@ def write_codex_usage(db_path: str, usage_data: Dict[str, Any]) -> None:
                 usage_data.get("primary_resets_at"),
                 usage_data.get("secondary_resets_at"),
                 usage_data.get("plan_type"),
+                usage_data.get("limit_id"),
                 usage_data["timestamp"],
             ),
         )
@@ -235,6 +261,7 @@ def read_codex_usage(db_path: str) -> Optional[Dict[str, Any]]:
             "primary_resets_at": row["primary_resets_at"],
             "secondary_resets_at": row["secondary_resets_at"],
             "plan_type": row["plan_type"],
+            "limit_id": row["limit_id"] if "limit_id" in row.keys() else None,
             "timestamp": row["timestamp"],
         }
 

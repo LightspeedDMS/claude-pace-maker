@@ -35,6 +35,9 @@ from .transcript_reader import (
 )
 from .logger import log_warning, log_debug, log_info
 
+# Guards one-time schema migration for codex_usage table in SubagentStop handler.
+_codex_migration_done: bool = False
+
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
     """Load configuration from file."""
@@ -683,8 +686,16 @@ def run_subagent_stop_hook():
     try:
         hook_model = config.get("hook_model", "auto")
         if "gpt" in hook_model.lower() or "codex" in hook_model.lower():
-            from .codex_usage import get_latest_codex_usage, write_codex_usage
+            global _codex_migration_done
+            from .codex_usage import (
+                get_latest_codex_usage,
+                migrate_codex_usage_schema,
+                write_codex_usage,
+            )
 
+            if not _codex_migration_done:
+                migrate_codex_usage_schema(DEFAULT_DB_PATH)
+                _codex_migration_done = True
             usage = get_latest_codex_usage()
             if usage:
                 write_codex_usage(DEFAULT_DB_PATH, usage)

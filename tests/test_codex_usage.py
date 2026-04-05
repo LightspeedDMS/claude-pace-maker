@@ -12,6 +12,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -460,6 +461,70 @@ def test_read_codex_usage_db_error(tmp_path):
 # 18. test_write_codex_usage_db_error — covers except path (lines 208-209)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 19. test_migrate_codex_usage_schema_adds_limit_id_column
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_codex_usage_schema_adds_limit_id_column(tmp_path):
+    """migrate_codex_usage_schema adds limit_id column to old-schema DB."""
+    from pacemaker.codex_usage import migrate_codex_usage_schema
+
+    # Create DB with OLD schema (no limit_id column)
+    db_path = str(tmp_path / "old_schema.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE codex_usage (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                primary_used_pct REAL NOT NULL,
+                secondary_used_pct REAL NOT NULL,
+                primary_resets_at INTEGER,
+                secondary_resets_at INTEGER,
+                plan_type TEXT,
+                timestamp REAL NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+    # Verify column does NOT exist before migration
+    with sqlite3.connect(db_path) as conn:
+        cols_before = [row[1] for row in conn.execute("PRAGMA table_info(codex_usage)")]
+    assert "limit_id" not in cols_before
+
+    # Run migration
+    migrate_codex_usage_schema(db_path)
+
+    # Verify column EXISTS after migration
+    with sqlite3.connect(db_path) as conn:
+        cols_after = [row[1] for row in conn.execute("PRAGMA table_info(codex_usage)")]
+    assert "limit_id" in cols_after
+
+
+# ---------------------------------------------------------------------------
+# 20. test_migrate_codex_usage_schema_is_idempotent
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_codex_usage_schema_is_idempotent(tmp_path):
+    """Running migrate_codex_usage_schema twice does not raise."""
+    from pacemaker.codex_usage import migrate_codex_usage_schema
+    from pacemaker.database import initialize_database
+
+    db_path = str(tmp_path / "test.db")
+    initialize_database(db_path)
+
+    # First call: column already exists in new schema
+    migrate_codex_usage_schema(db_path)
+    # Second call: must not raise
+    migrate_codex_usage_schema(db_path)
+
+    # Verify column still present
+    with sqlite3.connect(db_path) as conn:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(codex_usage)")]
+    assert "limit_id" in cols
+
 
 def test_write_codex_usage_db_error(tmp_path, monkeypatch):
     """write_codex_usage calls log_warning and does not raise when DB is corrupt."""
@@ -489,3 +554,89 @@ def test_write_codex_usage_db_error(tmp_path, monkeypatch):
 
     assert len(warning_calls) == 1
     assert "Failed to write codex usage" in warning_calls[0][1]
+
+
+# ---------------------------------------------------------------------------
+# 21. test_hook_runs_migration_before_write_on_old_schema
+# ---------------------------------------------------------------------------
+
+
+def test_hook_runs_migration_before_write_on_old_schema(tmp_path, monkeypatch):
+    """SubagentStop hook migrates old-schema DB before writing codex usage.
+
+    Creates an old-schema DB without limit_id, sets hook_model to a codex
+    model, mocks get_latest_codex_usage to return a usage dict, then runs
+    run_subagent_stop_hook. Verifies limit_id column exists in DB afterward,
+    proving migrate_codex_usage_schema is wired before write_codex_usage.
+    """
+    import json
+    import pacemaker.hook as hook_module
+    from pacemaker.hook import run_subagent_stop_hook
+
+    # Create old-schema DB (no limit_id column)
+    db_path = str(tmp_path / "old_schema.db")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE codex_usage (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                primary_used_pct REAL NOT NULL,
+                secondary_used_pct REAL NOT NULL,
+                primary_resets_at INTEGER,
+                secondary_resets_at INTEGER,
+                plan_type TEXT,
+                timestamp REAL NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+    # Patch DEFAULT_DB_PATH to point at our old-schema DB
+    monkeypatch.setattr(hook_module, "DEFAULT_DB_PATH", db_path)
+
+    # Patch load_config to return a config with a codex model
+    monkeypatch.setattr(
+        hook_module,
+        "load_config",
+        lambda path: {"enabled": True, "hook_model": "codex-model"},
+    )
+
+    # Patch get_latest_codex_usage to return a valid usage dict
+    fake_usage = {
+        "primary_used_pct": 10.0,
+        "secondary_used_pct": 20.0,
+        "primary_resets_at": 1000000,
+        "secondary_resets_at": 2000000,
+        "plan_type": "team",
+        "limit_id": "codex",
+        "timestamp": time.time(),
+    }
+    import pacemaker.codex_usage as codex_module
+
+    monkeypatch.setattr(codex_module, "get_latest_codex_usage", lambda: fake_usage)
+
+    # Reset the module-level migration flag so migration runs fresh
+    monkeypatch.setattr(hook_module, "_codex_migration_done", False)
+
+    # Minimal hook_data for SubagentStop
+    hook_data = json.dumps(
+        {
+            "hook_event_name": "SubagentStop",
+            "session_id": "test-session",
+            "agent_id": "test-agent",
+        }
+    )
+
+    # Patch load_state and save_state to avoid filesystem side effects
+    monkeypatch.setattr(hook_module, "load_state", lambda path: {})
+    monkeypatch.setattr(hook_module, "save_state", lambda state, path: None)
+
+    import io
+
+    with patch("sys.stdin", io.StringIO(hook_data)):
+        run_subagent_stop_hook()
+
+    # Verify limit_id column now exists — migration was called
+    with sqlite3.connect(db_path) as conn:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(codex_usage)")]
+    assert "limit_id" in cols

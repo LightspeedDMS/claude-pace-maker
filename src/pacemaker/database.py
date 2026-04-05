@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS codex_usage (
     primary_resets_at INTEGER,
     secondary_resets_at INTEGER,
     plan_type TEXT,
+    limit_id TEXT,
     timestamp REAL NOT NULL
 );
 """
