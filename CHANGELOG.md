@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.11.0] - 2026-04-04
+
+### Added
+- **Clean code rules merge strategy** (#55): YAML config now stores only custom rules and deletion markers, not defaults. `load_rules()` merges at runtime: defaults minus deleted, overrides applied at position, custom appended
+- **`_load_custom_config()`**: Reads YAML returning `{rules, deleted_rules}` with validation for missing files, empty YAML, invalid types, and malformed entries
+- **`_write_config()`**: Atomic write via temp file + `os.replace()` with orphan cleanup on failure (replaces `_write_rules`)
+- **`_migrate_snapshot()`**: One-time migration strips old snapshot copies of defaults, preserving only genuine overrides and custom rules
+- **`get_rules_metadata()`**: Returns `[{id, source}]` with source as "default", "override", or "custom" for display tagging
+- **Source tags in CLI**: `pace-maker clean-code list` now shows `[default]`, `[override]`, `[custom]` tags per rule
+- **4 new security rules**: `credential-construction`, `path-traversal`, `resource-leak`, `concurrency-hazard`
+- **58 unit tests + 7 integration tests** covering all 24 acceptance criteria
+
+### Changed
+- **Default rules refactored from 25 to 20**: Merged redundant rules (`bare-except` + `swallowed-exceptions` → `exception-handling`, 4 size rules → `blob-size`, 2 mock rules → `mock-abuse`, `undeclared-fallbacks` → `silent-degradation`), removed context-dependent rules (`missing-comments`, `missing-invariants`, `excessive-indirection`, `commented-code`), sharpened descriptions for micro-review detectability
+- **`add_rule()`**: Only writes custom rule to YAML, clears deletion marker if re-adding
+- **`remove_rule()`**: Deletion marker for defaults, direct removal for custom, removes override AND suppresses default
+- **`modify_rule()`**: Override copy for defaults, in-place for custom, strips `id` from updates
+- **`format_rules_for_display()`**: Optional `config_path` parameter for source tagging
+
 ## [2.10.0] - 2026-04-04
 
 ### Added
