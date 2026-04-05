@@ -43,7 +43,7 @@ def test_cli_clean_code_add_command_with_custom_config():
     while conftest overrides HOME to a fake path.
     """
     from pacemaker.constants import DEFAULT_CLEAN_CODE_RULES_PATH
-    from pacemaker.clean_code_rules import load_rules, _write_rules
+    from pacemaker.clean_code_rules import load_rules, _write_config
     from pacemaker.user_commands import _execute_clean_code
     import shutil
 
@@ -54,16 +54,19 @@ def test_cli_clean_code_add_command_with_custom_config():
             backup_path = DEFAULT_CLEAN_CODE_RULES_PATH + ".backup"
             shutil.copy2(DEFAULT_CLEAN_CODE_RULES_PATH, backup_path)
 
-        # Initialize with a test rule
-        _write_rules(
+        # Initialize with a custom test rule (new merge-strategy format)
+        _write_config(
             DEFAULT_CLEAN_CODE_RULES_PATH,
-            [
-                {
-                    "id": "test-init",
-                    "name": "Test Init",
-                    "description": "Initial test rule",
-                }
-            ],
+            {
+                "rules": [
+                    {
+                        "id": "test-init",
+                        "name": "Test Init",
+                        "description": "Initial test rule",
+                    }
+                ],
+                "deleted_rules": [],
+            },
         )
 
         # Execute: Add rule via Python function
@@ -78,7 +81,7 @@ def test_cli_clean_code_add_command_with_custom_config():
             or "\u2713" in result["message"]
         )
 
-        # Assert: Rule was actually added to file
+        # Assert: Rule was actually added to file (merged with defaults)
         rules = load_rules(DEFAULT_CLEAN_CODE_RULES_PATH)
         assert any(r["id"] == "cli-test-rule" for r in rules)
         added_rule = next(r for r in rules if r["id"] == "cli-test-rule")
@@ -123,7 +126,7 @@ def test_cli_clean_code_modify_command():
     while conftest overrides HOME to a fake path.
     """
     from pacemaker.constants import DEFAULT_CLEAN_CODE_RULES_PATH
-    from pacemaker.clean_code_rules import load_rules, _write_rules
+    from pacemaker.clean_code_rules import load_rules, _write_config
     from pacemaker.user_commands import _execute_clean_code
     import shutil
 
@@ -134,16 +137,19 @@ def test_cli_clean_code_modify_command():
             backup_path = DEFAULT_CLEAN_CODE_RULES_PATH + ".backup"
             shutil.copy2(DEFAULT_CLEAN_CODE_RULES_PATH, backup_path)
 
-        # Initialize with a test rule
-        _write_rules(
+        # Initialize with a custom test rule (new merge-strategy format)
+        _write_config(
             DEFAULT_CLEAN_CODE_RULES_PATH,
-            [
-                {
-                    "id": "modify-test",
-                    "name": "Original Name",
-                    "description": "Original description",
-                }
-            ],
+            {
+                "rules": [
+                    {
+                        "id": "modify-test",
+                        "name": "Original Name",
+                        "description": "Original description",
+                    }
+                ],
+                "deleted_rules": [],
+            },
         )
 
         # Execute: Modify rule via Python function
@@ -158,7 +164,7 @@ def test_cli_clean_code_modify_command():
             or "\u2713" in result["message"]
         )
 
-        # Assert: Rule was actually modified in file
+        # Assert: Rule was actually modified in file (merged with defaults)
         rules = load_rules(DEFAULT_CLEAN_CODE_RULES_PATH)
         modified_rule = next(r for r in rules if r["id"] == "modify-test")
         assert modified_rule["description"] == "Updated via CLI test"
@@ -181,7 +187,7 @@ def test_cli_clean_code_remove_command():
     while conftest overrides HOME to a fake path.
     """
     from pacemaker.constants import DEFAULT_CLEAN_CODE_RULES_PATH
-    from pacemaker.clean_code_rules import load_rules, _write_rules
+    from pacemaker.clean_code_rules import load_rules, _write_config
     from pacemaker.user_commands import _execute_clean_code
     import shutil
 
@@ -192,17 +198,24 @@ def test_cli_clean_code_remove_command():
             backup_path = DEFAULT_CLEAN_CODE_RULES_PATH + ".backup"
             shutil.copy2(DEFAULT_CLEAN_CODE_RULES_PATH, backup_path)
 
-        # Initialize with two test rules
-        _write_rules(
+        # Initialize with two custom test rules (new merge-strategy format)
+        _write_config(
             DEFAULT_CLEAN_CODE_RULES_PATH,
-            [
-                {"id": "keep-rule", "name": "Keep This", "description": "Rule to keep"},
-                {
-                    "id": "remove-rule",
-                    "name": "Remove This",
-                    "description": "Rule to remove",
-                },
-            ],
+            {
+                "rules": [
+                    {
+                        "id": "keep-rule",
+                        "name": "Keep This",
+                        "description": "Rule to keep",
+                    },
+                    {
+                        "id": "remove-rule",
+                        "name": "Remove This",
+                        "description": "Rule to remove",
+                    },
+                ],
+                "deleted_rules": [],
+            },
         )
 
         # Execute: Remove rule via Python function
@@ -215,10 +228,9 @@ def test_cli_clean_code_remove_command():
             or "\u2713" in result["message"]
         )
 
-        # Assert: Rule was actually removed from file
+        # Assert: Rule was actually removed (merged with defaults, so check absence)
         rules = load_rules(DEFAULT_CLEAN_CODE_RULES_PATH)
-        assert len(rules) == 1
-        assert rules[0]["id"] == "keep-rule"
+        assert any(r["id"] == "keep-rule" for r in rules)
         assert all(r["id"] != "remove-rule" for r in rules)
 
     finally:
