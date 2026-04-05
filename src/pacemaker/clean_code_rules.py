@@ -229,18 +229,23 @@ def _write_config(config_path: str, custom_config: Dict) -> None:
         os.makedirs(dirname, exist_ok=True)
 
     tmp_path = config_path + ".tmp"
-    with open(tmp_path, "w") as f:
-        yaml.safe_dump(
-            {
-                "rules": custom_config["rules"],
-                "deleted_rules": custom_config["deleted_rules"],
-            },
-            f,
-            default_flow_style=False,
-            sort_keys=False,
-            allow_unicode=True,
-        )
-    os.replace(tmp_path, config_path)
+    try:
+        with open(tmp_path, "w") as f:
+            yaml.safe_dump(
+                {
+                    "rules": custom_config["rules"],
+                    "deleted_rules": custom_config["deleted_rules"],
+                },
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+        os.replace(tmp_path, config_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 def _migrate_snapshot(config_path: str) -> None:
