@@ -2174,12 +2174,18 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                         )
 
                         # Phase 1: Check for INTENT: marker (fast reject, no LLM)
+                        # Use n=4 and extract_current_assistant_message to search
+                        # backward for INTENT: across multiple messages, same as
+                        # Write/Edit validation.
                         messages = get_last_n_messages_for_validation(
-                            transcript_path, n=2
+                            transcript_path, n=4
                         )
-                        current_message = messages[-1] if messages else ""
+                        from .intent_validator import (
+                            _has_intent_marker,
+                            extract_current_assistant_message,
+                        )
 
-                        from .intent_validator import _has_intent_marker
+                        current_message = extract_current_assistant_message(messages)
 
                         if not _has_intent_marker(current_message):
                             # Phase 1 BLOCKED — no intent declared
