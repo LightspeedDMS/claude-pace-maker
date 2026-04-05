@@ -1828,7 +1828,9 @@ def _execute_clean_code(subcommand: Optional[str]) -> Dict[str, Any]:
             rules = clean_code_rules.load_rules(
                 DEFAULT_CLEAN_CODE_RULES_PATH, strict=True
             )
-            formatted = clean_code_rules.format_rules_for_display(rules)
+            formatted = clean_code_rules.format_rules_for_display(
+                rules, config_path=DEFAULT_CLEAN_CODE_RULES_PATH
+            )
             return {"success": True, "message": formatted}
         except ValueError as e:
             return {
