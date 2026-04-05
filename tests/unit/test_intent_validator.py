@@ -1051,3 +1051,95 @@ def test_regex_ac12_version_bump_across_newline():
         "src/pacemaker/__init__.py",
     )
     assert result == "YES"
+
+
+# ---------------------------------------------------------------------------
+# Tests: validate_intent_and_code() includes "reviewer" field in result dict
+# ---------------------------------------------------------------------------
+
+
+def test_validate_intent_and_code_stage1_no_includes_reviewer():
+    """Stage 1 NO (no INTENT marker) result includes reviewer field."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_and_code
+
+    with patch("pacemaker.intent_validator._call_stage2_validation"):
+        result = validate_intent_and_code(
+            messages=["No intent marker here."],
+            code="def bar(): pass",
+            file_path="scripts/foo.py",
+            tool_name="Write",
+            hook_model="gpt-5",
+        )
+
+    assert result["approved"] is False
+    assert "reviewer" in result
+
+
+def test_validate_intent_and_code_stage1_no_tdd_includes_reviewer():
+    """Stage 1 NO_TDD (core path, missing TDD) result includes reviewer field."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_and_code
+
+    with patch("pacemaker.intent_validator._call_stage2_validation"):
+        result = validate_intent_and_code(
+            messages=["INTENT: Modify src/foo.py to add bar()."],
+            code="def bar(): pass",
+            file_path="src/foo.py",
+            tool_name="Write",
+            hook_model="gpt-5",
+        )
+
+    assert result["approved"] is False
+    assert result.get("tdd_failure") is True
+    assert "reviewer" in result
+
+
+def test_validate_intent_and_code_stage2_approved_includes_reviewer():
+    """Stage 2 APPROVED result includes reviewer field set to provider name."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_and_code
+
+    with patch(
+        "pacemaker.inference.registry.resolve_and_call_with_reviewer",
+        return_value=("APPROVED", "codex-gpt5"),
+    ):
+        result = validate_intent_and_code(
+            messages=[
+                "INTENT: Modify scripts/foo.py to add bar().\n"
+                "Test: tests/test_foo.py::test_bar"
+            ],
+            code="def bar(): pass",
+            file_path="scripts/foo.py",
+            tool_name="Write",
+            hook_model="gpt-5",
+        )
+
+    assert result["approved"] is True
+    assert "reviewer" in result
+    assert result["reviewer"] == "codex-gpt5"
+
+
+def test_validate_intent_and_code_stage2_blocked_includes_reviewer():
+    """Stage 2 BLOCKED result includes reviewer field set to provider name."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_and_code
+
+    with patch(
+        "pacemaker.inference.registry.resolve_and_call_with_reviewer",
+        return_value=("Code review feedback here.", "anthropic-sdk"),
+    ):
+        result = validate_intent_and_code(
+            messages=[
+                "INTENT: Modify scripts/foo.py to add bar().\n"
+                "Test: tests/test_foo.py::test_bar"
+            ],
+            code="def bar(): pass",
+            file_path="scripts/foo.py",
+            tool_name="Write",
+            hook_model="gpt-5",
+        )
+
+    assert result["approved"] is False
+    assert "reviewer" in result
+    assert result["reviewer"] == "anthropic-sdk"

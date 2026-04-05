@@ -2236,7 +2236,11 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 reason=result.get("feedback", "Validation failed"),
                 hook_type="pre_tool_use",
                 session_id=session_id or "unknown",
-                details={"tool": tool_name, "file_path": file_path},
+                details={
+                    "tool": tool_name,
+                    "file_path": file_path,
+                    "reviewer": result.get("reviewer", "unknown"),
+                },
             )
 
             # Record governance event for live event feed
@@ -2248,12 +2252,16 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 }
                 _event_type = _category_to_event_type.get(category, "IV")
                 _project_name = os.path.basename(os.getcwd())
+                _feedback = result.get("feedback", "Validation failed")
+                _reviewer = result.get("reviewer", "")
+                if _reviewer:
+                    _feedback = f"[REVIEWER:{_reviewer}] {_feedback}"
                 record_governance_event(
                     db_path=DEFAULT_DB_PATH,
                     event_type=_event_type,
                     project_name=_project_name,
                     session_id=session_id or "unknown",
-                    feedback_text=result.get("feedback", "Validation failed"),
+                    feedback_text=_feedback,
                 )
             except Exception:
                 pass  # Governance recording must never break pre-tool hook

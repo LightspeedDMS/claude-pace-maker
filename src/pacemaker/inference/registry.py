@@ -2,6 +2,12 @@
 
 from .provider import ProviderError
 from ..logger import log_warning
+from ..codex_usage import (
+    get_latest_codex_usage,
+    write_codex_usage,
+    migrate_codex_usage_schema,
+)
+from ..constants import DEFAULT_DB_PATH
 
 
 # Call context → default model hint when hook_model is "auto"
@@ -12,6 +18,22 @@ _AUTO_DEFAULTS = {
     "stage2_unified": "opus",  # _call_unified_validation_async: tries opus first
     "code_review": "sonnet",  # _call_sdk_review_async: tries sonnet first
 }
+
+# Reviewer name constants — identify which provider actually served the request
+_REVIEWER_CODEX = "codex-gpt5"
+_REVIEWER_SDK = "anthropic-sdk"
+_REVIEWER_UNKNOWN = "unknown"
+
+
+def _refresh_codex_usage() -> None:
+    """Refresh codex usage DB from session files. Logs and continues on errors."""
+    try:
+        migrate_codex_usage_schema(DEFAULT_DB_PATH)
+        usage = get_latest_codex_usage()
+        if usage:
+            write_codex_usage(DEFAULT_DB_PATH, usage)
+    except Exception as e:
+        log_warning("registry", f"Codex usage refresh failed: {e}")
 
 
 def get_provider(hook_model: str):
@@ -59,6 +81,78 @@ def resolve_model_for_call(hook_model: str, call_context: str) -> str:
     return hook_model
 
 
+def resolve_and_call_with_reviewer(
+    hook_model: str,
+    prompt: str,
+    system_prompt: str,
+    call_context: str,
+    max_thinking_tokens: int = 4000,
+) -> tuple:
+    """Top-level orchestrator returning (response, reviewer_name) with fallback.
+
+    Fallback chain: selected provider → auto (Anthropic) → fail-open (empty string)
+    When the actual failing provider is CodexProvider, refreshes codex usage DB
+    from session files before invoking the fallback provider.
+
+    Reviewer identity is determined from the concrete provider instance actually
+    used (not from the hook_model string) to ensure correctness when unknown
+    hook_model values fall back to Anthropic.
+
+    Args:
+        hook_model: Config value for hook inference model
+        prompt: The validation/review prompt
+        system_prompt: System instructions for the model
+        call_context: Call site identifier for model resolution
+        max_thinking_tokens: Max thinking tokens for the model
+
+    Returns:
+        Tuple of (response_text, reviewer_name) where reviewer_name identifies
+        the provider that actually served the request:
+        - "codex-gpt5" for Codex CLI
+        - "anthropic-sdk" for Anthropic SDK
+        - "unknown" on complete failure (fail-open)
+    """
+    from .codex_provider import CodexProvider
+
+    provider = get_provider(hook_model)
+    model_hint = resolve_model_for_call(hook_model, call_context)
+    is_codex_provider = isinstance(provider, CodexProvider)
+
+    try:
+        response = provider.query(
+            prompt, system_prompt, model_hint, max_thinking_tokens
+        )
+        reviewer = _REVIEWER_CODEX if is_codex_provider else _REVIEWER_SDK
+        return response, reviewer
+    except ProviderError as e:
+        if hook_model != "auto":
+            log_warning(
+                "registry",
+                f"Primary provider failed for hook_model='{hook_model}' ({e}), "
+                "falling back to auto (Anthropic)",
+            )
+
+            # Refresh codex usage from session files when the actual Codex provider fails
+            if is_codex_provider:
+                _refresh_codex_usage()
+
+            from .anthropic_provider import AnthropicProvider
+
+            fallback_provider = AnthropicProvider()
+            fallback_hint = resolve_model_for_call("auto", call_context)
+            try:
+                response = fallback_provider.query(
+                    prompt, system_prompt, fallback_hint, max_thinking_tokens
+                )
+                return response, _REVIEWER_SDK
+            except ProviderError as e2:
+                log_warning("registry", f"Fallback also failed ({e2}), fail-open")
+                return "", _REVIEWER_UNKNOWN
+        else:
+            log_warning("registry", f"Anthropic failed ({e}), fail-open")
+            return "", _REVIEWER_UNKNOWN
+
+
 def resolve_and_call(
     hook_model: str,
     prompt: str,
@@ -80,29 +174,7 @@ def resolve_and_call(
     Returns:
         Model response text, or empty string on complete failure (fail-open)
     """
-    provider = get_provider(hook_model)
-    model_hint = resolve_model_for_call(hook_model, call_context)
-
-    try:
-        return provider.query(prompt, system_prompt, model_hint, max_thinking_tokens)
-    except ProviderError as e:
-        if hook_model != "auto":
-            log_warning(
-                "registry",
-                f"Primary provider failed for hook_model='{hook_model}' ({e}), "
-                "falling back to auto (Anthropic)",
-            )
-            from .anthropic_provider import AnthropicProvider
-
-            fallback_provider = AnthropicProvider()
-            fallback_hint = resolve_model_for_call("auto", call_context)
-            try:
-                return fallback_provider.query(
-                    prompt, system_prompt, fallback_hint, max_thinking_tokens
-                )
-            except ProviderError as e2:
-                log_warning("registry", f"Fallback also failed ({e2}), fail-open")
-                return ""
-        else:
-            log_warning("registry", f"Anthropic failed ({e}), fail-open")
-            return ""
+    response, _ = resolve_and_call_with_reviewer(
+        hook_model, prompt, system_prompt, call_context, max_thinking_tokens
+    )
+    return response

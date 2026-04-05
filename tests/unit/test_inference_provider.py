@@ -381,6 +381,253 @@ class TestRegistry:
         assert mock_provider.query.call_count == 1
 
 
+class TestResolveAndCallWithReviewer:
+    """Tests for resolve_and_call_with_reviewer() returning (response, reviewer) tuple."""
+
+    def test_primary_success_returns_response_and_codex_reviewer(self):
+        """resolve_and_call_with_reviewer with gpt-5 success returns ('YES', 'codex-gpt5').
+
+        Patches CodexProvider.query directly so isinstance(provider, CodexProvider)
+        returns True — confirming reviewer identity from the real provider type.
+        """
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+        from pacemaker.inference.codex_provider import CodexProvider
+
+        with patch.object(CodexProvider, "query", return_value="YES"):
+            response, reviewer = resolve_and_call_with_reviewer(
+                "gpt-5", "prompt", "sys", "stage1", 4000
+            )
+
+        assert response == "YES"
+        assert reviewer == "codex-gpt5"
+
+    def test_auto_model_returns_anthropic_sdk_reviewer(self):
+        """resolve_and_call_with_reviewer with auto returns reviewer 'anthropic-sdk'."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+
+        with patch("pacemaker.inference.registry.get_provider") as mock_get:
+            mock_provider = MagicMock()
+            mock_provider.query.return_value = "APPROVED"
+            mock_get.return_value = mock_provider
+
+            response, reviewer = resolve_and_call_with_reviewer(
+                "auto", "prompt", "sys", "stage1", 4000
+            )
+
+        assert response == "APPROVED"
+        assert reviewer == "anthropic-sdk"
+
+    def test_fallback_returns_anthropic_sdk_reviewer(self):
+        """When codex fails and fallback succeeds, reviewer is 'anthropic-sdk'."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+        from pacemaker.inference.provider import ProviderError
+
+        mock_primary = MagicMock()
+        mock_primary.query.side_effect = ProviderError("codex failed")
+
+        mock_fallback = MagicMock()
+        mock_fallback.query.return_value = "FALLBACK_YES"
+
+        with patch(
+            "pacemaker.inference.registry.get_provider", return_value=mock_primary
+        ):
+            with patch(
+                "pacemaker.inference.anthropic_provider.AnthropicProvider",
+                return_value=mock_fallback,
+            ):
+                with patch(
+                    "pacemaker.inference.registry.get_latest_codex_usage",
+                    return_value=None,
+                ):
+                    response, reviewer = resolve_and_call_with_reviewer(
+                        "gpt-5", "prompt", "sys", "stage1", 4000
+                    )
+
+        assert response == "FALLBACK_YES"
+        assert reviewer == "anthropic-sdk"
+
+    def test_both_fail_returns_empty_and_unknown_reviewer(self):
+        """When both providers fail, returns ('', 'unknown')."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+        from pacemaker.inference.provider import ProviderError
+
+        mock_provider = MagicMock()
+        mock_provider.query.side_effect = ProviderError("failed")
+
+        with patch(
+            "pacemaker.inference.registry.get_provider", return_value=mock_provider
+        ):
+            with patch(
+                "pacemaker.inference.anthropic_provider.AnthropicProvider",
+                return_value=mock_provider,
+            ):
+                with patch(
+                    "pacemaker.inference.registry.get_latest_codex_usage",
+                    return_value=None,
+                ):
+                    response, reviewer = resolve_and_call_with_reviewer(
+                        "gpt-5", "prompt", "sys", "stage1", 4000
+                    )
+
+        assert response == ""
+        assert reviewer == "unknown"
+
+    def test_sonnet_model_returns_anthropic_sdk_reviewer(self):
+        """Explicit sonnet model returns 'anthropic-sdk' reviewer."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+
+        with patch("pacemaker.inference.registry.get_provider") as mock_get:
+            mock_provider = MagicMock()
+            mock_provider.query.return_value = "YES"
+            mock_get.return_value = mock_provider
+
+            response, reviewer = resolve_and_call_with_reviewer(
+                "sonnet", "prompt", "sys", "stage1", 4000
+            )
+
+        assert response == "YES"
+        assert reviewer == "anthropic-sdk"
+
+    def test_resolve_and_call_backward_compat_still_returns_str(self):
+        """Original resolve_and_call still returns str (backward compatible)."""
+        from pacemaker.inference.registry import resolve_and_call
+
+        with patch("pacemaker.inference.registry.get_provider") as mock_get:
+            mock_provider = MagicMock()
+            mock_provider.query.return_value = "YES"
+            mock_get.return_value = mock_provider
+
+            result = resolve_and_call("auto", "prompt", "sys", "stage1", 4000)
+
+        assert isinstance(result, str)
+        assert result == "YES"
+
+
+class TestCodexUsageRefreshOnFallback:
+    """Tests for codex usage DB refresh when Codex fails and falls back."""
+
+    def test_codex_fallback_triggers_usage_refresh(self):
+        """When gpt-5 provider fails, get_latest_codex_usage is called."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+        from pacemaker.inference.provider import ProviderError
+        from pacemaker.inference.codex_provider import CodexProvider
+
+        # Test double that IS a CodexProvider (passes isinstance) but raises on query
+        class FailingCodexProvider(CodexProvider):
+            def __init__(self):
+                pass  # skip parent __init__
+
+            def query(self, prompt, system_prompt, model_hint, max_thinking_tokens):
+                raise ProviderError("codex exit 1")
+
+        # Test double for fallback
+        mock_fallback_instance = MagicMock()
+        mock_fallback_instance.query.return_value = "YES"
+        MockAnthropicProvider = MagicMock(return_value=mock_fallback_instance)
+
+        with patch(
+            "pacemaker.inference.codex_provider.CodexProvider", FailingCodexProvider
+        ):
+            with patch(
+                "pacemaker.inference.anthropic_provider.AnthropicProvider",
+                MockAnthropicProvider,
+            ):
+                with patch(
+                    "pacemaker.inference.registry.get_latest_codex_usage"
+                ) as mock_get_usage:
+                    with patch(
+                        "pacemaker.inference.registry.migrate_codex_usage_schema"
+                    ):
+                        mock_get_usage.return_value = None
+                        resolve_and_call_with_reviewer(
+                            "gpt-5", "prompt", "sys", "stage1", 4000
+                        )
+
+        mock_get_usage.assert_called_once()
+
+    def test_codex_fallback_writes_usage_when_available(self):
+        """When gpt-5 fails and session data exists, write_codex_usage is called."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+        from pacemaker.inference.provider import ProviderError
+        from pacemaker.inference.codex_provider import CodexProvider
+
+        # Test double that IS a CodexProvider (passes isinstance) but raises on query
+        class FailingCodexProvider(CodexProvider):
+            def __init__(self):
+                pass  # skip parent __init__
+
+            def query(self, prompt, system_prompt, model_hint, max_thinking_tokens):
+                raise ProviderError("codex empty response")
+
+        # Test double for fallback
+        mock_fallback_instance = MagicMock()
+        mock_fallback_instance.query.return_value = "YES"
+        MockAnthropicProvider = MagicMock(return_value=mock_fallback_instance)
+
+        usage_data = {
+            "primary_used_pct": 42.0,
+            "secondary_used_pct": 10.0,
+            "timestamp": 9999999.0,
+        }
+
+        with patch(
+            "pacemaker.inference.codex_provider.CodexProvider", FailingCodexProvider
+        ):
+            with patch(
+                "pacemaker.inference.anthropic_provider.AnthropicProvider",
+                MockAnthropicProvider,
+            ):
+                with patch(
+                    "pacemaker.inference.registry.get_latest_codex_usage",
+                    return_value=usage_data,
+                ):
+                    with patch(
+                        "pacemaker.inference.registry.write_codex_usage"
+                    ) as mock_write:
+                        with patch(
+                            "pacemaker.inference.registry.migrate_codex_usage_schema"
+                        ):
+                            resolve_and_call_with_reviewer(
+                                "gpt-5", "prompt", "sys", "stage1", 4000
+                            )
+
+        mock_write.assert_called_once()
+
+    def test_non_codex_model_does_not_refresh_usage(self):
+        """When hook_model is 'auto', no codex usage refresh is attempted."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+        from pacemaker.inference.provider import ProviderError
+
+        mock_provider = MagicMock()
+        mock_provider.query.side_effect = ProviderError("auto failed")
+
+        with patch(
+            "pacemaker.inference.registry.get_provider", return_value=mock_provider
+        ):
+            with patch(
+                "pacemaker.inference.registry.get_latest_codex_usage"
+            ) as mock_get_usage:
+                resolve_and_call_with_reviewer("auto", "prompt", "sys", "stage1", 4000)
+
+        mock_get_usage.assert_not_called()
+
+    def test_codex_success_does_not_refresh_usage(self):
+        """When gpt-5 succeeds, no codex usage refresh is triggered."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+
+        with patch("pacemaker.inference.registry.get_provider") as mock_get:
+            mock_provider = MagicMock()
+            mock_provider.query.return_value = "YES"
+            mock_get.return_value = mock_provider
+
+            with patch(
+                "pacemaker.inference.registry.get_latest_codex_usage"
+            ) as mock_get_usage:
+                resolve_and_call_with_reviewer("gpt-5", "prompt", "sys", "stage1", 4000)
+
+        mock_get_usage.assert_not_called()
+
+
 class TestConfigDefault:
     """Tests for hook_model config default."""
 

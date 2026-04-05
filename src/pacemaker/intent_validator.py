@@ -646,7 +646,7 @@ def _regex_stage1_check(current_message: str, file_path: str, exclusions: list) 
     return "NO_TDD"
 
 
-def _call_stage2_validation(prompt: str, hook_model: str = "auto") -> str:
+def _call_stage2_validation(prompt: str, hook_model: str = "auto") -> "tuple[str, str]":
     """
     Synchronous Stage 2 validation via provider abstraction.
 
@@ -655,11 +655,12 @@ def _call_stage2_validation(prompt: str, hook_model: str = "auto") -> str:
         hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5"
 
     Returns:
-        SDK response text (feedback or empty/APPROVED)
+        Tuple of (response_text, reviewer_name) where reviewer_name identifies
+        which provider served the request (e.g. "codex-gpt5", "anthropic-sdk").
     """
-    from .inference import resolve_and_call
+    from .inference import resolve_and_call_with_reviewer
 
-    return resolve_and_call(
+    return resolve_and_call_with_reviewer(
         hook_model=hook_model,
         prompt=prompt,
         system_prompt="You are a strict code validator. Return empty response ONLY if all checks pass. Otherwise return detailed feedback.",
@@ -964,7 +965,9 @@ System failing closed to prevent bypassing intent declaration requirements.""",
             "intent_validator", f"Stage 2 prompt length: {len(stage2_prompt)} chars"
         )
 
-        stage2_feedback = _call_stage2_validation(stage2_prompt, hook_model=hook_model)
+        stage2_feedback, reviewer = _call_stage2_validation(
+            stage2_prompt, hook_model=hook_model
+        )
         log_debug(
             "intent_validator",
             f"Stage 2 SDK response length: {len(stage2_feedback)} chars",
@@ -973,11 +976,12 @@ System failing closed to prevent bypassing intent declaration requirements.""",
             "intent_validator",
             f"Stage 2 feedback preview: {stage2_feedback[:200] if stage2_feedback else '(empty)'}...",
         )
+        log_debug("intent_validator", f"Stage 2 reviewer: {reviewer}")
 
         if stage2_feedback.strip().upper() == "APPROVED":
             # APPROVED response = approved
             log_debug("intent_validator", "=== STAGE 2 APPROVED ===")
-            return {"approved": True}
+            return {"approved": True, "reviewer": reviewer}
         else:
             # Any other response = blocked with feedback
             log_debug("intent_validator", "=== STAGE 2 BLOCKED (has feedback) ===")
@@ -991,6 +995,7 @@ System failing closed to prevent bypassing intent declaration requirements.""",
                 "approved": False,
                 "feedback": stage2_feedback,
                 "clean_code_failure": is_clean_code_failure,
+                "reviewer": reviewer,
             }
 
     except Exception as e:
