@@ -33,7 +33,21 @@ the file, prefer APPROVED over a false rejection. A missed issue is recoverable;
 a false block wastes developer time and erodes trust in the review system.
 ════════════════════════════════════════════════════════════════
 
-YOUR TASK - TWO VALIDATION CHECKS:
+YOUR TASK - THREE VALIDATION CHECKS:
+
+════════════════════════════════════════════════════════════════
+CHECK 0: INTENT SPECIFICITY (CRITICAL — prevents vague declarations from passing)
+════════════════════════════════════════════════════════════════
+
+Before checking code quality, validate that the INTENT declaration itself is meaningful:
+- Does it specify WHAT specific changes are being made? (not just "fix the thing" or "update the code")
+- Does it specify WHY/GOAL of the changes? (not just "because it needs fixing")
+- Is it specific enough that you could verify the code against it?
+
+If the intent declaration is too vague to verify against the code, REJECT with feedback:
+"Intent declaration is too vague. Specify: (1) what specific changes you're making, (2) why/goal."
+
+A vague intent like "fix the thing", "update the code", "doing stuff because reasons" MUST be rejected.
 
 ════════════════════════════════════════════════════════════════
 CHECK 1: CODE MATCHES INTENT

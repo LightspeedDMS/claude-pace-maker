@@ -11,6 +11,7 @@ This module validates if Claude completed the user's original request by:
 """
 
 import os
+import re
 import contextlib
 from typing import Any, Dict, List
 
@@ -573,116 +574,74 @@ def extract_current_assistant_message(messages: List[str]) -> str:
     return current_tool
 
 
-def _build_stage1_prompt(current_message: str, file_path: str, tool_name: str) -> str:
-    """
-    Build Stage 1 validation prompt from external template.
+def _has_intent_marker(text: str):
+    """Return re.Match if INTENT: marker found (case-insensitive), else None."""
+    return re.search(r"(?i)\bintent\s*:", text)
+
+
+def _mentions_file(text: str, file_path: str) -> bool:
+    """Return True if basename or full path appears in text."""
+    basename = os.path.basename(file_path)
+    return basename in text or file_path in text
+
+
+def _is_core_path(file_path: str) -> bool:
+    """Return True if file_path is under a core directory (src/lib/core/source/libraries/kernel)."""
+    return bool(re.search(r"(?:^|/)(src|lib|core|source|libraries|kernel)/", file_path))
+
+
+def _is_version_bump(intent_text: str) -> bool:
+    """Return True if intent_text describes a version bump with a digit."""
+    if re.search(
+        r"(?i)(bump|update|change|set)\s+(the\s+)?version\b.*?\d", intent_text
+    ):
+        return True
+    return bool(re.search(r"(?i)version\s+bump\b.*?\d", intent_text))
+
+
+def _has_tdd_declaration(intent_text: str) -> bool:
+    """Return True if a structured TDD or skip-TDD declaration is present."""
+    if re.search(r"(?i)(test\s+coverage|covered\s+by|test\s*:)\s*\S+", intent_text):
+        return True
+    return bool(re.search(r"(?i)user\s+permission\s+(to\s+)?skip\s+tdd", intent_text))
+
+
+def _regex_stage1_check(current_message: str, file_path: str, exclusions: list) -> str:
+    """Regex-based Stage 1 structural check. Returns YES, NO, or NO_TDD.
 
     Args:
-        current_message: Current assistant message
-        file_path: Target file path
-        tool_name: Write or Edit
+        current_message: Current assistant message text
+        file_path: Target file path (relative or absolute)
+        exclusions: List of excluded path prefixes (e.g. ["tests/", ".tmp/"])
 
     Returns:
-        Stage 1 prompt string with variables replaced
+        "YES"    – intent declared, file mentioned, TDD satisfied (or not required)
+        "NO"     – intent marker missing, file not mentioned, or invalid file_path
+        "NO_TDD" – intent and file present, core path, but TDD not declared
     """
-    module_dir = os.path.dirname(__file__)
-    prompt_path = os.path.join(
-        module_dir, "prompts", "pre_tool_use", "stage1_declaration_check.md"
-    )
+    if not file_path or not os.path.basename(file_path):
+        return "NO"
 
-    if not os.path.exists(prompt_path):
-        raise FileNotFoundError(
-            f"Stage 1 prompt template not found at {prompt_path}. "
-            "This indicates a broken installation. Run ./install.sh to fix."
-        )
+    intent_match = _has_intent_marker(current_message)
+    if not intent_match:
+        return "NO"
 
-    template = load_prompt_template(prompt_path)
+    if not _mentions_file(current_message, file_path):
+        return "NO"
 
-    # Load excluded paths and format for prompt
-    from .constants import DEFAULT_EXCLUDED_PATHS_PATH
-    from . import excluded_paths
+    from .excluded_paths import is_excluded_path
 
-    exclusions = excluded_paths.load_exclusions(DEFAULT_EXCLUDED_PATHS_PATH)
-    excluded_paths_text = excluded_paths.format_exclusions_for_prompt(exclusions)
+    if is_excluded_path(file_path, exclusions):
+        return "YES"
 
-    # Replace placeholders
-    prompt = template.format(
-        current_message=current_message, file_path=file_path, tool_name=tool_name
-    )
+    if not _is_core_path(file_path):
+        return "YES"
 
-    # Replace excluded_paths placeholder
-    # NOTE: Template has {{excluded_paths}} (double braces), but .format() above
-    # consumes one layer, leaving {excluded_paths} (single braces)
-    prompt = prompt.replace("{excluded_paths}", excluded_paths_text)
+    intent_text = current_message[intent_match.end() :]
+    if _is_version_bump(intent_text) or _has_tdd_declaration(intent_text):
+        return "YES"
 
-    return prompt
-
-
-async def _call_stage1_validation_async(prompt: str) -> str:
-    """
-    Call SDK with Haiku for Stage 1 fast validation.
-
-    Args:
-        prompt: Stage 1 validation prompt
-
-    Returns:
-        SDK response text (YES, NO, or NO_TDD)
-    """
-    if not SDK_AVAILABLE:
-        raise ImportError("Claude Agent SDK not available")
-
-    # Fresh import to avoid cached state
-    from claude_agent_sdk import query as fresh_query
-    from claude_agent_sdk.types import (  # type: ignore[import-not-found]
-        ClaudeAgentOptions as FreshOptions,
-        ResultMessage as FreshResult,
-    )
-
-    # Use Sonnet for better intent detection (Stage 1)
-    options = FreshOptions(
-        max_turns=1,
-        model="claude-sonnet-4-5",
-        max_thinking_tokens=1024,  # API minimum is 1024
-        system_prompt="You are validating intent declarations. Respond with YES, NO, or NO_TDD only.",
-        disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
-    )
-
-    response_text = ""
-    try:
-        with _clean_sdk_env():
-            async for message in fresh_query(prompt=prompt, options=options):
-                if isinstance(message, FreshResult):
-                    if hasattr(message, "result") and message.result:
-                        response_text = message.result.strip()
-    except Exception as e:
-        log_warning("intent_validator", "Stage 1 validation call failed", e)
-
-    return response_text
-
-
-def _call_stage1_validation(prompt: str, hook_model: str = "auto") -> str:
-    """
-    Synchronous Stage 1 validation via provider abstraction.
-
-    Args:
-        prompt: Stage 1 validation prompt
-        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5"
-
-    Returns:
-        SDK response text (YES, NO, or NO_TDD)
-    """
-    if not SDK_AVAILABLE and hook_model in ("auto", "sonnet", "opus", "haiku"):
-        raise ImportError("Claude Agent SDK not available")
-
-    from .inference import resolve_and_call
-
-    return resolve_and_call(
-        hook_model=hook_model,
-        prompt=prompt,
-        system_prompt="You are validating intent declarations. Respond with YES, NO, or NO_TDD only.",
-        call_context="stage1",
-        max_thinking_tokens=1024,
-    )
+    return "NO_TDD"
 
 
 def _call_stage2_validation(prompt: str, hook_model: str = "auto") -> str:
@@ -928,25 +887,18 @@ System failing closed to prevent bypassing intent declaration requirements.""",
             "intent_validator", f"Current message preview: {current_message[:200]}..."
         )
 
-        stage1_prompt = _build_stage1_prompt(current_message, file_path, tool_name)
-        log_debug(
-            "intent_validator", f"Stage 1 prompt length: {len(stage1_prompt)} chars"
+        # Load exclusions for regex check
+        from .constants import DEFAULT_EXCLUDED_PATHS_PATH
+        from .excluded_paths import load_exclusions
+
+        exclusions = load_exclusions(DEFAULT_EXCLUDED_PATHS_PATH)
+
+        # STAGE 1: Fast regex structural check (no LLM call)
+        stage1_response_upper = _regex_stage1_check(
+            current_message, file_path, exclusions
         )
-        log_debug("intent_validator", "=" * 80)
-        log_debug("intent_validator", "STAGE 1 COMPLETE PROMPT BEING SENT TO SDK:")
-        log_debug("intent_validator", "=" * 80)
-        log_debug("intent_validator", stage1_prompt)
-        log_debug("intent_validator", "=" * 80)
-        log_debug("intent_validator", "END OF STAGE 1 PROMPT")
-        log_debug("intent_validator", "=" * 80)
-
-        stage1_response = _call_stage1_validation(stage1_prompt, hook_model=hook_model)
-        log_debug("intent_validator", f"Stage 1 SDK response: '{stage1_response}'")
-
-        # Parse Stage 1 response
-        stage1_response_upper = stage1_response.strip().upper()
         log_debug(
-            "intent_validator", f"Stage 1 parsed response: '{stage1_response_upper}'"
+            "intent_validator", f"Stage 1 regex response: '{stage1_response_upper}'"
         )
 
         if stage1_response_upper == "NO":
