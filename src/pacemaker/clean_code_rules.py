@@ -65,7 +65,7 @@ def get_default_rules() -> List[Dict[str, str]]:
         {
             "id": "concurrency-hazard",
             "name": "No Concurrency Hazards",
-            "description": "Shared mutable state accessed without synchronization: module-level mutable variables written from functions, class-level mutable attributes modified without locks, global keyword usage in concurrent contexts",
+            "description": "Shared mutable state accessed without synchronization: module-level mutable variables modified without locks, class-level mutable attributes modified without locks, global keyword usage in concurrent contexts",
         },
         {
             "id": "boundary-checks",
