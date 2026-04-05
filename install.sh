@@ -544,6 +544,18 @@ install_hook_modules() {
   echo "Creating $HOOKS_PACEMAKER_DIR..."
   mkdir -p "$HOOKS_PACEMAKER_DIR"
 
+  # Clean stale files: remove deployed .py files not in source
+  echo "Cleaning stale Python modules..."
+  for deployed in "$HOOKS_PACEMAKER_DIR"/*.py; do
+    if [ -f "$deployed" ]; then
+      filename=$(basename "$deployed")
+      if [ ! -f "$PACEMAKER_SOURCE_DIR/$filename" ]; then
+        echo "  Removing stale $filename..."
+        rm "$deployed"
+      fi
+    fi
+  done
+
   # Copy all Python files to hooks/pacemaker/
   echo "Copying Python modules from $PACEMAKER_SOURCE_DIR..."
   for pyfile in "$PACEMAKER_SOURCE_DIR"/*.py; do
@@ -554,36 +566,25 @@ install_hook_modules() {
     fi
   done
 
-  # Copy prompts directory
-  if [ -d "$PACEMAKER_SOURCE_DIR/prompts" ]; then
-    echo "Copying prompts directory..."
-    cp -r "$PACEMAKER_SOURCE_DIR/prompts" "$HOOKS_PACEMAKER_DIR/"
-  else
+  # Copy subdirectories: delete target first to remove stale files, then copy fresh
+  _copy_subdir() {
+    local dirname="$1"
+    local label="$2"
+    if [ -d "$PACEMAKER_SOURCE_DIR/$dirname" ]; then
+      echo "Copying $label directory..."
+      rm -rf "$HOOKS_PACEMAKER_DIR/$dirname"
+      cp -r "$PACEMAKER_SOURCE_DIR/$dirname" "$HOOKS_PACEMAKER_DIR/"
+    fi
+  }
+
+  _copy_subdir "prompts" "prompts"
+  _copy_subdir "langfuse" "langfuse"
+  _copy_subdir "telemetry" "telemetry"
+  _copy_subdir "secrets" "secrets"
+  _copy_subdir "intel" "intel"
+
+  if [ ! -d "$PACEMAKER_SOURCE_DIR/prompts" ]; then
     echo -e "${YELLOW}⚠ Warning: prompts directory not found, skipping${NC}"
-  fi
-
-  # Copy langfuse directory (for incremental telemetry)
-  if [ -d "$PACEMAKER_SOURCE_DIR/langfuse" ]; then
-    echo "Copying langfuse directory..."
-    cp -r "$PACEMAKER_SOURCE_DIR/langfuse" "$HOOKS_PACEMAKER_DIR/"
-  fi
-
-  # Copy telemetry directory (for JSONL parsing)
-  if [ -d "$PACEMAKER_SOURCE_DIR/telemetry" ]; then
-    echo "Copying telemetry directory..."
-    cp -r "$PACEMAKER_SOURCE_DIR/telemetry" "$HOOKS_PACEMAKER_DIR/"
-  fi
-
-  # Copy secrets directory (for secrets management)
-  if [ -d "$PACEMAKER_SOURCE_DIR/secrets" ]; then
-    echo "Copying secrets directory..."
-    cp -r "$PACEMAKER_SOURCE_DIR/secrets" "$HOOKS_PACEMAKER_DIR/"
-  fi
-
-  # Copy intel directory (for prompt intelligence telemetry)
-  if [ -d "$PACEMAKER_SOURCE_DIR/intel" ]; then
-    echo "Copying intel directory..."
-    cp -r "$PACEMAKER_SOURCE_DIR/intel" "$HOOKS_PACEMAKER_DIR/"
   fi
 
   # Copy __init__.py if exists
