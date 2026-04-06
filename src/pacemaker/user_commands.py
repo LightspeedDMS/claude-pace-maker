@@ -932,7 +932,10 @@ def _execute_status(
             f"\nDanger Bash: {'ENABLED' if danger_bash_enabled else 'DISABLED'}"
         )
         status_text += f"\nModel Preference: {preferred_model.upper()}"
-        status_text += f"\nHook Model: {hook_model.upper()}"
+        _HOOK_MODEL_DISPLAY = {"gemini-flash": "GEM-FLASH", "gemini-pro": "GEM-PRO"}
+        status_text += (
+            f"\nHook Model: {_HOOK_MODEL_DISPLAY.get(hook_model, hook_model.upper())}"
+        )
         status_text += (
             f"\nLog Level: {log_level} ({level_names.get(log_level, 'UNKNOWN')})"
         )
