@@ -17,14 +17,71 @@ Merge Strategy (same as clean_code_rules):
 import os
 import re
 import yaml
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .logger import log_warning
+
+VALID_CATEGORIES: frozenset = frozenset({"work_destruction", "system_destruction"})
+MAX_PATTERN_DISPLAY_LEN: int = 80
 
 # Path to bundled default rules YAML, co-located with this module
 _DEFAULT_YAML = os.path.join(
     os.path.dirname(__file__), "danger_bash_rules_default.yaml"
 )
+
+
+def _validate_rule_id(rule_id: str) -> None:
+    """
+    Validate a rule ID string.
+
+    Args:
+        rule_id: The rule ID to validate
+
+    Raises:
+        ValueError: If rule_id is empty, whitespace-only, or contains whitespace
+    """
+    if not rule_id or not rule_id.strip():
+        raise ValueError("rule_id must not be empty or whitespace-only")
+    if any(c.isspace() for c in rule_id):
+        raise ValueError(f"rule_id must not contain whitespace: {rule_id!r}")
+
+
+def _write_config(config_path: str, custom_config: Dict[str, Any]) -> None:
+    """
+    Write custom config to YAML file atomically.
+
+    Uses a temp file (config_path + '.tmp') then os.replace() for atomicity.
+    Cleans up the temp file if the replace fails.
+
+    Args:
+        config_path: Path to YAML config file
+        custom_config: Dict with 'rules' and 'deleted_rules' keys
+
+    Raises:
+        OSError: If the file cannot be written
+    """
+    dirname = os.path.dirname(config_path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+
+    tmp_path = config_path + ".tmp"
+    try:
+        with open(tmp_path, "w") as f:
+            yaml.safe_dump(
+                {
+                    "rules": custom_config["rules"],
+                    "deleted_rules": custom_config["deleted_rules"],
+                },
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+        os.replace(tmp_path, config_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 def load_default_rules() -> List[Dict[str, str]]:
@@ -152,7 +209,12 @@ def load_rules(config_path: str) -> List[Dict[str, Any]]:
     ]
 
     for raw in custom_config["rules"]:
-        if raw["id"] not in default_ids:
+        if raw["id"] in default_ids:
+            log_warning(
+                "danger_bash_rules",
+                f"Custom rule '{raw['id']}' has the same ID as a default rule — skipping",
+            )
+        else:
             merged.append(_compile_rule(raw, "custom"))
 
     return merged
@@ -229,3 +291,212 @@ def match_command(command: str, rules: List[Dict[str, Any]]) -> List[Dict[str, A
         for rule in rules
         if rule["pattern"].search(command)
     ]
+
+
+_ALLOWED_MODIFY_FIELDS = frozenset({"description", "category"})
+_REQUIRED_RULE_KEYS = frozenset({"id", "pattern", "category", "description"})
+
+
+def add_rule(config_path: str, rule: Dict[str, Any]) -> None:
+    """
+    Add a custom rule to the config.
+
+    Args:
+        config_path: Path to user YAML config file
+        rule: Dict with id (str), pattern (str), category (str), description (str)
+
+    Raises:
+        ValueError: If required keys are missing or not strings, rule_id is invalid,
+                    pattern is invalid regex, category is not in VALID_CATEGORIES,
+                    rule_id matches a default rule, or a custom rule with the same
+                    ID already exists
+    """
+    missing = _REQUIRED_RULE_KEYS - set(rule.keys())
+    if missing:
+        raise ValueError(f"Rule is missing required keys: {sorted(missing)}")
+
+    for key in _REQUIRED_RULE_KEYS:
+        if not isinstance(rule[key], str):
+            raise ValueError(
+                f"Rule field '{key}' must be a string, got {type(rule[key]).__name__}"
+            )
+
+    _validate_rule_id(rule["id"])
+
+    try:
+        re.compile(rule["pattern"])
+    except re.error as e:
+        raise ValueError(f"Invalid pattern regex: {e}") from e
+
+    if rule["category"] not in VALID_CATEGORIES:
+        raise ValueError(
+            f"Invalid category {rule['category']!r}. Must be one of: {sorted(VALID_CATEGORIES)}"
+        )
+
+    default_ids = {r["id"] for r in load_default_rules()}
+    if rule["id"] in default_ids:
+        raise ValueError(
+            f"Rule id '{rule['id']}' matches a default rule. "
+            "Default rules cannot be replaced; choose a different id or suppress the default first."
+        )
+
+    custom_config = _load_custom_config(config_path)
+    if any(r["id"] == rule["id"] for r in custom_config["rules"]):
+        raise ValueError(
+            f"Duplicate rule id '{rule['id']}': already exists in custom config"
+        )
+
+    custom_config["rules"].append(rule)
+    _write_config(config_path, custom_config)
+
+
+def restore_rule(config_path: str, rule_id: str) -> None:
+    """
+    Restore a deleted default rule.
+
+    Args:
+        config_path: Path to user YAML config file
+        rule_id: ID of the default rule to restore
+
+    Raises:
+        ValueError: If rule_id is not a default rule, or is not currently deleted
+    """
+    default_ids = {r["id"] for r in load_default_rules()}
+    if rule_id not in default_ids:
+        raise ValueError(f"'{rule_id}' is not a default rule and cannot be restored")
+
+    custom_config = _load_custom_config(config_path)
+    if rule_id not in custom_config["deleted_rules"]:
+        raise ValueError(f"'{rule_id}' is not in deleted_rules — nothing to restore")
+
+    custom_config["deleted_rules"].remove(rule_id)
+    _write_config(config_path, custom_config)
+
+
+def remove_rule(config_path: str, rule_id: str) -> None:
+    """
+    Remove a rule by ID.
+
+    For default rules: adds rule_id to deleted_rules (suppression).
+    For custom rules: removes from rules list (no suppression marker).
+
+    Args:
+        config_path: Path to user YAML config file
+        rule_id: ID of the rule to remove
+
+    Raises:
+        ValueError: If rule is already deleted or not found
+    """
+    custom_config = _load_custom_config(config_path)
+    default_ids = {r["id"] for r in load_default_rules()}
+    custom_ids = {r["id"] for r in custom_config["rules"]}
+
+    if rule_id in set(custom_config["deleted_rules"]):
+        raise ValueError(f"Rule '{rule_id}' is already deleted")
+
+    if rule_id not in default_ids and rule_id not in custom_ids:
+        raise ValueError(f"Rule '{rule_id}' not found")
+
+    custom_config["rules"] = [r for r in custom_config["rules"] if r["id"] != rule_id]
+
+    if rule_id in default_ids:
+        custom_config["deleted_rules"].append(rule_id)
+
+    _write_config(config_path, custom_config)
+
+
+def modify_rule(config_path: str, rule_id: str, updates: Dict[str, Any]) -> None:
+    """
+    Modify a custom rule's description and/or category.
+
+    Only 'description' and 'category' fields may be updated.
+    The 'id' key in updates is silently ignored.
+    The 'pattern' key in updates raises ValueError.
+    Only custom rules (not default rules) may be modified.
+
+    Args:
+        config_path: Path to user YAML config file
+        rule_id: ID of the custom rule to modify
+        updates: Dict of fields to update (only 'description' and 'category' allowed)
+
+    Raises:
+        ValueError: If rule_id is a default rule, updates contain 'pattern',
+                    category value is invalid, or rule_id is not found
+    """
+    if "pattern" in updates:
+        raise ValueError(
+            "Field 'pattern' cannot be modified. Remove and re-add the rule to change its pattern."
+        )
+
+    # Silently drop 'id' from updates — cannot change rule identity
+    safe_updates = {k: v for k, v in updates.items() if k != "id"}
+
+    disallowed = set(safe_updates.keys()) - _ALLOWED_MODIFY_FIELDS
+    if disallowed:
+        raise ValueError(f"Fields not allowed in updates: {sorted(disallowed)}")
+
+    if "category" in safe_updates and safe_updates["category"] not in VALID_CATEGORIES:
+        raise ValueError(
+            f"Invalid category {safe_updates['category']!r}. Must be one of: {sorted(VALID_CATEGORIES)}"
+        )
+
+    default_ids = {r["id"] for r in load_default_rules()}
+    if rule_id in default_ids:
+        raise ValueError(
+            f"Rule '{rule_id}' is a default rule. Only custom rules can be modified."
+        )
+
+    custom_config = _load_custom_config(config_path)
+    for rule in custom_config["rules"]:
+        if rule["id"] == rule_id:
+            rule.update(safe_updates)
+            _write_config(config_path, custom_config)
+            return
+
+    raise ValueError(f"Rule '{rule_id}' not found in custom config")
+
+
+def format_rules_for_display(
+    rules: List[Dict[str, Any]], config_path: Optional[str] = None
+) -> str:
+    """
+    Format rules for CLI display output.
+
+    Rules are sorted stably by ID. When config_path is provided, each rule
+    is tagged with its source: [default] or [custom]. Pattern strings are
+    truncated at MAX_PATTERN_DISPLAY_LEN characters with '...' appended.
+
+    Args:
+        rules: List of runtime rule dicts (with compiled pattern objects)
+        config_path: Optional path to config file for source tagging
+
+    Returns:
+        Formatted string for display, or "No rules configured." if empty
+    """
+    if not rules:
+        return "No rules configured."
+
+    metadata: Dict[str, str] = {}
+    if config_path:
+        for m in get_rules_metadata(config_path):
+            metadata[m["id"]] = m["source"]
+
+    sorted_rules = sorted(rules, key=lambda r: r.get("id", ""))
+
+    output = []
+    for rule in sorted_rules:
+        rid = rule.get("id", "N/A")
+        source_tag = f" [{metadata.get(rid, 'default')}]" if metadata else ""
+        pattern_obj = rule.get("pattern")
+        pattern_str = (
+            pattern_obj.pattern if hasattr(pattern_obj, "pattern") else str(pattern_obj)
+        )
+        if len(pattern_str) > MAX_PATTERN_DISPLAY_LEN:
+            pattern_str = pattern_str[:MAX_PATTERN_DISPLAY_LEN] + "..."
+        output.append(f"ID: {rid}{source_tag}")
+        output.append(f"  Pattern: {pattern_str}")
+        output.append(f"  Category: {rule.get('category', 'N/A')}")
+        output.append(f"  Description: {rule.get('description', 'N/A')}")
+        output.append("")
+
+    return "\n".join(output).rstrip()
