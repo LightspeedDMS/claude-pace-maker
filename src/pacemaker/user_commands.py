@@ -30,7 +30,7 @@ ANSI_RESET = "\033[0m"
 
 # Comprehensive help text used by both 'pace-maker help' and 'pace-maker --help'
 HELP_TEXT = """\
-Pace Maker - Credit-Aware Adaptive Throttling
+Pace Maker - Credit-Aware Adaptive Throttling... and much more
 
 COMMANDS:
   pace-maker on                   Enable pace maker throttling
@@ -60,6 +60,15 @@ COMMANDS:
   pace-maker clean-code modify --id ID [--name NAME] [--description DESC]
                                                 Modify an existing rule
   pace-maker clean-code remove --id ID         Remove a validation rule
+  pace-maker danger-bash list                  List all danger bash validation rules
+  pace-maker danger-bash add --id ID --pattern 'REGEX' --category CAT --description 'DESC'
+                                               Add a custom danger bash rule
+  pace-maker danger-bash remove --id ID        Remove/suppress a danger bash rule
+  pace-maker danger-bash restore --id ID       Restore a deleted default rule
+  pace-maker danger-bash modify --id ID [--description 'DESC'] [--category CAT]
+                                               Modify a custom rule (description/category only)
+  pace-maker danger-bash on                    Enable danger bash validation
+  pace-maker danger-bash off                   Disable danger bash validation
   pace-maker core-paths list                   List all TDD-enforced core paths
   pace-maker core-paths add PATH               Add a new core path
   pace-maker core-paths remove PATH            Remove a core path
@@ -152,6 +161,30 @@ CLEAN CODE RULES:
   Rules are stored in: ~/.claude-pace-maker/clean_code_rules.yaml
   When intent validation is enabled, these rules are checked against all
   code changes to ensure quality standards are met.
+
+DANGER BASH RULES:
+  Manage regex patterns that detect dangerous Bash commands. When a Bash
+  command matches any rule, pace-maker requires an INTENT: declaration
+  (Phase 1) and validates intent-to-command alignment via LLM (Phase 2).
+
+  Two categories:
+  - work_destruction (WD): git checkout --, git reset --hard, git stash,
+    database DROP, etc.
+  - system_destruction (SD): rm -rf, kill -9, chmod 777, terraform destroy,
+    kubectl delete, etc.
+
+  55 default rules ship with pace-maker. Users can add custom rules,
+  remove (suppress) defaults, and restore deleted defaults.
+
+  Custom rules require valid regex patterns (validated with re.compile).
+  Pattern modifications require remove + add (cannot modify patterns in place).
+
+  Rules are stored in: ~/.claude-pace-maker/danger_bash_rules.yaml
+  Config toggle: danger_bash_enabled in ~/.claude-pace-maker/config.json
+
+  Note: Patterns with backslashes must be single-quoted in the shell:
+    pace-maker danger-bash add --id MY-001 --pattern 'npm\s+run\s+nuke' \
+      --category work_destruction --description 'Block npm run nuke'
 
 CORE PATHS:
   Manage paths that require TDD enforcement. When both intent validation
@@ -411,6 +444,19 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": f"remove {match_clean_code_remove.group(1)}",
         }
 
+    # Pattern 12b: pace-maker danger-bash <subcommand> [args...]
+    pattern_danger_bash = r"^pace-maker\s+danger-bash\s+(\S+)(.*)$"
+    match_danger_bash = re.match(pattern_danger_bash, normalized)
+
+    if match_danger_bash:
+        sub = match_danger_bash.group(1)
+        args = match_danger_bash.group(2).strip()
+        return {
+            "is_pace_maker_command": True,
+            "command": "danger-bash",
+            "subcommand": f"{sub} {args}".strip() if args else sub,
+        }
+
     # Pattern 13: pace-maker core-paths list
     pattern_core_paths_list = r"^pace-maker\s+core-paths\s+list$"
     match_core_paths_list = re.match(pattern_core_paths_list, normalized)
@@ -605,6 +651,14 @@ def execute_command(
         return _execute_tdd(config_path, subcommand)
     elif command == "clean-code":
         return _execute_clean_code(subcommand)
+
+    elif command == "danger-bash":
+        from . import danger_bash_cli
+
+        parts = (subcommand or "").split(None, 1)
+        sub = parts[0] if parts else ""
+        args = parts[1] if len(parts) > 1 else ""
+        return danger_bash_cli.execute(sub, args)
     elif command == "core-paths":
         return _execute_core_paths(subcommand)
     elif command == "excluded-paths":
@@ -750,6 +804,7 @@ def _execute_status(
         subagent_reminder_enabled = config.get("subagent_reminder_enabled", True)
         intent_validation_enabled = config.get("intent_validation_enabled", False)
         tdd_enabled = config.get("tdd_enabled", True)
+        danger_bash_enabled = config.get("danger_bash_enabled", True)
         preferred_model = config.get("preferred_subagent_model", "auto")
         hook_model = config.get("hook_model", "auto")
         log_level = config.get("log_level", 2)
@@ -871,6 +926,9 @@ def _execute_status(
         status_text += f"\nSubagent Reminder: {'ENABLED' if subagent_reminder_enabled else 'DISABLED'}"
         status_text += f"\nIntent Validation: {'ENABLED' if intent_validation_enabled else 'DISABLED'}"
         status_text += f"\nTDD Enforcement: {'ENABLED' if tdd_enabled else 'DISABLED'}"
+        status_text += (
+            f"\nDanger Bash: {'ENABLED' if danger_bash_enabled else 'DISABLED'}"
+        )
         status_text += f"\nModel Preference: {preferred_model.upper()}"
         status_text += f"\nHook Model: {hook_model.upper()}"
         status_text += (
@@ -2895,7 +2953,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         prog="pace-maker",
-        description="Claude Pace Maker - Credit-Aware Adaptive Throttling",
+        description="Claude Pace Maker - Credit-Aware Adaptive Throttling... and much more",
         add_help=False,
     )
 
@@ -2916,6 +2974,7 @@ def main():
             "tdd",
             "loglevel",
             "clean-code",
+            "danger-bash",
             "core-paths",
             "excluded-paths",
             "prefer-model",
