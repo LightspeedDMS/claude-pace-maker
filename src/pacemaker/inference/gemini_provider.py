@@ -1,4 +1,4 @@
-"""Gemini CLI provider for Google Gemini models."""
+"""Gemini CLI provider for Google Gemini models (gemini-flash, gemini-pro)."""
 
 import subprocess
 

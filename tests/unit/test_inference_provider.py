@@ -948,7 +948,11 @@ class TestResolveAndCallWithReviewerGemini:
 
 
 class TestGeminiShortAliases:
-    """Tests for gem-flash/gem-pro short aliases in CLI and normalization."""
+    """Tests for gem-flash/gem-pro short aliases in CLI and normalization.
+
+    gem-flash/gem-pro are accepted as input but normalized to gemini-flash/gemini-pro
+    before storage. The shorter names also appear as reviewer tags in governance events.
+    """
 
     def test_parse_command_accepts_gem_flash(self):
         """parse_command should accept 'gem-flash' as hook-model subcommand."""
