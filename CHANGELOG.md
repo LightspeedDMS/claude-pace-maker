@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.13.0] - 2026-04-05
+
+### Added
+- **Danger bash CLI CRUD commands** (#62): Full command-line management matching clean-code rules UX — `pace-maker danger-bash list/add/remove/restore/modify/on/off`
+- **`danger_bash_cli.py` helper module** (#62): Thin CLI dispatcher with argument parsing, regex validation on add (`re.compile` before write), category validation, and clear error messages
+- **CRUD functions in `danger_bash_rules.py`** (#62): `add_rule()`, `remove_rule()`, `restore_rule()`, `modify_rule()`, `_write_config()` (atomic write with directory creation), `format_rules_for_display()` (source tags, pattern truncation, stable sort)
+- **`pace-maker status` shows Danger Bash** (#62): Displays ENABLED/DISABLED state alongside Intent Validation and TDD
+- **Help text updates** (#62): All danger-bash commands in `pace-maker help` with DANGER BASH RULES documentation section
+- **Same-ID warning in loader** (#62): `load_rules()` logs warning when custom rule ID matches a default (skips custom, uses default)
+- **54 CRUD unit tests** (#62): Comprehensive coverage for add/remove/restore/modify, validation, atomic write, display formatting
+
+### Changed
+- **CLI title** (#62): Updated from "Credit-Aware Adaptive Throttling" to "Credit-Aware Adaptive Throttling... and much more"
+
+## [2.12.0] - 2026-04-05
+
+### Added
+- **Danger Bash intent validation** (#58): Two-phase validation for dangerous Bash commands — Phase 1 regex gate fast-rejects commands matching danger rules when no `INTENT:` declaration is present (no LLM call); Phase 2 LLM validates intent-to-command alignment when `INTENT:` is present
+- **55 default danger bash regex rules** (#58): `danger_bash_rules_default.yaml` with 25 Work Destruction (WD) rules and 30 System Destruction (SD) rules covering git destructive operations, file deletion, process killing, and infrastructure commands
+- **`danger_bash_rules.py` module** (#58): Loads bundled defaults, merges with user customizations from `~/.claude-pace-maker/danger_bash_rules.yaml`, pre-compiles regex patterns at load time, and matches commands against compiled rules (same merge strategy as clean code rules)
+- **`intent_validation_dangerbash` blockage category** (#58): New blockage category with "Danger Bash" label for telemetry and blockage stats
+- **483 parametrized regex tests** (#58): Comprehensive test coverage for all 55 rules including loader, match (WD and SD categories), performance, and edge cases
+- **Reviewer identity tracking** (#60): `resolve_and_call_with_reviewer()` returns `(response, reviewer_name)` tuple; reviewer identity threaded through intent_validator to hook to blockage_events details JSON; governance event `feedback_text` prefixed with `[REVIEWER:xxx]` tag
+- **`_refresh_codex_usage()` on fallback** (#60): Codex usage stats refreshed when Codex inference fails and falls back to auto provider
+
+### Changed
+- **PreToolUse hook tool matching** (#58): Expanded from `Write|Edit` to include `Bash` tool for danger bash validation (existing Write/Edit validation unchanged)
+- **Installer updated** (#58): Deploys `danger_bash_rules_default.yaml` config file alongside existing YAML configs
+
+### Fixed
+- **Codex PAYG billing crash** (#59): `_parse_last_token_count()` no longer crashes when Codex CLI returns null primary/secondary fields for PAYG billing plans
+- **`limit_id` column in `codex_usage` table** (#59): Added with idempotent `ALTER TABLE` migration; wired migration call in hook.py SubagentStop handler
+
 ## [2.11.0] - 2026-04-04
 
 ### Added
