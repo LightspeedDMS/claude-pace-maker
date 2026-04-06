@@ -1,6 +1,10 @@
 """Competitive multi-model review pipeline for hook inference."""
 
-from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    wait as futures_wait,
+    TimeoutError as FuturesTimeoutError,
+)
 
 from ..logger import log_warning, log_debug
 from .registry import get_provider, resolve_model_for_call
@@ -27,8 +31,11 @@ _REVIEWER_GEMINI_PRO = "gem-pro"
 _REVIEWER_SDK = "anthropic-sdk"
 
 # Named constants for timeouts and token budget
-REVIEWER_WAIT_TIMEOUT_SEC = 150
+REVIEWER_WAIT_TIMEOUT_SEC = 60  # individual per-reviewer timeout
+SYNTHESIS_TIMEOUT_SEC = 30  # synthesis phase timeout
 DEFAULT_MAX_THINKING_TOKENS = 4000
+MIN_REVIEWERS = 2
+MAX_REVIEWERS = 3
 
 
 def parse_competitive(hook_model: str):
@@ -53,10 +60,12 @@ def parse_competitive(hook_model: str):
             raise ValueError(f"Invalid model: {token}")
     if len(reviewers) != len(set(reviewers)):
         raise ValueError("Duplicate models in reviewer list not allowed")
-    if len(reviewers) < 2:
-        raise ValueError("Competitive mode requires at least 2 reviewers")
-    if len(reviewers) > 3:
-        raise ValueError("Competitive mode supports at most 3 reviewers")
+    if len(reviewers) < MIN_REVIEWERS:
+        raise ValueError(
+            f"Competitive mode requires at least {MIN_REVIEWERS} reviewers"
+        )
+    if len(reviewers) > MAX_REVIEWERS:
+        raise ValueError(f"Competitive mode supports at most {MAX_REVIEWERS} reviewers")
     return reviewers, synthesizer
 
 
@@ -205,20 +214,36 @@ def _synthesize(
         f"{len(succeeded)} survivors — calling synthesizer '{synthesizer}'",
     )
     synthesis_prompt = _build_synthesis_prompt(succeeded, prompt)
+    synth_executor = ThreadPoolExecutor(max_workers=1)
     try:
         synth_provider = get_provider(synthesizer)
         synth_hint = resolve_model_for_call(synthesizer, call_context)
-        synth_response = synth_provider.query(
-            synthesis_prompt, system_prompt, synth_hint, max_thinking_tokens
+        future = synth_executor.submit(
+            synth_provider.query,
+            synthesis_prompt,
+            system_prompt,
+            synth_hint,
+            max_thinking_tokens,
         )
-        log_debug("competitive", f"Synthesis complete, len={len(synth_response)}")
-        return synth_response, expression
-    except Exception as e:
-        log_warning(
-            "competitive",
-            f"Synthesizer '{synthesizer}' failed: {e} — first survivor wins",
-        )
-        return succeeded[0]
+        try:
+            synth_response = future.result(timeout=SYNTHESIS_TIMEOUT_SEC)
+            log_debug("competitive", f"Synthesis complete, len={len(synth_response)}")
+            return synth_response, expression
+        except FuturesTimeoutError:
+            log_warning(
+                "competitive",
+                f"Synthesizer '{synthesizer}' timed out after {SYNTHESIS_TIMEOUT_SEC}s"
+                " — first survivor wins",
+            )
+            return succeeded[0]
+        except Exception as e:
+            log_warning(
+                "competitive",
+                f"Synthesizer '{synthesizer}' failed: {e} — first survivor wins",
+            )
+            return succeeded[0]
+    finally:
+        synth_executor.shutdown(wait=False)
 
 
 def run_competitive(

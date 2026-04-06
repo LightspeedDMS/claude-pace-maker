@@ -85,6 +85,27 @@ COMMANDS:
   pace-maker hook-model gpt-5                  Use GPT-5 (via Codex CLI) for hook inference
   pace-maker hook-model gemini-flash           Use Gemini Flash for hook inference
   pace-maker hook-model gemini-pro             Use Gemini Pro for hook inference
+  pace-maker hook-model "<r1>+<r2>[+<r3>]-><synth>"
+                                               Use competitive multi-model review
+
+COMPETITIVE REVIEW MODE:
+  Run multiple reviewers in parallel and synthesize their verdicts.
+  Syntax: pace-maker hook-model "<r1>+<r2>[+<r3>]-><synthesizer>"
+
+  Examples:
+    pace-maker hook-model "opus+gpt-5->haiku"
+    pace-maker hook-model "sonnet+gemini-flash->opus"
+    pace-maker hook-model "opus+gpt-5+gemini-pro->sonnet"
+
+  Short aliases: gem-flash=gemini-flash, gem-pro=gemini-pro
+  Reviewers: 2-3 (no duplicates). Synthesizer: any model.
+
+  Failure modes:
+  - 2+ survivors: synthesizer combines verdicts
+  - 1 survivor: passes through without synthesis
+  - All fail (no Anthropic reviewer): Anthropic SDK solo fallback
+  - All fail (Anthropic was a reviewer): fail -> APPROVED by default
+
   pace-maker langfuse config <url> <public_key> <secret_key>
                                                Configure Langfuse credentials manually
   pace-maker langfuse provision [--force] [--verbose]
@@ -971,10 +992,7 @@ def _execute_status(
                     else "gem-pro" if _synthesizer == "gemini-pro" else _synthesizer
                 )
                 ANSI_BLUE = "\033[34m"
-                status_text += f"\nHook Model: {ANSI_BLUE}competitive{ANSI_RESET}"
-                status_text += (
-                    f"\n  reviewers: {', '.join(_rev_display)} \u2192 {_syn_display}"
-                )
+                status_text += f"\nHook Model: {ANSI_BLUE}{hook_model}{ANSI_RESET}"
             else:
                 status_text += f"\nHook Model: {hook_model}"
         else:

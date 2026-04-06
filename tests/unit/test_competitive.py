@@ -351,6 +351,58 @@ class TestRunCompetitive:
         # Either survivor may be first depending on thread scheduling; both are valid
         assert label in {"codex-gpt5", "anthropic-sdk"}
 
+    def test_synthesizer_timeout_causes_first_survivor_wins(self):
+        """First survivor returned when synthesizer times out (exceeds SYNTHESIS_TIMEOUT_SEC)."""
+        from pacemaker.inference.competitive import (
+            run_competitive,
+            SYNTHESIS_TIMEOUT_SEC,
+        )
+        from pacemaker.inference.codex_provider import CodexProvider
+
+        # Reviewers return immediately
+        codex_mock = MagicMock(spec=CodexProvider)
+        codex_mock.query.return_value = "APPROVED"
+
+        anthropic_mock = MagicMock()
+        anthropic_mock.query.return_value = "APPROVED"
+
+        # Synthesizer sleeps longer than SYNTHESIS_TIMEOUT_SEC to trigger timeout
+        synth_sleep_s = SYNTHESIS_TIMEOUT_SEC + 5
+
+        def _slow_synth_query(*args, **kwargs):
+            time.sleep(synth_sleep_s)
+            return "SHOULD NOT REACH"
+
+        synth_mock = MagicMock()
+        synth_mock.query.side_effect = _slow_synth_query
+
+        def _get_provider(model):
+            if model == "gpt-5":
+                return codex_mock
+            if model == "haiku":
+                return synth_mock
+            return anthropic_mock
+
+        # Patch SYNTHESIS_TIMEOUT_SEC to 1s so test doesn't take 30s
+        with (
+            patch(
+                "pacemaker.inference.competitive.get_provider",
+                side_effect=_get_provider,
+            ),
+            patch("pacemaker.inference.competitive.SYNTHESIS_TIMEOUT_SEC", 1),
+        ):
+            response, label = run_competitive(
+                reviewers=["gpt-5", "sonnet"],
+                synthesizer="haiku",
+                prompt="review this",
+                system_prompt="",
+                call_context="intent_validation",
+            )
+
+        # Timeout causes first-survivor-wins: label is a reviewer label, not the expression
+        assert response == "APPROVED"
+        assert label in {"codex-gpt5", "anthropic-sdk"}
+
     def test_run_competitive_concurrent_dispatch(self):
         """Reviewers are dispatched in parallel — verified via threading barrier."""
         from pacemaker.inference.competitive import run_competitive
@@ -481,7 +533,8 @@ class TestStatusDisplayCompetitive:
 
         assert result["success"] is True
         message = result["message"]
-        assert "competitive" in message.lower()
+        assert "gpt-5+gemini-flash->sonnet" in message
+        assert "reviewers:" not in message.lower()
 
 
 # ---------------------------------------------------------------------------
