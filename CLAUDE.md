@@ -160,3 +160,34 @@ This applies to:
 - Validation prompt templates (`prompts/pre_tool_use/`)
 - Clean code rules and core paths configuration
 - Any code that affects the pre-tool validation hook
+
+---
+
+## Competitive Review Pipeline
+
+**Syntax**: `hook_model = "m1+m2[+m3]->synthesizer"` (2-3 reviewers + 1 synthesizer)
+
+**Supported models**: auto, sonnet, opus, haiku, gpt-5, gemini-flash, gemini-pro
+
+**Short aliases**: gem-flash→gemini-flash, gem-pro→gemini-pro (accepted at CLI, stored canonically)
+
+**Key file**: `src/pacemaker/inference/competitive.py`
+
+**Wiring**: `resolve_and_call_with_reviewer()` in `registry.py` detects `+` in hook_model and delegates to `run_competitive()`
+
+**Failure modes**:
+- 2+ survivors → synthesize via synthesizer model
+- 1 survivor → pass through without synthesis (survivor's label returned)
+- All fail, no Anthropic in reviewers → SDK solo fallback (label: "sdk-fallback")
+- All fail, Anthropic was a reviewer → fail per caller semantics (empty string returned)
+- Synthesizer fails → first survivor wins
+
+**Tag format**: `[expression]` in feedback_text (no REVIEWER: prefix), e.g. `[gpt-5+gemini-flash->sonnet]`
+
+**CLI**: `pace-maker hook-model gpt-5+gemini-flash->sonnet` — validates via `parse_competitive()`, stores canonical form
+
+**Status display**: `pace-maker status` shows "competitive" in ANSI blue with reviewers breakdown line
+
+**claude-usage display**: Hook Model shows "competitive" in blue; governance feed shows `[Comp]` for competitive expressions
+
+**Concurrency**: `ThreadPoolExecutor` with `futures_wait(timeout=150s)` — partial results preserved on timeout; `executor.shutdown(wait=False)` avoids blocking on in-flight threads

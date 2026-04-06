@@ -122,6 +122,36 @@ def resolve_and_call_with_reviewer(
         - "anthropic-sdk" for Anthropic SDK
         - "unknown" on complete failure (fail-open)
     """
+    # Competitive mode detection — must be checked before single-model path
+    if "+" in hook_model:
+        from .competitive import parse_competitive, run_competitive
+
+        try:
+            parsed = parse_competitive(hook_model)
+        except ValueError as e:
+            log_warning(
+                "registry",
+                f"Invalid competitive expression '{hook_model}': {e}, falling back to Anthropic auto",
+            )
+            parsed = None
+        if parsed is None:
+            log_warning(
+                "registry",
+                f"hook_model '{hook_model}' contains '+' but is not valid competitive expression, "
+                "falling back to Anthropic auto",
+            )
+            hook_model = "auto"
+        else:
+            reviewers, synthesizer = parsed
+            return run_competitive(
+                reviewers,
+                synthesizer,
+                prompt,
+                system_prompt,
+                call_context,
+                max_thinking_tokens,
+            )
+
     from .codex_provider import CodexProvider
     from .gemini_provider import GeminiProvider
 

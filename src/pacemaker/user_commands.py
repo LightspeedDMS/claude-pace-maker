@@ -536,15 +536,33 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_prefer_model.group(1),
         }
 
-    # Pattern 20: pace-maker hook-model (auto|sonnet|opus|gpt-5)
-    pattern_hook_model = r"^pace-maker\s+hook-model\s+(auto|sonnet|opus|gpt-5|gemini-flash|gemini-pro|gem-flash|gem-pro)$"
-    match_hook_model = re.match(pattern_hook_model, normalized)
+    # Pattern 20: pace-maker hook-model — single model or competitive expression
+    # Single model: auto|sonnet|opus|haiku|gpt-5|gemini-flash|gemini-pro (incl. short aliases)
+    pattern_hook_model_single = (
+        r"^pace-maker\s+hook-model\s+"
+        r"(auto|sonnet|opus|haiku|gpt-5|gemini-flash|gemini-pro|gem-flash|gem-pro)$"
+    )
+    match_hook_model = re.match(pattern_hook_model_single, normalized)
 
     if match_hook_model:
         return {
             "is_pace_maker_command": True,
             "command": "hook-model",
             "subcommand": match_hook_model.group(1),
+        }
+
+    # Competitive expression: <model>(+<model>)+->model  (token shape: [a-z0-9-]+)
+    # Full semantic validation delegated to _execute_hook_model via parse_competitive()
+    pattern_hook_model_competitive = (
+        r"^pace-maker\s+hook-model\s+" r"([a-z0-9-]+(?:\+[a-z0-9-]+)+->[a-z0-9-]+)$"
+    )
+    match_hook_model_comp = re.match(pattern_hook_model_competitive, normalized)
+
+    if match_hook_model_comp:
+        return {
+            "is_pace_maker_command": True,
+            "command": "hook-model",
+            "subcommand": match_hook_model_comp.group(1),
         }
 
     # Pattern 21: pace-maker langfuse (config|on|off|status) [args...]
@@ -933,9 +951,34 @@ def _execute_status(
         )
         status_text += f"\nModel Preference: {preferred_model.upper()}"
         _HOOK_MODEL_DISPLAY = {"gemini-flash": "GEM-FLASH", "gemini-pro": "GEM-PRO"}
-        status_text += (
-            f"\nHook Model: {_HOOK_MODEL_DISPLAY.get(hook_model, hook_model.upper())}"
-        )
+        if "+" in hook_model and "->" in hook_model:
+            from .inference.competitive import parse_competitive
+
+            _parsed = parse_competitive(hook_model)
+            if _parsed:
+                _reviewers, _synthesizer = _parsed
+                _rev_display = [
+                    (
+                        "gem-flash"
+                        if r == "gemini-flash"
+                        else "gem-pro" if r == "gemini-pro" else r
+                    )
+                    for r in _reviewers
+                ]
+                _syn_display = (
+                    "gem-flash"
+                    if _synthesizer == "gemini-flash"
+                    else "gem-pro" if _synthesizer == "gemini-pro" else _synthesizer
+                )
+                ANSI_BLUE = "\033[34m"
+                status_text += f"\nHook Model: {ANSI_BLUE}competitive{ANSI_RESET}"
+                status_text += (
+                    f"\n  reviewers: {', '.join(_rev_display)} \u2192 {_syn_display}"
+                )
+            else:
+                status_text += f"\nHook Model: {hook_model}"
+        else:
+            status_text += f"\nHook Model: {_HOOK_MODEL_DISPLAY.get(hook_model, hook_model.upper())}"
         status_text += (
             f"\nLog Level: {log_level} ({level_names.get(log_level, 'UNKNOWN')})"
         )
@@ -1565,16 +1608,57 @@ def _execute_prefer_model(
 
 def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
     """Set hook inference model for intent validation and code review."""
-    # Normalize short aliases to canonical names before validation and storage
-    _GEMINI_ALIASES = {"gem-flash": "gemini-flash", "gem-pro": "gemini-pro"}
-    subcommand = _GEMINI_ALIASES.get(subcommand, subcommand)  # type: ignore[arg-type]
+    from .inference.competitive import parse_competitive, SHORT_ALIASES
 
-    valid_models = ["auto", "sonnet", "opus", "gpt-5", "gemini-flash", "gemini-pro"]
+    # Try competitive expression first (contains + and ->)
+    if subcommand and ("+" in subcommand):
+        try:
+            parsed = parse_competitive(subcommand)
+        except ValueError as e:
+            return {
+                "success": False,
+                "message": f"Invalid competitive expression: {e}\nUsage: pace-maker hook-model <m1>+<m2>[+<m3>]-><synthesizer>",
+            }
+        if parsed is not None:
+            reviewers, synthesizer = parsed
+            canonical = "+".join(reviewers) + "->" + synthesizer
+            try:
+                config = _load_config(config_path)
+                config["hook_model"] = canonical
+                _write_config_atomic(config, config_path)
+                return {
+                    "success": True,
+                    "message": (
+                        f"Hook model set to competitive: {canonical}\n"
+                        f"Reviewers: {', '.join(reviewers)} -> Synthesizer: {synthesizer}"
+                    ),
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "message": f"Error setting hook model: {str(e)}",
+                }
+
+    # Normalize short aliases to canonical names before validation and storage
+    subcommand = SHORT_ALIASES.get(subcommand, subcommand)  # type: ignore[arg-type]
+
+    valid_models = [
+        "auto",
+        "sonnet",
+        "opus",
+        "haiku",
+        "gpt-5",
+        "gemini-flash",
+        "gemini-pro",
+    ]
 
     if subcommand not in valid_models:
         return {
             "success": False,
-            "message": f"Invalid model: {subcommand}\nUsage: pace-maker hook-model [auto|sonnet|opus|gpt-5|gemini-flash|gemini-pro]",
+            "message": (
+                f"Invalid model: {subcommand}\n"
+                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|gpt-5|gemini-flash|gemini-pro]"
+            ),
         }
 
     try:

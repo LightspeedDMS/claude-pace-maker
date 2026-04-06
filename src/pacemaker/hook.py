@@ -2296,7 +2296,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             _feedback = response
                             _reviewer = reviewer
                             if _reviewer:
-                                _feedback = f"[REVIEWER:{_reviewer}] {_feedback}"
+                                _feedback = f"[{_reviewer}] {_feedback}"
                             record_blockage(
                                 db_path=DEFAULT_DB_PATH,
                                 category="intent_validation_dangerbash",
@@ -2448,7 +2448,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 _feedback = result.get("feedback", "Validation failed")
                 _reviewer = result.get("reviewer", "")
                 if _reviewer:
-                    _feedback = f"[REVIEWER:{_reviewer}] {_feedback}"
+                    _feedback = f"[{_reviewer}] {_feedback}"
                 record_governance_event(
                     db_path=DEFAULT_DB_PATH,
                     event_type=_event_type,
