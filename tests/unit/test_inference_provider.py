@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Unit tests for InferenceProvider abstract base class and ProviderError.
+Includes GeminiProvider tests added in story #54.
 
 Tests:
 - ProviderError is a catchable Exception subclass
@@ -871,8 +872,8 @@ class TestRegistryGemini:
 class TestResolveAndCallWithReviewerGemini:
     """Tests for Gemini reviewer identity in resolve_and_call_with_reviewer."""
 
-    def test_gemini_flash_success_returns_gemini_reviewer(self):
-        """resolve_and_call_with_reviewer with gemini-flash success returns 'gemini' reviewer."""
+    def test_gemini_flash_success_returns_gem_flash_reviewer(self):
+        """resolve_and_call_with_reviewer with gemini-flash returns 'gem-flash' reviewer."""
         from pacemaker.inference.registry import resolve_and_call_with_reviewer
         from pacemaker.inference.gemini_provider import GeminiProvider
 
@@ -882,7 +883,20 @@ class TestResolveAndCallWithReviewerGemini:
             )
 
         assert response == "YES"
-        assert reviewer == "gemini"
+        assert reviewer == "gem-flash"
+
+    def test_gemini_pro_success_returns_gem_pro_reviewer(self):
+        """resolve_and_call_with_reviewer with gemini-pro returns 'gem-pro' reviewer."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        with patch.object(GeminiProvider, "query", return_value="YES"):
+            response, reviewer = resolve_and_call_with_reviewer(
+                "gemini-pro", "prompt", "sys", "stage1", 4000
+            )
+
+        assert response == "YES"
+        assert reviewer == "gem-pro"
 
     def test_gemini_fallback_returns_anthropic_sdk_reviewer(self):
         """When GeminiProvider fails and fallback succeeds, reviewer is 'anthropic-sdk'."""
@@ -931,6 +945,66 @@ class TestResolveAndCallWithReviewerGemini:
                     )
 
         mock_get_usage.assert_not_called()
+
+
+class TestGeminiShortAliases:
+    """Tests for gem-flash/gem-pro short aliases in CLI and normalization."""
+
+    def test_parse_command_accepts_gem_flash(self):
+        """parse_command should accept 'gem-flash' as hook-model subcommand."""
+        from pacemaker.user_commands import parse_command
+
+        result = parse_command("pace-maker hook-model gem-flash")
+        assert result["command"] == "hook-model"
+        assert result["subcommand"] == "gem-flash"
+
+    def test_parse_command_accepts_gem_pro(self):
+        """parse_command should accept 'gem-pro' as hook-model subcommand."""
+        from pacemaker.user_commands import parse_command
+
+        result = parse_command("pace-maker hook-model gem-pro")
+        assert result["command"] == "hook-model"
+        assert result["subcommand"] == "gem-pro"
+
+    def test_execute_hook_model_normalizes_gem_flash(self):
+        """_execute_hook_model with 'gem-flash' stores 'gemini-flash' in config."""
+        import json
+        import tempfile
+        import os
+        from pacemaker.user_commands import _execute_hook_model
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"hook_model": "auto"}, f)
+            tmp_path = f.name
+
+        try:
+            result = _execute_hook_model(tmp_path, "gem-flash")
+            assert result["success"] is True
+            with open(tmp_path) as f:
+                config = json.load(f)
+            assert config["hook_model"] == "gemini-flash"
+        finally:
+            os.unlink(tmp_path)
+
+    def test_execute_hook_model_normalizes_gem_pro(self):
+        """_execute_hook_model with 'gem-pro' stores 'gemini-pro' in config."""
+        import json
+        import tempfile
+        import os
+        from pacemaker.user_commands import _execute_hook_model
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"hook_model": "auto"}, f)
+            tmp_path = f.name
+
+        try:
+            result = _execute_hook_model(tmp_path, "gem-pro")
+            assert result["success"] is True
+            with open(tmp_path) as f:
+                config = json.load(f)
+            assert config["hook_model"] == "gemini-pro"
+        finally:
+            os.unlink(tmp_path)
 
 
 class TestConfigDefault:

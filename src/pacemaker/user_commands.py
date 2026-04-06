@@ -537,9 +537,7 @@ def parse_command(user_input: str) -> Dict[str, Any]:
         }
 
     # Pattern 20: pace-maker hook-model (auto|sonnet|opus|gpt-5)
-    pattern_hook_model = (
-        r"^pace-maker\s+hook-model\s+(auto|sonnet|opus|gpt-5|gemini-flash|gemini-pro)$"
-    )
+    pattern_hook_model = r"^pace-maker\s+hook-model\s+(auto|sonnet|opus|gpt-5|gemini-flash|gemini-pro|gem-flash|gem-pro)$"
     match_hook_model = re.match(pattern_hook_model, normalized)
 
     if match_hook_model:
@@ -1564,6 +1562,10 @@ def _execute_prefer_model(
 
 def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
     """Set hook inference model for intent validation and code review."""
+    # Normalize short aliases to canonical names before validation and storage
+    _GEMINI_ALIASES = {"gem-flash": "gemini-flash", "gem-pro": "gemini-pro"}
+    subcommand = _GEMINI_ALIASES.get(subcommand, subcommand)  # type: ignore[arg-type]
+
     valid_models = ["auto", "sonnet", "opus", "gpt-5", "gemini-flash", "gemini-pro"]
 
     if subcommand not in valid_models:

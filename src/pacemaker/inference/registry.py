@@ -21,7 +21,8 @@ _AUTO_DEFAULTS = {
 
 # Reviewer name constants — identify which provider actually served the request
 _REVIEWER_CODEX = "codex-gpt5"
-_REVIEWER_GEMINI = "gemini"
+_REVIEWER_GEMINI_FLASH = "gem-flash"
+_REVIEWER_GEMINI_PRO = "gem-pro"
 _REVIEWER_SDK = "anthropic-sdk"
 _REVIEWER_UNKNOWN = "unknown"
 
@@ -116,7 +117,8 @@ def resolve_and_call_with_reviewer(
         Tuple of (response_text, reviewer_name) where reviewer_name identifies
         the provider that actually served the request:
         - "codex-gpt5" for Codex CLI
-        - "gemini" for Gemini CLI
+        - "gem-flash" for Gemini Flash CLI
+        - "gem-pro" for Gemini Pro CLI
         - "anthropic-sdk" for Anthropic SDK
         - "unknown" on complete failure (fail-open)
     """
@@ -135,7 +137,11 @@ def resolve_and_call_with_reviewer(
         if is_codex_provider:
             reviewer = _REVIEWER_CODEX
         elif is_gemini_provider:
-            reviewer = _REVIEWER_GEMINI
+            reviewer = (
+                _REVIEWER_GEMINI_FLASH
+                if hook_model == "gemini-flash"
+                else _REVIEWER_GEMINI_PRO
+            )
         else:
             reviewer = _REVIEWER_SDK
         return response, reviewer
