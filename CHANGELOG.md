@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.14.0] - 2026-04-05
+
+### Added
+- **Gemini CLI inference provider** (#54): Two new hook model options — `gemini-flash` (→ `gemini-2.5-flash`) and `gemini-pro` (→ `gemini-2.5-pro`) — using Google Gemini CLI subprocess with stdin prompt injection (avoids process-list exposure)
+- **Short CLI aliases** (#54): `pace-maker hook-model gem-flash` and `pace-maker hook-model gem-pro` accepted as aliases, stored canonically as `gemini-flash`/`gemini-pro`
+- **Reviewer identity tracking for Gemini** (#54): `[REVIEWER:gem-flash]` and `[REVIEWER:gem-pro]` tags in governance event `feedback_text`; displayed as `[Gem]` (cyan) in claude-usage monitor
+- **GEM-FLASH / GEM-PRO in `pace-maker status`** (#54): Short display names shown instead of raw model strings
+- **Fallback chain for Gemini** (#54): Gemini failure falls back to auto (Anthropic) then fail-open; same chain as Codex provider
+- **`GeminiProvider` in `inference/` package** (#54): `GeminiProvider` exported from `inference/__init__.py`; `inference/` subdirectory now deployed by `install.sh`
+
 ## [2.13.0] - 2026-04-05
 
 ### Added

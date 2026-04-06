@@ -35,6 +35,50 @@ These MUST always match. Forgetting `plugin.json` has happened before.
 
 ---
 
+## Danger Bash Validation
+
+**Two-phase validation** for dangerous Bash commands in the PreToolUse hook:
+
+- **Phase 1 (Regex Gate)**: When a Bash tool call matches any of the 55 default danger rules and the message contains no `INTENT:` declaration, the command is blocked immediately with no LLM call. This is a fast-reject path.
+- **Phase 2 (LLM Validation)**: When `INTENT:` is present, the LLM validates that the declared intent aligns with the actual Bash command being executed (same Stage 2 flow as Write/Edit).
+
+**Rule categories**: 25 Work Destruction (WD) rules (git checkout --, git reset --hard, git stash drop, branch deletion, etc.) and 30 System Destruction (SD) rules (rm -rf, kill -9, chmod 777, mkfs, dd, etc.).
+
+**Configuration**: Rules are customizable via `~/.claude-pace-maker/danger_bash_rules.yaml` using the same merge strategy as clean code rules (user config stores only additions and deletion markers, defaults loaded from bundled YAML at runtime).
+
+**Blockage category**: `intent_validation_dangerbash` with label "Danger Bash" in telemetry and blockage stats.
+
+**Key files**:
+- `src/pacemaker/danger_bash_rules_default.yaml` — 55 bundled default rules
+- `src/pacemaker/danger_bash_rules.py` — loader, merger, matcher module
+- `src/pacemaker/hook.py` line ~2149 — PreToolUse Bash tool handling
+
+---
+
+## Reviewer Identity Tracking
+
+When intent validation runs Stage 2 (LLM code review), the reviewer identity is tracked end-to-end:
+
+1. `resolve_and_call_with_reviewer()` in `inference/registry.py` returns `(response, reviewer_name)` tuple
+2. `intent_validator.py` threads reviewer through validation result dict (`"reviewer": reviewer`)
+3. `hook.py` records reviewer in blockage_events details JSON
+4. Governance event `feedback_text` is prefixed with `[REVIEWER:xxx]` tag (e.g., `[REVIEWER:codex-gpt5]`, `[REVIEWER:anthropic-sdk]`, `[REVIEWER:gemini]`)
+
+The reviewer tag enables the claude-usage monitor to display colored reviewer identity in the governance event feed.
+
+---
+
+## Codex PAYG Billing Handling
+
+The `codex_usage.py` module handles both subscription and PAYG (Pay-As-You-Go) Codex billing:
+
+- **PAYG detection**: When Codex CLI returns `limit_id: "premium"` in rate limit headers, the plan is identified as PAYG
+- **Null handling**: `_parse_last_token_count()` gracefully handles null `primary`/`secondary` fields that Codex returns for PAYG billing (no usage percentages available)
+- **`limit_id` column**: Added to `codex_usage` SQLite table via idempotent `ALTER TABLE` migration in `migrate_codex_usage_schema()`
+- **SubagentStop wiring**: Migration is called in `hook.py` SubagentStop handler before writing codex usage data
+
+---
+
 ## Running Tests
 
 **NEVER run tests as a single pytest process** (`python -m pytest tests/`). SQLite WAL contention causes hangs when multiple test files create DBs concurrently in the same process.

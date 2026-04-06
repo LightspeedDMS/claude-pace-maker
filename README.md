@@ -19,6 +19,7 @@ Intelligent credit consumption throttling and code quality enforcement for Claud
 - **Prompt Intelligence (Intel)**: Optional per-prompt metadata (frustration, specificity, task type, quality, iteration) attached to Langfuse traces for dashboard analytics
 - **Secrets Management**: Sanitizes sensitive data from Langfuse trace outputs
 - **Langfuse Auto-Provisioning**: Automatic API key provisioning with configurable URL
+- **Danger Bash Validation**: Two-phase validation for dangerous Bash commands — regex gate fast-rejects without LLM call, then LLM validates intent alignment when INTENT: is present. 55 default rules covering work destruction (git) and system destruction (rm, kill, etc.)
 - **Activity Indicators**: Real-time hook activity tracking (IV, TD, CC, ST, CX, PA, PL, LF, SS, SM, SE, SA, UP) with color-coded status
 - **Global API Poll Coordination**: SQLite singleton prevents redundant API polling across concurrent sessions
 - **Companion Tool Installer**: `pace-maker install claude-usage-monitor` installs the usage monitoring dashboard
@@ -204,6 +205,9 @@ pace-maker excluded-paths remove PATH  # Remove excluded path
 pace-maker secrets add VALUE           # Declare a secret value for masking
 pace-maker secrets addfile PATH        # Declare a file as containing secrets
 pace-maker secrets list                # List declared secrets
+pace-maker danger-bash list            # List danger bash rules
+pace-maker danger-bash add ID PATTERN CATEGORY DESC  # Add custom danger bash rule
+pace-maker danger-bash remove ID       # Remove danger bash rule
 pace-maker blockage-stats              # Show validation blockage statistics
 pace-maker install claude-usage-monitor  # Install claude-usage-monitor companion tool
 pace-maker version                # Show version
@@ -289,6 +293,7 @@ All configuration is externalized for easy customization:
 - **Config**: `~/.claude-pace-maker/config.json` - Main configuration (enable/disable features, log level)
 - **Extensions**: `~/.claude-pace-maker/source_code_extensions.json` - Source file extensions to validate
 - **Clean Code Rules**: `~/.claude-pace-maker/clean_code_rules.yaml` - Customizable code quality rules
+- **Danger Bash Rules**: `~/.claude-pace-maker/danger_bash_rules.yaml` - Customizable dangerous command rules (same merge strategy as clean code rules)
 - **Core Paths**: `~/.claude-pace-maker/core_paths.yaml` - Directories requiring TDD enforcement
 - **Prompts**: `~/.claude/hooks/pacemaker/prompts/` - Validation prompt templates
 
@@ -575,6 +580,7 @@ When Claude attempts to stop:
   "tempo_enabled": true,
   "intent_validation_enabled": true,
   "tdd_enabled": true,
+  "danger_bash_enabled": true,
   "subagent_reminder_enabled": true,
   "preferred_subagent_model": "auto",
   "base_delay": 5,

@@ -1,8 +1,26 @@
-#!/usr/bin/env bash
-# pace-maker CLI wrapper for plugin installation.
-# Resolves symlinks so PYTHONPATH points to the real plugin root,
-# not the symlink location (~/.local/bin).
-REAL_SCRIPT="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
-PLUGIN_ROOT="$(cd "$(dirname "$REAL_SCRIPT")/.." && pwd)"
-export PYTHONPATH="${PLUGIN_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
-exec python3 -m pacemaker.user_commands "$@"
+#!/usr/bin/env python3
+"""
+pace-maker CLI wrapper.
+
+This script provides the user-facing CLI for Claude Pace Maker.
+It executes the main() function from the user_commands module.
+"""
+
+import sys
+import os
+
+# Add the installed pacemaker package to the Python path
+PACEMAKER_LIB = os.path.expanduser("~/.claude-pace-maker")
+if os.path.exists(PACEMAKER_LIB):
+    sys.path.insert(0, PACEMAKER_LIB)
+
+try:
+    from pacemaker.user_commands import main
+    main()
+except ImportError as e:
+    print(f"Error: Could not import pace-maker modules: {e}", file=sys.stderr)
+    print("Please ensure pace-maker is properly installed.", file=sys.stderr)
+    sys.exit(1)
+except Exception as e:
+    print(f"Error: {e}", file=sys.stderr)
+    sys.exit(1)
