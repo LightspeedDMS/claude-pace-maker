@@ -83,6 +83,8 @@ COMMANDS:
   pace-maker hook-model sonnet                 Use Sonnet for hook inference
   pace-maker hook-model opus                   Use Opus for hook inference
   pace-maker hook-model gpt-5                  Use GPT-5 (via Codex CLI) for hook inference
+  pace-maker hook-model gemini-flash           Use Gemini Flash for hook inference
+  pace-maker hook-model gemini-pro             Use Gemini Pro for hook inference
   pace-maker langfuse config <url> <public_key> <secret_key>
                                                Configure Langfuse credentials manually
   pace-maker langfuse provision [--force] [--verbose]
@@ -535,7 +537,9 @@ def parse_command(user_input: str) -> Dict[str, Any]:
         }
 
     # Pattern 20: pace-maker hook-model (auto|sonnet|opus|gpt-5)
-    pattern_hook_model = r"^pace-maker\s+hook-model\s+(auto|sonnet|opus|gpt-5)$"
+    pattern_hook_model = (
+        r"^pace-maker\s+hook-model\s+(auto|sonnet|opus|gpt-5|gemini-flash|gemini-pro)$"
+    )
     match_hook_model = re.match(pattern_hook_model, normalized)
 
     if match_hook_model:
@@ -1560,12 +1564,12 @@ def _execute_prefer_model(
 
 def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
     """Set hook inference model for intent validation and code review."""
-    valid_models = ["auto", "sonnet", "opus", "gpt-5"]
+    valid_models = ["auto", "sonnet", "opus", "gpt-5", "gemini-flash", "gemini-pro"]
 
     if subcommand not in valid_models:
         return {
             "success": False,
-            "message": f"Invalid model: {subcommand}\nUsage: pace-maker hook-model [auto|sonnet|opus|gpt-5]",
+            "message": f"Invalid model: {subcommand}\nUsage: pace-maker hook-model [auto|sonnet|opus|gpt-5|gemini-flash|gemini-pro]",
         }
 
     try:
@@ -1583,6 +1587,20 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
                 "✓ Hook model set to GPT-5\n"
                 "Hook inference will use Codex CLI (OpenAI GPT-5) with Anthropic fallback.\n"
                 "Requires: codex CLI installed and authenticated."
+            )
+        elif subcommand == "gemini-flash":
+            message = (
+                "✓ Hook model set to Gemini Flash\n"
+                "Hook inference will use Gemini CLI (gemini-2.5-flash) "
+                "with Anthropic fallback.\n"
+                "Requires: gemini CLI installed and authenticated."
+            )
+        elif subcommand == "gemini-pro":
+            message = (
+                "✓ Hook model set to Gemini Pro\n"
+                "Hook inference will use Gemini CLI (gemini-2.5-pro) "
+                "with Anthropic fallback.\n"
+                "Requires: gemini CLI installed and authenticated."
             )
         else:
             message = (

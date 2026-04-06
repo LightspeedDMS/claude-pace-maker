@@ -21,6 +21,7 @@ _AUTO_DEFAULTS = {
 
 # Reviewer name constants — identify which provider actually served the request
 _REVIEWER_CODEX = "codex-gpt5"
+_REVIEWER_GEMINI = "gemini"
 _REVIEWER_SDK = "anthropic-sdk"
 _REVIEWER_UNKNOWN = "unknown"
 
@@ -40,7 +41,8 @@ def get_provider(hook_model: str):
     """Get provider instance for the given hook_model config value.
 
     Args:
-        hook_model: Config value - "auto", "sonnet", "opus", "haiku", "gpt-5"
+        hook_model: Config value - "auto", "sonnet", "opus", "haiku", "gpt-5",
+                    "gemini-flash", "gemini-pro"
 
     Returns:
         InferenceProvider instance
@@ -53,6 +55,10 @@ def get_provider(hook_model: str):
         from .codex_provider import CodexProvider
 
         return CodexProvider()
+    elif hook_model in ("gemini-flash", "gemini-pro"):
+        from .gemini_provider import GeminiProvider
+
+        return GeminiProvider()
     else:
         log_warning(
             "registry", f"Unknown hook_model '{hook_model}', falling back to Anthropic"
@@ -69,7 +75,8 @@ def resolve_model_for_call(hook_model: str, call_context: str) -> str:
     current hardcoded behavior. Otherwise passes through the hook_model value.
 
     Args:
-        hook_model: Config value - "auto", "sonnet", "opus", "gpt-5"
+        hook_model: Config value - "auto", "sonnet", "opus", "gpt-5",
+                    "gemini-flash", "gemini-pro"
         call_context: Identifies the call site - "stop_hook", "intent_validation",
                       "stage2_unified", "code_review"
 
@@ -109,20 +116,28 @@ def resolve_and_call_with_reviewer(
         Tuple of (response_text, reviewer_name) where reviewer_name identifies
         the provider that actually served the request:
         - "codex-gpt5" for Codex CLI
+        - "gemini" for Gemini CLI
         - "anthropic-sdk" for Anthropic SDK
         - "unknown" on complete failure (fail-open)
     """
     from .codex_provider import CodexProvider
+    from .gemini_provider import GeminiProvider
 
     provider = get_provider(hook_model)
     model_hint = resolve_model_for_call(hook_model, call_context)
     is_codex_provider = isinstance(provider, CodexProvider)
+    is_gemini_provider = isinstance(provider, GeminiProvider)
 
     try:
         response = provider.query(
             prompt, system_prompt, model_hint, max_thinking_tokens
         )
-        reviewer = _REVIEWER_CODEX if is_codex_provider else _REVIEWER_SDK
+        if is_codex_provider:
+            reviewer = _REVIEWER_CODEX
+        elif is_gemini_provider:
+            reviewer = _REVIEWER_GEMINI
+        else:
+            reviewer = _REVIEWER_SDK
         return response, reviewer
     except ProviderError as e:
         if hook_model != "auto":

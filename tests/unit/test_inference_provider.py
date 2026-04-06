@@ -628,6 +628,311 @@ class TestCodexUsageRefreshOnFallback:
         mock_get_usage.assert_not_called()
 
 
+class TestGeminiProvider:
+    """Tests for GeminiProvider subprocess integration."""
+
+    def test_gemini_provider_returns_stdout(self):
+        """GeminiProvider should return stripped stdout on success."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "  YES  \n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            result = provider.query(
+                "test prompt", "system prompt", "gemini-flash", 4000
+            )
+
+        assert result == "YES"
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args
+        cmd = call_args[0][0]
+        assert cmd[0] == "gemini"
+        assert "-p" not in cmd
+        assert "-m" in cmd
+        assert "test prompt" in call_args[1]["input"]
+
+    def test_gemini_provider_embeds_system_prompt(self):
+        """GeminiProvider should embed system prompt when provided."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "NO"
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            provider.query("user question", "be strict", "gemini-flash", 4000)
+
+        call_args = mock_run.call_args
+        full_prompt = call_args[1]["input"]
+        assert "SYSTEM INSTRUCTIONS:\nbe strict" in full_prompt
+        assert "USER REQUEST:\nuser question" in full_prompt
+
+    def test_gemini_provider_no_system_prompt(self):
+        """GeminiProvider should pass raw prompt when no system prompt."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "YES"
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            provider.query("raw prompt", "", "gemini-flash", 4000)
+
+        call_args = mock_run.call_args
+        full_prompt = call_args[1]["input"]
+        assert full_prompt == "raw prompt"
+
+    def test_gemini_provider_maps_flash_model(self):
+        """GeminiProvider should map 'gemini-flash' to 'gemini-2.5-flash'."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "ok"
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            provider.query("test", "", "gemini-flash", 4000)
+
+        cmd = mock_run.call_args[0][0]
+        m_idx = cmd.index("-m")
+        assert cmd[m_idx + 1] == "gemini-2.5-flash"
+
+    def test_gemini_provider_maps_pro_model(self):
+        """GeminiProvider should map 'gemini-pro' to 'gemini-2.5-pro'."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "ok"
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            provider.query("test", "", "gemini-pro", 4000)
+
+        cmd = mock_run.call_args[0][0]
+        m_idx = cmd.index("-m")
+        assert cmd[m_idx + 1] == "gemini-2.5-pro"
+
+    def test_gemini_provider_default_model(self):
+        """GeminiProvider should default to gemini-2.5-flash when model_hint is empty."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "ok"
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            provider.query("test", "", "", 4000)
+
+        cmd = mock_run.call_args[0][0]
+        m_idx = cmd.index("-m")
+        assert cmd[m_idx + 1] == "gemini-2.5-flash"
+
+    def test_gemini_provider_unknown_model_passthrough(self):
+        """GeminiProvider should pass through unknown model hints as-is."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "ok"
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            provider.query("test", "", "gemini-experimental", 4000)
+
+        cmd = mock_run.call_args[0][0]
+        m_idx = cmd.index("-m")
+        assert cmd[m_idx + 1] == "gemini-experimental"
+
+    def test_gemini_provider_raises_on_not_found(self):
+        """GeminiProvider should raise ProviderError if gemini not installed."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+        from pacemaker.inference.provider import ProviderError
+
+        provider = GeminiProvider()
+
+        with patch("subprocess.run", side_effect=FileNotFoundError("gemini")):
+            raised = False
+            try:
+                provider.query("test", "", "gemini-flash", 4000)
+            except ProviderError as e:
+                raised = True
+                assert "not found" in str(e).lower()
+            assert raised
+
+    def test_gemini_provider_raises_on_timeout(self):
+        """GeminiProvider should raise ProviderError on timeout."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+        from pacemaker.inference.provider import ProviderError
+
+        provider = GeminiProvider()
+
+        with patch(
+            "subprocess.run", side_effect=subprocess.TimeoutExpired("gemini", 120)
+        ):
+            raised = False
+            try:
+                provider.query("test", "", "gemini-flash", 4000)
+            except ProviderError as e:
+                raised = True
+                assert "timed out" in str(e)
+            assert raised
+
+    def test_gemini_provider_raises_on_nonzero_exit(self):
+        """GeminiProvider should raise ProviderError on non-zero exit."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+        from pacemaker.inference.provider import ProviderError
+
+        provider = GeminiProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "model not found"
+
+        with patch("subprocess.run", return_value=mock_result):
+            raised = False
+            try:
+                provider.query("test", "", "gemini-flash", 4000)
+            except ProviderError as e:
+                raised = True
+                assert "exit 1" in str(e)
+            assert raised
+
+    def test_gemini_provider_raises_on_empty_response(self):
+        """GeminiProvider should raise ProviderError on empty stdout."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+        from pacemaker.inference.provider import ProviderError
+
+        provider = GeminiProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "   \n"
+
+        with patch("subprocess.run", return_value=mock_result):
+            raised = False
+            try:
+                provider.query("test", "", "gemini-flash", 4000)
+            except ProviderError as e:
+                raised = True
+                assert "empty" in str(e).lower()
+            assert raised
+
+    def test_gemini_provider_stderr_noise_ignored(self):
+        """GeminiProvider should return stdout even when stderr has noise."""
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        provider = GeminiProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "APPROVED"
+        mock_result.stderr = "Warning: some noise on stderr"
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = provider.query("test", "", "gemini-flash", 4000)
+
+        assert result == "APPROVED"
+
+
+class TestRegistryGemini:
+    """Tests for Gemini provider in registry."""
+
+    def test_get_provider_gemini_flash_returns_gemini(self):
+        """get_provider('gemini-flash') should return GeminiProvider."""
+        from pacemaker.inference.registry import get_provider
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        assert isinstance(get_provider("gemini-flash"), GeminiProvider)
+
+    def test_get_provider_gemini_pro_returns_gemini(self):
+        """get_provider('gemini-pro') should return GeminiProvider."""
+        from pacemaker.inference.registry import get_provider
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        assert isinstance(get_provider("gemini-pro"), GeminiProvider)
+
+
+class TestResolveAndCallWithReviewerGemini:
+    """Tests for Gemini reviewer identity in resolve_and_call_with_reviewer."""
+
+    def test_gemini_flash_success_returns_gemini_reviewer(self):
+        """resolve_and_call_with_reviewer with gemini-flash success returns 'gemini' reviewer."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        with patch.object(GeminiProvider, "query", return_value="YES"):
+            response, reviewer = resolve_and_call_with_reviewer(
+                "gemini-flash", "prompt", "sys", "stage1", 4000
+            )
+
+        assert response == "YES"
+        assert reviewer == "gemini"
+
+    def test_gemini_fallback_returns_anthropic_sdk_reviewer(self):
+        """When GeminiProvider fails and fallback succeeds, reviewer is 'anthropic-sdk'."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+        from pacemaker.inference.provider import ProviderError
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        mock_fallback = MagicMock()
+        mock_fallback.query.return_value = "FALLBACK_YES"
+
+        with patch.object(
+            GeminiProvider, "query", side_effect=ProviderError("gemini failed")
+        ):
+            with patch(
+                "pacemaker.inference.anthropic_provider.AnthropicProvider",
+                return_value=mock_fallback,
+            ):
+                response, reviewer = resolve_and_call_with_reviewer(
+                    "gemini-flash", "prompt", "sys", "stage1", 4000
+                )
+
+        assert response == "FALLBACK_YES"
+        assert reviewer == "anthropic-sdk"
+
+    def test_gemini_fallback_does_not_refresh_codex_usage(self):
+        """When GeminiProvider fails, get_latest_codex_usage should NOT be called."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+        from pacemaker.inference.provider import ProviderError
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        mock_fallback = MagicMock()
+        mock_fallback.query.return_value = "FALLBACK_YES"
+
+        with patch.object(
+            GeminiProvider, "query", side_effect=ProviderError("gemini failed")
+        ):
+            with patch(
+                "pacemaker.inference.anthropic_provider.AnthropicProvider",
+                return_value=mock_fallback,
+            ):
+                with patch(
+                    "pacemaker.inference.registry.get_latest_codex_usage"
+                ) as mock_get_usage:
+                    resolve_and_call_with_reviewer(
+                        "gemini-flash", "prompt", "sys", "stage1", 4000
+                    )
+
+        mock_get_usage.assert_not_called()
+
+
 class TestConfigDefault:
     """Tests for hook_model config default."""
 

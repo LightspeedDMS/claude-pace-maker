@@ -591,6 +591,7 @@ install_hook_modules() {
   _copy_subdir "telemetry" "telemetry"
   _copy_subdir "secrets" "secrets"
   _copy_subdir "intel" "intel"
+  _copy_subdir "inference" "inference"
 
   if [ ! -d "$PACEMAKER_SOURCE_DIR/prompts" ]; then
     echo -e "${YELLOW}⚠ Warning: prompts directory not found, skipping${NC}"
