@@ -894,6 +894,7 @@ def validate_intent_and_code(
             # Intent declaration missing
             return {
                 "approved": False,
+                "reviewer": "RegEx",
                 "feedback": """⛔ Intent declaration required
 
 You must declare your intent BEFORE using Write/Edit tools.
@@ -917,6 +918,7 @@ Then use your Write/Edit tool in the same message.""",
             return {
                 "approved": False,
                 "tdd_failure": True,
+                "reviewer": "RegEx",
                 "feedback": f"""⛔ TDD Required for Core Code
 
 You're modifying core code: {file_path}

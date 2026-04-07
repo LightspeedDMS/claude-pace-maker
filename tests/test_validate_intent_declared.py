@@ -114,3 +114,42 @@ class TestValidateIntentDeclared:
         )
 
         assert result["intent_found"] is False
+
+
+class TestStage1ReviewerTag:
+    """Tests that Stage 1 regex blocks include reviewer='RegEx'."""
+
+    @patch("pacemaker.excluded_paths.load_exclusions", return_value=[])
+    def test_stage1_no_returns_regex_reviewer(self, _mock_excl):
+        """Stage 1 NO (missing INTENT: marker) must return reviewer='RegEx'."""
+        from pacemaker.intent_validator import validate_intent_and_code
+
+        result = validate_intent_and_code(
+            messages=["Just some text without intent marker"],
+            code="x = 1",
+            file_path="/home/user/project/src/mymodule.py",
+            tool_name="Write",
+        )
+
+        assert result["approved"] is False
+        assert result.get("reviewer") == "RegEx"
+
+    @patch("pacemaker.excluded_paths.load_exclusions", return_value=[])
+    def test_stage1_no_tdd_returns_regex_reviewer(self, _mock_excl):
+        """Stage 1 NO_TDD (core path, no TDD declaration) must return reviewer='RegEx'."""
+        from pacemaker.intent_validator import validate_intent_and_code
+
+        # Message has INTENT: marker and mentions file, but no test declaration
+        result = validate_intent_and_code(
+            messages=[
+                "INTENT: Modify src/mymodule.py to add a helper function "
+                "that does X, for performance."
+            ],
+            code="def helper(): pass",
+            file_path="/home/user/project/src/mymodule.py",
+            tool_name="Write",
+        )
+
+        assert result["approved"] is False
+        assert result.get("tdd_failure") is True
+        assert result.get("reviewer") == "RegEx"

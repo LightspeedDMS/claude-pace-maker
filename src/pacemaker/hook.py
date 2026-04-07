@@ -2221,7 +2221,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                     project_name=_project_name,
                                     session_id=_sid,
                                     feedback_text=(
-                                        f"Dangerous Bash command blocked (no INTENT:). "
+                                        f"[RegEx] Dangerous Bash command blocked (no INTENT:). "
                                         f"Rules: {matched_ids}. Command: {command[:200]}"
                                     ),
                                 )
