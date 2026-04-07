@@ -424,13 +424,13 @@ def test_load_rules_non_strict_mode_returns_defaults_on_invalid_yaml():
 # ============================================================================
 
 
-def test_default_rules_total_count_is_20():
-    """Test that get_default_rules returns exactly 20 rules after Codex review refactor."""
+def test_default_rules_total_count_is_25():
+    """Test that get_default_rules returns exactly 25 rules after language-agnostic expansion."""
     from pacemaker.clean_code_rules import get_default_rules
 
     rules = get_default_rules()
 
-    assert len(rules) == 20, f"Expected 20 rules, got {len(rules)}"
+    assert len(rules) == 25, f"Expected 25 rules, got {len(rules)}"
 
 
 def test_merged_rule_silent_degradation_present():
@@ -593,6 +593,66 @@ def test_new_rule_hidden_magic_present():
     assert "Metaprogramming" in rule["description"]
 
 
+def test_mutable_defaults_rule_replaced_by_unsafe_defaults():
+    """Test that mutable-defaults id is gone and unsafe-defaults is present."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule_ids = {r["id"] for r in rules}
+
+    assert (
+        "mutable-defaults" not in rule_ids
+    ), "Old rule 'mutable-defaults' must be removed"
+    rule = next((r for r in rules if r["id"] == "unsafe-defaults"), None)
+    assert rule is not None, "New rule 'unsafe-defaults' must be present"
+    assert rule["name"] == "No Unsafe Default Values"
+    assert "contamination" in rule["description"]
+
+
+def test_new_rules_present():
+    """Test that all 5 new rule IDs added in the language-agnostic expansion are present."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rule_ids = {r["id"] for r in rules}
+
+    new_ids = [
+        "type-safety-erosion",
+        "ignored-error-return",
+        "unhandled-async",
+        "hardcoded-config",
+        "unsafe-string-interpolation",
+    ]
+    for rid in new_ids:
+        assert rid in rule_ids, f"New rule '{rid}' must be present in default rules"
+
+
+def test_patched_rules_are_language_agnostic():
+    """Test that the 5 patched rules contain at least one non-Python language reference."""
+    from pacemaker.clean_code_rules import get_default_rules
+
+    rules = get_default_rules()
+    rules_by_id = {r["id"]: r for r in rules}
+
+    non_python_markers = ["Go", "Java", "Kotlin", "C#", "JS", "TypeScript"]
+    patched_ids = [
+        "exception-handling",
+        "resource-leak",
+        "path-traversal",
+        "concurrency-hazard",
+        "hidden-magic",
+    ]
+    for rid in patched_ids:
+        rule = rules_by_id.get(rid)
+        assert rule is not None, f"Patched rule '{rid}' must be present"
+        desc = rule["description"]
+        has_non_python = any(marker in desc for marker in non_python_markers)
+        assert has_non_python, (
+            f"Rule '{rid}' description must reference at least one non-Python language "
+            f"(one of {non_python_markers}), got: {desc!r}"
+        )
+
+
 def test_all_new_rule_ids_present():
     """Test that exactly the 20 Codex-refactored rule IDs are present in default rules (no missing, no extras)."""
     from pacemaker.clean_code_rules import get_default_rules
@@ -611,7 +671,7 @@ def test_all_new_rule_ids_present():
         "boundary-checks",
         "logic-bugs",
         "magic-numbers",
-        "mutable-defaults",
+        "unsafe-defaults",
         "deep-nesting",
         "blob-size",
         "mock-abuse",
@@ -621,6 +681,11 @@ def test_all_new_rule_ids_present():
         "orphan-code",
         "unbounded-loops",
         "hidden-magic",
+        "type-safety-erosion",
+        "ignored-error-return",
+        "unhandled-async",
+        "hardcoded-config",
+        "unsafe-string-interpolation",
     }
 
     missing = expected_rule_ids - rule_ids

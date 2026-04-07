@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.16.0] - 2026-04-07
+
+### Added
+- **5 new default clean code rules**: `type-safety-erosion` (TypeScript `any`, Java raw types, C# `dynamic`, Go `interface{}`, Kotlin `!!`), `ignored-error-return` (Go `_, err` discard, Java/Kotlin discarded Result), `unhandled-async` (missing `await`, `async void`, fire-and-forget Promises), `hardcoded-config` (env-specific URLs/ports/paths distinct from secrets and magic numbers), `unsafe-string-interpolation` (command injection and XSS via string interpolation, extends sql-injection coverage)
+
+### Changed
+- **Replaced `mutable-defaults` with `unsafe-defaults`**: Generalizes Python-only mutable default argument rule to cover JS/TS module-level mutable defaults and Java/Kotlin static mutable fields used as defaults
+- **Patched 5 rule descriptions for multi-language coverage**: `exception-handling` (adds Go `val, _ := fn()` idiom), `resource-leak` (adds Java try-with-resources, C# using, Go defer), `path-traversal` (adds Java/Go/Node examples), `concurrency-hazard` (generalizes from Python global/module-level to Go/Java/C#/JS), `hidden-magic` (adds JS eval, Java/Kotlin reflection, Go reflect, C# dynamic)
+- **Default rule count**: 20 → 25
+
 ## [2.15.0] - 2026-04-06
 
 ### Added

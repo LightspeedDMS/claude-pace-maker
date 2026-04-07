@@ -50,22 +50,22 @@ def get_default_rules() -> List[Dict[str, str]]:
         {
             "id": "path-traversal",
             "name": "No Path Traversal",
-            "description": "User-supplied input used directly in file path construction without sanitization. No raw open(user_input) or os.path.join(base, user_input) without validation",
+            "description": "User-supplied input used directly in file path construction without sanitization: Python open(user_input) or os.path.join(base, user_input), Java new File(userInput), Go os.Open(userInput), Node fs.readFile(userInput) — all without validation",
         },
         {
             "id": "exception-handling",
             "name": "Proper Exception Handling",
-            "description": "Bare except clauses, silently swallowed exceptions without log/re-raise, or unchecked return values from non-void functions. Every error must be explicitly handled — LOG+THROW, LOG+RECOVER, or EXPLICIT DISCARD",
+            "description": "Bare except clauses, silently swallowed exceptions without log/re-raise, or unchecked return values from non-void functions. Every error must be explicitly handled — LOG+THROW, LOG+RECOVER, or EXPLICIT DISCARD; in Go: discarded error returns (val, _ := fn()) without justification",
         },
         {
             "id": "resource-leak",
             "name": "No Resource Leaks",
-            "description": "Files, database connections, sockets, and locks opened without a context manager (with statement) or explicit finally/close. Every acquired resource must have a guaranteed release path",
+            "description": "Files, database connections, sockets, and locks opened without a guaranteed release path: context manager/with (Python), try-with-resources (Java/Kotlin), using/await using (C#), defer (Go), or explicit finally/close. Every acquired resource must have a guaranteed release path",
         },
         {
             "id": "concurrency-hazard",
             "name": "No Concurrency Hazards",
-            "description": "Shared mutable state accessed without synchronization: module-level mutable variables modified without locks, class-level mutable attributes modified without locks, global keyword usage in concurrent contexts",
+            "description": "Shared mutable state accessed without synchronization: package/module-level mutable variables modified without locks (Go, Python), class/object-level mutable attributes without locks (Java, Kotlin, C#), global keyword in concurrent contexts (Python), JS closures capturing shared mutable state across async boundaries",
         },
         {
             "id": "boundary-checks",
@@ -83,9 +83,9 @@ def get_default_rules() -> List[Dict[str, str]]:
             "description": "Magic numbers (use named constants)",
         },
         {
-            "id": "mutable-defaults",
-            "name": "No Mutable Default Arguments",
-            "description": "Mutable default arguments (Python: def func(items=[]):)",
+            "id": "unsafe-defaults",
+            "name": "No Unsafe Default Values",
+            "description": "Mutable or shared default arguments causing cross-call contamination: Python def f(x=[]) or def f(cfg={}), JS/TS default param pointing to a module-level mutable object, Java/Kotlin static mutable fields used as defaults. Default values must be immutable or re-created per call",
         },
         {
             "id": "deep-nesting",
@@ -130,7 +130,32 @@ def get_default_rules() -> List[Dict[str, str]]:
         {
             "id": "hidden-magic",
             "name": "No Hidden Magic",
-            "description": "Metaprogramming that obscures control flow: eval/exec, >2 stacked decorators, metaclass abuse, monkey patching, convention-based auto-discovery. Every code path must be traceable by reading source",
+            "description": "Metaprogramming that obscures control flow: eval/exec (Python/JS), >2 stacked decorators, metaclass abuse, monkey patching, convention-based auto-discovery, Java/Kotlin reflection (Class.forName, KClass), Go reflect package for dynamic dispatch, C# dynamic keyword. Every code path must be traceable by reading source",
+        },
+        {
+            "id": "type-safety-erosion",
+            "name": "No Type Safety Bypass",
+            "description": "Explicit type safety escapes that disable compile-time checks: TypeScript any or as unknown as T double-cast, Java raw types (List without <T>), C# dynamic, Go interface{}/any used as typed-param substitute, Kotlin !! operator without a guarding condition. Each use must have a comment justifying why the type system cannot express the constraint",
+        },
+        {
+            "id": "ignored-error-return",
+            "name": "No Ignored Error Returns",
+            "description": "Error-carrying return values silently discarded: Go val, _ := fn() without justifying comment, Java methods returning boolean/Optional called as void statements, Kotlin Result.getOrNull() with no null branch, C# discarded Task returns. Distinct from exception-handling (try/catch) — targets the return-value error model",
+        },
+        {
+            "id": "unhandled-async",
+            "name": "No Floating Async Calls",
+            "description": "Async operations without error propagation or completion handling: missing await on async calls (JS/TS/Python/C#), Promise chains with no .catch() or error handler, async void methods in C# (fire-and-forget), unawaited coroutines in Python. Every async operation must have an explicit completion and error path",
+        },
+        {
+            "id": "hardcoded-config",
+            "name": "No Hardcoded Configuration",
+            "description": "Environment-specific values embedded in source: hostnames, port numbers, URLs, file system paths, timeouts, or feature flags that differ between environments. Distinct from hardcoded-secrets (credentials) and magic-numbers (numeric semantics) — targets infrastructure coupling. Values must be loaded from environment variables, config files, or dependency injection",
+        },
+        {
+            "id": "unsafe-string-interpolation",
+            "name": "No Unsafe String Interpolation",
+            "description": "User-controlled input interpolated directly into command strings, shell invocations, or HTML/template expressions without sanitization: subprocess.run(f'cmd {user_input}'), innerHTML assignments with unsanitized data, fmt.Sprintf with external input in the format position. Extends sql-injection coverage to command injection and XSS vectors",
         },
     ]
 
