@@ -36,6 +36,7 @@ SYNTHESIS_TIMEOUT_SEC = 30  # synthesis phase timeout
 DEFAULT_MAX_THINKING_TOKENS = 4000
 MIN_REVIEWERS = 2
 MAX_REVIEWERS = 3
+MAX_REVIEW_LOG_CHARS = 300  # max chars of reviewer response to log at DEBUG level
 
 
 def parse_competitive(hook_model: str):
@@ -75,16 +76,15 @@ def _build_synthesis_prompt(succeeded: list, original_prompt: str) -> str:
         f"[{label}]: {response}" for response, label in succeeded
     )
     return (
-        "You are a synthesis judge. Multiple AI reviewers have independently reviewed "
-        "the same code/command.\n"
-        "Produce ONE final verdict based on their combined analysis.\n\n"
+        "You are a synthesis formatter. Multiple AI reviewers have independently reviewed "
+        "the same code/command. Your job is to consolidate their verdicts — not re-judge.\n\n"
         f"Original submission under review:\n{original_prompt}\n\n"
         f"Independent reviewer verdicts:\n{verdicts_block}\n\n"
-        "Decision rules:\n"
-        "- If all reviewers approve -> output exactly: APPROVED\n"
-        "- If any reviewer raises a substantive concern -> output: BLOCKED: [consolidated feedback]\n"
-        "- When reviewers conflict, favor BLOCKED if the concern is specific and actionable\n"
-        "- Do not repeat each reviewer's text verbatim -- synthesize into one coherent verdict\n"
+        "Rules (apply mechanically, do not override):\n"
+        "- If ALL reviewers output APPROVED -> output exactly: APPROVED\n"
+        "- If ANY reviewer outputs BLOCKED -> output: BLOCKED: [combined reasons from all blocking reviewers, de-duplicated]\n"
+        "- Do not add new concerns not raised by reviewers\n"
+        "- Do not remove or downgrade concerns raised by reviewers\n"
         '- Output ONLY "APPROVED" or "BLOCKED: [reason]" -- no other text, no preamble'
     )
 
@@ -171,6 +171,11 @@ def _dispatch_reviewers(
             result = future.result()
             succeeded.append(result)
             log_debug("competitive", f"Reviewer {model} succeeded")
+            response_text, _label = result
+            log_debug(
+                "competitive",
+                f"Reviewer {model} verdict: {response_text[:MAX_REVIEW_LOG_CHARS]!r}",
+            )
         except Exception as e:
             log_warning("competitive", f"Reviewer {model} failed: {e}")
 
