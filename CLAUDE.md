@@ -186,8 +186,14 @@ This applies to:
 
 **CLI**: `pace-maker hook-model gpt-5+gemini-flash->sonnet` — validates via `parse_competitive()`, stores canonical form
 
-**Status display**: `pace-maker status` shows "competitive" in ANSI blue with reviewers breakdown line
+**Synthesis prompt**: Synthesizer is a formatter, not a judge — applies verdicts mechanically: any BLOCK from any reviewer → BLOCKED with combined reasons; all APPROVED → APPROVED. Does not add new concerns or remove existing ones.
 
-**claude-usage display**: Hook Model shows "competitive" in blue; governance feed shows `[Comp]` for competitive expressions
+**Reviewer verdict logging**: Each reviewer's raw response is logged at DEBUG level (first 300 chars via `MAX_REVIEW_LOG_CHARS`) via `log_debug("competitive", f"Reviewer {model} verdict: ...")` for synthesis quality evaluation.
 
-**Concurrency**: `ThreadPoolExecutor` with `futures_wait(timeout=150s)` — partial results preserved on timeout; `executor.shutdown(wait=False)` avoids blocking on in-flight threads
+**Timeouts**: `REVIEWER_WAIT_TIMEOUT_SEC = 60` (per-reviewer via `futures_wait`), `SYNTHESIS_TIMEOUT_SEC = 30` (synthesis via `future.result(timeout=...)`), outer hook timeout = 120s (in `~/.claude/settings.json`). Timeout → first-survivor-wins for synthesis; partial reviewer results always preserved.
+
+**Status display**: `pace-maker status` shows full expression (e.g. `opus+gpt-5->haiku`) in ANSI blue — no separate "reviewers:" breakdown line.
+
+**claude-usage display**: Hook Model shows `comp` in `bright_blue`; governance feed shows `[Comp]` in `bright_blue` for competitive expressions.
+
+**Concurrency**: `ThreadPoolExecutor` with `futures_wait(timeout=REVIEWER_WAIT_TIMEOUT_SEC)` — partial results preserved on timeout; `executor.shutdown(wait=False)` avoids blocking on in-flight threads.

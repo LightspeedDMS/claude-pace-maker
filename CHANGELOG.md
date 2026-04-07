@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.15.0] - 2026-04-06
+
+### Added
+- **Competitive multi-model review pipeline** (#63): New `hook_model` expression syntax `m1+m2[+m3]->synthesizer` dispatches 2–3 reviewers in parallel and synthesizes results; supported models: `auto`, `sonnet`, `opus`, `haiku`, `gpt-5`, `gemini-flash`, `gemini-pro`
+- **`inference/competitive.py`** (#63): Core module with `parse_competitive()` (validates expression), `run_competitive()` (parallel dispatch + synthesis), `_dispatch_reviewers()` (ThreadPoolExecutor with per-reviewer timeout), `_synthesize()` (synthesis phase with bounded timeout)
+- **Synthesis formatter prompt** (#63): Synthesizer acts as formatter not judge — mechanically consolidates verdicts: any BLOCK from any reviewer → BLOCKED; all APPROVED → APPROVED; does not add or remove concerns
+- **Reviewer verdict logging at DEBUG** (#63): First 300 chars of each reviewer's raw response logged via `log_debug()` for synthesis quality evaluation (`MAX_REVIEW_LOG_CHARS = 300`)
+- **`COMPETITIVE REVIEW MODE:` section in `pace-maker help`** (#63): Documents expression syntax, model aliases, supported reviewers, failure modes, and examples
+- **Named constants for timeouts and sizing** (#63): `REVIEWER_WAIT_TIMEOUT_SEC = 60`, `SYNTHESIS_TIMEOUT_SEC = 30`, `MIN_REVIEWERS = 2`, `MAX_REVIEWERS = 3` replace magic numbers throughout `competitive.py`
+
+### Changed
+- **`pace-maker status` competitive display** (#63): Shows full expression (e.g. `opus+gpt-5->haiku`) in ANSI blue instead of "competitive" + separate "reviewers:" breakdown line
+- **PreToolUse hook timeout** (#63): Bumped from 60s to 120s in `~/.claude/settings.json` to accommodate 2-phase pipeline (reviewer dispatch + synthesis) without mid-execution kill
+- **Synthesis timeout bounded** (#63): `_synthesize()` wraps synthesizer call in `future.result(timeout=SYNTHESIS_TIMEOUT_SEC)` — timeout → first-survivor-wins; avoids indefinite block
+
+### Fixed
+- **Individual phase timeouts** (#63): Per-reviewer timeout (`futures_wait(timeout=60s)`) and synthesis timeout (`future.result(timeout=30s)`) replace a single unbounded outer timeout, ensuring partial results are always preserved on slow reviewers
+
 ## [2.14.0] - 2026-04-05
 
 ### Added
