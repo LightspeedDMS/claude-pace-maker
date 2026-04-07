@@ -1,10 +1,12 @@
 
+# Python bytecode (all depths)
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
 .claude/tdd-guard/data/test.json
 .coverage
-/src/pacemaker/__pycache__
-/tests/__pycache__
 /.tmp
-/scripts/__pycache__
 /~/.claude-pace-maker
 /.analysis
 .ssh-mcp-server.port
@@ -24,16 +26,8 @@ bin/
 # Code indexer
 .code-indexer/
 .code-indexer-override.yaml
-/__pycache__
 coverage.json
 
 # Local testing credentials (DO NOT COMMIT)
 .local-testing
-/src/pacemaker/langfuse/__pycache__
-/src/pacemaker/telemetry/__pycache__
-/tests/unit/__pycache__
 .secrets
-/src/pacemaker/secrets/__pycache__
-/tests/integration/__pycache__
-/tests/e2e/__pycache__
-/src/pacemaker/intel/__pycache__
