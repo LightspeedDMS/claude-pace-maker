@@ -81,48 +81,145 @@ These are UNRECOVERABLE conditions. Claude cannot fix them by continuing — blo
 **RULE**: If recent messages show a stuck loop or repeated identical failures → APPROVED
 (Allow stoppage immediately. The user needs to intervene — e.g., /compact, model change, or fresh session.)
 
-CRITICAL - STORY/EPIC IMPLEMENTATION REQUIRES REAL-WORLD E2E VALIDATION:
+CRITICAL - ALL DEVELOPMENT WORK REQUIRES E2E EVIDENCE:
 
-If the BEGINNING OF SESSION shows the user ran a story or epic implementation command:
-- Slash commands like: /implement-story-spec, /implement-epic-spec, /implement-backlog
-- Phrases like: "story #N", "epic #N", "implement story", "implement epic", "implement this story", "implement this epic"
-- Any session where Claude was asked to implement a story or epic feature
+─────────────────────────────────────────────────────────
+STEP 1: DETECT DEVELOPMENT WORK
+─────────────────────────────────────────────────────────
 
-Then REAL-WORLD END-TO-END VALIDATION IS MANDATORY before Claude may stop.
+Development work is ANY session where Claude produced, modified, or fixed executable code:
 
-⚠️ WHAT THIS MEANS - READ CAREFULLY:
+  Story/epic implementation:
+    /implement-story-spec, /implement-epic-spec, /implement-backlog
+    "story #N", "epic #N", "implement story", "implement epic"
 
-This is NOT about running automated test code (pytest, unit tests, integration test suites, test scripts).
-Writing tests or running `pytest` does NOT satisfy this requirement.
+  Bug fixes:
+    "fix", "repair", "resolve", "not working", "broken", "bug", "issue #N"
+    /troubleshoot-and-fix, /fix-epic-spec-compliance, any debug/repair session
 
-This MEANS: Claude must actually EXECUTE THE IMPLEMENTED APPLICATION against real systems under real conditions:
-- Actually invoking the application, CLI, API endpoint, or feature that was built
-- Against a real database, real filesystem, real external service — NO mocks, NO emulations, NO fakes
-- Observing real output, real side effects, real system responses
-- Demonstrating the feature works in the actual deployment context
+  Feature or behavioral changes:
+    "add", "implement", "build", "create", "refactor"
+    Any change to how the system behaves at runtime
 
-Evidence that REAL-WORLD E2E validation was performed (look in RECENT messages):
-- Claude explicitly invoked the manual-test-executor subagent (which runs the real application)
-- Claude ran /execute-e2e or /execute-manual skills that exercise the live system
-- Claude described actually running the application and showed real output/results
-- Claude's last message declares specifically: what was run, against what real system, and what the outcome was
-- Claude used Bash to invoke the actual built feature (not test code) and showed real results
+  NOT development work (skip this entire section):
+    - Pure documentation edits (no executable code changed)
+    - Pure prompt/template text edits (no logic changed)
+    - Config value change with no observable behavioral difference at runtime
+    - Research, planning, or analysis sessions with no code output
 
-Evidence that is NOT sufficient (do NOT accept these as E2E validation):
-- "I wrote tests for this" or "tests are passing" (writing test code ≠ real-world validation)
-- "I ran pytest" or "all unit tests pass" (automated test execution ≠ real-world E2E)
-- "The code looks correct" or "the logic is sound" (analysis ≠ execution)
-- Describing what the code SHOULD do without showing it actually did it
+⚠️ TRUNCATION NOTE: Even with truncated middle context, if the BEGINNING OF SESSION
+shows development work was requested, this section applies. The general permissive
+default does NOT apply here — unclear context does NOT excuse missing E2E evidence.
 
-BLOCK STOPPAGE if ALL of the following are true:
-1. The session was implementing a story or epic (from BEGINNING OF SESSION context)
-2. AND there is NO evidence of real-world application execution in RECENT messages
-3. AND Claude's last message does NOT explicitly state: what was run, against what real system, and the observed outcome
+─────────────────────────────────────────────────────────
+STEP 2: CHECK FOR VALID E2E EXIT
+─────────────────────────────────────────────────────────
 
-**RULE**: Story/epic implementation is NOT complete until Claude has actually run the implemented feature against real systems and reported what happened. Code that compiles and has passing tests but has never been executed in the real world is UNVALIDATED.
+Before demanding evidence, check if the agent declared a valid exit:
 
-When blocking for missing real-world E2E:
-BLOCKED: Story/epic implementation requires real-world end-to-end validation. This means actually running the implemented application/feature against real systems (not running test code). Please invoke the manual-test-executor subagent or run /execute-e2e, then declare: what you ran, against what real system/data, and the actual observed outcome.
+EXIT A — NOT APPLICABLE (agent explains why):
+
+  The agent must state specifically and concretely why E2E is inapplicable
+  to THIS specific work. Generic claims are rejected.
+
+  VALID (specific, work-grounded):
+    "This was documentation-only: I modified README.md. No executable code changed."
+    "I updated a config default value only. There is no runtime behavior difference."
+    "This was a prompt template text edit. The only change is a string in a .md file."
+
+  INVALID (generic, excuses):
+    "E2E is difficult/time-consuming for this"
+    "Unit tests are sufficient coverage"
+    "The code is obviously correct"
+    "Real APIs aren't available" — availability is a problem to solve, not an exit
+
+  ⚠️ YOU MUST VALIDATE EXIT A:
+    - Does the claimed work type actually match non-behavioral, non-executable changes?
+    - Is the justification specific to what was built, or a generic excuse?
+    - If specific and plausible → accept.
+    - If vague, doesn't match the session context, or shifts blame → REJECT, BLOCK.
+
+EXIT B — USER EXPLICITLY WAIVED E2E (verbatim quote required):
+
+  The agent must quote the EXACT words from the user in THIS conversation
+  that explicitly waived E2E testing. Paraphrasing is invalid.
+
+  Valid trigger phrases to look for:
+    "skip end to end", "no E2E needed", "don't do E2E testing"
+    "skip manual testing", "no end to end tests"
+    "I don't need end to end tests for this"
+
+  CRITICAL RULES (identical to TDD override rules):
+    - Must be verbatim — not a summary, not "the user implied"
+    - Must appear in the visible conversation — fabricated quotes are invalid
+    - "The user trusted me" is NOT a quote → invalid
+    - If no such quote is visible → EXIT B is invalid
+
+─────────────────────────────────────────────────────────
+STEP 3: VERIFY E2E EVIDENCE IN RECENT MESSAGES
+─────────────────────────────────────────────────────────
+
+If neither exit applies, look in RECENT messages for E2E evidence.
+Accept EITHER of the following:
+
+  FORMAT A — E2E TEST COMPLETION REPORT (from e2e-test-heuristic.md standard):
+    The agent produced a block containing:
+      "CHANGED CODE COVERAGE" section with: Step / Command / Expected / Observed / Result
+      "REGRESSION COVERAGE" section with the same structure
+      "OVERALL VERDICT: PASS / FAIL / INCONCLUSIVE"
+    With real captured output (not claims) in the Observed fields.
+
+  FORMAT B — E2E Evidence Table:
+    | # | AC  | Test Description | How Performed | Real System / Data | Observed Result |
+    Minimum 3 rows per acceptance criterion (happy path + edge case + error/boundary).
+    If no explicit ACs: 3 rows per major functional area changed.
+
+  Column validation rules (FORMAT B):
+
+    "How Performed" — must describe ACTUAL execution:
+      ✅ "Called POST /api/search with Voyage AI enabled, key from env VOYAGE_API_KEY"
+      ✅ "Ran: pace-maker status --verbose, observed terminal output"
+      ❌ "ran the test suite" / "executed tests" / "pytest tests/"
+
+    "Real System / Data" — must name the actual system:
+      ✅ "Voyage AI API (live)", "PostgreSQL staging", "live filesystem at /data/"
+      ❌ "mock", "stub", "fake", "emulated", "pytest fixture", "monkeypatched"
+
+    "Observed Result" — must be actual captured output:
+      ✅ Pasted response body, exit code + stdout snippet, log line with timestamp
+      ❌ "worked as expected" / "passed" / "no errors" / any claim without output
+
+  WHAT DOES NOT COUNT AS E2E (reject these):
+    - "Tests are passing" or "pytest completed with 0 failures"
+    - "Code compiles successfully"
+    - "I wrote test cases for this"
+    - Any result from mocked, stubbed, or emulated systems
+    - Describing what the code SHOULD do vs. showing it DID it
+
+─────────────────────────────────────────────────────────
+WHEN BLOCKING FOR MISSING E2E
+─────────────────────────────────────────────────────────
+
+BLOCKED: Development work requires E2E evidence before stopping.
+
+Your recent messages must contain either:
+
+  OPTION 1 — E2E TEST COMPLETION REPORT (from standards):
+    CHANGED CODE COVERAGE and REGRESSION COVERAGE sections with actual
+    captured output. OVERALL VERDICT required.
+
+  OPTION 2 — E2E Evidence Table:
+    | # | AC | Test Description | How Performed | Real System / Data | Observed Result |
+    Minimum 3 rows per acceptance criterion. "Observed Result" must be actual
+    captured output — not a claim, not "passed", not "worked as expected".
+
+  OPTION 3 — Valid exit:
+    EXIT A: Explain specifically (not generically) why E2E is inapplicable.
+            This will be validated against the session context.
+    EXIT B: Quote the exact user words from this conversation that waived E2E.
+            Paraphrasing is invalid.
+
+Running pytest, unit tests, or mocked integration tests does NOT satisfy this.
 
 YOUR JOB:
 

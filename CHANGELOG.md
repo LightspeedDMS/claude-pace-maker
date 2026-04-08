@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.18.0] - 2026-04-08
+
+### Added
+- **Stop hook E2E enforcement protocol**: Replaced narrow story/epic-only E2E gate with a 3-step protocol covering ALL development work (story/epic, bug fixes, feature additions, behavioral refactors). Step 1 detects development work from session context; Step 2 checks for valid exits (EXIT A: specific not-applicable justification validated by LLM; EXIT B: verbatim user waiver quote, identical rules to TDD override); Step 3 requires E2E evidence in accepted format before allowing stop
+- **E2E evidence formats**: Stop hook now accepts FORMAT A (`E2E TEST COMPLETION REPORT` from `e2e-test-heuristic.md` standard with CHANGED CODE COVERAGE + REGRESSION COVERAGE + OVERALL VERDICT) or FORMAT B (E2E Evidence Table with `#`, `AC`, `Test Description`, `How Performed`, `Real System / Data`, `Observed Result` columns); running pytest or claiming "tests pass" explicitly rejected
+- **Stop hook exit valve counter**: New `consecutive_stop_blocks` field in session state prevents infinite block loops — increments on each BLOCKED stop, resets to 0 on any tool use (PostToolUse handler), releases on 5th consecutive block (`STOP_EXIT_VALVE_THRESHOLD = 4`); "EV" activity event recorded on activation
+- **`STOP_EXIT_VALVE_THRESHOLD` module constant**: Replaces local variable, imported by tests to eliminate threshold duplication across files
+- **Minimum 3 E2E tests per acceptance criterion**: `e2e-test-heuristic.md` now mandates happy path + edge case + error/boundary test per AC, enforced by stop hook's minimum row count requirement
+- **All-dev-work E2E scope in standards**: `testing-quality-standards.md` updated to state E2E is mandatory for all development (not just story/epic), stop hook enforcement noted, completion criteria strengthened to require accepted format with 3+ rows and real captured output
+
+### Fixed
+- **`test_blockage_telemetry.py` stale count**: Pre-existing test failure fixed — category count assertion corrected from 6 to 7 to reflect `intent_validation_dangerbash` category added with Danger Bash feature
+
 ## [2.16.0] - 2026-04-07
 
 ### Added

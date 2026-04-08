@@ -833,6 +833,15 @@ def run_hook():
     # Increment global tool execution counter
     state["tool_execution_count"] = state.get("tool_execution_count", 0) + 1
 
+    # Reset stop-block exit valve counter whenever agent uses a tool
+    # (agent doing real work breaks the text-only arguing loop)
+    if state.get("consecutive_stop_blocks", 0) > 0:
+        state["consecutive_stop_blocks"] = 0
+        log_debug(
+            "hook",
+            "PostToolUse: reset consecutive_stop_blocks counter (tool use detected)",
+        )
+
     # Ensure database is initialized
     db_path = DEFAULT_DB_PATH
     database.initialize_database(db_path)
@@ -1036,6 +1045,13 @@ def run_hook():
 
     # Return whether feedback was provided
     return feedback_provided
+
+
+# Alias for testability: exposes the PostToolUse handler under the name the
+# tests expect.  run_hook() IS the PostToolUse handler; this alias lets test
+# code do `from pacemaker.hook import handle_post_tool_use` without any
+# restructuring of the production function.
+handle_post_tool_use = run_hook
 
 
 def parse_user_prompt_input(raw_input: str) -> dict:
@@ -1547,6 +1563,11 @@ def format_elapsed_time(last_interaction_time) -> str:
 # Langfuse push timeout for AC4 (<2s constraint)
 LANGFUSE_PUSH_TIMEOUT_SECONDS = 2
 
+# Stop hook exit valve: number of consecutive blocks before the valve releases on the (N+1)th block.
+STOP_EXIT_VALVE_THRESHOLD = (
+    4  # Consecutive stop blocks before exit valve releases; 5th block passes through
+)
+
 
 def _handle_langfuse_subagent_start(hook_data: dict, config: dict) -> Optional[str]:
     """
@@ -1968,6 +1989,44 @@ def run_stop_hook():
         )
 
         log_debug("hook", f"Intent validation result: {result}")
+
+        # Exit valve: prevent infinite block loop when agent only produces text without tool use.
+        # After 5 consecutive blocks without intervening tool use, allow exit to avoid deadlock.
+        _EXIT_VALVE_THRESHOLD = STOP_EXIT_VALVE_THRESHOLD
+        if result.get("decision") == "block":
+            _consec = state.get("consecutive_stop_blocks", 0)
+            if _consec >= _EXIT_VALVE_THRESHOLD:
+                # 5th consecutive block without tool use — activate exit valve
+                state["consecutive_stop_blocks"] = 0
+                save_state(state, DEFAULT_STATE_PATH)
+                log_warning(
+                    "hook",
+                    f"Stop hook exit valve activated after {_consec + 1} consecutive blocks "
+                    "without tool use. Allowing exit to prevent deadlock.",
+                )
+                try:
+                    record_activity_event(
+                        DEFAULT_DB_PATH, "EV", "yellow", session_id or "unknown"
+                    )
+                except Exception as e:
+                    log_warning(
+                        "hook", "Exit valve: failed to record EV activity event", e
+                    )
+                return {"continue": True}
+            else:
+                state["consecutive_stop_blocks"] = _consec + 1
+                save_state(state, DEFAULT_STATE_PATH)
+                log_debug(
+                    "hook", f"Stop hook blocked: consecutive_stop_blocks={_consec + 1}"
+                )
+        else:
+            # APPROVED or COMPLETE: reset exit valve counter
+            if state.get("consecutive_stop_blocks", 0) > 0:
+                state["consecutive_stop_blocks"] = 0
+                save_state(state, DEFAULT_STATE_PATH)
+                log_debug(
+                    "hook", "Stop hook approved: reset consecutive_stop_blocks counter"
+                )
 
         # AC5: Record blockage for tempo validation failure
         if result.get("decision") == "block":
