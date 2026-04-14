@@ -295,7 +295,7 @@ def call_sdk_validation(conversation_context: str, hook_model: str = "auto") -> 
 
     Args:
         conversation_context: Formatted conversation context from format_stop_hook_context()
-        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5"
+        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5.4" (legacy alias: "gpt-5")
 
     Returns:
         SDK response text
@@ -470,7 +470,7 @@ def _call_sdk_intent_validation(prompt: str, hook_model: str = "auto") -> str:
 
     Args:
         prompt: Validation prompt
-        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5"
+        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5.4" (legacy alias: "gpt-5")
 
     Returns:
         SDK response text (YES or NO)
@@ -652,7 +652,7 @@ def _call_stage2_validation(prompt: str, hook_model: str = "auto") -> "tuple[str
 
     Args:
         prompt: Stage 2 validation prompt
-        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5"
+        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5.4" (legacy alias: "gpt-5")
 
     Returns:
         Tuple of (response_text, reviewer_name) where reviewer_name identifies

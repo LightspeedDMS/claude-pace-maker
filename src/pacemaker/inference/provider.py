@@ -25,7 +25,7 @@ class InferenceProvider(ABC):
         Args:
             prompt: The user/validation prompt
             system_prompt: System instructions for the model
-            model_hint: Model identifier (e.g., "sonnet", "opus", "gpt-5")
+            model_hint: Model identifier (e.g., "sonnet", "opus", "gpt-5.4")
             max_thinking_tokens: Max thinking/reasoning tokens
 
         Returns:

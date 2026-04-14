@@ -50,23 +50,23 @@ class TestParseCompetitive:
     """Tests for parse_competitive() expression parser."""
 
     def test_parse_competitive_valid_expression(self):
-        """Standard 2-reviewer expression parses correctly."""
+        """Standard 2-reviewer expression parses correctly; gpt-5 alias resolves to gpt-5.4."""
         from pacemaker.inference.competitive import parse_competitive
 
         result = parse_competitive("gpt-5+gemini-flash->sonnet")
         assert result is not None
         reviewers, synthesizer = result
-        assert reviewers == ["gpt-5", "gemini-flash"]
+        assert reviewers == ["gpt-5.4", "gemini-flash"]
         assert synthesizer == "sonnet"
 
     def test_parse_competitive_three_reviewers(self):
-        """Three-reviewer expression parses all models."""
+        """Three-reviewer expression parses all models; gpt-5 alias resolves to gpt-5.4."""
         from pacemaker.inference.competitive import parse_competitive
 
         result = parse_competitive("gpt-5+gemini-flash+opus->sonnet")
         assert result is not None
         reviewers, synthesizer = result
-        assert reviewers == ["gpt-5", "gemini-flash", "opus"]
+        assert reviewers == ["gpt-5.4", "gemini-flash", "opus"]
         assert synthesizer == "sonnet"
 
     def test_parse_competitive_alias_normalization(self):
@@ -457,13 +457,13 @@ class TestCLIHookModel:
     """Tests for CLI hook-model command with competitive expressions."""
 
     def test_cli_hook_model_competitive_expression(self, config_file):
-        """CLI accepts and stores competitive expression verbatim (canonical)."""
+        """CLI accepts competitive expression and normalizes gpt-5 alias to gpt-5.4."""
         from pacemaker.user_commands import _execute_hook_model
 
         result = _execute_hook_model(config_file, "gpt-5+gemini-flash->sonnet")
 
         assert result["success"] is True
-        assert _read_config(config_file)["hook_model"] == "gpt-5+gemini-flash->sonnet"
+        assert _read_config(config_file)["hook_model"] == "gpt-5.4+gemini-flash->sonnet"
 
     def test_cli_hook_model_competitive_aliases(self, config_file):
         """CLI canonicalizes aliases before storing."""
@@ -546,7 +546,8 @@ class TestGovernanceTagCompetitive:
     """Tests for governance event tag format with competitive reviewer."""
 
     def test_governance_tag_competitive(self):
-        """Reviewer label from competitive pipeline produces correct [expression] tag format."""
+        """Reviewer label from competitive pipeline produces correct [expression] tag format.
+        gpt-5 alias resolves to gpt-5.4, so expression uses canonical name."""
         from pacemaker.inference.competitive import parse_competitive
 
         reviewers, synthesizer = parse_competitive("gpt-5+gemini-flash->sonnet")
@@ -554,7 +555,7 @@ class TestGovernanceTagCompetitive:
         # Simulate hook.py tag formatting: f"[{_reviewer}] {feedback}"
         feedback = "some feedback"
         tagged = f"[{expression}] {feedback}"
-        assert tagged == "[gpt-5+gemini-flash->sonnet] some feedback"
+        assert tagged == "[gpt-5.4+gemini-flash->sonnet] some feedback"
         assert "REVIEWER:" not in tagged
 
     def test_governance_tag_single_reviewer_format(self):
@@ -570,3 +571,131 @@ class TestGovernanceTagCompetitive:
         tagged = f"[{single_reviewer}] {feedback}"
         assert "[" + single_reviewer + "]" in tagged
         assert "REVIEWER:" not in tagged
+
+
+# ---------------------------------------------------------------------------
+# gpt-5.4 support tests
+# ---------------------------------------------------------------------------
+
+
+class TestGpt54Support:
+    """Tests for gpt-5.4 as canonical model and gpt-5 backward-compat alias.
+
+    Covers 7 scenarios from the bug report:
+    1. parse_competitive with gpt-5.4 as canonical token
+    2. gpt-5 alias in parse_competitive normalizes to gpt-5.4
+    3. CodexProvider invokes subprocess with -m gpt-5.4 for both gpt-5 and gpt-5.4 hints
+    4. CLI accepts gpt-5.4 as single model (_execute_hook_model)
+    5. CLI accepts gpt-5 (backward compat) and stores gpt-5.4 as canonical
+    6. get_provider("gpt-5.4") returns CodexProvider
+    7. get_provider("gpt-5") still returns CodexProvider
+    """
+
+    def test_parse_competitive_gpt54_canonical(self):
+        """parse_competitive accepts gpt-5.4 as a valid canonical model token."""
+        from pacemaker.inference.competitive import parse_competitive
+
+        result = parse_competitive("gpt-5.4+gemini-flash->haiku")
+        assert result is not None
+        reviewers, synthesizer = result
+        assert "gpt-5.4" in reviewers
+        assert synthesizer == "haiku"
+
+    def test_parse_competitive_gpt5_alias_normalizes_to_gpt54(self):
+        """gpt-5 in parse_competitive is treated as alias for gpt-5.4."""
+        from pacemaker.inference.competitive import parse_competitive
+
+        result = parse_competitive("gpt-5+gemini-flash->haiku")
+        assert result is not None
+        reviewers, synthesizer = result
+        # gpt-5 should resolve to gpt-5.4 via SHORT_ALIASES
+        assert "gpt-5.4" in reviewers
+        assert "gpt-5" not in reviewers
+
+    @pytest.mark.parametrize("model_hint", ["gpt-5", "gpt-5.4"])
+    def test_codex_provider_uses_gpt54_for_model_hint(self, model_hint):
+        """CodexProvider passes -m gpt-5.4 to subprocess for any gpt-5 variant."""
+        from unittest.mock import patch, MagicMock
+        from pacemaker.inference.codex_provider import CodexProvider
+
+        provider = CodexProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "APPROVED"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            provider.query("check this", "", model_hint, 4000)
+
+        call_args = mock_run.call_args
+        cmd = call_args[0][0]
+        m_index = cmd.index("-m")
+        assert cmd[m_index + 1] == "gpt-5.4"
+
+    def test_cli_accepts_gpt54_as_single_model(self, config_file):
+        """_execute_hook_model accepts gpt-5.4 and stores it in config."""
+        from pacemaker.user_commands import _execute_hook_model
+
+        result = _execute_hook_model(config_file, "gpt-5.4")
+
+        assert result["success"] is True
+        assert _read_config(config_file)["hook_model"] == "gpt-5.4"
+
+    def test_cli_gpt5_backward_compat_stores_gpt54(self, config_file):
+        """_execute_hook_model accepts legacy gpt-5 and stores gpt-5.4 as canonical."""
+        from pacemaker.user_commands import _execute_hook_model
+
+        result = _execute_hook_model(config_file, "gpt-5")
+
+        assert result["success"] is True
+        # gpt-5 is an alias; config must store canonical gpt-5.4
+        assert _read_config(config_file)["hook_model"] == "gpt-5.4"
+
+    def test_get_provider_gpt54_returns_codex_provider(self):
+        """get_provider('gpt-5.4') returns a CodexProvider instance."""
+        from pacemaker.inference.registry import get_provider
+        from pacemaker.inference.codex_provider import CodexProvider
+
+        provider = get_provider("gpt-5.4")
+        assert isinstance(provider, CodexProvider)
+
+    def test_get_provider_gpt5_still_returns_codex_provider(self):
+        """get_provider('gpt-5') still returns CodexProvider (backward compat)."""
+        from pacemaker.inference.registry import get_provider
+        from pacemaker.inference.codex_provider import CodexProvider
+
+        provider = get_provider("gpt-5")
+        assert isinstance(provider, CodexProvider)
+
+    def test_parse_command_accepts_gpt54_competitive_expression(self):
+        """parse_command recognizes gpt-5.4 in competitive expressions at the regex layer.
+
+        This test caught a bug where [a-z0-9-] in pattern_hook_model_competitive
+        excluded '.' so gpt-5.4+gemini-flash->haiku was silently treated as a
+        non-pace-maker prompt instead of a hook-model command.
+        """
+        from pacemaker.user_commands import parse_command
+
+        r = parse_command("pace-maker hook-model gpt-5.4+gemini-flash->haiku")
+        assert r["is_pace_maker_command"] is True
+        assert r["command"] == "hook-model"
+        assert r["subcommand"] == "gpt-5.4+gemini-flash->haiku"
+
+    def test_parse_command_accepts_gpt5_legacy_competitive_expression(self):
+        """parse_command recognizes legacy gpt-5 alias in competitive expressions."""
+        from pacemaker.user_commands import parse_command
+
+        r = parse_command("pace-maker hook-model gpt-5+gemini-flash->haiku")
+        assert r["is_pace_maker_command"] is True
+        assert r["command"] == "hook-model"
+        assert r["subcommand"] == "gpt-5+gemini-flash->haiku"
+
+    def test_parse_command_accepts_gpt54_three_way_competitive(self):
+        """parse_command recognizes gpt-5.4 in 3-reviewer competitive expressions."""
+        from pacemaker.user_commands import parse_command
+
+        r = parse_command("pace-maker hook-model opus+gpt-5.4+gemini-pro->sonnet")
+        assert r["is_pace_maker_command"] is True
+        assert r["command"] == "hook-model"
+        assert r["subcommand"] == "opus+gpt-5.4+gemini-pro->sonnet"

@@ -12,17 +12,8 @@ from .codex_provider import CodexProvider
 from .gemini_provider import GeminiProvider
 from .anthropic_provider import AnthropicProvider
 from .provider import ProviderError
+from .model_aliases import KNOWN_MODELS, SHORT_ALIASES
 
-KNOWN_MODELS = {
-    "auto",
-    "sonnet",
-    "opus",
-    "haiku",
-    "gpt-5",
-    "gemini-flash",
-    "gemini-pro",
-}
-SHORT_ALIASES = {"gem-flash": "gemini-flash", "gem-pro": "gemini-pro"}
 _ANTHROPIC_MODELS = {"auto", "sonnet", "opus", "haiku"}
 
 _REVIEWER_CODEX = "codex-gpt5"

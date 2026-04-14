@@ -24,20 +24,24 @@ class TestVersionCommand:
 
     def test_execute_version_command(self):
         """Execute version command returns version string."""
+        from pacemaker import __version__
+
         result = user_commands.execute_command(
             "version", "/tmp/config.json", "/tmp/db.sqlite"
         )
         assert result["success"] is True
-        assert "2.5.0" in result["message"]
+        assert __version__ in result["message"]
         assert "Claude Pace Maker" in result["message"]
 
     def test_handle_user_prompt_version(self):
         """Full integration test for version command."""
+        from pacemaker import __version__
+
         result = user_commands.handle_user_prompt(
             "pace-maker version", "/tmp/config.json", "/tmp/db.sqlite"
         )
         assert result["intercepted"] is True
-        assert "2.5.0" in result["output"]
+        assert __version__ in result["output"]
 
     def test_help_includes_version_command(self):
         """Help text should document version command."""

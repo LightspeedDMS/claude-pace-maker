@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.18.2] - 2026-04-14
+
+### Fixed
+- **Competitive expression CLI regex**: `pace-maker hook-model gpt-5.4+gemini-flash->haiku` was silently dropped by `parse_command()` because the competitive-expression regex character class `[a-z0-9-]+` did not include the literal `.`. The canonical form advertised in help text therefore never reached the hook-model handler — only the legacy alias `gpt-5+...` worked by accident. Character class widened to `[a-z0-9.\-]+`; semantic validation is still delegated to `parse_competitive()`. New tests added for both `gpt-5.4` and legacy `gpt-5` competitive parse paths via `parse_command`
+
+### Changed
+- **Centralized model alias map**: Extracted `KNOWN_MODELS` and `SHORT_ALIASES` into a new leaf module `src/pacemaker/inference/model_aliases.py` imported by both `competitive.py` and `codex_provider.py`. Eliminates the hardcoded inline `gpt-5 → gpt-5.4` check previously duplicated in `codex_provider.query()` (Messi rule 4, anti-duplication). Single source of truth; no circular import between sibling providers
+- **Stale docstrings/comments updated**: `gpt-5` references in docstrings and comments across `code_reviewer.py`, `constants.py`, `inference/provider.py`, `inference/registry.py`, `intent_validator.py`, and `user_commands.py` replaced with canonical `gpt-5.4` (backward compat note retained where helpful)
+
+## [2.18.1] - 2026-04-14
+
+### Fixed
+- **gpt-5.4 Codex CLI model identifier**: `gpt-5.4` is now the canonical model token for Codex CLI (ChatGPT account subscription). The previous token `gpt-5` is retained as a backward-compatible alias that transparently maps to `gpt-5.4` — existing configs and competitive expressions using `gpt-5` continue to work without change. The Codex CLI subprocess always receives `-m gpt-5.4`, fixing the `ERROR: The 'gpt-5' model is not supported` failure that caused the competitive reviewer pipeline to fall back to SDK solo
+
 ## [2.18.0] - 2026-04-08
 
 ### Added

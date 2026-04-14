@@ -82,7 +82,8 @@ COMMANDS:
   pace-maker hook-model auto                   Use auto model selection for hook inference
   pace-maker hook-model sonnet                 Use Sonnet for hook inference
   pace-maker hook-model opus                   Use Opus for hook inference
-  pace-maker hook-model gpt-5                  Use GPT-5 (via Codex CLI) for hook inference
+  pace-maker hook-model gpt-5.4                Use GPT-5.4 (via Codex CLI) for hook inference
+  pace-maker hook-model gpt-5                  Alias for gpt-5.4 (backward-compatible)
   pace-maker hook-model gemini-flash           Use Gemini Flash for hook inference
   pace-maker hook-model gemini-pro             Use Gemini Pro for hook inference
   pace-maker hook-model "<r1>+<r2>[+<r3>]-><synth>"
@@ -93,9 +94,9 @@ COMPETITIVE REVIEW MODE:
   Syntax: pace-maker hook-model "<r1>+<r2>[+<r3>]-><synthesizer>"
 
   Examples:
-    pace-maker hook-model "opus+gpt-5->haiku"
+    pace-maker hook-model "opus+gpt-5.4->haiku"
     pace-maker hook-model "sonnet+gemini-flash->opus"
-    pace-maker hook-model "opus+gpt-5+gemini-pro->sonnet"
+    pace-maker hook-model "opus+gpt-5.4+gemini-pro->sonnet"
 
   Short aliases: gem-flash=gemini-flash, gem-pro=gemini-pro
   Reviewers: 2-3 (no duplicates). Synthesizer: any model.
@@ -558,10 +559,10 @@ def parse_command(user_input: str) -> Dict[str, Any]:
         }
 
     # Pattern 20: pace-maker hook-model — single model or competitive expression
-    # Single model: auto|sonnet|opus|haiku|gpt-5|gemini-flash|gemini-pro (incl. short aliases)
+    # Single model: auto|sonnet|opus|haiku|gpt-5.4 (legacy: gpt-5)|gemini-flash|gemini-pro (incl. short aliases)
     pattern_hook_model_single = (
         r"^pace-maker\s+hook-model\s+"
-        r"(auto|sonnet|opus|haiku|gpt-5|gemini-flash|gemini-pro|gem-flash|gem-pro)$"
+        r"(auto|sonnet|opus|haiku|gpt-5\.4|gpt-5|gemini-flash|gemini-pro|gem-flash|gem-pro)$"
     )
     match_hook_model = re.match(pattern_hook_model_single, normalized)
 
@@ -572,10 +573,11 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_hook_model.group(1),
         }
 
-    # Competitive expression: <model>(+<model>)+->model  (token shape: [a-z0-9-]+)
+    # Competitive expression: <model>(+<model>)+->model  (token shape: [a-z0-9.\-]+)
     # Full semantic validation delegated to _execute_hook_model via parse_competitive()
     pattern_hook_model_competitive = (
-        r"^pace-maker\s+hook-model\s+" r"([a-z0-9-]+(?:\+[a-z0-9-]+)+->[a-z0-9-]+)$"
+        r"^pace-maker\s+hook-model\s+"
+        r"([a-z0-9.\-]+(?:\+[a-z0-9.\-]+)+->[a-z0-9.\-]+)$"
     )
     match_hook_model_comp = re.match(pattern_hook_model_competitive, normalized)
 
@@ -1665,7 +1667,7 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
         "sonnet",
         "opus",
         "haiku",
-        "gpt-5",
+        "gpt-5.4",
         "gemini-flash",
         "gemini-pro",
     ]
@@ -1675,7 +1677,7 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
             "success": False,
             "message": (
                 f"Invalid model: {subcommand}\n"
-                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|gpt-5|gemini-flash|gemini-pro]"
+                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|gpt-5.4|gemini-flash|gemini-pro]"
             ),
         }
 
@@ -1689,10 +1691,10 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
                 "✓ Hook model set to AUTO\n"
                 "Hook inference will use per-call-site defaults (sonnet for stage1, opus for stage2)."
             )
-        elif subcommand == "gpt-5":
+        elif subcommand == "gpt-5.4":
             message = (
-                "✓ Hook model set to GPT-5\n"
-                "Hook inference will use Codex CLI (OpenAI GPT-5) with Anthropic fallback.\n"
+                "✓ Hook model set to GPT-5.4\n"
+                "Hook inference will use Codex CLI (OpenAI GPT-5.4) with Anthropic fallback.\n"
                 "Requires: codex CLI installed and authenticated."
             )
         elif subcommand == "gemini-flash":

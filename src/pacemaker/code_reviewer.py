@@ -140,7 +140,7 @@ def call_sdk_review(prompt: str, hook_model: str = "auto") -> str:
 
     Args:
         prompt: Review prompt
-        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5"
+        hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5.4" (legacy: "gpt-5")
 
     Returns:
         SDK response text (feedback or empty string)
