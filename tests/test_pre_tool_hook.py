@@ -11,6 +11,27 @@ from pacemaker.hook import run_pre_tool_hook
 class TestPreToolHook:
     """Test run_pre_tool_hook() function."""
 
+    @patch("sys.stdin")
+    def test_fails_open_on_invalid_stdin_json_no_unbound_local_error(self, mock_stdin):
+        """Should return continue=True (fail-open) on invalid JSON stdin.
+
+        Regression test: before the fix, an UnboundLocalError was raised because
+        _csa_result was initialised AFTER json.loads(), so any exception between
+        the top of the try block and that line (e.g. malformed JSON) caused the
+        outer except handler to crash referencing an undefined variable.
+        After the fix, _csa_result is initialised as the FIRST statement of the
+        try block, guaranteeing it is always bound when the outer except fires.
+        """
+        mock_stdin.read.return_value = "not-valid-json"
+
+        # Must NOT raise UnboundLocalError (or any other exception)
+        result = run_pre_tool_hook()
+
+        assert isinstance(result, dict), "Expected a dict response for fail-open"
+        assert (
+            result.get("continue") is True
+        ), f"Expected fail-open {{continue: True}}, got {result}"
+
     @patch("pacemaker.hook.load_config")
     @patch("sys.stdin")
     def test_returns_continue_when_feature_disabled(self, mock_stdin, mock_load_config):
@@ -227,8 +248,11 @@ class TestPreToolHook:
         mock_load_config.return_value = {"intent_validation_enabled": True}
         mock_load_ext.return_value = [".py"]
         mock_is_source.return_value = True
+        # Message must include INTENT: marker so Stage 1 passes and execution
+        # reaches the SDK availability gate (which then blocks fail-closed).
         mock_get_messages.return_value = [
-            "I will modify test.py to add foo() function that does nothing"
+            "INTENT: Modify test.py to add foo() function that does nothing. "
+            "Test coverage: tests/test_foo.py::test_foo_returns_none"
         ]
 
         result = run_pre_tool_hook()

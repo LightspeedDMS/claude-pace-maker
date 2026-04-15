@@ -210,6 +210,23 @@ def _load_custom_config(config_path: str, strict: bool = False) -> Dict:
     return {"rules": rules, "deleted_rules": deleted}
 
 
+def _write_rules(config_path: str, rules: List[Dict[str, str]]) -> None:
+    """
+    Write a list of rules directly to a YAML config file.
+
+    Convenience wrapper around _write_config for callers that only have
+    a flat list of rules (e.g. tests that seed initial state).
+
+    Args:
+        config_path: Path to YAML config file
+        rules: List of rule dicts to write
+
+    Raises:
+        OSError: If the file cannot be written
+    """
+    _write_config(config_path, {"rules": rules, "deleted_rules": []})
+
+
 def _write_config(config_path: str, custom_config: Dict) -> None:
     """
     Write custom config to YAML file atomically.

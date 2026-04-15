@@ -23,6 +23,7 @@ Intelligent credit consumption throttling and code quality enforcement for Claud
 - **Activity Indicators**: Real-time hook activity tracking (IV, TD, CC, ST, CX, PA, PL, LF, SS, SM, SE, SA, UP) with color-coded status
 - **Global API Poll Coordination**: SQLite singleton prevents redundant API polling across concurrent sessions
 - **Companion Tool Installer**: `pace-maker install claude-usage-monitor` installs the usage monitoring dashboard
+- **Cross-Session Awareness Registry**: Prevents "rogue agent" hallucinations when multiple Claude Code sessions work concurrently on the same repository. Each session is factually aware of sibling sessions in the same workspace via a shared SQLite registry. At session start, on subagent spawn, periodically every 5 tool uses, and before destructive Bash operations, the hook injects a banner listing active sibling sessions — so Claude no longer mistakes another session's unfamiliar files for corruption and attempts to "recover" by running `git checkout --`, `git reset --hard`, `git clean`, or `rm`. Strict workspace isolation: sessions in different repositories never see each other. CLI: `pace-maker sessions list`, `pace-maker cross-session-awareness on/off`
 
 ## Installation
 

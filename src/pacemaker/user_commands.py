@@ -10,6 +10,7 @@ import os
 import json
 import re
 import tempfile
+import time
 from typing import Dict, Optional, Any
 
 from .constants import DEFAULT_CONFIG
@@ -718,6 +719,10 @@ def execute_command(
         from .install_commands import handle_install
 
         return handle_install(subcommand)
+    elif command == "sessions":
+        return _execute_sessions(subcommand)
+    elif command == "cross-session-awareness":
+        return _execute_cross_session_awareness(config_path, subcommand)
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -3068,6 +3073,208 @@ def _execute_secrets(
         }
 
 
+def _execute_cross_session_awareness(
+    config_path: str, subcommand: Optional[str]
+) -> Dict[str, Any]:
+    """Enable or disable cross-session awareness feature.
+
+    Toggles the cross_session_awareness_enabled flag in config.json.
+    When disabled, all registry writes, sibling queries, and nudge injections
+    are skipped — hook behavior is identical to pre-feature baseline.
+    """
+    _CONFIG_KEY = "cross_session_awareness_enabled"
+    if subcommand == "on":
+        try:
+            config = _load_config(config_path)
+            config[_CONFIG_KEY] = True
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": (
+                    "✓ Cross-Session Awareness ENABLED\n"
+                    "Sessions will be registered in the shared registry and will receive "
+                    "sibling warnings at session start, periodically, and before destructive "
+                    "Bash operations."
+                ),
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error enabling cross-session awareness: {e}",
+            }
+    elif subcommand == "off":
+        try:
+            config = _load_config(config_path)
+            config[_CONFIG_KEY] = False
+            _write_config_atomic(config, config_path)
+            return {
+                "success": True,
+                "message": (
+                    "✓ Cross-Session Awareness DISABLED\n"
+                    "No registry writes or sibling warnings will be injected."
+                ),
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Error disabling cross-session awareness: {e}",
+            }
+    else:
+        return {
+            "success": False,
+            "message": (
+                f"Unknown subcommand: {subcommand!r}\n"
+                "Usage: pace-maker cross-session-awareness [on|off]"
+            ),
+        }
+
+
+# ── Sessions column widths ────────────────────────────────────────────────────
+_SESSIONS_COL_SESSION_WIDTH = 36
+_SESSIONS_COL_WORKSPACE_WIDTH = 40
+_SESSIONS_COL_PID_WIDTH = 8
+_SESSIONS_COL_TIME_WIDTH = 19
+
+# ── Sessions staleness threshold ──────────────────────────────────────────────
+_SESSIONS_STALE_THRESHOLD_SECONDS = 20 * 60  # 20 minutes
+
+# ── Sessions SQL ──────────────────────────────────────────────────────────────
+_SQL_LIST_ALL_SESSIONS = (
+    "SELECT session_id, workspace_root, pid, start_time, last_seen "
+    "FROM sessions ORDER BY start_time ASC"
+)
+
+# ── Sessions messages ─────────────────────────────────────────────────────────
+_MSG_NO_ACTIVE_SESSIONS = "No active sessions"
+
+
+def _validate_sessions_subcommand(
+    subcommand: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Return an error dict if subcommand is missing or unsupported, else None."""
+    if not subcommand:
+        return {
+            "success": False,
+            "message": "Error: sessions command requires a subcommand. Usage: pace-maker sessions list",
+        }
+    if subcommand.strip().lower() != "list":
+        return {
+            "success": False,
+            "message": (
+                f"Error: unknown sessions subcommand: {subcommand!r}. "
+                "Usage: pace-maker sessions list"
+            ),
+        }
+    return None
+
+
+def _load_session_rows(db_path: str):
+    """Load all session rows from the registry DB.
+
+    Returns (rows, None) on success, or (None, error_dict) on failure.
+    Missing DB file is treated as an empty registry (rows=[]).
+    sqlite3.Error returns (None, error_dict).
+    """
+    import sqlite3 as _sqlite3
+
+    if not os.path.exists(db_path):
+        return [], None
+
+    from .session_registry.db import get_connection
+
+    try:
+        conn = get_connection(db_path)
+        try:
+            cursor = conn.execute(_SQL_LIST_ALL_SESSIONS)
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
+        return rows, None
+    except _sqlite3.Error as e:
+        return None, {"success": False, "message": f"Error listing sessions: {e}"}
+
+
+def _format_session_timestamp(ts: float) -> str:
+    """Format a POSIX timestamp as YYYY-MM-DD HH:MM:SS.
+
+    Falls back to str(ts) on conversion errors, logging the failure.
+    """
+    import datetime
+
+    try:
+        return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except (OSError, OverflowError, ValueError) as e:
+        log_warning(
+            "user_commands", f"_format_session_timestamp: cannot format {ts!r}: {e}"
+        )
+        return str(ts)
+
+
+def _render_sessions_table(rows) -> str:
+    """Render a list of session rows as a formatted ASCII table string."""
+
+    def _trunc(value: str, width: int) -> str:
+        if len(value) > width:
+            return value[: width - 1] + "…"
+        return value
+
+    w_s = _SESSIONS_COL_SESSION_WIDTH
+    w_w = _SESSIONS_COL_WORKSPACE_WIDTH
+    w_p = _SESSIONS_COL_PID_WIDTH
+    w_t = _SESSIONS_COL_TIME_WIDTH
+
+    header = (
+        f"{'SESSION':<{w_s}}  {'WORKSPACE':<{w_w}}  {'PID':<{w_p}}  "
+        f"{'STARTED':<{w_t}}  {'LAST_SEEN':<{w_t}}"
+    )
+    lines = [header, "-" * len(header)]
+    for row in rows:
+        session_id, workspace_root, pid, start_time, last_seen = row
+        lines.append(
+            f"{_trunc(str(session_id), w_s):<{w_s}}  "
+            f"{_trunc(str(workspace_root), w_w):<{w_w}}  "
+            f"{str(pid):<{w_p}}  "
+            f"{_format_session_timestamp(start_time):<{w_t}}  "
+            f"{_format_session_timestamp(last_seen):<{w_t}}"
+        )
+    return "\n".join(lines)
+
+
+def _execute_sessions(
+    subcommand: Optional[str],
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Execute sessions management commands.
+
+    Delegates to _validate_sessions_subcommand, _load_session_rows,
+    and _render_sessions_table. Returns {"success": bool, "message": str}.
+
+    Sessions with last_seen older than _SESSIONS_STALE_THRESHOLD_SECONDS are
+    excluded from the output (they are considered dead/disconnected).
+    """
+    error = _validate_sessions_subcommand(subcommand)
+    if error is not None:
+        return error
+
+    if not db_path:
+        from .session_registry.db import resolve_db_path
+
+        db_path = resolve_db_path()
+
+    rows, load_error = _load_session_rows(db_path)
+    if load_error is not None:
+        return load_error
+
+    # Filter out stale sessions: only show sessions seen within the threshold.
+    cutoff = time.time() - _SESSIONS_STALE_THRESHOLD_SECONDS
+    rows = [row for row in rows if row[4] >= cutoff]
+
+    if not rows:
+        return {"success": True, "message": _MSG_NO_ACTIVE_SESSIONS}
+
+    return {"success": True, "message": _render_sessions_table(rows)}
+
+
 def main():
     """CLI entry point for pace-maker command."""
     import sys
@@ -3109,6 +3316,8 @@ def main():
             "langfuse",
             "secrets",
             "install",
+            "sessions",
+            "cross-session-awareness",
         ],
         help="Command to execute",
     )

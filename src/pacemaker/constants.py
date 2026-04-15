@@ -55,6 +55,9 @@ DEFAULT_CORE_PATHS_PATH = str(Path.home() / ".claude-pace-maker" / "core_paths.y
 DEFAULT_EXCLUDED_PATHS_PATH = str(
     Path.home() / ".claude-pace-maker" / "excluded_paths.yaml"
 )
+DEFAULT_DANGER_RULES_PATH = str(
+    Path.home() / ".claude-pace-maker" / "danger_bash_rules.yaml"
+)
 
 # Log level constants
 LOG_LEVEL_OFF = 0

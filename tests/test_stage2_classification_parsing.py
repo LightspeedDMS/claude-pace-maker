@@ -39,8 +39,9 @@ class TestStage2ClassificationParsing:
         tool_name = "Write"
         code = "def helper(): return True"
 
+        # _call_stage2_validation returns (response_text, reviewer_name) tuple
         with patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2:
-            mock_s2.return_value = stage2_response
+            mock_s2.return_value = (stage2_response, "test-reviewer")
 
             return intent_validator.validate_intent_and_code(
                 messages=messages,
@@ -222,8 +223,9 @@ The intent declares three changes but only one is present in the proposed code:
 
 CLASSIFICATION: CLEAN_CODE"""
 
+        # _call_stage2_validation returns (response_text, reviewer_name) tuple
         with patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2:
-            mock_s2.return_value = stage2_response
+            mock_s2.return_value = (stage2_response, "test-reviewer")
 
             result = intent_validator.validate_intent_and_code(
                 messages=messages,
@@ -246,8 +248,9 @@ CLASSIFICATION: CLEAN_CODE"""
         messages = [current_message]
         file_path = "helpers/utils.py"
 
+        # _call_stage2_validation returns (response_text, reviewer_name) tuple
         with patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2:
-            mock_s2.return_value = "APPROVED"
+            mock_s2.return_value = ("APPROVED", "test-reviewer")
 
             result = intent_validator.validate_intent_and_code(
                 messages=messages,

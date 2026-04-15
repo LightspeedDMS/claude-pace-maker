@@ -274,7 +274,8 @@ class TestAC5_SanitizeLangfuseTraces:
             }
         ]
 
-        sanitized = sanitize_trace(trace_batch, temp_db)
+        # sanitize_trace returns (sanitized_batch, mask_count) tuple
+        sanitized, mask_count = sanitize_trace(trace_batch, temp_db)
 
         # Original unchanged
         assert "secret-api-key" in trace_batch[0]["body"]["input"]
@@ -299,7 +300,8 @@ class TestAC5_SanitizeLangfuseTraces:
             }
         ]
 
-        sanitized = sanitize_trace(trace_batch, temp_db)
+        # sanitize_trace returns (sanitized_batch, mask_count) tuple
+        sanitized, mask_count = sanitize_trace(trace_batch, temp_db)
 
         assert sanitized[0]["body"]["input"] == "This is public data"
         assert "only-this-secret" not in sanitized[0]["body"]["output"]

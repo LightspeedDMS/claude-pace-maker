@@ -55,6 +55,70 @@ These MUST always match. Forgetting `plugin.json` has happened before.
 
 ---
 
+## Cross-Session Awareness Registry
+
+**Story #64**: Prevents rogue-agent hallucinations by giving each session factual evidence of sibling sessions.
+
+### Architecture
+- **Storage**: `~/.claude-pace-maker/session_registry.db` (separate from `usage.db`), WAL mode, 2s busy_timeout
+- **Env override**: `PACEMAKER_SESSION_REGISTRY_PATH` overrides DB path (REQUIRED in test mode)
+- **Test-mode enforcement**: `db.py` raises `RuntimeError` if `PACEMAKER_TEST_MODE=1` and `PACEMAKER_SESSION_REGISTRY_PATH` is unset
+- **Workspace key**: `git rev-parse --show-toplevel` at SessionStart (source=startup/resume only), fallback `os.path.realpath(os.getcwd())`
+- **Session identity**: Root session `session_id` from `hook_data["session_id"]`; subagents reuse parent's session_id
+- **Purge**: Records with `last_seen < now() - 20min` purged on every `heartbeat_and_purge` call
+
+### Key Files
+- `src/pacemaker/session_registry/db.py` — SQLite schema, connection mgmt, test-mode path enforcement
+- `src/pacemaker/session_registry/registry.py` — `register_session`, `heartbeat_and_purge`, `list_siblings`, `unregister_session`
+- `src/pacemaker/session_registry/workspace.py` — `resolve_workspace_root(cwd)` git + fallback resolver
+- `src/pacemaker/session_registry/nudges.py` — `build_start_banner`, `build_periodic_reminder`, `build_danger_bash_warning`
+- `src/pacemaker/session_registry/_csa.py` — Hook integration: `on_session_start`, `on_subagent_start`, `on_heartbeat`, `on_pre_tool_use`, `on_session_end`
+- `src/pacemaker/hook.py` lines ~351, ~562, ~616, ~1946, ~2305 — Hook wiring to `_csa`
+
+### CLI
+```bash
+pace-maker sessions list   # Show active registry sessions (filters out >20min stale rows)
+```
+
+### Nudge Channels
+1. **SessionStart banner** — fired on source=startup/resume when siblings found
+2. **SubagentStart banner** — via `hookSpecificOutput.additionalContext`
+3. **Periodic reminder** — every 5th PreToolUse per agent_id
+4. **Danger_bash warning** — injected into Stage 2 LLM context when Bash matches a danger rule
+
+### Config Gate
+```json
+{ "cross_session_awareness_enabled": true }
+```
+When `false`, ALL cross-session logic is skipped — no registry writes, no banners.
+
+### State Schema (namespaced under `cross_session_awareness`, keyed by session_id)
+```json
+{
+  "cross_session_awareness": {
+    "<session_id_A>": {
+      "workspace_root": "/path/to/repoA",
+      "seen_agent_ids": ["root", "abc123"],
+      "tool_use_counter": {"root": 0, "abc123": 0}
+    },
+    "<session_id_B>": {
+      "workspace_root": "/path/to/repoB",
+      "seen_agent_ids": ["root"],
+      "tool_use_counter": {"root": 0}
+    }
+  }
+}
+```
+
+**CRITICAL — why this must be keyed by session_id**: `~/.claude-pace-maker/state.json` is a SINGLE global file shared across all concurrent Claude Code sessions on the machine (pace-maker's existing architecture uses one file for all sessions, with `session_id` as a top-level field updated by whichever session wrote last). The original story-#64 design used a flat `cross_session_awareness` block without session_id scoping, which caused catastrophic cross-workspace pollution: session A's `workspace_root` cache would be overwritten by session B's SessionStart, and session A's subsequent sibling queries would then use session B's workspace_root, leaking cross-repository sibling info. The fix (v2.19.1) keys every CSA entry by `session_id` so each session strictly reads and writes only its own sub-dict. `on_session_end` garbage-collects the session's sub-dict to prevent unbounded growth. See `src/pacemaker/session_registry/_csa.py::_get_cs(state, session_id)` and `tests/test_session_registry_csa_session_scoping.py`.
+
+### Test Isolation
+- `tests/conftest.py` sets `PACEMAKER_SESSION_REGISTRY_PATH` to a tmp path via `pytest.ini`-level fixture
+- Tests that need registry isolation use `monkeypatch.setenv("PACEMAKER_SESSION_REGISTRY_PATH", str(tmp_path / "sessions.db"))`
+- E2E tests use synthetic sibling seeding (direct SQLite INSERT + verify nudge responses)
+
+---
+
 ## Reviewer Identity Tracking
 
 When intent validation runs Stage 2 (LLM code review), the reviewer identity is tracked end-to-end:

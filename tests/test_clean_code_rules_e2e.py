@@ -157,8 +157,9 @@ def test_validation_prompt_integration():
 
         # Load rules from file (real file I/O)
         loaded_rules = load_rules(config_path)
-        # Should have init rule + 3 validation rules = 4 total
-        assert len(loaded_rules) == 4
+        # load_rules merges defaults + custom rules, so total count > 4.
+        # Verify each of our custom rules is present by id.
+        assert any(r["id"] == "init" for r in loaded_rules)
         assert any(r["id"] == "validation-1" for r in loaded_rules)
         assert any(r["id"] == "validation-2" for r in loaded_rules)
         assert any(r["id"] == "validation-3" for r in loaded_rules)

@@ -28,6 +28,7 @@ from .constants import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_STATE_PATH,
     DEFAULT_EXTENSION_REGISTRY_PATH,
+    DEFAULT_DANGER_RULES_PATH,
     MAX_DELAY_SECONDS,
 )
 from .transcript_reader import (
@@ -341,6 +342,34 @@ def run_session_start_hook():
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
 
+    # Cross-Session Awareness: register session and emit sibling banner if any.
+    # csa.on_session_start() mutates state to cache workspace_root, so we save
+    # state again after the call. init_schema is idempotent and ensures the
+    # registry DB file exists before the first CSA operation.
+    # os.getcwd() and os.getpid() are recomputed here because hook_data does
+    # not expose cwd directly and no pre-existing local variable holds them.
+    try:
+        from .session_registry._csa import on_session_start as csa_on_session_start
+        from .session_registry.db import resolve_db_path, init_schema
+
+        csa_db_path = resolve_db_path()
+        init_schema(csa_db_path)
+        csa_banner = csa_on_session_start(
+            session_id=session_id or "",
+            source=source,
+            cwd=os.getcwd(),
+            pid=os.getpid(),
+            db_path=csa_db_path,
+            state=state,
+            config=config,
+        )
+        # Persist state mutation from csa.on_session_start (workspace_root cache)
+        save_state(state, DEFAULT_STATE_PATH)
+        if csa_banner:
+            safe_print(csa_banner, file=sys.stdout)
+    except Exception as e:
+        log_warning("hook", f"CSA session_start failed: {e}")
+
     # Activity event: SE (session started)
     try:
         record_activity_event(
@@ -504,24 +533,59 @@ def run_subagent_start_hook():
     except Exception:
         pass  # Activity recording must never break subagent start
 
+    def _emit_subagent_additional_context(text: str) -> None:
+        """Emit hookSpecificOutput.additionalContext JSON for SubagentStart."""
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "SubagentStart",
+                "additionalContext": text,
+            }
+        }
+        safe_print(json.dumps(output), file=sys.stdout)
+
+    # Collect context parts from intent validation and CSA, then emit exactly once.
+    _additional_context_parts: list = []
+
     # Display intent validation mandate if enabled
     try:
         if config.get("intent_validation_enabled", False):
             guidance = display_intent_validation_guidance()
-            # Output JSON with additionalContext for subagent injection
-            output = {
-                "hookSpecificOutput": {
-                    "hookEventName": "SubagentStart",
-                    "additionalContext": guidance,
-                }
-            }
-            safe_print(json.dumps(output), file=sys.stdout)
+            _additional_context_parts.append(guidance)
     except Exception as e:
         # Log error but don't break subagent start
         print(
             f"[PACE-MAKER WARNING] Failed to display intent guidance: {e}",
             file=sys.stderr,
         )
+
+    # Cross-Session Awareness: inject sibling banner for new subagent if siblings present.
+    # State is reloaded here to get workspace_root cached by SessionStart.
+    # No save_state after on_subagent_start: seen_agent_ids/counter mutations are
+    # acceptable as in-memory-only since SubagentStart fires per subagent launch.
+    try:
+        if hook_data:
+            from .session_registry._csa import (
+                on_subagent_start as csa_on_subagent_start,
+            )
+            from .session_registry.db import resolve_db_path
+
+            csa_state = load_state(DEFAULT_STATE_PATH)
+            csa_banner = csa_on_subagent_start(
+                session_id=hook_data.get("session_id", ""),
+                agent_id=hook_data.get("agent_id", ""),
+                pid=os.getpid(),
+                db_path=resolve_db_path(),
+                state=csa_state,
+                config=config,
+            )
+            if csa_banner:
+                _additional_context_parts.append(csa_banner)
+    except Exception as e:
+        log_warning("hook", f"CSA subagent_start failed: {e}")
+
+    # Emit exactly one hookSpecificOutput if any context was collected.
+    if _additional_context_parts:
+        _emit_subagent_additional_context("\n\n".join(_additional_context_parts))
 
 
 def run_subagent_stop_hook():
@@ -557,6 +621,23 @@ def run_subagent_stop_hook():
 
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
+
+    # Cross-Session Awareness: heartbeat on subagent stop to keep session visible to siblings.
+    # Called unconditionally inside try/except; CSA validates inputs and fails-open.
+    try:
+        from .session_registry._csa import on_heartbeat as csa_on_heartbeat
+        from .session_registry.db import resolve_db_path
+
+        _csa_substop_state = load_state(DEFAULT_STATE_PATH)
+        csa_on_heartbeat(
+            session_id=(hook_data or {}).get("session_id", ""),
+            pid=os.getpid(),
+            db_path=resolve_db_path(),
+            state=_csa_substop_state,
+            config=config,
+        )
+    except Exception as e:
+        log_warning("hook", f"CSA subagent_stop heartbeat failed: {e}")
 
     # Activity event: SA (subagent stopped)
     try:
@@ -841,6 +922,21 @@ def run_hook():
             "hook",
             "PostToolUse: reset consecutive_stop_blocks counter (tool use detected)",
         )
+
+    # Cross-Session Awareness: heartbeat on PostToolUse to keep session visible to siblings.
+    try:
+        from .session_registry._csa import on_heartbeat as csa_on_heartbeat
+        from .session_registry.db import resolve_db_path
+
+        csa_on_heartbeat(
+            session_id=session_id or state.get("session_id", ""),
+            pid=os.getpid(),
+            db_path=resolve_db_path(),
+            state=state,
+            config=config,
+        )
+    except Exception as e:
+        log_warning("hook", f"CSA post_tool_use heartbeat failed: {e}")
 
     # Ensure database is initialized
     db_path = DEFAULT_DB_PATH
@@ -1163,6 +1259,22 @@ def run_user_prompt_submit():
             state["last_user_interaction_time"] = datetime.now(timezone.utc)
 
         save_state(state, DEFAULT_STATE_PATH)
+
+        # Cross-Session Awareness: heartbeat on UserPromptSubmit to keep session visible.
+        try:
+            from .session_registry._csa import on_heartbeat as csa_on_heartbeat
+            from .session_registry.db import resolve_db_path
+
+            _ups_config = load_config(DEFAULT_CONFIG_PATH)
+            csa_on_heartbeat(
+                session_id=session_id or state.get("session_id", ""),
+                pid=os.getpid(),
+                db_path=resolve_db_path(),
+                state=state,
+                config=_ups_config,
+            )
+        except Exception as e:
+            log_warning("hook", f"CSA user_prompt_submit heartbeat failed: {e}")
 
         # Activity event: UP (user prompt received) — only for real Claude prompts
         if not result["intercepted"]:
@@ -1872,6 +1984,34 @@ def run_stop_hook():
             get_transcript_path(session_id) if session_id else None
         )
 
+        # Cross-Session Awareness: final heartbeat then unregister session on stop.
+        # session_id passed directly; CSA functions validate inputs and fail-open on None.
+        try:
+            from .session_registry._csa import (
+                on_heartbeat as csa_on_heartbeat,
+                on_session_end as csa_on_session_end,
+            )
+            from .session_registry.db import resolve_db_path
+
+            _csa_stop_state = load_state(DEFAULT_STATE_PATH)
+            _csa_stop_db = resolve_db_path()
+            csa_on_heartbeat(
+                session_id=session_id,
+                pid=os.getpid(),
+                db_path=_csa_stop_db,
+                state=_csa_stop_state,
+                config=config,
+            )
+            csa_on_session_end(
+                session_id=session_id,
+                pid=os.getpid(),
+                db_path=_csa_stop_db,
+                state=_csa_stop_state,
+                config=config,
+            )
+        except Exception as e:
+            log_warning("hook", f"CSA stop cleanup failed: {e}")
+
         # Finalize current trace with Claude's output (ALWAYS runs, regardless of tempo)
         # This adds the output field to the trace before final push
         try:
@@ -2057,6 +2197,30 @@ def run_stop_hook():
         return {"continue": True}
 
 
+def _merge_csa_reminder(
+    response: Dict[str, Any], csa_result: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Inject CSA periodic_reminder into response hookSpecificOutput.additionalContext.
+
+    Returns response unchanged when csa_result has no periodic_reminder.
+    When a reminder is present, merges it into hookSpecificOutput.additionalContext,
+    preserving any existing additionalContext by appending with a blank-line separator.
+    """
+    reminder = csa_result.get("periodic_reminder", "") if csa_result else ""
+    if not reminder:
+        return response
+
+    existing = response.get("hookSpecificOutput", {}).get("additionalContext", "")
+    merged_context = f"{existing}\n\n{reminder}" if existing else reminder
+
+    result = dict(response)
+    result["hookSpecificOutput"] = {
+        "hookEventName": "PreToolUse",
+        "additionalContext": merged_context,
+    }
+    return result
+
+
 def run_pre_tool_hook() -> Dict[str, Any]:
     """
     Pre-tool hook: Unified validation (intent + code review).
@@ -2073,6 +2237,11 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         {"decision": "block", "reason": "..."} to block
     """
     try:
+        # CSA result must be initialized before ANY operation that could throw,
+        # so the outer except handler at the bottom of this function can safely
+        # reference it via _merge_csa_reminder() for fail-open semantics.
+        _csa_result: Dict[str, Any] = {}
+
         # 1. Read hook data from stdin
         raw_input = sys.stdin.read()
         if not raw_input:
@@ -2205,6 +2374,29 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 except Exception as e:
                     log_debug("hook", f"Error searching {agent_path}: {e}")
 
+        # Cross-Session Awareness: increment per-agent counter, get reminders/warnings.
+        # Runs before Danger Bash so danger_bash_warning is available for Stage 2.
+        try:
+            from .session_registry._csa import on_pre_tool_use as csa_on_pre_tool_use
+            from .session_registry.db import resolve_db_path
+
+            _csa_config = load_config(DEFAULT_CONFIG_PATH)
+            _csa_state = load_state(DEFAULT_STATE_PATH)
+            _csa_command = tool_input.get("command") if tool_name == "Bash" else None
+            _csa_result = csa_on_pre_tool_use(
+                session_id=session_id or "",
+                agent_id=agent_id or "root",
+                pid=os.getpid(),
+                tool_name=tool_name or "",
+                command=_csa_command,
+                db_path=resolve_db_path(),
+                state=_csa_state,
+                config=_csa_config,
+            )
+            save_state(_csa_state, DEFAULT_STATE_PATH)
+        except Exception as e:
+            log_warning("hook", f"CSA pre_tool_use failed: {e}")
+
         # 2a. Danger Bash validation (before Write/Edit check)
         if tool_name == "Bash":
             try:
@@ -2219,10 +2411,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
                     from .danger_bash_rules import load_rules, match_command
 
-                    db_rules_path = os.path.expanduser(
-                        "~/.claude-pace-maker/danger_bash_rules.yaml"
-                    )
-                    rules = load_rules(db_rules_path)
+                    rules = load_rules(DEFAULT_DANGER_RULES_PATH)
                     matched = match_command(command, rules)
 
                     if matched:
@@ -2329,6 +2518,11 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             f"Otherwise respond with detailed feedback explaining the mismatch."
                         )
 
+                        # Inject CSA danger_bash_warning into Stage 2 context if siblings active
+                        _danger_warning = _csa_result.get("danger_bash_warning", "")
+                        if _danger_warning:
+                            bash_prompt = bash_prompt + f"\n\n{_danger_warning}"
+
                         response, reviewer = resolve_and_call_with_reviewer(
                             hook_model=bash_config.get("hook_model", "auto"),
                             prompt=bash_prompt,
@@ -2400,22 +2594,31 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
         # 2b. Only validate Write/Edit tools beyond this point
         if tool_name not in ["Write", "Edit"]:
+            _periodic = _csa_result.get("periodic_reminder", "")
+            if _periodic:
+                return {
+                    "continue": True,
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "additionalContext": _periodic,
+                    },
+                }
             return {"continue": True}
 
         # Skip if no file_path (e.g., some edge cases)
         if not file_path:
-            return {"continue": True}
+            return _merge_csa_reminder({"continue": True}, _csa_result)
 
         # 3. Load config
         config = load_config(DEFAULT_CONFIG_PATH)
 
         # Master switch - all features disabled
         if not config.get("enabled", True):
-            return {"continue": True}
+            return _merge_csa_reminder({"continue": True}, _csa_result)
 
         # Check if feature enabled
         if not config.get("intent_validation_enabled", False):
-            return {"continue": True}
+            return _merge_csa_reminder({"continue": True}, _csa_result)
 
         # 4. Check if source code file
         from . import extension_registry
@@ -2424,7 +2627,9 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         is_source = extension_registry.is_source_code_file(file_path, extensions)
 
         if not is_source:
-            return {"continue": True}  # Bypass non-source files
+            return _merge_csa_reminder(
+                {"continue": True}, _csa_result
+            )  # Bypass non-source files
 
         # 5. Extract proposed code from tool_input
         if tool_name == "Write":
@@ -2471,7 +2676,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 record_activity_event(DEFAULT_DB_PATH, "CC", "green", _sid)
             except Exception:
                 pass  # Activity recording must never break pre-tool hook
-            return {"continue": True}
+            return _merge_csa_reminder({"continue": True}, _csa_result)
         else:
             # AC4: Record blockage for intent validation failure
             # Determine category based on failure type
@@ -2539,15 +2744,18 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             except Exception:
                 pass  # Activity recording must never break pre-tool hook
 
-            return {
-                "decision": "block",
-                "reason": result.get("feedback", "Validation failed"),
-            }
+            return _merge_csa_reminder(
+                {
+                    "decision": "block",
+                    "reason": result.get("feedback", "Validation failed"),
+                },
+                _csa_result,
+            )
 
     except Exception as e:
         # Graceful degradation - log error and allow
         print(f"[PACE-MAKER ERROR] Pre-tool hook: {e}", file=sys.stderr)
-        return {"continue": True}
+        return _merge_csa_reminder({"continue": True}, _csa_result)
 
 
 def main():

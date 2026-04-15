@@ -87,6 +87,25 @@ class TestOrchestratorIncrementalSpans:
         with tempfile.TemporaryDirectory() as tmpdir:
             yield tmpdir
 
+    @pytest.fixture(autouse=True)
+    def isolate_from_real_pacemaker_state(self, tmp_path):
+        """Patch DEFAULT_STATE_PATH to a non-existent path for all tests.
+
+        The orchestrator reads DEFAULT_STATE_PATH (~/.claude-pace-maker/state.json)
+        to detect subagent context. If the real file has in_subagent=true (which
+        it often does during active development sessions), it overrides current_trace_id
+        with the subagent's trace_id, breaking test assertions.
+
+        Patching to a non-existent path triggers the FileNotFoundError except branch,
+        which gracefully falls back to using the parent session's trace_id.
+        """
+        non_existent = str(tmp_path / "no_such_state.json")
+        with patch(
+            "pacemaker.langfuse.orchestrator.DEFAULT_STATE_PATH",
+            non_existent,
+        ):
+            yield
+
     def test_handle_post_tool_use_creates_text_and_tool_spans(
         self, config, transcript_with_text_and_tool, state_dir
     ):

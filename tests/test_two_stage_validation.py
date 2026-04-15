@@ -77,8 +77,9 @@ class TestStage1DeclarationCheck:
         code = "def validate_token(): pass"
 
         # Only patch Stage 2 (external LLM call) — Stage 1 runs as real regex
+        # _call_stage2_validation returns (response_text, reviewer_name) tuple
         with patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2:
-            mock_s2.return_value = "APPROVED"
+            mock_s2.return_value = ("APPROVED", "test-reviewer")
 
             result = intent_validator.validate_intent_and_code(
                 messages=messages,
@@ -113,8 +114,12 @@ def risky_function():
 """
 
         # Only mock the external LLM call (Stage 2)
+        # _call_stage2_validation returns (response_text, reviewer_name) tuple
         with patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2:
-            mock_s2.return_value = "Clean code violation: Bare except clause found"
+            mock_s2.return_value = (
+                "Clean code violation: Bare except clause found",
+                "test-reviewer",
+            )
 
             result = intent_validator.validate_intent_and_code(
                 messages=messages,
@@ -138,8 +143,9 @@ def risky_function():
         code = "def clean_function():\n    return True"
 
         # Only mock the external LLM call (Stage 2)
+        # _call_stage2_validation returns (response_text, reviewer_name) tuple
         with patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2:
-            mock_s2.return_value = "APPROVED"
+            mock_s2.return_value = ("APPROVED", "test-reviewer")
 
             result = intent_validator.validate_intent_and_code(
                 messages=messages,

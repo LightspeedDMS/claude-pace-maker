@@ -70,3 +70,12 @@ def _guard_production_db(tmp_path, monkeypatch):
             initialize_database(fake_db_path)
     except ImportError:
         pass
+
+    # Guard the session registry DB path — prevents tests from writing to
+    # ~/.claude-pace-maker/session_registry.db (the production registry).
+    # db.py raises RuntimeError when PACEMAKER_TEST_MODE=1 and this is unset,
+    # so setting it here satisfies that safety check for all tests.
+    monkeypatch.setenv(
+        "PACEMAKER_SESSION_REGISTRY_PATH",
+        str(fake_pace_maker_dir / "session_registry.db"),
+    )
