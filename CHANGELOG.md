@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.19.2] - 2026-04-16
+
+### Fixed
+- **Stop hook death spiral on valid E2E evidence**: When the stop hook rejected an E2E evidence table, it injected the rejection as an `isMeta: true` user message. The assistant responded with a short "I'm waiting" message. On the next stop attempt, the backwards-walk context evaluator saw the short message as the "last message" — not the E2E table. Each rejection generated a new short response, pushing the real evidence further down and creating an infinite rejection loop. Fix: `build_stop_hook_context()` in `transcript_reader.py` now filters `isMeta` entries and short (<200 char) assistant responses that immediately follow META messages. Real substantive content (>200 chars) after META is preserved. 5 new tests in `test_stop_hook_meta_filtering.py`
+- **Overly rigid E2E evidence format check**: The stop hook validator prompt demanded exact column headers (`| # | AC | Test Description | How Performed | Real System / Data | Observed Result |`) for FORMAT B. Real E2E evidence tables from subagents used similar but different headers like `| # | Test | Command | Captured Output | Result |` — containing the same substantive information (test name, execution method, real captured output, pass/fail) but with different column names. Added FORMAT C to `stop_hook_validator_prompt.md` accepting any markdown table with 3+ rows of real commands, real captured output, and per-row results regardless of exact column headers
+
 ## [2.19.1] - 2026-04-15
 
 ### Added
