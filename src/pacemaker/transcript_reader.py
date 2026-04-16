@@ -313,25 +313,52 @@ def build_stop_hook_context(
         all_messages = []
 
         with open(transcript_path, "r") as f:
+            prev_was_meta = False
             for line_num, line in enumerate(f):
                 # Skip lines before and including the compact boundary
                 if line_num <= compact_boundary_line:
                     continue
 
                 entry = json.loads(line)
+
+                # Skip META messages — these are stop hook feedback injections,
+                # not real user messages.  Including them causes a death spiral:
+                # rejection feedback -> short assistant response -> evaluated as
+                # "last message" -> rejected again -> repeat.
+                if entry.get("isMeta"):
+                    prev_was_meta = True
+                    continue
+
                 message = entry.get("message", {})
                 role = message.get("role")
 
                 # Only process user and assistant messages
                 if role not in ["user", "assistant"]:
+                    prev_was_meta = False
                     continue
 
                 content = message.get("content", [])
                 text = _extract_text_only(content)
 
-                # Only add messages with text content
-                if text.strip():
-                    all_messages.append({"role": role, "text": text})
+                if not text.strip():
+                    prev_was_meta = False
+                    continue
+
+                # Skip short assistant responses that immediately follow META
+                # messages.  These are reflexive "I'm waiting" messages, not
+                # substantive content.  Real E2E tables are 500+ chars; waiting
+                # messages are typically <150 chars.  200 gives comfortable margin.
+                _META_SHORT_THRESHOLD = 200
+                if (
+                    role == "assistant"
+                    and prev_was_meta
+                    and len(text.strip()) < _META_SHORT_THRESHOLD
+                ):
+                    prev_was_meta = False
+                    continue
+
+                prev_was_meta = False
+                all_messages.append({"role": role, "text": text})
 
         if not all_messages:
             return {
@@ -376,12 +403,24 @@ def build_stop_hook_context(
             for user_msg, assistant_msgs in first_pairs:
                 first_pairs_end_index += 1 + len(assistant_msgs)  # user + assistants
 
-        # Walk backwards from end until budget exhausted
+        # Walk backwards from end until budget exhausted.
+        # When META filtering has collapsed all_messages to fewer entries than
+        # first_pairs_end_index (e.g. all remaining messages were already absorbed
+        # into first_pairs), set the stop boundary to -1 so the backwards walk
+        # covers the entire message list.  This preserves recent context (the last
+        # substantive E2E table) even when the transcript has been shrunk by META
+        # filtering.  When there are messages beyond first_pairs_end_index the stop
+        # boundary stays at first_pairs_end_index - 1 (normal non-overlapping case).
         remaining_budget = token_budget - first_pairs_tokens
         backwards_messages = []
         backwards_tokens = 0
 
-        for i in range(len(all_messages) - 1, first_pairs_end_index - 1, -1):
+        backwards_stop = (
+            first_pairs_end_index - 1
+            if len(all_messages) > first_pairs_end_index
+            else -1
+        )
+        for i in range(len(all_messages) - 1, backwards_stop, -1):
             msg = all_messages[i]
             msg_tokens = len(msg["text"]) // 4
 

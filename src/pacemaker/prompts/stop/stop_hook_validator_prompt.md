@@ -169,12 +169,22 @@ Accept EITHER of the following:
       "OVERALL VERDICT: PASS / FAIL / INCONCLUSIVE"
     With real captured output (not claims) in the Observed fields.
 
-  FORMAT B — E2E Evidence Table:
+  FORMAT B — E2E Evidence Table (acceptance-criterion-aligned):
     | # | AC  | Test Description | How Performed | Real System / Data | Observed Result |
     Minimum 3 rows per acceptance criterion (happy path + edge case + error/boundary).
-    If no explicit ACs: 3 rows per major functional area changed.
+    Use this format when the story has explicit numbered acceptance criteria.
 
-  Column validation rules (FORMAT B):
+  FORMAT C — Ad-hoc Evidence Table (no formal ACs):
+    | # | Test | Command | Captured Output | Result |
+    |---|------|---------|----------------|--------|
+    Minimum 3 rows covering the key behaviours changed.
+    Use this format when there are no explicit acceptance criteria (bug fixes,
+    refactors, exploratory tasks, infrastructure changes).
+    "Command" must be the actual command run or action taken.
+    "Captured Output" must be real terminal/log output — not a claim.
+    "Result" must be PASS or FAIL — not "worked" or "OK".
+
+  Column validation rules (FORMAT B and FORMAT C):
 
     "How Performed" — must describe ACTUAL execution:
       ✅ "Called POST /api/search with Voyage AI enabled, key from env VOYAGE_API_KEY"
@@ -208,10 +218,15 @@ Your recent messages must contain either:
     CHANGED CODE COVERAGE and REGRESSION COVERAGE sections with actual
     captured output. OVERALL VERDICT required.
 
-  OPTION 2 — E2E Evidence Table:
+  OPTION 2a — E2E Evidence Table (with acceptance criteria):
     | # | AC | Test Description | How Performed | Real System / Data | Observed Result |
     Minimum 3 rows per acceptance criterion. "Observed Result" must be actual
     captured output — not a claim, not "passed", not "worked as expected".
+
+  OPTION 2b — Ad-hoc Evidence Table (no formal ACs):
+    | # | Test | Command | Captured Output | Result |
+    Minimum 3 rows covering key behaviours. "Captured Output" must be real
+    terminal/log output. "Result" must be PASS or FAIL.
 
   OPTION 3 — Valid exit:
     EXIT A: Explain specifically (not generically) why E2E is inapplicable.
