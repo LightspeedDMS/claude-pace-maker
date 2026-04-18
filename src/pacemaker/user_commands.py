@@ -117,6 +117,11 @@ COMPETITIVE REVIEW MODE:
   pace-maker langfuse on                       Enable Langfuse telemetry (auto-provisions if needed)
   pace-maker langfuse off                      Disable Langfuse telemetry collection
   pace-maker langfuse status                   Show Langfuse configuration and connection status
+  pace-maker localize-memory                   Seed <repo>/.claude-memory/ from central memory and symlink
+  pace-maker memory-localization on            Enable auto-linking of .claude-memory/ at SessionStart
+  pace-maker memory-localization off           Disable auto-linking of .claude-memory/ at SessionStart
+  pace-maker memory-localization status        Show memory localization enabled/disabled state
+  pace-maker memory-localization unlink        Remove symlink and copy .claude-memory/ contents back to central
 
 LOG LEVELS:
   0 = OFF      - No logging
@@ -644,6 +649,30 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_install.group(1).strip(),
         }
 
+    # Pattern 25: pace-maker localize-memory (no subcommand)
+    pattern_localize_memory = r"^pace-maker\s+localize-memory$"
+    match_localize_memory = re.match(pattern_localize_memory, normalized)
+
+    if match_localize_memory:
+        return {
+            "is_pace_maker_command": True,
+            "command": "localize-memory",
+            "subcommand": None,
+        }
+
+    # Pattern 26: pace-maker memory-localization (on|off|status|unlink)
+    pattern_memory_localization = (
+        r"^pace-maker\s+memory-localization\s+(on|off|status|unlink)$"
+    )
+    match_memory_localization = re.match(pattern_memory_localization, normalized)
+
+    if match_memory_localization:
+        return {
+            "is_pace_maker_command": True,
+            "command": "memory-localization",
+            "subcommand": match_memory_localization.group(1),
+        }
+
     return {"is_pace_maker_command": False, "command": None, "subcommand": None}
 
 
@@ -723,6 +752,18 @@ def execute_command(
         return _execute_sessions(subcommand)
     elif command == "cross-session-awareness":
         return _execute_cross_session_awareness(config_path, subcommand)
+    elif command in ("localize-memory", "memory-localization"):
+        from . import (
+            memory_localization_cli,
+        )  # lazy import — CLI module only loaded on demand
+
+        if command == "localize-memory":
+            exit_code = memory_localization_cli.localize_memory_cmd(os.getcwd())
+        else:
+            exit_code = memory_localization_cli.memory_localization_cmd(
+                subcommand or "", os.getcwd()
+            )
+        return {"success": exit_code == 0, "message": ""}
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
 
@@ -853,6 +894,7 @@ def _execute_status(
         intent_validation_enabled = config.get("intent_validation_enabled", False)
         tdd_enabled = config.get("tdd_enabled", True)
         danger_bash_enabled = config.get("danger_bash_enabled", True)
+        memory_localization_enabled = config.get("memory_localization_enabled", True)
         preferred_model = config.get("preferred_subagent_model", "auto")
         hook_model = config.get("hook_model", "auto")
         log_level = config.get("log_level", 2)
@@ -977,6 +1019,7 @@ def _execute_status(
         status_text += (
             f"\nDanger Bash: {'ENABLED' if danger_bash_enabled else 'DISABLED'}"
         )
+        status_text += f"\nMemory Localization: {'ENABLED' if memory_localization_enabled else 'DISABLED'}"
         status_text += f"\nModel Preference: {preferred_model.upper()}"
         _HOOK_MODEL_DISPLAY = {"gemini-flash": "GEM-FLASH", "gemini-pro": "GEM-PRO"}
         if "+" in hook_model and "->" in hook_model:
@@ -3318,6 +3361,8 @@ def main():
             "install",
             "sessions",
             "cross-session-awareness",
+            "localize-memory",
+            "memory-localization",
         ],
         help="Command to execute",
     )

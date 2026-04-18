@@ -261,3 +261,62 @@ This applies to:
 **claude-usage display**: Hook Model shows `comp` in `bright_blue`; governance feed shows `[Comp]` in `bright_blue` for competitive expressions.
 
 **Concurrency**: `ThreadPoolExecutor` with `futures_wait(timeout=REVIEWER_WAIT_TIMEOUT_SEC)` — partial results preserved on timeout; `executor.shutdown(wait=False)` avoids blocking on in-flight threads.
+
+---
+
+## Memory Localization
+
+**Story #65**: Makes Claude Code per-project memory git-portable by symlinking the central memory folder to a repo-local `.claude-memory/` directory that developers commit to git.
+
+### Flows
+- **Flow A — SessionStart auto-link** (`link_if_local_exists`): If `.claude-memory/` exists at the git root, the SessionStart hook replaces `~/.claude/projects/<encoded>/memory/` with a symlink pointing at it. Local always wins — any stale central content is renamed to `memory.bak_localize`, the symlink is created, and the backup is deleted. Rollback on OSError restores the backup.
+- **Flow B — CLI seed** (`pace-maker localize-memory`): Copies central memory contents into `<repo>/.claude-memory/`, then replaces central with symlink. Refuses if `.claude-memory/` already exists (except idempotent correct-symlink case).
+- **Flow C — CLI unlink** (`pace-maker memory-localization unlink`): Removes the symlink and copies `.claude-memory/` contents back to the central folder. Leaves the repo folder in place — user can `git rm -r .claude-memory` to remove from repo.
+
+### CLI Commands
+```bash
+pace-maker localize-memory                      # Flow B — seed fresh
+pace-maker memory-localization on|off|status   # Config gate
+pace-maker memory-localization unlink          # Flow C — reverse
+```
+
+### Architecture
+
+**Path discovery** — no re-implementation of Claude Code's encoding:
+- Flow A uses `transcript_path` from SessionStart `hook_data` → `Path(transcript_path).parent / "memory"`
+- Flow B/C scan `~/.claude/projects/*/*.jsonl` matching the project's cwd
+
+**Classification states** (`classify_central`): `missing`, `correct_symlink`, `wrong_symlink`, `regular_folder`, `permission_denied`, `unknown`.
+
+**Safety invariants**:
+- `assert_safe_to_destroy(path)` requires `path` under `CENTRAL_BASE` and `path.name == "memory"` before any rmtree
+- `replace_with_symlink_atomic` renames to `.bak_localize`, symlinks, rmtree's the backup — on OSError the rename is reversed
+- `_is_under` uses canonicalize-parent-only strategy so symlink leaves do not escape the boundary check
+
+**Concurrency**: Optimistic — on `FileExistsError`, re-classify; if now `correct_symlink` return `raced_but_ok`.
+
+**Symlink target**: Absolute, via `local.resolve()`.
+
+**Nudge injection**: On success states (`linked_fresh`, `replaced_with_symlink`, `relinked`, `already_linked`, `raced_but_ok`), hook emits JSON `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "<nudge>"}}` to stdout — same channel as the SubagentStart CSA banner.
+
+### Config Gate
+```json
+{ "memory_localization_enabled": true }
+```
+Default `true`. Checked as the first operation in `link_if_local_exists`. When `false`, Flow A returns `("disabled", None)` immediately — no filesystem operations.
+
+### Test Isolation — `PACEMAKER_CENTRAL_BASE`
+Mirrors `PACEMAKER_SESSION_REGISTRY_PATH` pattern. `core.py` raises `RuntimeError` when `PACEMAKER_TEST_MODE=1` and the env var is unset, preventing accidental pollution of real `~/.claude/projects/`.
+
+`CENTRAL_BASE` is resolved dynamically per access via module-level `__getattr__` so per-test `monkeypatch.setenv` changes take effect. All internal references use `_resolve_central_base()` to bypass stale caching.
+
+`tests/conftest.py` provides shared fixtures: `ml_central_base`, `ml_repo`, `ml_enc_dir`, `ml_transcript_path`, `ml_local_memory`.
+
+### Key Files
+- `src/pacemaker/memory_localization/core.py` — path helpers, classification, atomic replace, Flow A/B/C entry points
+- `src/pacemaker/memory_localization/__init__.py` — public API exports
+- `src/pacemaker/memory_localization_cli.py` — `localize_memory_cmd`, `memory_localization_cmd` CLI handlers
+- `src/pacemaker/hook.py` (~lines 373-410) — SessionStart wiring
+- `src/pacemaker/user_commands.py` — command patterns (25, 26) and dispatch
+- `install.sh` line 596 — copies `memory_localization/` subdir to `~/.claude/hooks/pacemaker/`
+- `tests/test_memory_localization_*.py` — 33 tests (classification, linking, seed/restore)

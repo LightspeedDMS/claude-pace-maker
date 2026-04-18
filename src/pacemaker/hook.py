@@ -370,6 +370,46 @@ def run_session_start_hook():
     except Exception as e:
         log_warning("hook", f"CSA session_start failed: {e}")
 
+    # Memory localization (story #65) — auto-link central memory folder to
+    # repo-local .claude-memory/ when present. Safe no-op for non-git repos or
+    # repos without .claude-memory/.
+    if source in ("startup", "resume"):
+        try:
+            from .memory_localization.core import link_if_local_exists
+
+            ml_cwd = hook_data.get("cwd") if hook_data else None
+            ml_transcript = hook_data.get("transcript_path") if hook_data else None
+            if ml_cwd and ml_transcript:
+                ml_status, ml_target = link_if_local_exists(
+                    ml_cwd, ml_transcript, config
+                )
+                if ml_status in (
+                    "linked_fresh",
+                    "replaced_with_symlink",
+                    "relinked",
+                    "already_linked",
+                    "raced_but_ok",
+                ):
+                    ml_nudge = (
+                        f"**Memory localization active**\n"
+                        f"Your project memory is stored in {ml_target} "
+                        f"(git-tracked), symlinked from the central Claude memory folder. "
+                        f"Edits to memory files will appear in `git status` and can be "
+                        f"committed to share across clones."
+                    )
+                    _session_start_additional_context = {
+                        "hookSpecificOutput": {
+                            "hookEventName": "SessionStart",
+                            "additionalContext": ml_nudge,
+                        }
+                    }
+                    safe_print(
+                        json.dumps(_session_start_additional_context),
+                        file=sys.stdout,
+                    )
+        except Exception as e:
+            log_warning("memory_localization", f"SessionStart link failed: {e}")
+
     # Activity event: SE (session started)
     try:
         record_activity_event(

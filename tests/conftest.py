@@ -7,6 +7,7 @@ instantiate UsageModel without an explicit db_path will get a temp DB.
 """
 
 import os
+import subprocess
 
 import pytest
 
@@ -79,3 +80,69 @@ def _guard_production_db(tmp_path, monkeypatch):
         "PACEMAKER_SESSION_REGISTRY_PATH",
         str(fake_pace_maker_dir / "session_registry.db"),
     )
+
+    # Guard PACEMAKER_CENTRAL_BASE — prevents memory_localization tests from
+    # touching the real ~/.claude/projects/ directory.
+    # core.py raises RuntimeError when PACEMAKER_TEST_MODE=1 and this is unset.
+    fake_central = tmp_path / "fake-central"
+    fake_central.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("PACEMAKER_CENTRAL_BASE", str(fake_central))
+
+
+# ---------------------------------------------------------------------------
+# Memory-localization shared fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ml_central_base(tmp_path, monkeypatch):
+    """Isolated central-base directory with PACEMAKER_CENTRAL_BASE set."""
+    base = tmp_path / "ml-central"
+    base.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("PACEMAKER_CENTRAL_BASE", str(base))
+    return base
+
+
+@pytest.fixture
+def ml_repo(tmp_path):
+    """A real git repository at tmp_path/ml-repo."""
+    path = tmp_path / "ml-repo"
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", str(path)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"],
+        cwd=str(path),
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=str(path),
+        capture_output=True,
+        check=True,
+    )
+    return path
+
+
+@pytest.fixture
+def ml_enc_dir(ml_central_base):
+    """Encoded project directory inside ml_central_base."""
+    enc = ml_central_base / "enc123"
+    enc.mkdir()
+    return enc
+
+
+@pytest.fixture
+def ml_transcript_path(ml_enc_dir):
+    """Fake transcript .jsonl inside ml_enc_dir."""
+    transcript = ml_enc_dir / "session.jsonl"
+    transcript.write_text("{}")
+    return transcript
+
+
+@pytest.fixture
+def ml_local_memory(ml_repo):
+    """.claude-memory directory inside ml_repo."""
+    local = ml_repo / ".claude-memory"
+    local.mkdir()
+    return local
