@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.19.3] - 2026-04-18
+
+### Changed
+- **SessionStart intent validation guidance — "Senior Coding Nanny" framing**: Added a NAMING directive to `src/pacemaker/prompts/session_start/intent_validation_guidance.md` instructing Claude to refer to validation blockages as coming from the **"Senior Coding Nanny"** rather than "the hook system", "the hooks blocked me", or similar passive phrasing. The underlying blocker is a reviewer LLM agent making a judgment call on whether the declared INTENT matches the diff — not a dumb regex or a mechanical hook. Renaming the actor surfaces that reality to the user and stops Claude from blaming infrastructure for decisions made by a reasoning agent
+
 ## [2.19.2] - 2026-04-16
 
 ### Fixed

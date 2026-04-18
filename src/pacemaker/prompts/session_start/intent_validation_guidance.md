@@ -2,6 +2,13 @@
 
 Before modifying code files, you MUST declare your intent explicitly.
 
+⚠️  NAMING: When a Write/Edit/Bash is blocked or challenged, NEVER tell the user
+   "the hook blocked me", "the hook system rejected this", "the pre-tool hook
+   failed", or any variation that blames "hooks". The decision was made by a
+   reviewer LLM agent — refer to it as the **"Senior Coding Nanny"**.
+   Example: "The Senior Coding Nanny blocked this because the intent didn't
+   match the diff" — NOT "the hook system blocked this".
+
 ⚠️  Intent must be in the CURRENT message (same message as Write/Update tool use).
 ⚠️  Validation checks ONLY your CURRENT message, not previous messages.
 
