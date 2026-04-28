@@ -44,19 +44,58 @@ If Claude claims in its LAST MESSAGE that a subagent or slash command is "runnin
 
 **RULE**: If the stop hook is executing, NO agent or slash command can be running. Period.
 
-**EXCEPTION - BACKGROUND TASKS ARE REAL**:
+**EXCEPTION - BACKGROUND TASKS / SCHEDULED WAKEUPS ARE REAL** (HIGHEST PRECEDENCE):
 
-Claude Code supports `run_in_background=True` for Bash and Agent tool calls. These background jobs
-genuinely continue running after Claude finishes its response. When a background job completes,
-Claude is re-awakened automatically — so early stoppage is NOT a problem.
+Claude Code supports two legitimate asynchronous mechanisms. BOTH automatically re-awaken
+Claude when ready — so stopping now is the CORRECT action, not avoidance:
 
-If Claude's LAST MESSAGE explicitly says it launched a background task and is awaiting its results:
-- Keywords: "running in background", "background job", "I'll be notified when it completes",
-  "waiting for background", "run_in_background", "background process"
-- **ALLOW THE STOPPAGE** - The background job will wake Claude when done
-- This is NOT Claude avoiding work — this is legitimate asynchronous operation
+  1. **Background tasks** — `run_in_background=True` on Bash and Agent tool calls.
+     The job continues running; Claude is notified on completion.
 
-**RULE**: If Claude claims a *background task* is running and awaiting results → APPROVED
+  2. **Scheduled wakeups** — the `ScheduleWakeup` tool sets a future re-entry time.
+     The runtime resumes Claude at that time with full context to continue the loop.
+
+If Claude's LAST MESSAGE indicates EITHER mechanism is in flight, ALLOW STOPPAGE.
+
+Background-task signals (any phrase indicating async agent/job work is in flight):
+  "running in background", "background job", "background process", "background agent",
+  "background agents", "run_in_background", "in flight", "agent in flight",
+  "agents in flight", "two agents in flight", "N agents in flight",
+  "agents running in background", "subagent running", "subagents running",
+  "awaiting subagent", "awaiting agent", "awaiting agents", "awaiting results",
+  "I'll be notified when it completes", "waiting for background",
+  "will report when [it/they/agents/both/all] [return/complete/finish/are done]",
+  "report consolidated findings", "consolidated findings when [agents/both] return",
+  "agent returns", "both agents return", "both return"
+
+Scheduled-wakeup signals (any phrase indicating timed re-entry):
+  "scheduled wakeup", "scheduled to resume", "ScheduleWakeup", "wakeup at",
+  "wake up at", "next firing", "I'll resume in", "scheduled fire-time",
+  "the loop will continue at", "scheduled re-entry", "wakeup in N min",
+  "drives the loop closure", "explicit wakeup", "schedule explicit wakeup"
+
+**RULE**: If ANY background-task OR scheduled-wakeup signal appears in the LAST MESSAGE
+→ APPROVED. Period. The async mechanism will resume Claude. This is NOT Claude
+avoiding work — it is the legitimate asynchronous workflow Claude Code is designed for.
+
+**THIS RULE OVERRIDES ALL OTHER BLOCKING CRITERIA**, including:
+  - "Show-stopper" / "blocker" / "critical" / "production blocking" framing from
+    earlier user messages
+  - The E2E-evidence requirement below (the in-flight agents may BE doing the E2E work;
+    demanding it from the orchestrator before they return is impossible by definition)
+  - "Analysis paralysis" suspicion (delegation to subagents IS the action being taken)
+  - User urgency phrases ("can't release", "must complete this session", "ASAP")
+  - Apparent unfinished work in the LAST MESSAGE (it IS being worked on, asynchronously)
+
+The user implicitly accepted this asynchronous workflow when Claude launched the
+background work or scheduled the wakeup. Forcing Claude to stay awake while
+subagents run does NOT speed them up — it burns context and tokens, and prevents
+the legitimate stoppage the runtime is designed for. **Trust the wakeup mechanism.**
+
+ONLY override this exception if Claude's LAST MESSAGE shows the background launch
+itself FAILED (visible error/exception/"agent crashed"/"wakeup rejected") with no
+recovery in progress. Mere absence of results is NOT failure — it is the expected
+state during async execution.
 
 CRITICAL - "ANALYSIS PARALYSIS" DETECTION:
 
@@ -82,6 +121,11 @@ These are UNRECOVERABLE conditions. Claude cannot fix them by continuing — blo
 (Allow stoppage immediately. The user needs to intervene — e.g., /compact, model change, or fresh session.)
 
 CRITICAL - ALL DEVELOPMENT WORK REQUIRES E2E EVIDENCE:
+
+⚠️ PRECEDENCE REMINDER: The "BACKGROUND TASKS / SCHEDULED WAKEUPS" exception above
+takes precedence over this entire section. If background subagents are in flight or
+a scheduled wakeup has been set, APPROVE — do NOT demand E2E evidence from the
+orchestrator while the agents that produce it are still running.
 
 ─────────────────────────────────────────────────────────
 STEP 1: DETECT DEVELOPMENT WORK
@@ -254,7 +298,7 @@ WHEN TO BLOCK (strict criteria - need CLEAR evidence):
 - Claude's LAST MESSAGE shows work actively in progress (not summarizing)
 - Claude identified a bug/problem in LAST MESSAGE but took no action
 - The MOST RECENT user request (in recent messages) is clearly unanswered
-- Claude claims an agent/slash command is "still running" (impossible - see above, unless it's a background task)
+- Claude claims an agent/slash command is "still running" (impossible — see above, UNLESS it's a background task with `run_in_background=True` OR a scheduled wakeup via `ScheduleWakeup`, both of which are real async mechanisms — in those cases, APPROVE)
 
 RESPONSE FORMAT - Choose EXACTLY one:
 
