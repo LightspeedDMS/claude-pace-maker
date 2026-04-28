@@ -25,6 +25,111 @@ This is a separate tool that displays usage metrics in a monitor/dashboard forma
 - `pace-maker status` = CLI command from THIS repo (claude-pace-maker)
 - `claude-usage` = Monitor tool from claude-usage-reporting repo
 
+## Cross-Process Data Access Pattern (Pace-Maker → claude-usage Monitor)
+
+The `claude-usage-reporting` monitor (a.k.a. "claude-console") reads pace-maker's SQLite DBs directly. This is the **canonical pattern** for any new cross-process reader — follow it exactly when adding new panels, columns, or data consumers on the monitor side.
+
+### Architecture
+
+- **Producer**: `claude-pace-maker` writes SQLite DBs under `~/.claude-pace-maker/` from hook processes, using `execute_with_retry()` (exponential backoff 100ms → 200ms → 400ms, `MAX_RETRIES=3`). See `src/pacemaker/database.py:442-482`.
+- **Consumer**: `claude-usage-reporting/claude_usage/code_mode/pacemaker_integration.py` opens **blocking read connections with a 5-second timeout** — NO retry loop on the reader side. The timeout IS the circuit breaker.
+- **Two databases, identical access pattern**: `usage.db` (heavily read) and `session_registry.db` (reserved for cross-session features).
+- **Hardcoded base path**: monitor uses `Path.home() / ".claude-pace-maker"` (no env var override in consumer, unlike producer's `PACEMAKER_SESSION_REGISTRY_PATH`).
+
+### Canonical Read Idioms
+
+**Pattern A — single-row read** (use for per-agent / per-session lookups):
+```python
+if not self.db_path.exists():
+    return None
+try:
+    with sqlite3.connect(str(self.db_path), timeout=5.0) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT col1, col2 FROM table WHERE id = ?", (ID,))
+        row = cursor.fetchone()
+    if row is None:
+        return None
+    return {
+        "col1": row["col1"],
+        "col2": row["col2"] if "col2" in row.keys() else None,  # optional col
+    }
+except (sqlite3.Error, OSError) as e:
+    logging.debug("Failed: %s", e)
+    return None
+```
+
+**Pattern B — aggregate with time window** (use for panel feeds):
+```python
+if not self.db_path.exists():
+    return None
+try:
+    cutoff = time.time() - WINDOW_SECONDS
+    conn = sqlite3.connect(str(self.db_path), timeout=5.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT col1, SUM(col2) FROM t WHERE ts >= ? GROUP BY col1",
+            (cutoff,),
+        )
+        return {r[0]: r[1] for r in cursor.fetchall()}
+    finally:
+        conn.close()
+except (sqlite3.Error, OSError) as e:
+    logging.debug("Failed: %s", e)
+    return None
+```
+
+### Mandatory Rules for All Cross-Process Readers
+
+1. **`.exists()` check before `sqlite3.connect()`** — DB file may not exist yet on fresh install.
+2. **`timeout=5.0`** — use the `DB_TIMEOUT` constant in `pacemaker_integration.py:28`.
+3. **`PRAGMA journal_mode=WAL`** — matches producer, avoids lock contention.
+4. **Optional columns via `"col" in row.keys()`** — producer adds columns via additive `ALTER TABLE` (see `codex_usage`'s `limit_id`); consumers must tolerate missing columns.
+5. **Catch `(sqlite3.Error, OSError)` broadly** — includes lock timeout, missing table, permission errors.
+6. **Return `None` on any failure** — never raise to caller. `logging.debug()` the reason.
+7. **Check `row is None` after `fetchone()`** — empty result is legal.
+8. **No retry logic in consumer** — the 5s timeout already covers writer contention; retries would compound.
+9. **No schema version checks** — defensive reads (point 4) replace migrations on the consumer side.
+10. **For caching, use manual TTL** — see `get_blockage_stats_cached()` at `pacemaker_integration.py:653-680` (5s TTL with `_*_cache_time` sentinel).
+
+### Beyond SQLite
+
+- **JSON reads**: `config.json` read via `_read_config()` at `pacemaker_integration.py:507-516` (same defensive pattern).
+- **Dynamic imports**: Monitor adds pace-maker's `src/` to `sys.path` via `_get_pacemaker_src_path()` (reads `~/.claude-pace-maker/install_source`, lines 157-197) then calls `UsageModel.get_current_usage()` **in-process**. Import-based calls are NOT cross-process — the function runs in the monitor's Python interpreter against the shared SQLite file.
+- **No Unix sockets, no subprocess CLI calls, no HTTP.** SQLite + JSON files + dynamic imports are the only IPC surfaces.
+
+### Read Cadence
+
+- **No background polling** — all reads are reactive (called per-tick by the TUI / API layer).
+- **Caller controls cadence** — the monitor's main render loop decides refresh interval, readers are stateless.
+- **Caching is opt-in** — individual readers implement TTL caches where needed (see blockage stats).
+
+### Key File References
+
+| Concern | File | Lines |
+|---------|------|-------|
+| Consumer timeout constant | `claude-usage-reporting/claude_usage/code_mode/pacemaker_integration.py` | 28 |
+| Consumer DB path | same | 148-151 |
+| Consumer install-source discovery | same | 157-197 |
+| Consumer stale-data handling | same | 391-443 |
+| Consumer single-row read (Pattern A) | same | 475-505 (`_read_codex_usage`) |
+| Consumer windowed aggregate (Pattern B) | same | 559-622 (`get_blockage_stats`) |
+| Consumer TTL cache example | same | 653-680 |
+| Producer retry helper | `src/pacemaker/database.py` | 442-482 (`execute_with_retry`) |
+| Producer WAL + timeout setup | `src/pacemaker/database.py` | 26-28, 427-440 |
+| Registry DB setup | `src/pacemaker/session_registry/db.py` | 114-146 |
+
+### When Adding New Tables / Columns
+
+- **Additive `ALTER TABLE` only** — never drop or rename columns; the consumer tolerates missing columns but does not tolerate missing tables well (returns `None` for the whole read). If you must remove a table, coordinate a migration on both sides in the same release.
+- **Idempotent migrations** — use `ALTER TABLE` inside try/except for `OperationalError: duplicate column name`. Example: `migrate_codex_usage_schema()` in `hook.py` SubagentStop handler.
+- **Document the contract** in this CLAUDE.md section when adding a new table the monitor will read.
+
+---
+
 ## Version Bumping
 
 **When bumping the version**, ALWAYS update BOTH files:
