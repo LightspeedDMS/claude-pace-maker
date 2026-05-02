@@ -326,6 +326,9 @@ def run_session_start_hook():
         if session_id:
             state["session_id"] = session_id
         state["last_user_interaction_time"] = None
+        state.setdefault("last_user_interaction_time_by_session", {}).pop(
+            session_id or "", None
+        )
         state["tool_execution_count"] = 0
     elif source == "resume":
         # RESUME existing session - Update session_id but preserve counters
@@ -336,6 +339,9 @@ def run_session_start_hook():
         # CLEAR/COMPACT - Reset counters but keep session_id
         # (session_id from stdin should match existing session_id)
         state["last_user_interaction_time"] = None
+        state.setdefault("last_user_interaction_time_by_session", {}).pop(
+            session_id or "", None
+        )
         state["tool_execution_count"] = 0
         # Keep: session_id (same session continues)
 
@@ -1296,10 +1302,14 @@ def run_user_prompt_submit():
         # Only update last_user_interaction_time for actual prompts to Claude
         # NOT for pace-maker commands (which are just checking status/settings)
         if not result["intercepted"]:
-            state["last_user_interaction_time"] = datetime.now(timezone.utc)
-            # Mark that a live user prompt is active — stop hook uses this to skip
-            # LLM validation for the duration of this response cycle.
-            state["current_request_active"] = True
+            now = datetime.now(timezone.utc)
+            state["last_user_interaction_time"] = now  # global kept for backward compat
+            # Per-session map prevents cross-session timestamp corruption: another
+            # session's startup would reset the global to None, making this session's
+            # stop hook think Claude is running unattended.
+            state.setdefault("last_user_interaction_time_by_session", {})[
+                session_id or ""
+            ] = now.isoformat()
 
         save_state(state, DEFAULT_STATE_PATH)
 
@@ -1612,7 +1622,7 @@ def get_last_n_messages(transcript_path: str, n: int = 5) -> list:
         return []
 
 
-def should_run_tempo(config: dict, state: dict) -> bool:
+def should_run_tempo(config: dict, state: dict, session_id: str = "") -> bool:
     """
     Determine if tempo tracking should run based on global and session settings.
 
@@ -1627,6 +1637,7 @@ def should_run_tempo(config: dict, state: dict) -> bool:
     Args:
         config: Configuration dictionary with tempo_mode (or legacy tempo_enabled)
         state: State dictionary with tempo_session_enabled and last_user_interaction_time (optional)
+        session_id: Current session ID for per-session timestamp lookup
 
     Returns:
         True if tempo should run, False otherwise
@@ -1659,16 +1670,31 @@ def should_run_tempo(config: dict, state: dict) -> bool:
         return True
 
     if tempo_mode == "auto":
-        # Check user activity
-        last_interaction = state.get("last_user_interaction_time")
+        # Per-session timestamp takes priority over the global key.
+        # The global key is corrupted whenever any other session starts
+        # (SessionStart resets it to None), causing false "unattended" reads.
+        last_interaction = None
+        raw = state.get("last_user_interaction_time_by_session", {}).get(
+            session_id or ""
+        )
+        if raw:
+            try:
+                last_interaction = datetime.fromisoformat(raw)
+                if last_interaction.tzinfo is None:
+                    last_interaction = last_interaction.replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                last_interaction = None
 
-        # No interaction recorded, assume unattended
+        # Fall back to global timestamp for sessions that predate this change
+        if last_interaction is None:
+            last_interaction = state.get("last_user_interaction_time")
+
+        # No interaction recorded for this session — assume unattended
         if last_interaction is None:
             return True
 
         # Check if elapsed time exceeds threshold
         threshold_minutes = config.get("auto_tempo_threshold_minutes", 10)
-        # State may store naive timestamps — assume UTC
         if hasattr(last_interaction, "tzinfo") and last_interaction.tzinfo is None:
             last_interaction = last_interaction.replace(tzinfo=timezone.utc)
         elapsed_seconds = (
@@ -2142,23 +2168,13 @@ def run_stop_hook():
             else:
                 # Max nudges reached — reset counter and allow exit
                 state["silent_tool_nudge_count"] = 0
-                state["current_request_active"] = False
                 save_state(state, DEFAULT_STATE_PATH)
                 log_debug("hook", "Max silent tool nudges reached - allowing exit")
                 return {"continue": True}
 
-        # Grace period: if a live user prompt was submitted for this response cycle,
-        # skip LLM validation entirely. Claude is responding to the user right now.
-        if state.get("current_request_active", False):
-            state["current_request_active"] = False
-            save_state(state, DEFAULT_STATE_PATH)
-            log_debug(
-                "hook", "Stop hook: active user request — skipping LLM validation"
-            )
-            return {"continue": True}
-
-        # NOW check tempo - if disabled, allow exit after silent-stop check
-        if not should_run_tempo(config, state):
+        # Check tempo: skip LLM if elapsed time since last user message is below
+        # the threshold — user is likely watching the screen (auto mode).
+        if not should_run_tempo(config, state, session_id=session_id or ""):
             log_debug("hook", "Tempo disabled - allow exit")
             return {"continue": True}  # Tempo disabled - allow exit
 
