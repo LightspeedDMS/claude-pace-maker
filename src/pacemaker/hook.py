@@ -1297,6 +1297,9 @@ def run_user_prompt_submit():
         # NOT for pace-maker commands (which are just checking status/settings)
         if not result["intercepted"]:
             state["last_user_interaction_time"] = datetime.now(timezone.utc)
+            # Mark that a live user prompt is active — stop hook uses this to skip
+            # LLM validation for the duration of this response cycle.
+            state["current_request_active"] = True
 
         save_state(state, DEFAULT_STATE_PATH)
 
@@ -2139,9 +2142,20 @@ def run_stop_hook():
             else:
                 # Max nudges reached — reset counter and allow exit
                 state["silent_tool_nudge_count"] = 0
+                state["current_request_active"] = False
                 save_state(state, DEFAULT_STATE_PATH)
                 log_debug("hook", "Max silent tool nudges reached - allowing exit")
                 return {"continue": True}
+
+        # Grace period: if a live user prompt was submitted for this response cycle,
+        # skip LLM validation entirely. Claude is responding to the user right now.
+        if state.get("current_request_active", False):
+            state["current_request_active"] = False
+            save_state(state, DEFAULT_STATE_PATH)
+            log_debug(
+                "hook", "Stop hook: active user request — skipping LLM validation"
+            )
+            return {"continue": True}
 
         # NOW check tempo - if disabled, allow exit after silent-stop check
         if not should_run_tempo(config, state):
