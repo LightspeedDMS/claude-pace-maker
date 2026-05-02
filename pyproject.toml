@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-pace-maker"
-version = "2.19.2"
+version = "2.20.1"
 description = "Intelligent pacing, intent validation, TDD enforcement, and Langfuse telemetry for Claude Code"
 readme = "README.md"
 requires-python = ">=3.9"

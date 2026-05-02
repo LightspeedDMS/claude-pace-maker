@@ -18,7 +18,7 @@ class CodexProvider(InferenceProvider):
         max_thinking_tokens: int = 4000,
     ) -> str:
         """Query OpenAI model via Codex CLI subprocess."""
-        # Normalize legacy aliases (e.g. gpt-5 → gpt-5.4); fall back to o3 default
+        # Normalize aliases (e.g. gpt-5 → gpt-5.5, gpt/codex → gpt-5.5); fall back to o3 default
         model = SHORT_ALIASES.get(model_hint, model_hint) or "o3"
 
         # Embed system prompt in the prompt text (codex has no --system-prompt flag)

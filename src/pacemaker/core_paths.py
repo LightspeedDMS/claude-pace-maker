@@ -28,6 +28,7 @@ def get_default_paths() -> List[str]:
     return [
         "src/",
         "lib/",
+        "code/",
         "core/",
         "source/",
         "libraries/",

@@ -27,11 +27,18 @@ def test_get_default_paths_returns_expected_list():
     assert isinstance(defaults, list)
     assert "src/" in defaults
     assert "lib/" in defaults
+    assert "code/" in defaults
     assert "core/" in defaults
     assert "source/" in defaults
     assert "libraries/" in defaults
     assert "kernel/" in defaults
-    assert len(defaults) == 6
+    assert len(defaults) == 7
+
+
+def test_get_default_paths_includes_code():
+    """Test that 'code/' is included in default core paths."""
+    defaults = core_paths.get_default_paths()
+    assert "code/" in defaults
 
 
 def test_load_paths_with_missing_config_returns_defaults():

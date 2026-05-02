@@ -42,8 +42,9 @@ def get_provider(hook_model: str):
     """Get provider instance for the given hook_model config value.
 
     Args:
-        hook_model: Config value - "auto", "sonnet", "opus", "haiku", "gpt-5.4"
-                    (legacy alias: "gpt-5"), "gemini-flash", "gemini-pro"
+        hook_model: Config value - "auto", "sonnet", "opus", "haiku", "gpt-5.4",
+                    "gpt-5.5" (legacy aliases: "gpt-5", "gpt", "codex"),
+                    "gemini-flash", "gemini-pro"
 
     Returns:
         InferenceProvider instance
@@ -52,7 +53,7 @@ def get_provider(hook_model: str):
         from .anthropic_provider import AnthropicProvider
 
         return AnthropicProvider()
-    elif hook_model in ("gpt-5", "gpt-5.4"):
+    elif hook_model in ("gpt-5", "gpt-5.4", "gpt-5.5", "gpt", "codex"):
         from .codex_provider import CodexProvider
 
         return CodexProvider()
@@ -76,8 +77,8 @@ def resolve_model_for_call(hook_model: str, call_context: str) -> str:
     current hardcoded behavior. Otherwise passes through the hook_model value.
 
     Args:
-        hook_model: Config value - "auto", "sonnet", "opus", "gpt-5.4"
-                    (legacy alias: "gpt-5"), "gemini-flash", "gemini-pro"
+        hook_model: Config value - "auto", "sonnet", "opus", "gpt-5.4", "gpt-5.5"
+                    (legacy aliases: "gpt-5", "gpt", "codex"), "gemini-flash", "gemini-pro"
         call_context: Identifies the call site - "stop_hook", "intent_validation",
                       "stage2_unified", "code_review"
 

@@ -83,8 +83,11 @@ COMMANDS:
   pace-maker hook-model auto                   Use auto model selection for hook inference
   pace-maker hook-model sonnet                 Use Sonnet for hook inference
   pace-maker hook-model opus                   Use Opus for hook inference
+  pace-maker hook-model gpt-5.5                Use GPT-5.5 (via Codex CLI) for hook inference (preferred / latest)
   pace-maker hook-model gpt-5.4                Use GPT-5.4 (via Codex CLI) for hook inference
-  pace-maker hook-model gpt-5                  Alias for gpt-5.4 (backward-compatible)
+  pace-maker hook-model gpt-5                  Alias for gpt-5.5 (latest Codex model)
+  pace-maker hook-model gpt                    Alias for gpt-5.5 (short form)
+  pace-maker hook-model codex                  Alias for gpt-5.5 (descriptive alias)
   pace-maker hook-model gemini-flash           Use Gemini Flash for hook inference
   pace-maker hook-model gemini-pro             Use Gemini Pro for hook inference
   pace-maker hook-model "<r1>+<r2>[+<r3>]-><synth>"
@@ -565,10 +568,10 @@ def parse_command(user_input: str) -> Dict[str, Any]:
         }
 
     # Pattern 20: pace-maker hook-model — single model or competitive expression
-    # Single model: auto|sonnet|opus|haiku|gpt-5.4 (legacy: gpt-5)|gemini-flash|gemini-pro (incl. short aliases)
+    # Single model: auto|sonnet|opus|haiku|gpt-5.5|gpt-5.4 (aliases: gpt-5|gpt|codex)|gemini-flash|gemini-pro (incl. short aliases)
     pattern_hook_model_single = (
         r"^pace-maker\s+hook-model\s+"
-        r"(auto|sonnet|opus|haiku|gpt-5\.4|gpt-5|gemini-flash|gemini-pro|gem-flash|gem-pro)$"
+        r"(auto|sonnet|opus|haiku|gpt-5\.5|gpt-5\.4|gpt-5|gpt|codex|gemini-flash|gemini-pro|gem-flash|gem-pro)$"
     )
     match_hook_model = re.match(pattern_hook_model_single, normalized)
 
@@ -1707,7 +1710,7 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
                     "message": f"Error setting hook model: {str(e)}",
                 }
 
-    # Normalize short aliases to canonical names before validation and storage
+    # Normalize short aliases to canonical names before validation and storage (e.g. gpt-5/gpt/codex → gpt-5.5)
     subcommand = SHORT_ALIASES.get(subcommand, subcommand)  # type: ignore[arg-type]
 
     valid_models = [
@@ -1716,6 +1719,7 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
         "opus",
         "haiku",
         "gpt-5.4",
+        "gpt-5.5",
         "gemini-flash",
         "gemini-pro",
     ]
@@ -1725,7 +1729,7 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
             "success": False,
             "message": (
                 f"Invalid model: {subcommand}\n"
-                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|gpt-5.4|gemini-flash|gemini-pro]"
+                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|gpt-5.4|gpt-5.5|gemini-flash|gemini-pro]"
             ),
         }
 
@@ -1738,6 +1742,12 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
             message = (
                 "✓ Hook model set to AUTO\n"
                 "Hook inference will use per-call-site defaults (sonnet for stage1, opus for stage2)."
+            )
+        elif subcommand == "gpt-5.5":
+            message = (
+                "✓ Hook model set to GPT-5.5\n"
+                "Hook inference will use Codex CLI (OpenAI GPT-5.5) with Anthropic fallback.\n"
+                "Requires: codex CLI installed and authenticated."
             )
         elif subcommand == "gpt-5.4":
             message = (

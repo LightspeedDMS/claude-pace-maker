@@ -14,6 +14,7 @@ KNOWN_MODELS = {
     "opus",
     "haiku",
     "gpt-5.4",
+    "gpt-5.5",
     "gemini-flash",
     "gemini-pro",
 }
@@ -21,5 +22,7 @@ KNOWN_MODELS = {
 SHORT_ALIASES = {
     "gem-flash": "gemini-flash",
     "gem-pro": "gemini-pro",
-    "gpt-5": "gpt-5.4",  # backward-compat alias; Codex CLI requires gpt-5.4
+    "gpt-5": "gpt-5.5",  # user-friendly alias; resolves to latest (gpt-5.5); Codex CLI accepts both gpt-5.4 and gpt-5.5
+    "gpt": "gpt-5.5",  # short alias for latest Codex model
+    "codex": "gpt-5.5",  # descriptive alias for latest Codex model
 }

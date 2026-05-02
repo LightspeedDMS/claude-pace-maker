@@ -557,6 +557,30 @@ def test_regex_ac5_kernel_path():
     assert result == "NO_TDD"
 
 
+def test_regex_ac5_code_relative():
+    """code/ relative path → core path → NO_TDD without TDD declaration."""
+    result = _check("INTENT: Modify code/foo.py to add bar().", "code/foo.py")
+    assert result == "NO_TDD"
+
+
+def test_regex_ac5_code_absolute():
+    """Absolute /home/user/project/code/foo.py → core path → NO_TDD."""
+    result = _check(
+        "INTENT: Modify code/foo.py to add bar().",
+        "/home/user/project/code/foo.py",
+    )
+    assert result == "NO_TDD"
+
+
+def test_regex_ac5_code_nested():
+    """Nested code/ path (some/code/bar.py) → core path → NO_TDD."""
+    result = _check(
+        "INTENT: Modify bar.py to add baz().",
+        "/some/code/bar.py",
+    )
+    assert result == "NO_TDD"
+
+
 # ---------------------------------------------------------------------------
 # AC6: Core path negative (non-core directories → YES when file is mentioned)
 # ---------------------------------------------------------------------------
