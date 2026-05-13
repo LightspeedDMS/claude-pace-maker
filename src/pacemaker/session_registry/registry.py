@@ -248,7 +248,9 @@ _SQL_LIST_ACTIONS = (
     "SELECT tool_name, target, ts FROM agent_actions "
     "WHERE agent_id = ? ORDER BY ts ASC, id ASC"
 )
-_SQL_HEARTBEAT_AGENT = "UPDATE agents SET last_seen = ? WHERE agent_id = ?"
+_SQL_HEARTBEAT_AGENT = (
+    "UPDATE agents SET last_seen = ?, ended_at = NULL WHERE agent_id = ?"
+)
 
 # ── Shared validators ─────────────────────────────────────────────────────────
 
