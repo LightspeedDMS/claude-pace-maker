@@ -220,7 +220,7 @@ def unregister_session(session_id: str, db_path: str) -> None:
 
 _AGENT_STALE_CUTOFF_SECONDS = 1200
 _AGENT_ENDED_RETENTION_SECONDS = 60
-_MAX_AGENT_ACTIONS = 3
+_MAX_AGENT_ACTIONS = 1
 
 _SQL_REGISTER_AGENT = (
     "INSERT OR REPLACE INTO agents "
