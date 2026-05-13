@@ -994,6 +994,30 @@ def run_hook():
     except Exception as e:
         log_warning("hook", f"CSA post_tool_use heartbeat failed: {e}")
 
+    # Cross-Session Awareness: record tool action for activity trail display.
+    try:
+        from .session_registry.registry import record_action as _csa_record
+        from .session_registry.registry import update_agent_heartbeat as _csa_hb
+        from .session_registry.db import resolve_db_path as _csa_db
+
+        _csa_aid = (
+            (hook_data or {}).get("agent_id")
+            or session_id
+            or state.get("session_id", "")
+        )
+        if _csa_aid and tool_name:
+            _csa_dbp = _csa_db()
+            _csa_record(
+                agent_id=_csa_aid,
+                tool_name=tool_name,
+                tool_input=tool_input or {},
+                ts=time.time(),
+                db_path=_csa_dbp,
+            )
+            _csa_hb(_csa_aid, _csa_dbp)
+    except Exception as e:
+        log_warning("hook", f"CSA record_action failed: {e}")
+
     # Ensure database is initialized
     db_path = DEFAULT_DB_PATH
     database.initialize_database(db_path)
