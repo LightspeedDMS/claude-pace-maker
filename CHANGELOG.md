@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.23.0] - 2026-05-13
+
+### Removed
+- **Random/failover hook model expressions**: Removed `_try_expression_dispatch()` and random (`*`) / failover (`|`) dispatch from inference registry, CLI command parsing, and status display
+- **Minimum Claude Code version check**: Removed `min-claude-version` CLI command, version probe, status display, and `min_claude_version` config default
+- **Transcript reader window expansion**: Removed backward window expansion and ghost entry filtering from `get_last_n_messages_for_validation()`
+
+### Changed
+- **CLI wrapper**: Rewritten `scripts/pace-maker` from bash to python3
+- **plugin.json**: Version synced to 2.22.0
+
+## [2.22.0] - 2026-05-13
+
+### Added
+- **Agent activity tracking** (#6): `register_agent`, `record_action`, `mark_agent_ended`, `purge_agents`, `update_agent_heartbeat`, `list_active_tree` in session_registry for cross-session agent visibility
+- **PostToolUse action recording**: `record_action` wired into PostToolUse hook for live tool trail display
+- **Heartbeat clears ended_at**: Agent heartbeat SQL clears `ended_at` so alive agents stay active
+
 ## [2.21.1] - 2026-05-13
 
 ### Fixed

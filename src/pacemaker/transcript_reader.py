@@ -186,8 +186,6 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
 
                 content = message.get("content", [])
                 msg_parts = _extract_message_parts(content)
-                if not msg_parts["text"].strip() and not msg_parts["tools"]:
-                    continue
                 messages.append(msg_parts)
 
         log_debug(
@@ -196,17 +194,6 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
 
         # Get last N messages
         recent = messages[-n:] if len(messages) >= n else messages
-
-        # Parallel tool calls produce separate tool_use JSONL entries that can
-        # push the text entry (with INTENT declaration) out of the n-window.
-        # Expand backward to include the nearest text-containing entry.
-        if not any(msg["text"].strip() for msg in recent):
-            window_start = len(messages) - len(recent)
-            for i in range(window_start - 1, -1, -1):
-                if messages[i]["text"].strip():
-                    recent = messages[i:]
-                    break
-
         log_debug("transcript_reader", f"Extracting last {len(recent)} messages")
 
         # Format: text-only for first N-1, full for last

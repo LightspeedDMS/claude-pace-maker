@@ -33,7 +33,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "log_level": 2,  # Default: WARNING level
     "preferred_subagent_model": "auto",  # Model preference: "opus", "sonnet", "haiku", "auto"
     "hook_model": "auto",  # Hook inference model: "auto", "sonnet", "opus", "gpt-5.4", "gpt-5.5" (legacy alias: "gpt-5"), "gemini-flash", "gemini-pro"
-    "min_claude_version": "2.1.39",
 }
 
 # Default file paths

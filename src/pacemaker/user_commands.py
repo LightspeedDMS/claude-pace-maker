@@ -111,25 +111,6 @@ COMPETITIVE REVIEW MODE:
   - All fail (no Anthropic reviewer): Anthropic SDK solo fallback
   - All fail (Anthropic was a reviewer): fail -> APPROVED by default
 
-RANDOM SELECTION MODE:
-  Pick one model uniformly at random per invocation. SDK fallback on failure.
-  Syntax: pace-maker hook-model "<m1>*<m2>[*<mN>]"
-  Examples:
-    pace-maker hook-model "sonnet*opus"
-    pace-maker hook-model "sonnet*gpt-5.5*gemini-flash"
-
-SEQUENTIAL FAILOVER MODE:
-  Try models left-to-right; advance on failure. SDK fallback when all fail.
-  Syntax: pace-maker hook-model "<m1>|<m2>[|<mN>]"
-  Examples:
-    pace-maker hook-model "gpt-5.4|sonnet"
-    pace-maker hook-model "gpt-5.4|gemini-flash|sonnet"
-
-MINIMUM CLAUDE CODE VERSION:
-  pace-maker min-claude-version                Show configured minimum Claude Code version
-  pace-maker min-claude-version show           Same as above
-  pace-maker min-claude-version set X.Y.Z      Set minimum Claude Code version
-
   pace-maker langfuse config <url> <public_key> <secret_key>
                                                Configure Langfuse credentials manually
   pace-maker langfuse provision [--force] [--verbose]
@@ -616,50 +597,6 @@ def parse_command(user_input: str) -> Dict[str, Any]:
             "subcommand": match_hook_model_comp.group(1),
         }
 
-    # Random expression: <model>*<model>[*<model>...]
-    pattern_hook_model_random = (
-        r"^pace-maker\s+hook-model\s+" r"([a-z0-9.\-]+(?:\*[a-z0-9.\-]+)+)$"
-    )
-    match_hook_model_rand = re.match(pattern_hook_model_random, normalized)
-
-    if match_hook_model_rand:
-        return {
-            "is_pace_maker_command": True,
-            "command": "hook-model",
-            "subcommand": match_hook_model_rand.group(1),
-        }
-
-    # Failover expression: <model>|<model>[|<model>...]
-    pattern_hook_model_failover = (
-        r"^pace-maker\s+hook-model\s+" r"([a-z0-9.\-]+(?:\|[a-z0-9.\-]+)+)$"
-    )
-    match_hook_model_fo = re.match(pattern_hook_model_failover, normalized)
-
-    if match_hook_model_fo:
-        return {
-            "is_pace_maker_command": True,
-            "command": "hook-model",
-            "subcommand": match_hook_model_fo.group(1),
-        }
-
-    # Pattern 27: pace-maker min-claude-version [show|set X.Y.Z]
-    pattern_min_ver_bare = r"^pace-maker\s+min-claude-version$"
-    if re.match(pattern_min_ver_bare, normalized):
-        return {
-            "is_pace_maker_command": True,
-            "command": "min-claude-version",
-            "subcommand": "show",
-        }
-
-    pattern_min_ver_sub = r"^pace-maker\s+min-claude-version\s+(.+)$"
-    match_min_ver = re.match(pattern_min_ver_sub, normalized)
-    if match_min_ver:
-        return {
-            "is_pace_maker_command": True,
-            "command": "min-claude-version",
-            "subcommand": match_min_ver.group(1),
-        }
-
     # Pattern 21: pace-maker langfuse (config|on|off|status) [args...]
     pattern_langfuse = r"^pace-maker\s+langfuse\s+(.+)$"
     match_langfuse = re.match(pattern_langfuse, normalized)
@@ -818,8 +755,6 @@ def execute_command(
         return _execute_sessions(subcommand)
     elif command == "cross-session-awareness":
         return _execute_cross_session_awareness(config_path, subcommand)
-    elif command == "min-claude-version":
-        return _execute_min_claude_version(config_path, subcommand)
     elif command in ("localize-memory", "memory-localization"):
         from . import (
             memory_localization_cli,
@@ -834,42 +769,6 @@ def execute_command(
         return {"success": exit_code == 0, "message": ""}
     else:
         return {"success": False, "message": f"Unknown command: {command}"}
-
-
-def _execute_min_claude_version(
-    config_path: str, subcommand: Optional[str] = None
-) -> Dict[str, Any]:
-    """Show or set the minimum Claude Code version."""
-    if subcommand is None or subcommand == "show":
-        try:
-            config = _load_config(config_path)
-        except (OSError, ValueError) as e:
-            return {"success": False, "message": f"Failed to read config: {e}"}
-        min_ver = config.get("min_claude_version", DEFAULT_CONFIG["min_claude_version"])
-        return {"success": True, "message": f"Minimum Claude Code version: {min_ver}"}
-
-    if subcommand.startswith("set "):
-        version_str = subcommand[4:].strip()
-        from .claude_code_version import ClaudeCodeVersion
-
-        parsed = ClaudeCodeVersion.parse(version_str)
-        if parsed is None:
-            return {
-                "success": False,
-                "message": f"Invalid version format: {version_str} (expected X.Y.Z)",
-            }
-        try:
-            config = _load_config(config_path)
-            config["min_claude_version"] = version_str
-            _write_config_atomic(config, config_path)
-        except (OSError, ValueError) as e:
-            return {"success": False, "message": f"Failed to update config: {e}"}
-        return {
-            "success": True,
-            "message": f"Minimum Claude Code version set to {version_str}",
-        }
-
-    return {"success": False, "message": f"Unknown subcommand: {subcommand}"}
 
 
 def _execute_on(config_path: str) -> Dict[str, Any]:
@@ -1149,11 +1048,6 @@ def _execute_status(
                 status_text += f"\nHook Model: {ANSI_BLUE}{hook_model}{ANSI_RESET}"
             else:
                 status_text += f"\nHook Model: {hook_model}"
-        elif "*" in hook_model:
-            ANSI_MAGENTA = "\033[35m"
-            status_text += f"\nHook Model: {ANSI_MAGENTA}{hook_model}{ANSI_RESET}"
-        elif "|" in hook_model:
-            status_text += f"\nHook Model: {ANSI_YELLOW}{hook_model}{ANSI_RESET}"
         else:
             status_text += f"\nHook Model: {_HOOK_MODEL_DISPLAY.get(hook_model, hook_model.upper())}"
         status_text += (
@@ -1172,26 +1066,6 @@ def _execute_status(
             status_text += f"\nUsage Console: v{usage_version}"
         except ImportError:
             status_text += "\nUsage Console: not installed"
-
-        try:
-            from .claude_code_version import ClaudeCodeVersion, probe_installed_version
-
-            min_ver_str = config.get(
-                "min_claude_version", DEFAULT_CONFIG["min_claude_version"]
-            )
-            installed = probe_installed_version()
-            min_ver = ClaudeCodeVersion.parse(min_ver_str)
-            if installed and min_ver:
-                if installed.is_below(min_ver):
-                    status_text += f"\nClaude Code: {ANSI_RED}v{installed} ✗ (need ≥v{min_ver_str}){ANSI_RESET}"
-                else:
-                    status_text += f"\nClaude Code: {ANSI_GREEN}v{installed} ✓ (min v{min_ver_str}){ANSI_RESET}"
-            else:
-                ANSI_YELLOW_VER = "\033[33m"
-                status_text += f"\nClaude Code: {ANSI_YELLOW_VER}unknown (min v{min_ver_str}, version probe failed){ANSI_RESET}"
-        except Exception:
-            ANSI_YELLOW_VER = "\033[33m"
-            status_text += f"\nClaude Code: {ANSI_YELLOW_VER}unknown (version check unavailable){ANSI_RESET}"
 
         # Add Langfuse status
         langfuse_enabled = config.get("langfuse_enabled", False)
@@ -1835,39 +1709,6 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
                     "success": False,
                     "message": f"Error setting hook model: {str(e)}",
                 }
-
-    # Try random (*) and failover (|) expressions
-    if subcommand and ("*" in subcommand or "|" in subcommand):
-        from .inference.random_failover import parse_random, parse_failover
-
-        for parser_fn, operator, mode_label in [
-            (parse_random, "*", "random"),
-            (parse_failover, "|", "failover"),
-        ]:
-            if operator not in subcommand:
-                continue
-            try:
-                parsed_models = parser_fn(subcommand)
-            except ValueError as e:
-                return {
-                    "success": False,
-                    "message": f"Invalid {mode_label} expression: {e}",
-                }
-            if parsed_models is not None:
-                canonical = operator.join(parsed_models)
-                try:
-                    config = _load_config(config_path)
-                    config["hook_model"] = canonical
-                    _write_config_atomic(config, config_path)
-                    return {
-                        "success": True,
-                        "message": f"Hook model set to {mode_label}: {canonical}",
-                    }
-                except Exception as e:
-                    return {
-                        "success": False,
-                        "message": f"Error setting hook model: {str(e)}",
-                    }
 
     # Normalize short aliases to canonical names before validation and storage (e.g. gpt-5/gpt/codex → gpt-5.5)
     subcommand = SHORT_ALIASES.get(subcommand, subcommand)  # type: ignore[arg-type]
@@ -3532,7 +3373,6 @@ def main():
             "cross-session-awareness",
             "localize-memory",
             "memory-localization",
-            "min-claude-version",
         ],
         help="Command to execute",
     )

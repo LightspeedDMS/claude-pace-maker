@@ -27,39 +27,6 @@ _REVIEWER_SDK = "anthropic-sdk"
 _REVIEWER_UNKNOWN = "unknown"
 
 
-def _try_expression_dispatch(
-    hook_model,
-    operator,
-    mode_label,
-    parser_fn,
-    runner_fn,
-    prompt,
-    system_prompt,
-    call_context,
-    max_thinking_tokens,
-):
-    """Parse and dispatch a random/failover expression, or return None on failure."""
-    if operator not in hook_model:
-        return None
-    try:
-        parsed = parser_fn(hook_model)
-    except ValueError as e:
-        log_warning(
-            "registry",
-            f"Invalid {mode_label} expression '{hook_model}': {e}, "
-            "falling back to Anthropic auto",
-        )
-        return None
-    if parsed is None:
-        log_warning(
-            "registry",
-            f"hook_model '{hook_model}' contains '{operator}' but is not a valid "
-            f"{mode_label} expression, falling back to Anthropic auto",
-        )
-        return None
-    return runner_fn(parsed, prompt, system_prompt, call_context, max_thinking_tokens)
-
-
 def _refresh_codex_usage() -> None:
     """Refresh codex usage DB from session files. Logs and continues on errors."""
     try:
@@ -185,44 +152,6 @@ def resolve_and_call_with_reviewer(
                 call_context,
                 max_thinking_tokens,
             )
-
-    # Random mode detection
-    from .random_failover import parse_random, run_random
-
-    result = _try_expression_dispatch(
-        hook_model,
-        "*",
-        "random",
-        parse_random,
-        run_random,
-        prompt,
-        system_prompt,
-        call_context,
-        max_thinking_tokens,
-    )
-    if result is not None:
-        return result
-    if "*" in hook_model:
-        hook_model = "auto"
-
-    # Failover mode detection
-    from .random_failover import parse_failover, run_failover
-
-    result = _try_expression_dispatch(
-        hook_model,
-        "|",
-        "failover",
-        parse_failover,
-        run_failover,
-        prompt,
-        system_prompt,
-        call_context,
-        max_thinking_tokens,
-    )
-    if result is not None:
-        return result
-    if "|" in hook_model:
-        hook_model = "auto"
 
     from .codex_provider import CodexProvider
     from .gemini_provider import GeminiProvider
