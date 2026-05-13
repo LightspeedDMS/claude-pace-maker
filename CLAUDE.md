@@ -140,6 +140,30 @@ These MUST always match. Forgetting `plugin.json` has happened before.
 
 ---
 
+## Claude Code Compatibility Policy
+
+**Backwards compatibility is the contract.** When Claude Code introduces a breaking change to its transcript format, hook payload schema, or hook event lifecycle, pace-maker ADAPTS to handle both the old and new behavior. We do NOT bump the minimum supported Claude Code version to force users to upgrade.
+
+**Why**: Forcing every pace-maker user to upgrade Claude Code on every breaking change would brick their install at the worst possible time. Backwards-compat code in pace-maker is annoying to maintain but invisible to users — that's the right tradeoff.
+
+**Minimum supported Claude Code version**: `2.1.39`
+
+This is the floor pace-maker explicitly tests against and guarantees. The hook code can technically read pre-2.1.39 layouts via fallback paths (see `src/pacemaker/hook.py:38, 81`), but anything below `2.1.39` is best-effort, not supported. Below the minimum, the SessionStart hook hard-blocks with an upgrade message — pace-maker refuses to run rather than silently produce wrong telemetry.
+
+**Adding new compatibility shims** when Claude Code ships a breaking change in a future version:
+1. Add an entry to the "Tracked breaking changes" list below — version, what changed, what we adapted, where the shim lives
+2. Add the shim/fallback code with a comment naming the Claude Code version that introduced the change
+3. Add tests that exercise both old and new behaviors
+4. **Do NOT bump `min_claude_version`** in config — we support both old and new. Bumping the minimum is reserved for cases where the old behavior is truly unrecoverable (no shim possible).
+
+**Tracked breaking changes**:
+
+| Claude Code version | What changed | Pace-maker adaptation | Tests |
+|---------------------|--------------|----------------------|-------|
+| `2.1.39` | Subagent transcripts moved from `<project>/agent-*.jsonl` to `<project>/<session-id>/subagents/agent-*.jsonl` | Hook glob searches both locations (`src/pacemaker/hook.py:38, 81`) | `tests/unit/test_subagent_transcript_path.py` |
+
+---
+
 ## Danger Bash Validation
 
 **Two-phase validation** for dangerous Bash commands in the PreToolUse hook:
@@ -221,6 +245,60 @@ When `false`, ALL cross-session logic is skipped — no registry writes, no bann
 - `tests/conftest.py` sets `PACEMAKER_SESSION_REGISTRY_PATH` to a tmp path via `pytest.ini`-level fixture
 - Tests that need registry isolation use `monkeypatch.setenv("PACEMAKER_SESSION_REGISTRY_PATH", str(tmp_path / "sessions.db"))`
 - E2E tests use synthetic sibling seeding (direct SQLite INSERT + verify nudge responses)
+
+---
+
+## Minimum Claude Code Version Check (Story #66)
+
+When a user's installed Claude Code is below pace-maker's configured minimum version, SessionStart hard-blocks with an actionable stderr message. All subsequent hooks skip their logic silently (fail-open). Version status is persisted to a dedicated SQLite DB.
+
+### Architecture
+
+- **Version probe**: `subprocess.run(["claude", "--version"], timeout=5)` — any failure (FileNotFoundError, TimeoutExpired, non-zero exit, parse error) returns `None` and the check fails-open (no block).
+- **Minimum configured in**: `DEFAULT_CONFIG["min_claude_version"] = "2.1.39"` in `src/pacemaker/constants.py`. Overridable via `pace-maker min-claude-version set X.Y.Z`.
+- **Block flag**: `state["version_block_active"] = True` written to `state.json` when installed version is below minimum.
+- **Downstream hooks**: PreToolUse and Stop check `version_block_active` at entry and return `{"continue": True}` immediately when set.
+
+### Key Files
+
+- `src/pacemaker/claude_code_version.py` — `ClaudeCodeVersion` dataclass: `parse()`, `compare()`, `is_below()`, `probe_installed_version()`
+- `src/pacemaker/version_status_db.py` — SQLite DB following session_registry pattern: `resolve_db_path()`, `record_status()`, `read_status()`
+- `src/pacemaker/version_check.py` — `perform_session_start_version_check(state, config, stderr)` with full fail-open wrapper
+- `src/pacemaker/hook.py` — SessionStart wiring (after first save_state, before CSA block); PreToolUse and Stop early-return guards
+- `src/pacemaker/user_commands.py` — Pattern 27 (`min-claude-version` CLI), `_execute_min_claude_version()`, status line "Claude Code: ..."
+
+### Version Status DB
+
+Follows the session_registry pattern exactly:
+- **Env override**: `PACEMAKER_VERSION_STATUS_PATH` overrides DB path
+- **Test-mode enforcement**: raises `RuntimeError` if `PACEMAKER_TEST_MODE=1` and env var is unset
+- **Single-row upsert**: `INSERT ... ON CONFLICT(id) DO UPDATE SET` — always id=1
+- **Fail-open reads**: `read_status()` catches all exceptions at DEBUG level, returns `None`
+- **Named constant**: `_READ_TIMEOUT_SECONDS = 5.0`
+
+### CLI Commands
+
+```bash
+pace-maker min-claude-version           # Show configured minimum
+pace-maker min-claude-version show      # Same
+pace-maker min-claude-version set X.Y.Z # Set new minimum
+```
+
+### Status Display
+
+`pace-maker status` shows a "Claude Code:" line immediately after the version line:
+- Green: `Claude Code: v2.1.126 ✓ (min v2.1.39)` — installed version meets minimum
+- Red: `Claude Code: v2.1.10 ✗ (need ≥v2.1.39)` — blocked
+- Yellow: `Claude Code: unknown (min v2.1.39, version probe failed)` — fail-open
+
+### Test Isolation
+
+`tests/conftest.py` sets `PACEMAKER_VERSION_STATUS_PATH` to a tmp path in `_guard_production_db` fixture, preventing tests from writing to `~/.claude-pace-maker/version_status.db`.
+
+### Test Files
+
+- `tests/test_claude_code_version.py` — 47 unit tests (parse, compare, is_below, probe, config defaults, DB, CLI)
+- `tests/test_version_check_integration.py` — 10 component tests (session start check, downstream hook early returns, recovery)
 
 ---
 
@@ -366,6 +444,50 @@ This applies to:
 **claude-usage display**: Hook Model shows `comp` in `bright_blue`; governance feed shows `[Comp]` in `bright_blue` for competitive expressions.
 
 **Concurrency**: `ThreadPoolExecutor` with `futures_wait(timeout=REVIEWER_WAIT_TIMEOUT_SEC)` — partial results preserved on timeout; `executor.shutdown(wait=False)` avoids blocking on in-flight threads.
+
+---
+
+## Random Selection & Sequential Failover
+
+**Story #67**: Adds two new hook model expression shapes for multi-model dispatch without synthesis overhead.
+
+**Random syntax**: `hook_model = "m1*m2[*mN]"` — picks one model uniformly at random per invocation.
+
+**Failover syntax**: `hook_model = "m1|m2[|mN]"` — tries models left-to-right, advances on failure.
+
+**Supported models**: sonnet, opus, haiku, gpt-5.4, gpt-5.5, gemini-flash, gemini-pro
+
+**Short aliases**: gem-flash→gemini-flash, gem-pro→gemini-pro, gpt-5→gpt-5.5, codex→gpt-5.5 (accepted at CLI, stored canonically)
+
+**Key file**: `src/pacemaker/inference/random_failover.py`
+
+**Wiring**: `resolve_and_call_with_reviewer()` in `registry.py` detects `*` and `|` in hook_model (after competitive `+` detection) and delegates to `run_random()` / `run_failover()` via shared `_try_expression_dispatch()` helper.
+
+**Operator precedence in registry**: competitive (`+`) → random (`*`) → failover (`|`) → single model. Mixed operators (e.g. `sonnet*opus|haiku`) are rejected at parse time.
+
+**Failure modes — Random**:
+- Chosen model succeeds → return response with provider-specific reviewer label
+- Chosen model fails (ProviderError, TimeoutError, OSError) → SDK fallback (label: "anthropic-sdk")
+
+**Failure modes — Failover**:
+- First model succeeds → return immediately (no further models tried)
+- Model fails → advance to next in list
+- All models fail → SDK fallback (label: "anthropic-sdk")
+
+**CLI**: `pace-maker hook-model sonnet*opus` or `pace-maker hook-model sonnet|opus` — validates via `parse_random()` / `parse_failover()`, canonicalizes aliases, stores canonical form.
+
+**Validation rules**: Minimum 2 models, no duplicates (including after alias resolution), no mixing operators, all models must be in `KNOWN_MODELS`.
+
+**Status display**: `pace-maker status` shows random expressions in ANSI magenta (`\033[35m`), failover expressions in ANSI yellow (`\033[33m`).
+
+**claude-usage display**: Hook Model shows `rand` in `bright_magenta` for random, `fo` in `bright_yellow` for failover; governance feed shows `[Rand]` / `[FO]` tags respectively.
+
+### Key Files
+- `src/pacemaker/inference/random_failover.py` — parsers, dispatchers, SDK fallback
+- `src/pacemaker/inference/model_aliases.py` — `KNOWN_MODELS`, `SHORT_ALIASES` used by parser
+- `src/pacemaker/inference/registry.py` — `_try_expression_dispatch()` helper, routing in `resolve_and_call_with_reviewer()`
+- `src/pacemaker/user_commands.py` — CLI validation, status display colors, help text
+- `tests/test_random_failover.py` — 48 tests (parsers, dispatchers, routing, CLI, status)
 
 ---
 

@@ -1303,10 +1303,7 @@ def run_user_prompt_submit():
         # NOT for pace-maker commands (which are just checking status/settings)
         if not result["intercepted"]:
             now = datetime.now(timezone.utc)
-            state["last_user_interaction_time"] = now  # global kept for backward compat
-            # Per-session map prevents cross-session timestamp corruption: another
-            # session's startup would reset the global to None, making this session's
-            # stop hook think Claude is running unattended.
+            state["last_user_interaction_time"] = now
             state.setdefault("last_user_interaction_time_by_session", {})[
                 session_id or ""
             ] = now.isoformat()
@@ -1670,13 +1667,8 @@ def should_run_tempo(config: dict, state: dict, session_id: str = "") -> bool:
         return True
 
     if tempo_mode == "auto":
-        # Per-session timestamp takes priority over the global key.
-        # The global key is corrupted whenever any other session starts
-        # (SessionStart resets it to None), causing false "unattended" reads.
         last_interaction = None
-        raw = state.get("last_user_interaction_time_by_session", {}).get(
-            session_id or ""
-        )
+        raw = state.get("last_user_interaction_time_by_session", {}).get(session_id)
         if raw:
             try:
                 last_interaction = datetime.fromisoformat(raw)
@@ -1685,16 +1677,16 @@ def should_run_tempo(config: dict, state: dict, session_id: str = "") -> bool:
             except (ValueError, TypeError):
                 last_interaction = None
 
-        # Fall back to global timestamp for sessions that predate this change
         if last_interaction is None:
             last_interaction = state.get("last_user_interaction_time")
 
-        # No interaction recorded for this session — assume unattended
+        # No interaction recorded, assume unattended
         if last_interaction is None:
             return True
 
         # Check if elapsed time exceeds threshold
         threshold_minutes = config.get("auto_tempo_threshold_minutes", 10)
+        # State may store naive timestamps — assume UTC
         if hasattr(last_interaction, "tzinfo") and last_interaction.tzinfo is None:
             last_interaction = last_interaction.replace(tzinfo=timezone.utc)
         elapsed_seconds = (
@@ -2172,8 +2164,7 @@ def run_stop_hook():
                 log_debug("hook", "Max silent tool nudges reached - allowing exit")
                 return {"continue": True}
 
-        # Check tempo: skip LLM if elapsed time since last user message is below
-        # the threshold — user is likely watching the screen (auto mode).
+        # NOW check tempo - if disabled, allow exit after silent-stop check
         if not should_run_tempo(config, state, session_id=session_id or ""):
             log_debug("hook", "Tempo disabled - allow exit")
             return {"continue": True}  # Tempo disabled - allow exit

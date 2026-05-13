@@ -81,6 +81,15 @@ def _guard_production_db(tmp_path, monkeypatch):
         str(fake_pace_maker_dir / "session_registry.db"),
     )
 
+    # Guard the version status DB path (Story #66) — prevents tests from writing to
+    # ~/.claude-pace-maker/version_status.db (the production version status DB).
+    # version_status_db.py raises RuntimeError when PACEMAKER_TEST_MODE=1 and this
+    # is unset, so setting it here satisfies that safety check for all tests.
+    monkeypatch.setenv(
+        "PACEMAKER_VERSION_STATUS_PATH",
+        str(fake_pace_maker_dir / "version_status.db"),
+    )
+
     # Guard PACEMAKER_CENTRAL_BASE — prevents memory_localization tests from
     # touching the real ~/.claude/projects/ directory.
     # core.py raises RuntimeError when PACEMAKER_TEST_MODE=1 and this is unset.

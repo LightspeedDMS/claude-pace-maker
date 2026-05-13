@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.21.1] - 2026-05-13
+
+### Fixed
+- **Intent validation parallel tool_use window bug**: When Claude made parallel tool calls (multiple Write/Edit in the same API response), Claude Code wrote each content block as a separate JSONL transcript entry. `get_last_n_messages_for_validation(n=2)` picked up the last 2 assistant entries — both tool_use with empty text — missing the text entry containing the INTENT declaration. The regex was correct; the text never reached it. Fix: (1) filter ghost entries (thinking blocks with no text and no tools) so they don't inflate the window, (2) expand backward to include the nearest text-containing entry when the n-window has no text. 13 new tests in `tests/test_parallel_tool_intent_validation.py`
+
+## [2.21.0] - 2026-05-13
+
+### Added
+- **Minimum Claude Code version check (story #66)**: SessionStart hard-blocks with an actionable stderr message when the installed Claude Code version is below pace-maker's configured minimum (`2.1.39`). Version probe via `subprocess.run(["claude", "--version"], timeout=5)` with fail-open on any failure (binary not found, timeout, parse error). Version status persisted to `~/.claude-pace-maker/version_status.db` (single-row upsert, WAL mode, 5s read timeout). Downstream hooks (PreToolUse, Stop) check `version_block_active` in state and return `{"continue": True}` immediately when set. Recovery is automatic when version is updated. CLI: `pace-maker min-claude-version [show|set X.Y.Z]`. Status display: green/red/yellow in `pace-maker status`
+  - `src/pacemaker/claude_code_version.py` — `ClaudeCodeVersion` dataclass with `parse()`, `compare()`, `is_below()`, `probe_installed_version()`
+  - `src/pacemaker/version_status_db.py` — SQLite DB with env override `PACEMAKER_VERSION_STATUS_PATH` and test-mode enforcement
+  - `src/pacemaker/version_check.py` — `perform_session_start_version_check()` with full fail-open wrapper
+  - 47 unit tests in `tests/test_claude_code_version.py`, 10 integration tests in `tests/test_version_check_integration.py`
+- **Random selection & sequential failover hook model expressions (story #67)**: Two new multi-model dispatch shapes without synthesis overhead. Random (`m1*m2[*mN]`) picks one model uniformly at random per invocation. Failover (`m1|m2[|mN]`) tries models left-to-right, advances on failure. Both fall back to Anthropic SDK on total failure. Supported models: sonnet, opus, haiku, gpt-5.4, gpt-5.5, gemini-flash, gemini-pro. Short aliases: gem-flash→gemini-flash, gem-pro→gemini-pro, gpt-5→gpt-5.5, codex→gpt-5.5. Operator precedence: competitive (`+`) → random (`*`) → failover (`|`) → single. Mixed operators rejected at parse time. CLI: `pace-maker hook-model sonnet*opus` or `pace-maker hook-model sonnet|opus`. Status display: random in magenta, failover in yellow
+  - `src/pacemaker/inference/random_failover.py` — parsers, dispatchers, SDK fallback
+  - `src/pacemaker/inference/registry.py` — `_try_expression_dispatch()` helper, routing
+  - 48 tests in `tests/test_random_failover.py`
+
+### Fixed
+- **Per-session interaction time restored**: Hook now uses per-session interaction time tracking, preventing cross-session LLM validation interference
+
 ## [2.20.1] - 2026-04-28
 
 ### Fixed
