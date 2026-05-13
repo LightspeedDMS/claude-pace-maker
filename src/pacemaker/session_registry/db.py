@@ -35,6 +35,30 @@ _DDL_CREATE_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_workspace ON sessions (workspace_root)
 """
 
+_DDL_CREATE_AGENTS = """
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id       TEXT PRIMARY KEY,
+    session_id     TEXT NOT NULL,
+    role           TEXT NOT NULL,
+    subagent_type  TEXT,
+    workspace_root TEXT NOT NULL,
+    start_time     REAL NOT NULL,
+    last_seen      REAL NOT NULL,
+    ended_at       REAL
+)
+"""
+
+_DDL_CREATE_AGENT_ACTIONS = """
+CREATE TABLE IF NOT EXISTS agent_actions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id   TEXT NOT NULL,
+    tool_name  TEXT NOT NULL,
+    target     TEXT NOT NULL DEFAULT '-',
+    ts         REAL NOT NULL,
+    FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE
+)
+"""
+
 # ── PRAGMA values ─────────────────────────────────────────────────────────────
 _BUSY_TIMEOUT_MS = 2000
 _SYNCHRONOUS = "NORMAL"
@@ -57,11 +81,20 @@ def _production_db_path() -> str:
 def _apply_schema(conn: sqlite3.Connection) -> None:
     """Execute schema DDL statements on an existing connection.
 
-    Runs CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+    Execution order:
+    1. PRAGMA foreign_keys = ON
+    2. CREATE TABLE IF NOT EXISTS sessions
+    3. CREATE INDEX IF NOT EXISTS idx_workspace
+    4. CREATE TABLE IF NOT EXISTS agents
+    5. CREATE TABLE IF NOT EXISTS agent_actions (FK to agents, cascade)
+
     Does NOT commit — transaction ownership belongs to the caller.
     """
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.execute(_DDL_CREATE_SESSIONS)
     conn.execute(_DDL_CREATE_INDEX)
+    conn.execute(_DDL_CREATE_AGENTS)
+    conn.execute(_DDL_CREATE_AGENT_ACTIONS)
 
 
 def resolve_db_path() -> str:

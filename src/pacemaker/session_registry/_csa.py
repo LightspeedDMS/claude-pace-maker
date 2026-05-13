@@ -10,6 +10,7 @@ Internal helpers:
 - _get_cs(state) -> Optional[dict]
 """
 
+import os
 from typing import Any, Dict, List, Optional
 
 from ..logger import log_debug, log_warning
@@ -92,6 +93,9 @@ def on_session_start(
             siblings: List[Dict[str, Any]] = []
             try:
                 registry.register_session(session_id, workspace_root, pid, db_path)
+                registry.register_agent(
+                    session_id, session_id, "root", workspace_root, db_path
+                )
                 registry.heartbeat_and_purge(session_id, workspace_root, pid, db_path)
                 siblings = registry.list_siblings(workspace_root, session_id, db_path)
             except Exception as e:
@@ -141,6 +145,7 @@ def on_subagent_start(
     db_path: str,
     state: Dict[str, Any],
     config: Dict[str, Any],
+    subagent_type: Optional[str] = None,
 ) -> str:
     """Handle SubagentStart hook for cross-session awareness.
 
@@ -160,6 +165,24 @@ def on_subagent_start(
         return ""
     if not _is_enabled(config):
         return ""
+
+    try:
+        from . import registry as _areg
+        from .workspace import resolve_workspace_root as _aws
+
+        _ws = ""
+        _cs_pre = _get_cs(state, session_id)
+        if _cs_pre:
+            _ws = _cs_pre.get(_KEY_WORKSPACE, "")
+        if not _ws:
+            _ws = _aws(os.getcwd())
+        _areg.register_agent(
+            agent_id, session_id, "subagent", _ws, db_path, subagent_type=subagent_type
+        )
+    except Exception as e:
+        log_warning(
+            "session_registry", f"CSA: register_agent failed on subagent_start: {e}"
+        )
 
     cs = _get_cs(state, session_id)
     if cs is None:
@@ -218,6 +241,24 @@ def on_heartbeat(
         return None
 
     workspace_root = cs.get(_KEY_WORKSPACE, "")
+    try:
+        from . import registry as _hreg
+        import sqlite3 as _sq
+
+        _hconn = _sq.connect(db_path)
+        try:
+            _exists = _hconn.execute(
+                "SELECT 1 FROM agents WHERE agent_id = ? LIMIT 1", (session_id,)
+            ).fetchone()
+        finally:
+            _hconn.close()
+        if _exists is None:
+            _hreg.register_agent(
+                session_id, session_id, "root", workspace_root, db_path
+            )
+    except Exception as e:
+        log_warning("session_registry", f"CSA: catch-up root register failed: {e}")
+
     try:
         from . import registry
 
@@ -340,6 +381,7 @@ def on_session_end(
     try:
         from . import registry
 
+        registry.mark_agent_ended(session_id, db_path)
         registry.unregister_session(session_id, db_path)
     except Exception as e:
         log_warning("session_registry", f"CSA: on_session_end failed: {e}")
@@ -348,4 +390,37 @@ def on_session_end(
     ns = state.get(_NS)
     if isinstance(ns, dict):
         ns.pop(session_id, None)
+    return None
+
+
+def on_subagent_stop(
+    session_id: str,
+    agent_id: str,
+    db_path: str,
+    state: Dict[str, Any],
+    config: Dict[str, Any],
+) -> None:
+    """Handle SubagentStop hook: mark the subagent as ended in the agents table.
+
+    Missing or invalid args: return None without crash.
+    Feature disabled: return None immediately.
+    """
+    if not isinstance(state, dict) or not isinstance(config, dict):
+        return None
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    if not isinstance(agent_id, str) or not agent_id:
+        return None
+    if not isinstance(db_path, str) or not db_path:
+        return None
+    if not _is_enabled(config):
+        return None
+    try:
+        from . import registry
+
+        registry.mark_agent_ended(agent_id, db_path)
+    except Exception as e:
+        log_warning(
+            "session_registry", f"CSA: on_subagent_stop mark_agent_ended failed: {e}"
+        )
     return None

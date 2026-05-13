@@ -623,6 +623,7 @@ def run_subagent_start_hook():
                 db_path=resolve_db_path(),
                 state=csa_state,
                 config=config,
+                subagent_type=hook_data.get("agent_type"),
             )
             if csa_banner:
                 _additional_context_parts.append(csa_banner)
@@ -672,13 +673,22 @@ def run_subagent_stop_hook():
     # Called unconditionally inside try/except; CSA validates inputs and fails-open.
     try:
         from .session_registry._csa import on_heartbeat as csa_on_heartbeat
+        from .session_registry._csa import on_subagent_stop as csa_on_subagent_stop
         from .session_registry.db import resolve_db_path
 
         _csa_substop_state = load_state(DEFAULT_STATE_PATH)
+        _csa_substop_db_path = resolve_db_path()
         csa_on_heartbeat(
             session_id=(hook_data or {}).get("session_id", ""),
             pid=os.getpid(),
-            db_path=resolve_db_path(),
+            db_path=_csa_substop_db_path,
+            state=_csa_substop_state,
+            config=config,
+        )
+        csa_on_subagent_stop(
+            session_id=(hook_data or {}).get("session_id", ""),
+            agent_id=(hook_data or {}).get("agent_id", ""),
+            db_path=_csa_substop_db_path,
             state=_csa_substop_state,
             config=config,
         )
