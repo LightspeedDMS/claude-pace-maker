@@ -263,6 +263,8 @@ def on_heartbeat(
         from . import registry
 
         registry.heartbeat_and_purge(session_id, workspace_root, pid, db_path)
+        registry.update_agent_heartbeat(session_id, db_path)
+        registry.purge_agents(db_path)
     except Exception as e:
         log_warning("session_registry", f"CSA: on_heartbeat failed: {e}")
     return None
