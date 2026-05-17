@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.24.0] - 2026-05-16
+
+### Fixed
+- **pipx install: missing hook scripts** — `pre-tool-use.sh`, `subagent-start.sh`, and `subagent-stop.sh` were absent from `setup.py` `data_files`, so pipx installs shipped only 4 of 7 hooks. All 7 are now listed explicitly
+- **pipx install: Python modules not found** — `install.sh` looked for pacemaker source only at `$SCRIPT_DIR/src/pacemaker` (dev) or `$SCRIPT_DIR/pacemaker` (stale path). When running from the pipx share dir the package lives in the venv's site-packages. Fix: derive venv root as `dirname(dirname($SCRIPT_DIR))` and use `find` on `lib/` — works identically on Linux and macOS without relying on the system Python's import path
+- **pipx install: `pace-maker` CLI not installed** — no `pace-maker` entry point existed; `install_cli` fell through with a warning. Fix: symlink `<venv>/bin/pace-maker` → `~/.local/bin/pace-maker` in the pipx case; fallback generates a wrapper script pointing at the venv Python (shebang rewritten via portable `python3 -c` instead of `sed -i`, which behaves differently on macOS vs Linux)
+- **Missing `pyyaml` dependency** — `pyyaml` is imported by `danger_bash_rules.py`, `core_paths.py`, `clean_code_rules.py`, and `excluded_paths.py` but was absent from both `pyproject.toml` and `setup.py`, causing `No module named 'yaml'` on fresh installs. Added `pyyaml>=6.0` to both files and added a pyyaml presence check + install step to `install.sh`
+- **`SyntaxWarning` on Python 3.14** — help text in `user_commands.py` contained `\s` in a regular string literal, triggering `SyntaxWarning: "\s" is an invalid escape sequence` on Python 3.14+. Fixed by escaping to `\\s`
+
+### Added
+- **`pace-maker` entry point in package metadata** — added `pace-maker = "pacemaker.user_commands:main"` to both `pyproject.toml` `[project.scripts]` and `setup.py` `entry_points`, so `pipx install` exposes `pace-maker` directly without a separate CLI copy step
+
 ## [2.23.0] - 2026-05-13
 
 ### Removed

@@ -216,7 +216,7 @@ DANGER BASH RULES:
   Config toggle: danger_bash_enabled in ~/.claude-pace-maker/config.json
 
   Note: Patterns with backslashes must be single-quoted in the shell:
-    pace-maker danger-bash add --id MY-001 --pattern 'npm\s+run\s+nuke' \
+    pace-maker danger-bash add --id MY-001 --pattern 'npm\\s+run\\s+nuke' \
       --category work_destruction --description 'Block npm run nuke'
 
 CORE PATHS:

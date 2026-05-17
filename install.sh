@@ -426,6 +426,15 @@ install_python_deps() {
     echo -e "${YELLOW}⚠ requests not found${NC}"
   fi
 
+  echo "Checking Python package: pyyaml..."
+  local yaml_installed=$("$python_cmd" -c "import yaml" 2>/dev/null && echo "1" || echo "0")
+  if [ "$yaml_installed" = "1" ]; then
+    local yaml_version=$("$python_cmd" -c "import yaml; print(yaml.__version__)" 2>/dev/null || echo "unknown")
+    echo -e "${GREEN}✓ pyyaml already installed (version $yaml_version)${NC}"
+  else
+    echo -e "${YELLOW}⚠ pyyaml not found${NC}"
+  fi
+
   echo "Checking Python package: claude-agent-sdk..."
   local sdk_installed=$("$python_cmd" -c "import claude_agent_sdk" 2>/dev/null && echo "1" || echo "0")
   if [ "$sdk_installed" = "1" ]; then
@@ -440,6 +449,11 @@ install_python_deps() {
 
   if [ "$requests_installed" = "0" ]; then
     packages+=("requests")
+    needs_install=1
+  fi
+
+  if [ "$yaml_installed" = "0" ]; then
+    packages+=("pyyaml")
     needs_install=1
   fi
 
@@ -529,14 +543,22 @@ install_hooks() {
 install_hook_modules() {
   echo "Installing Python modules for hooks..."
 
-  # Detect Python modules source directory (dev: src/pacemaker/, pipx: pacemaker/)
+  # Detect Python modules source directory
+  # dev: src/pacemaker/, legacy pipx share: pacemaker/, pipx venv: site-packages
   if [ -d "$SCRIPT_DIR/src/pacemaker" ]; then
     PACEMAKER_SOURCE_DIR="$SCRIPT_DIR/src/pacemaker"
   elif [ -d "$SCRIPT_DIR/pacemaker" ]; then
     PACEMAKER_SOURCE_DIR="$SCRIPT_DIR/pacemaker"
   else
-    echo -e "${RED}Error: Python modules not found${NC}"
-    exit 1
+    # pipx case: pacemaker is in the venv's site-packages, 2 dirs up from the share dir
+    # SCRIPT_DIR = <venv>/share/claude-pace-maker/ → venv root = dirname(dirname(SCRIPT_DIR))
+    VENV_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+    PACEMAKER_SOURCE_DIR=$(find "$VENV_ROOT/lib" -maxdepth 3 -type d -name "pacemaker" 2>/dev/null | head -1)
+    if [ -z "$PACEMAKER_SOURCE_DIR" ] || [ ! -d "$PACEMAKER_SOURCE_DIR" ]; then
+      echo -e "${RED}Error: Python modules not found${NC}"
+      exit 1
+    fi
+    echo "Using pipx site-packages: $PACEMAKER_SOURCE_DIR"
   fi
 
   # Create pacemaker module directory in hooks
@@ -615,22 +637,57 @@ install_cli() {
   # Ensure ~/.local/bin exists
   mkdir -p "$HOME/.local/bin"
 
-  # Detect CLI source (dev: scripts/pace-maker or bin/pace-maker, pipx: pace-maker)
+  # Detect CLI source (dev: scripts/pace-maker or bin/pace-maker, pipx: entry point)
   if [ -f "$SCRIPT_DIR/bin/pace-maker" ]; then
     CLI_SOURCE="$SCRIPT_DIR/bin/pace-maker"
+    echo "Installing pace-maker command to ~/.local/bin/pace-maker..."
+    cp "$CLI_SOURCE" "$HOME/.local/bin/pace-maker"
+    chmod +x "$HOME/.local/bin/pace-maker"
   elif [ -f "$SCRIPT_DIR/scripts/pace-maker" ]; then
     CLI_SOURCE="$SCRIPT_DIR/scripts/pace-maker"
+    echo "Installing pace-maker command to ~/.local/bin/pace-maker..."
+    cp "$CLI_SOURCE" "$HOME/.local/bin/pace-maker"
+    chmod +x "$HOME/.local/bin/pace-maker"
   elif [ -f "$SCRIPT_DIR/pace-maker" ]; then
     CLI_SOURCE="$SCRIPT_DIR/pace-maker"
+    echo "Installing pace-maker command to ~/.local/bin/pace-maker..."
+    cp "$CLI_SOURCE" "$HOME/.local/bin/pace-maker"
+    chmod +x "$HOME/.local/bin/pace-maker"
   else
-    echo -e "${YELLOW}⚠ Warning: CLI script not found, skipping${NC}"
-    return 0
+    # pipx case: pace-maker entry point lives in the venv bin, 2 dirs up from the share dir
+    # SCRIPT_DIR = <venv>/share/claude-pace-maker/ → venv root = dirname(dirname(SCRIPT_DIR))
+    VENV_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+    PIPX_PACE_MAKER="$VENV_ROOT/bin/pace-maker"
+    if [ -f "$PIPX_PACE_MAKER" ]; then
+      echo "Creating pace-maker symlink to pipx entry point..."
+      ln -sf "$PIPX_PACE_MAKER" "$HOME/.local/bin/pace-maker"
+    else
+      # Fallback: generate a wrapper that invokes pacemaker.user_commands via the venv python
+      echo "Generating pace-maker wrapper script..."
+      VENV_PYTHON=$(find "$VENV_ROOT/bin" -maxdepth 1 -name "python3*" -type f 2>/dev/null | head -1)
+      VENV_PYTHON="${VENV_PYTHON:-python3}"
+      cat > "$HOME/.local/bin/pace-maker" <<'EOF'
+#!/usr/bin/env python3
+import sys
+try:
+    from pacemaker.user_commands import main
+    main()
+except ImportError as e:
+    print(f"Error: Could not import pace-maker modules: {e}", file=sys.stderr)
+    sys.exit(1)
+EOF
+      # Replace the shebang with the venv python so it runs in the right environment
+      # Use python3 for the replacement — sed -i differs between macOS and Linux
+      python3 -c "
+import sys
+path = sys.argv[1]; shebang = '#!' + sys.argv[2]
+lines = open(path).readlines()
+lines[0] = shebang + '\n'
+open(path, 'w').writelines(lines)
+" "$HOME/.local/bin/pace-maker" "$VENV_PYTHON"
+      chmod +x "$HOME/.local/bin/pace-maker"
+    fi
   fi
-
-  # Copy CLI to ~/.local/bin
-  echo "Installing pace-maker command to ~/.local/bin/pace-maker..."
-  cp "$CLI_SOURCE" "$HOME/.local/bin/pace-maker"
-  chmod +x "$HOME/.local/bin/pace-maker"
 
   # Copy Python modules to support CLI (dev mode only - pipx handles this)
   if [ -d "$SCRIPT_DIR/src/pacemaker" ]; then
