@@ -8,8 +8,31 @@ Zero mocking - tests real CLI and file I/O.
 
 import subprocess
 import os
+import shutil
+
+import pytest
+
+_PACE_MAKER_CLI = "pace-maker"
+_PACE_MAKER_VERSION_TIMEOUT_SECONDS = 5
+
+_PACE_MAKER_AVAILABLE = shutil.which(_PACE_MAKER_CLI) is not None
+if _PACE_MAKER_AVAILABLE:
+    try:
+        _r = subprocess.run(
+            [_PACE_MAKER_CLI, "--version"],
+            capture_output=True,
+            timeout=_PACE_MAKER_VERSION_TIMEOUT_SECONDS,
+        )
+        _PACE_MAKER_AVAILABLE = _r.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        # Any CLI startup or import failure means the CLI is not usable for tests
+        _PACE_MAKER_AVAILABLE = False
 
 
+@pytest.mark.skipif(
+    not _PACE_MAKER_AVAILABLE,
+    reason="pace-maker CLI not installed or cannot import modules",
+)
 def test_cli_clean_code_list_command():
     """
     Test that 'pace-maker clean-code list' executes successfully and displays rules.
@@ -96,6 +119,10 @@ def test_cli_clean_code_add_command_with_custom_config():
             os.remove(DEFAULT_CLEAN_CODE_RULES_PATH)
 
 
+@pytest.mark.skipif(
+    not _PACE_MAKER_AVAILABLE,
+    reason="pace-maker CLI not installed or cannot import modules",
+)
 def test_cli_clean_code_add_missing_arguments():
     """
     Test that 'pace-maker clean-code add' with missing arguments shows error.
@@ -288,6 +315,10 @@ def test_cli_clean_code_list_shows_error_on_invalid_yaml():
             os.remove(DEFAULT_CLEAN_CODE_RULES_PATH)
 
 
+@pytest.mark.skipif(
+    not _PACE_MAKER_AVAILABLE,
+    reason="pace-maker CLI not installed or cannot import modules",
+)
 def test_cli_help_includes_clean_code_commands():
     """
     Test that 'pace-maker help' includes clean-code commands in output.

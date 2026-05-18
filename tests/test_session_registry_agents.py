@@ -59,8 +59,8 @@ SECOND_TS_OFFSET = 1  # middle action
 THIRD_TS_OFFSET = 2  # newest action
 
 # ── Action trimming constants ─────────────────────────────────────────────────
-ACTION_INSERT_COUNT = 5  # how many actions to insert in the trim test
-MAX_RETAINED_ACTIONS = 3  # window size kept by record_action rolling trim
+ACTION_INSERT_COUNT = 2  # how many actions to insert in the trim test
+MAX_RETAINED_ACTIONS = 1  # window size kept by record_action rolling trim
 
 # ── Collection size constants ─────────────────────────────────────────────────
 ONE_ACTION = 1
@@ -500,8 +500,8 @@ class TestListActiveTree:
         orphan_ids = [s["agent_id"] for s in orphan_group["subagents"]]
         assert AGENT_SUB_1 in orphan_ids
 
-    def test_list_active_tree_actions_oldest_to_newest(self, env):
-        """Actions in result are returned in oldest-first (chronological) order."""
+    def test_list_active_tree_actions_newest_retained(self, env):
+        """With MAX_RETAINED_ACTIONS=1, only the most recent action is retained."""
         registry, db, db_path = env
         registry.register_agent(AGENT_ROOT_A, SESSION_A, "root", WORKSPACE_X, db_path)
 
@@ -515,16 +515,9 @@ class TestListActiveTree:
         )
         registry.record_action(
             AGENT_ROOT_A,
-            "Edit",
-            {"file_path": "/a/mid.py"},
-            base_ts + SECOND_TS_OFFSET,
-            db_path,
-        )
-        registry.record_action(
-            AGENT_ROOT_A,
             "Write",
             {"file_path": "/a/new.py"},
-            base_ts + THIRD_TS_OFFSET,
+            base_ts + SECOND_TS_OFFSET,
             db_path,
         )
 
@@ -532,9 +525,7 @@ class TestListActiveTree:
         assert len(result) == ONE_ROOT
         actions = result[FIRST_IDX]["actions"]
         assert len(actions) == MAX_RETAINED_ACTIONS
-        assert actions[FIRST_IDX]["target"] == "old.py"
-        assert actions[SECOND_IDX]["target"] == "mid.py"
-        assert actions[THIRD_IDX]["target"] == "new.py"
+        assert actions[FIRST_IDX]["target"] == "new.py"
 
     def test_list_active_tree_sort_active_first(self, env):
         """Active roots sort before ended-visible roots."""

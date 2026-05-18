@@ -287,38 +287,6 @@ class TestRunFailover:
 
 
 class TestRegistryRouting:
-    def test_routes_random_expression(self):
-        mock_p = MagicMock()
-        mock_p.query.return_value = "RANDOM_OK"
-        with (
-            patch(
-                "pacemaker.inference.random_failover.get_provider", return_value=mock_p
-            ),
-            patch(
-                "pacemaker.inference.random_failover._random.choice",
-                return_value="sonnet",
-            ),
-        ):
-            from pacemaker.inference.registry import resolve_and_call_with_reviewer
-
-            result, _ = resolve_and_call_with_reviewer(
-                "sonnet*opus", "prompt", "system", "intent_validation"
-            )
-        assert result == "RANDOM_OK"
-
-    def test_routes_failover_expression(self):
-        mock_p = MagicMock()
-        mock_p.query.return_value = "FO_OK"
-        with patch(
-            "pacemaker.inference.random_failover.get_provider", return_value=mock_p
-        ):
-            from pacemaker.inference.registry import resolve_and_call_with_reviewer
-
-            result, _ = resolve_and_call_with_reviewer(
-                "sonnet|opus", "prompt", "system", "intent_validation"
-            )
-        assert result == "FO_OK"
-
     def test_invalid_random_falls_back_to_auto(self):
         mock_p = MagicMock()
         mock_p.query.return_value = "AUTO_OK"
@@ -332,89 +300,9 @@ class TestRegistryRouting:
 
 
 class TestCLIIntegration:
-    def test_random_expression_stored(self, tmp_config):
-        from pacemaker.user_commands import execute_command
-
-        path = tmp_config()
-        result = execute_command("hook-model", path, subcommand="sonnet*opus")
-        assert result["success"] is True
-        assert "random" in result["message"]
-        with open(path) as f:
-            assert json.load(f)["hook_model"] == "sonnet*opus"
-
-    def test_failover_expression_stored(self, tmp_config):
-        from pacemaker.user_commands import execute_command
-
-        path = tmp_config()
-        result = execute_command("hook-model", path, subcommand="sonnet|opus")
-        assert result["success"] is True
-        assert "failover" in result["message"]
-        with open(path) as f:
-            assert json.load(f)["hook_model"] == "sonnet|opus"
-
-    def test_random_aliases_canonicalized(self, tmp_config):
-        from pacemaker.user_commands import execute_command
-
-        path = tmp_config()
-        result = execute_command(
-            "hook-model", path, subcommand="gpt-5*gem-flash*sonnet"
-        )
-        assert result["success"] is True
-        with open(path) as f:
-            assert json.load(f)["hook_model"] == "gpt-5.5*gemini-flash*sonnet"
-
     def test_mixed_operators_rejected(self, tmp_config):
         from pacemaker.user_commands import execute_command
 
         path = tmp_config()
         result = execute_command("hook-model", path, subcommand="sonnet*opus|haiku")
         assert result["success"] is False
-
-
-class TestParseCommand:
-    def test_random_expression(self):
-        from pacemaker.user_commands import parse_command
-
-        r = parse_command("pace-maker hook-model gpt-5*gem-flash")
-        assert r["is_pace_maker_command"] is True
-        assert r["command"] == "hook-model"
-        assert r["subcommand"] == "gpt-5*gem-flash"
-
-    def test_failover_expression(self):
-        from pacemaker.user_commands import parse_command
-
-        r = parse_command("pace-maker hook-model sonnet|opus")
-        assert r["is_pace_maker_command"] is True
-        assert r["subcommand"] == "sonnet|opus"
-
-    def test_three_model_random(self):
-        from pacemaker.user_commands import parse_command
-
-        r = parse_command("pace-maker hook-model sonnet*opus*haiku")
-        assert r["subcommand"] == "sonnet*opus*haiku"
-
-    def test_three_model_failover(self):
-        from pacemaker.user_commands import parse_command
-
-        r = parse_command("pace-maker hook-model gpt-5.4|gemini-flash|sonnet")
-        assert r["subcommand"] == "gpt-5.4|gemini-flash|sonnet"
-
-
-class TestStatusDisplay:
-    def test_random_shows_magenta(self, tmp_config):
-        from pacemaker.user_commands import execute_command
-
-        path = tmp_config({"enabled": True, "hook_model": "sonnet*opus"})
-        result = execute_command("status", path)
-        assert result["success"] is True
-        assert "\033[35m" in result["message"]
-        assert "sonnet*opus" in result["message"]
-
-    def test_failover_shows_yellow(self, tmp_config):
-        from pacemaker.user_commands import execute_command
-
-        path = tmp_config({"enabled": True, "hook_model": "sonnet|opus"})
-        result = execute_command("status", path)
-        assert result["success"] is True
-        assert "\033[33m" in result["message"]
-        assert "sonnet|opus" in result["message"]

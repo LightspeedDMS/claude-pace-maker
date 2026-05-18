@@ -387,6 +387,7 @@ def record_action(
             target = "-"
         with _open_conn(db_path) as conn:
             conn.execute(_SQL_INSERT_ACTION, (agent_id, tool_name, target, ts))
+            conn.execute(_SQL_HEARTBEAT_AGENT, (ts, agent_id))
             conn.execute(_SQL_TRIM_ACTIONS, (agent_id, agent_id, _MAX_AGENT_ACTIONS))
             conn.commit()
     except Exception as e:

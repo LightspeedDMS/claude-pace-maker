@@ -537,6 +537,30 @@ def run_subagent_start_hook():
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
 
+    # Early CSA agent registration — must run BEFORE Langfuse (which can timeout)
+    try:
+        if hook_data and config.get("cross_session_awareness_enabled", True):
+            from .session_registry.registry import register_agent as _early_register
+            from .session_registry.db import resolve_db_path as _early_resolve_db
+
+            _session_id = hook_data.get("session_id", "")
+            _agent_id = hook_data.get("agent_id", "")
+            _csa_state = load_state(DEFAULT_STATE_PATH)
+            _csa_ns = _csa_state.get("cross_session_awareness", {})
+            _cs = _csa_ns.get(_session_id, {})
+            _ws = _cs.get("workspace_root", "")
+            if _session_id and _agent_id and _ws:
+                _early_register(
+                    agent_id=_agent_id,
+                    session_id=_session_id,
+                    role="subagent",
+                    workspace_root=_ws,
+                    db_path=_early_resolve_db(),
+                    subagent_type=hook_data.get("agent_type"),
+                )
+    except Exception as e:
+        log_warning("hook", f"Early CSA agent registration failed: {e}")
+
     # AC3: Create Langfuse trace for subagent if hook data available
     if hook_data:
         log_debug("hook", f"SubagentStart hook_data keys: {list(hook_data.keys())}")

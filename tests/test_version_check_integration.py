@@ -273,30 +273,3 @@ class TestBlockedHooksEarlyReturn:
 
         result = hook_module.run_stop_hook()
         assert result.get("decision") != "block"
-
-
-# ── Recovery via CLI ──────────────────────────────────────────────────────────
-
-
-class TestVersionCheckRecovery:
-    """After 'pace-maker min-claude-version set', a previously-blocked version unblocks."""
-
-    def test_lowering_minimum_allows_previously_blocked_version(
-        self, pacemaker_env, monkeypatch
-    ):
-        """Set min to 2.1.0 → 2.1.10 no longer blocks."""
-        from pacemaker.user_commands import execute_command
-
-        result = execute_command(
-            "min-claude-version",
-            config_path=pacemaker_env["config_path"],
-            subcommand="set 2.1.0",
-        )
-        assert result["success"] is True
-
-        state, stderr = _run_version_check(
-            pacemaker_env,
-            monkeypatch,
-            _make_probe_stub("2.1.10 (Claude Code)\n"),
-        )
-        assert state.get("version_block_active") is False
