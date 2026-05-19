@@ -786,19 +786,17 @@ class UsageModel:
                 state.get("resets_at_7d"), window_hours=168.0, now=now_naive
             )
 
-            # Check for previously persisted rollover first, then fresh rollover.
+            # Check fresh rollover FIRST, then fall back to a previously persisted
+            # offset. Fresh rollover (five_rolled=True) must take priority because a
+            # second (or later) rollover can occur while stored_rollover_5h is already
+            # set from the previous rollover — if Branch 1 (stored offset) wins in
+            # that case, the stale offset causes persistently wrong utilization.
             # After get_reset_windows() persists the rollover (updates resets_at_5h
             # to a future time), _project_window() returns five_rolled=False because
-            # the stored timestamp is now in the future. So we use stored_rollover_*
-            # as the primary indicator that a rollover was previously recorded.
+            # the stored timestamp is now in the future, so Branch 1 is still correct
+            # for the subsequent-call case.
             stored_rollover_5h = state.get("rollover_cost_5h")
-            if stored_rollover_5h is not None:
-                # Rollover was previously persisted by get_reset_windows() or us
-                cost_in_window_5h = max(
-                    0.0, accumulated_cost - float(stored_rollover_5h)
-                )
-                synthetic_5h = min(cost_in_window_5h * coeff_5h * 100.0, 100.0)
-            elif five_rolled and five_resets is not None:
+            if five_rolled and five_resets is not None:
                 # Fresh rollover detected now (before get_reset_windows persists it).
                 # Compute the last-expired boundary: five_resets is the NEXT future
                 # boundary, so the last-expired boundary = five_resets - window_size.
@@ -836,19 +834,21 @@ class UsageModel:
 
                 cost_in_window_5h = post_rollover_cost_5h
                 synthetic_5h = min(cost_in_window_5h * coeff_5h * 100.0, 100.0)
+            elif stored_rollover_5h is not None:
+                # Rollover was previously persisted by get_reset_windows() or us
+                # and the stored resets_at_5h is still in the future (five_rolled=False),
+                # so the stored offset correctly reflects the last rollover boundary.
+                cost_in_window_5h = max(
+                    0.0, accumulated_cost - float(stored_rollover_5h)
+                )
+                synthetic_5h = min(cost_in_window_5h * coeff_5h * 100.0, 100.0)
             else:
                 synthetic_5h = min(
                     baseline_5h + accumulated_cost * coeff_5h * 100.0, 100.0
                 )
 
             stored_rollover_7d = state.get("rollover_cost_7d")
-            if stored_rollover_7d is not None:
-                # Rollover was previously persisted by get_reset_windows() or us
-                cost_in_window_7d = max(
-                    0.0, accumulated_cost - float(stored_rollover_7d)
-                )
-                synthetic_7d = min(cost_in_window_7d * coeff_7d * 100.0, 100.0)
-            elif seven_rolled and seven_resets is not None:
+            if seven_rolled and seven_resets is not None:
                 # Fresh rollover detected now (before get_reset_windows persists it).
                 # Compute the last-expired 7d boundary: seven_resets - window_size.
                 last_expired_7d = seven_resets - timedelta(hours=168.0)
@@ -880,6 +880,14 @@ class UsageModel:
                 )
 
                 cost_in_window_7d = post_rollover_cost_7d
+                synthetic_7d = min(cost_in_window_7d * coeff_7d * 100.0, 100.0)
+            elif stored_rollover_7d is not None:
+                # Rollover was previously persisted by get_reset_windows() or us
+                # and the stored resets_at_7d is still in the future (seven_rolled=False),
+                # so the stored offset correctly reflects the last rollover boundary.
+                cost_in_window_7d = max(
+                    0.0, accumulated_cost - float(stored_rollover_7d)
+                )
                 synthetic_7d = min(cost_in_window_7d * coeff_7d * 100.0, 100.0)
             else:
                 synthetic_7d = min(

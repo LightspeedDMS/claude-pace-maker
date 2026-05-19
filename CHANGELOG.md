@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.26.0] - 2026-05-19
+
+### Fixed
+- **Fallback mode: subsequent 5h/7d window rollovers not detected** — In `_get_synthetic_snapshot()`, Branch 1 (`stored_rollover_5h is not None`) had higher priority than the fresh-rollover check (`five_rolled`). After the first rollover was persisted and `resets_at_5h` advanced, any further rollover of that same boundary went undetected: Branch 1 reused the stale first-rollover offset against the full accumulated cost, producing persistently inflated utilization (e.g. ~68% when the true post-window usage was near zero). Fix: swapped branch priority so `five_rolled=True` always triggers a fresh rollover computation first; Branch 1 (stored offset) is only used when no new rollover has occurred (`five_rolled=False`). Same fix applied to the 7-day window.
+  - `src/pacemaker/usage_model.py` — priority swap in `_get_synthetic_snapshot()` for both 5h and 7d windows
+  - 2 new tests in `tests/test_synthetic_snapshot_rollover.py` (`TestSubsequentRolloverWhenStoredRolloverExists`)
+
 ## [2.25.0] - 2026-05-18
 
 ### Fixed

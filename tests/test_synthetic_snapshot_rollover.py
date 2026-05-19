@@ -689,3 +689,147 @@ class TestNoRegressionNormalFallback:
             f"Expected ~{expected_5h:.2f}% (Branch 1: stored rollover), "
             f"got {snapshot.five_hour_util:.2f}%"
         )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 6: Subsequent rollover detected when stored_rollover_5h already set
+# ---------------------------------------------------------------------------
+
+
+class TestSubsequentRolloverWhenStoredRolloverExists:
+    """
+    Scenario 6: A second (or later) rollover must override the stale stored
+    rollover offset from the first rollover.
+
+    Bug: Branch 1 (stored_rollover_5h is not None) has higher priority than
+    the fresh-rollover branch (five_rolled=True). When the stored resets_at_5h
+    (from rollover 1) becomes past again (rollover 2+), Branch 1 wins and uses
+    the stale offset, causing persistently high utilization.
+
+    Fix: Check five_rolled FIRST; only fall back to stored_rollover_5h when
+    five_rolled=False (i.e. the stored future boundary hasn't expired yet).
+    """
+
+    def test_second_rollover_resets_utilization_when_stored_rollover_exists(
+        self, tmp_path
+    ):
+        """
+        When a second rollover occurs and rollover_cost_5h is already set from
+        the first rollover, _get_synthetic_snapshot() must detect the fresh
+        rollover and compute utilization from post-second-boundary cost only.
+
+        Setup:
+          - $50 pre-second-boundary cost (accumulated since fallback entry)
+          - $3 post-second-boundary cost
+          - rollover_cost_5h = 20.0 (stale value from first rollover)
+          - resets_at_5h = second_boundary (in the past — second window expired)
+
+        Bug produces: accumulated(53) - stored_rollover(20) = 33 → 33*0.0075*100=24.75%
+        Fix produces: post_second_boundary_cost(3) → 3*0.0075*100=2.25%
+        """
+        model, db_path = _make_model(tmp_path)
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        # The second boundary expired 30 minutes ago
+        second_boundary = now - timedelta(minutes=30)
+        future_7d = now + timedelta(days=6)
+
+        _enter_fallback_with_past_resets(
+            model,
+            resets_at_5h_past=second_boundary,
+            resets_at_7d_future=future_7d,
+        )
+        _override_entered_at(db_path)
+
+        # Simulate first rollover already persisted: stale rollover_cost_5h=20.0
+        # and last_rollover_resets_5h = second_boundary (so _persist_rollover
+        # will write a NEW entry since projected resets != last_rollover_resets_5h)
+        def set_stale_rollover(conn):
+            conn.execute(
+                "UPDATE fallback_state_v2 SET rollover_cost_5h = 20.0, "
+                "last_rollover_resets_5h = ? WHERE id = 1",
+                (second_boundary.strftime("%Y-%m-%dT%H:%M:%S"),),
+            )
+
+        execute_with_retry(db_path, set_stale_rollover)
+
+        # Insert $50 before the second boundary
+        pre_second_ts = _utc_naive_to_epoch(second_boundary - timedelta(minutes=45))
+        _insert_cost_at_timestamp(db_path, 50.0, pre_second_ts)
+
+        # Insert $3 after the second boundary
+        post_second_ts = _utc_naive_to_epoch(second_boundary + timedelta(minutes=10))
+        _insert_cost_at_timestamp(db_path, 3.0, post_second_ts)
+
+        snapshot = model._get_synthetic_snapshot()
+
+        assert snapshot is not None, "Expected a synthetic snapshot"
+
+        # Fix: only post-second-boundary cost ($3) counts
+        # 3.0 * 0.0075 * 100 = 2.25%
+        expected_5h = 3.0 * 0.0075 * 100.0
+        buggy_5h = (53.0 - 20.0) * 0.0075 * 100.0  # Branch 1 stale result
+        assert snapshot.five_hour_util == pytest.approx(expected_5h, abs=0.5), (
+            f"Expected ~{expected_5h:.2f}% (post-second-rollover cost only), "
+            f"got {snapshot.five_hour_util:.2f}% "
+            f"(bug would give ~{buggy_5h:.2f}% using stale stored offset)"
+        )
+
+    def test_stored_rollover_offset_updated_after_second_rollover(self, tmp_path):
+        """
+        After detecting a second rollover (when stored_rollover_5h already set),
+        _get_synthetic_snapshot() must persist an updated rollover_cost_5h
+        reflecting the NEW boundary, and resets_at_5h must be updated to a
+        FUTURE datetime.
+        """
+        model, db_path = _make_model(tmp_path)
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        second_boundary = now - timedelta(minutes=30)
+        future_7d = now + timedelta(days=6)
+
+        _enter_fallback_with_past_resets(
+            model,
+            resets_at_5h_past=second_boundary,
+            resets_at_7d_future=future_7d,
+        )
+        _override_entered_at(db_path)
+
+        # Simulate stale first-rollover state
+        def set_stale_rollover(conn):
+            conn.execute(
+                "UPDATE fallback_state_v2 SET rollover_cost_5h = 20.0, "
+                "last_rollover_resets_5h = ? WHERE id = 1",
+                (second_boundary.strftime("%Y-%m-%dT%H:%M:%S"),),
+            )
+
+        execute_with_retry(db_path, set_stale_rollover)
+
+        pre_second_ts = _utc_naive_to_epoch(second_boundary - timedelta(minutes=45))
+        _insert_cost_at_timestamp(db_path, 50.0, pre_second_ts)
+
+        post_second_ts = _utc_naive_to_epoch(second_boundary + timedelta(minutes=10))
+        _insert_cost_at_timestamp(db_path, 3.0, post_second_ts)
+
+        snapshot = model._get_synthetic_snapshot()
+        assert snapshot is not None
+
+        state_after = _get_fallback_state(db_path)
+
+        # rollover_cost_5h must have been updated (no longer the stale 20.0)
+        new_rollover_cost = state_after.get("rollover_cost_5h")
+        assert new_rollover_cost is not None, "rollover_cost_5h must be set"
+        assert float(new_rollover_cost) != pytest.approx(20.0, abs=0.01), (
+            f"rollover_cost_5h must have been updated from stale 20.0, "
+            f"got {new_rollover_cost}"
+        )
+
+        # resets_at_5h must now be a FUTURE datetime (next window boundary)
+        new_resets_str = state_after.get("resets_at_5h")
+        assert new_resets_str is not None, "resets_at_5h must be set"
+        new_resets = datetime.fromisoformat(new_resets_str)
+        # The stored value is naive; compare against naive now
+        assert new_resets > now, (
+            f"resets_at_5h must be a future datetime after second rollover, "
+            f"got {new_resets_str} (now={now.isoformat()})"
+        )
