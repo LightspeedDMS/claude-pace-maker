@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.25.0] - 2026-05-18
+
+### Fixed
+- **Tier-mismatch calibration writes coefficients to wrong slot** (#68): When the Claude API returned 429 and pace-maker entered fallback mode, `_detect_tier()` could return "20x" for a 5x-only user (stale/incorrect profile cache). This caused three cascading failures: (1) wrong tier stored in `fallback_state_v2`, (2) synthetic pacing used ~4x-too-low coefficients during outage, (3) `calibrate_on_recovery()` wrote calibrated coefficients to the "20x" slot permanently while the "5x" slot stayed at defaults. Fix: `calibrate_on_recovery()` now re-detects tier at recovery time (when API is back up and fresh data is available), compares against the stored tier, and skips calibration entirely on mismatch (synthetic predictions used wrong coefficients, so the error ratio would be garbage). After successful calibration, `_purge_stale_calibrations()` deletes any `calibrated_coefficients` rows for non-active tiers, cleaning up historical pollution from this bug
+  - `src/pacemaker/usage_model.py` — tier mismatch guard in `calibrate_on_recovery()`, new `_purge_stale_calibrations()` method
+  - 5 new tests in `tests/test_tier_mismatch_calibration.py`, updated `tests/test_usage_model_pressure.py`
+
 ## [2.24.0] - 2026-05-16
 
 ### Fixed

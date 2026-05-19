@@ -924,6 +924,15 @@ class UsageModel:
 
             tier = execute_with_retry(self.db_path, load_tier, readonly=True)
 
+            current_tier = self._detect_tier()
+            if current_tier != tier:
+                log_warning(
+                    "usage_model",
+                    f"Tier mismatch: stored={tier}, detected={current_tier}. "
+                    "Skipping calibration (synthetic predictions used wrong coefficients).",
+                )
+                return
+
             synthetic_5h = snapshot.five_hour_util
             synthetic_7d = snapshot.seven_day_util
 
@@ -998,6 +1007,7 @@ class UsageModel:
                 f"Calibrated {tier}: coeff_5h={new_coeff_5h:.6f} "
                 f"coeff_7d={new_coeff_7d:.6f} samples={new_count}",
             )
+            self._purge_stale_calibrations(tier)
 
         except Exception as e:
             log_warning("usage_model", "Failed to calibrate coefficients", e)
@@ -1033,6 +1043,30 @@ class UsageModel:
         except Exception as e:
             log_warning("usage_model", "Failed to get calibrated coefficients", e)
             return None
+
+    def _purge_stale_calibrations(self, active_tier: str) -> None:
+        """Remove calibrated_coefficients rows for tiers other than active_tier.
+
+        Cleans up pollution from bug #68 where wrong-tier calibrations
+        could accumulate.
+        """
+        try:
+
+            def purge(conn):
+                cursor = conn.execute(
+                    "DELETE FROM calibrated_coefficients WHERE tier != ?",
+                    (active_tier,),
+                )
+                return cursor.rowcount
+
+            deleted = execute_with_retry(self.db_path, purge)
+            if deleted and deleted > 0:
+                log_info(
+                    "usage_model",
+                    f"Purged {deleted} stale calibration row(s) for non-{active_tier} tiers",
+                )
+        except Exception as e:
+            log_warning("usage_model", "Failed to purge stale calibrations", e)
 
     def get_pacing_decision(self, config: Dict[str, Any]) -> Optional[Dict]:
         """Return a pacing decision dict based on current usage.

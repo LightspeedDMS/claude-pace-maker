@@ -28,11 +28,37 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+import json
+
+
 def make_model(db_path: str):
     """Instantiate a fresh UsageModel pointing at the given db_path."""
     from pacemaker.usage_model import UsageModel
 
     return UsageModel(db_path=db_path)
+
+
+def _seed_profile_cache_for_tier(db_path: str, tier: str) -> None:
+    """Seed profile_cache so _detect_tier() returns the given tier.
+
+    tier='5x'  → has_claude_max=False
+    tier='20x' → has_claude_max=True
+
+    Raises ValueError for unsupported tier values.
+    """
+    if tier not in ("5x", "20x"):
+        raise ValueError(f"Unsupported tier: {tier!r}. Expected '5x' or '20x'.")
+    has_claude_max = tier == "20x"
+    profile = {"account": {"has_claude_max": has_claude_max}}
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO profile_cache (id, timestamp, profile_json)
+            VALUES (1, ?, ?)
+            """,
+            (time.time(), json.dumps(profile)),
+        )
 
 
 def _store_simple_api_response(
@@ -728,11 +754,16 @@ class TestCoefficientCalibration:
         )
 
     def test_calibration_for_5x_and_20x_tiers_are_independent(self, tmp_path):
-        """5x and 20x tiers maintain separate calibrated coefficients."""
+        """5x and 20x tiers maintain separate calibrated coefficients.
+
+        Each calibration cycle seeds profile_cache to match the stored tier so
+        _detect_tier() agrees with fallback_state_v2.tier (no mismatch guard).
+        """
         db_path = str(tmp_path / "usage.db")
         model = make_model(db_path)
 
-        # Calibrate 5x tier
+        # Calibrate 5x tier — profile must say 5x so mismatch guard passes
+        _seed_profile_cache_for_tier(db_path, "5x")
         self._enter_fallback_with_baselines(
             model, db_path, five_util=50.0, seven_util=20.0, tier="5x"
         )
@@ -746,7 +777,8 @@ class TestCoefficientCalibration:
         )
         model.exit_fallback(real_5h=60.0, real_7d=25.0)
 
-        # Calibrate 20x tier
+        # Calibrate 20x tier — profile must say 20x so mismatch guard passes
+        _seed_profile_cache_for_tier(db_path, "20x")
         self._enter_fallback_with_baselines(
             model, db_path, five_util=50.0, seven_util=20.0, tier="20x"
         )
@@ -760,17 +792,37 @@ class TestCoefficientCalibration:
         )
         model.exit_fallback(real_5h=55.0, real_7d=22.0)
 
-        coeff_5x = model._get_calibrated_coefficients("5x")
+        # After 20x calibration and purge, only the 20x row survives.
+        # Verify 20x was correctly calibrated.
         coeff_20x = model._get_calibrated_coefficients("20x")
-
-        assert coeff_5x is not None, "5x tier should have calibration data"
         assert coeff_20x is not None, "20x tier should have calibration data"
+        assert coeff_20x[0] > 0.0, "20x coeff_5h must be positive"
+        assert coeff_20x[1] > 0.0, "20x coeff_7d must be positive"
 
-        # They should be independent rows and potentially different values
-        # (different tiers have different default coefficients)
-        # Default 5x coeff is 4x higher than 20x (different tier multipliers)
-        # After same number of tokens, 5x synthetic would be 4x higher than 20x
-        # So calibrated 5x coeff should be different from calibrated 20x coeff
+        # The 5x row was purged by the 20x calibration (bug #68 cleanup).
+        # Verify 5x can be independently re-calibrated when the tier is 5x again.
+        _seed_profile_cache_for_tier(db_path, "5x")
+        self._enter_fallback_with_baselines(
+            model, db_path, five_util=50.0, seven_util=20.0, tier="5x"
+        )
+        model.accumulate_cost(
+            input_tokens=500_000,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
+            model_family="sonnet",
+            session_id="5x-calib-2",
+        )
+        model.exit_fallback(real_5h=60.0, real_7d=25.0)
+
+        coeff_5x = model._get_calibrated_coefficients("5x")
+        assert (
+            coeff_5x is not None
+        ), "5x tier should have calibration data after re-calibration"
+        assert coeff_5x[0] > 0.0, "5x coeff_5h must be positive"
+
+        # Tiers use different default coefficients so their calibrated values differ.
+        # (5x default coeff_5h ~0.0075 vs 20x default ~0.001875 — 4x ratio)
         assert coeff_5x[0] != coeff_20x[0], (
             "5x and 20x calibrated coefficient_5h should differ "
             f"(5x={coeff_5x[0]:.6f}, 20x={coeff_20x[0]:.6f})"
