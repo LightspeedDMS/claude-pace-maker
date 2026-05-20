@@ -162,8 +162,14 @@ class UsageModel:
             log_warning("usage_model", "Failed to get backoff remaining", e)
             return 0.0
 
-    def record_429(self) -> None:
-        """Record a 429 rate-limit response with exponential backoff."""
+    def record_429(self, retry_after_seconds: Optional[float] = None) -> None:
+        """Record a 429 rate-limit response with exponential backoff.
+
+        Args:
+            retry_after_seconds: Value from the server's Retry-After header, if present.
+                When provided and larger than the computed exponential delay, the server
+                hint is used instead. The server hint is NOT capped by _BACKOFF_MAX_DELAY.
+        """
         try:
 
             def operation(conn):
@@ -172,10 +178,11 @@ class UsageModel:
                 ).fetchone()
                 old_count = row[0] if row else 0
                 new_count = old_count + 1
-                delay = min(
+                computed_delay = min(
                     self._BACKOFF_BASE_DELAY * (2**new_count),
                     self._BACKOFF_MAX_DELAY,
                 )
+                delay = max(computed_delay, retry_after_seconds or 0.0)
                 backoff_until = time.time() + delay
                 conn.execute(
                     """
