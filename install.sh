@@ -750,7 +750,7 @@ create_config() {
   "base_delay": 5,
   "max_delay": 120,
   "threshold_percent": 0,
-  "poll_interval": 60,
+  "poll_interval": 300,
   "subagent_reminder_enabled": true,
   "subagent_reminder_frequency": 5,
   "subagent_reminder_message": "💡 Consider using the Task tool to delegate work to specialized subagents (per your guidelines)"

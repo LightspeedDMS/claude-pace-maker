@@ -180,6 +180,48 @@ class TestGetBackoffRemaining:
         assert 598 <= remaining <= 602
 
 
+class TestRecord429RetryAfterHeader:
+    """Tests for UsageModel.record_429() with Retry-After header support."""
+
+    def test_retry_after_used_when_larger_than_exponential(self, tmp_path):
+        """record_429 uses Retry-After when it exceeds exponential backoff."""
+        model = _make_model(tmp_path)
+        # First 429: exponential = 300 * 2^1 = 600s, but Retry-After=3600 > 600
+        model.record_429(retry_after_seconds=3600.0)
+        remaining = model.get_backoff_remaining()
+        assert 3598 <= remaining <= 3602
+
+    def test_exponential_used_when_larger_than_retry_after(self, tmp_path):
+        """record_429 uses exponential when it exceeds Retry-After."""
+        model = _make_model(tmp_path)
+        # First 429: exponential = 300 * 2^1 = 600s > retry_after=100
+        model.record_429(retry_after_seconds=100.0)
+        remaining = model.get_backoff_remaining()
+        assert 598 <= remaining <= 602
+
+    def test_retry_after_none_uses_exponential(self, tmp_path):
+        """record_429 with retry_after_seconds=None behaves exactly like before."""
+        model = _make_model(tmp_path)
+        model.record_429(retry_after_seconds=None)
+        remaining = model.get_backoff_remaining()
+        assert 598 <= remaining <= 602
+
+    def test_retry_after_zero_uses_exponential(self, tmp_path):
+        """record_429 with retry_after_seconds=0.0 falls back to exponential."""
+        model = _make_model(tmp_path)
+        model.record_429(retry_after_seconds=0.0)
+        remaining = model.get_backoff_remaining()
+        assert 598 <= remaining <= 602
+
+    def test_large_retry_after_not_capped_by_max_delay(self, tmp_path):
+        """record_429 with large Retry-After is NOT capped by _BACKOFF_MAX_DELAY."""
+        model = _make_model(tmp_path)
+        # Server says wait 7200s (2h) — must NOT be capped at 3600s
+        model.record_429(retry_after_seconds=7200.0)
+        remaining = model.get_backoff_remaining()
+        assert 7198 <= remaining <= 7202
+
+
 class TestFetchUsageBackoffIntegration:
     """Integration tests for fetch_usage() with UsageModel backoff."""
 
@@ -353,6 +395,73 @@ class TestFetchUsageBackoffIntegration:
                 MockModel.return_value = mock_instance
                 # Must not raise
                 api_client.fetch_usage("fake-token", timeout=5)
+
+    def test_retry_after_header_passed_to_record_429(self, tmp_path):
+        """fetch_usage passes Retry-After header value to record_429."""
+        from pacemaker import api_client
+        from pacemaker.usage_model import UsageModel
+        from unittest.mock import patch, MagicMock
+
+        db_path = str(tmp_path / "test.db")
+
+        mock_429 = MagicMock()
+        mock_429.status_code = 429
+        mock_429.headers = {"Retry-After": "3600"}
+
+        with patch("pacemaker.api_client.requests.get", return_value=mock_429):
+            with patch("pacemaker.api_client.time.sleep"):
+                api_client.fetch_usage("fake-token", timeout=5, db_path=db_path)
+
+        model = UsageModel(db_path=db_path)
+        # Retry-After=3600 > exponential=600 → backoff should be ~3600s
+        remaining = model.get_backoff_remaining()
+        assert 3598 <= remaining <= 3602
+
+    def test_retry_after_header_missing_falls_back_to_exponential(self, tmp_path):
+        """fetch_usage falls back to exponential backoff when no Retry-After header."""
+        from pacemaker import api_client
+        from pacemaker.usage_model import UsageModel
+        from unittest.mock import patch, MagicMock
+
+        db_path = str(tmp_path / "test.db")
+
+        mock_429 = MagicMock()
+        mock_429.status_code = 429
+        mock_429.headers = {}
+
+        with patch("pacemaker.api_client.requests.get", return_value=mock_429):
+            with patch("pacemaker.api_client.time.sleep"):
+                api_client.fetch_usage("fake-token", timeout=5, db_path=db_path)
+
+        model = UsageModel(db_path=db_path)
+        # No Retry-After → exponential = 600s
+        remaining = model.get_backoff_remaining()
+        assert 598 <= remaining <= 602
+
+    def test_large_retry_after_skips_within_call_retries(self, tmp_path):
+        """fetch_usage exits retry loop early when Retry-After > 30s."""
+        from pacemaker import api_client
+        from unittest.mock import patch, MagicMock
+
+        db_path = str(tmp_path / "test.db")
+
+        mock_429 = MagicMock()
+        mock_429.status_code = 429
+        mock_429.headers = {"Retry-After": "120"}
+
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return mock_429
+
+        with patch("pacemaker.api_client.requests.get", side_effect=side_effect):
+            with patch("pacemaker.api_client.time.sleep"):
+                api_client.fetch_usage("fake-token", timeout=5, db_path=db_path)
+
+        # Retry-After=120 > 30s threshold → exit after 1st attempt, no within-call retries
+        assert call_count == 1
 
 
 class TestFetchUserProfileBackoffIntegration:

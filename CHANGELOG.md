@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.27.0] - 2026-05-20
+
+### Fixed
+- **`Retry-After` header ignored on 429 responses** — When the Anthropic OAuth API rate-limited a request it returned a `Retry-After` header (observed value: ~3405s), but `record_429()` ignored it entirely and used its own exponential backoff starting at 600s. This caused a cascade: pace-maker retried after 600s, got another 429, escalated to 1200s, retried again — accumulating up to 5 consecutive 429s over ~2 hours before finally reaching the 3600s cap. Fix: `record_429(retry_after_seconds=None)` now accepts the server hint and uses `max(computed_exponential, retry_after)` so the server's window is always respected. Additionally, when `Retry-After > 30s`, within-call retries (2s/4s sleeps) are skipped immediately rather than burning time on sleeps that are orders of magnitude too short.
+  - `src/pacemaker/usage_model.py` — `record_429()` accepts `retry_after_seconds` parameter
+  - `src/pacemaker/api_client.py` — extracts `Retry-After` header in both `fetch_usage()` and `fetch_user_profile()`, passes to `record_429()`, early-exits within-call retries when header exceeds threshold
+  - 8 new tests in `tests/test_api_backoff.py` (`TestRecord429RetryAfterHeader` × 5, `TestFetchUsageBackoffIntegration` × 3)
+- **`poll_interval` default was 60s instead of 300s** — `install.sh` wrote `"poll_interval": 60` to every fresh `config.json`, causing 5× more API calls per hour than intended (60 calls/hour vs 12). `constants.py` and `hook.py` both had the correct 300s default, but the install template overrode it. This was the root cause of repeated 429 rate-limit storms on active machines. Fixed install template to write 300s.
+  - `install.sh` — default config template: `poll_interval: 60` → `300`
+
 ## [2.26.0] - 2026-05-19
 
 ### Fixed

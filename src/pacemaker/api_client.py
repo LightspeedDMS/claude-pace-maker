@@ -31,6 +31,8 @@ API_HEADERS = {
 # Retry constants for 429 within a single call
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 2  # seconds
+# When Retry-After exceeds this threshold, skip within-call retries entirely
+_RETRY_AFTER_EARLY_EXIT_THRESHOLD = 30  # seconds
 
 # Cache for user email to avoid repeated API calls
 _cached_email: Optional[str] = None
@@ -159,13 +161,24 @@ def fetch_usage(
                 return parsed
 
             elif response.status_code == 429:
+                retry_after = None
+                try:
+                    ra = response.headers.get("Retry-After")
+                    if ra:
+                        retry_after = float(ra)
+                except (ValueError, TypeError):
+                    pass
                 if attempt < _MAX_RETRIES - 1:
-                    # Retry with short delay before giving up
-                    delay = _RETRY_BASE_DELAY * (2**attempt)
-                    time.sleep(delay)
-                    continue
+                    # Skip within-call retries when server mandates a long wait
+                    if retry_after is not None and retry_after > _RETRY_AFTER_EARLY_EXIT_THRESHOLD:
+                        pass  # fall through to persistent backoff below
+                    else:
+                        # Retry with short delay before giving up
+                        delay = _RETRY_BASE_DELAY * (2**attempt)
+                        time.sleep(delay)
+                        continue
                 # All retries exhausted - record persistent backoff and enter fallback
-                model.record_429()
+                model.record_429(retry_after_seconds=retry_after)
                 try:
                     model.enter_fallback()
                 except Exception as e:
@@ -232,11 +245,22 @@ def fetch_user_profile(
                 return response.json()
 
             elif response.status_code == 429:
+                retry_after = None
+                try:
+                    ra = response.headers.get("Retry-After")
+                    if ra:
+                        retry_after = float(ra)
+                except (ValueError, TypeError):
+                    pass
                 if attempt < _MAX_RETRIES - 1:
-                    delay = _RETRY_BASE_DELAY * (2**attempt)
-                    time.sleep(delay)
-                    continue
-                model.record_429()
+                    # Skip within-call retries when server mandates a long wait
+                    if retry_after is not None and retry_after > _RETRY_AFTER_EARLY_EXIT_THRESHOLD:
+                        pass  # fall through to persistent backoff below
+                    else:
+                        delay = _RETRY_BASE_DELAY * (2**attempt)
+                        time.sleep(delay)
+                        continue
+                model.record_429(retry_after_seconds=retry_after)
                 return None
 
             else:
