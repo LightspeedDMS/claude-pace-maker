@@ -21,6 +21,67 @@ fi
 PACEMAKER_DIR="$HOME/.claude-pace-maker"
 CONFIG_FILE="$PACEMAKER_DIR/config.json"
 DEBUG_LOG="$PACEMAKER_DIR/hook_debug.log"
+DEPS_MARKER="$PACEMAKER_DIR/.python_deps_installed"
+
+# ---------------------------------------------------------------------------
+# Find best available Python 3.10+ (shared by lazy-init and hook execution)
+# ---------------------------------------------------------------------------
+find_python() {
+    for py in python3.11 python3.10 python3; do
+        if command -v "$py" >/dev/null 2>&1; then
+            echo "$py"
+            return 0
+        fi
+    done
+    echo "python3"
+}
+
+# Install runtime deps for the interpreter used by scripts/pace-maker (#!/usr/bin/env python3)
+# and by hook execution (find_python). Idempotent: import check + marker file.
+install_python_deps_for() {
+    local python_cmd="$1"
+    if [ -z "$python_cmd" ] || ! command -v "$python_cmd" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ -f "$DEPS_MARKER" ] && [ "$(cat "$DEPS_MARKER" 2>/dev/null)" = "$python_cmd" ]; then
+        if "$python_cmd" -c "import requests, yaml" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    local packages=()
+    "$python_cmd" -c "import requests" 2>/dev/null || packages+=("requests")
+    "$python_cmd" -c "import yaml" 2>/dev/null || packages+=("pyyaml")
+    "$python_cmd" -c "import claude_agent_sdk" 2>/dev/null || packages+=("claude-agent-sdk")
+
+    if [ ${#packages[@]} -eq 0 ]; then
+        echo "$python_cmd" >"$DEPS_MARKER"
+        return 0
+    fi
+
+    if "$python_cmd" -m pip install --user "${packages[@]}" >/dev/null 2>&1; then
+        echo "$python_cmd" >"$DEPS_MARKER"
+        return 0
+    fi
+    if "$python_cmd" -m pip install --break-system-packages "${packages[@]}" >/dev/null 2>&1; then
+        echo "$python_cmd" >"$DEPS_MARKER"
+        return 0
+    fi
+
+    echo "[hook.sh] Warning: Could not install Python packages (${packages[*]}) for $python_cmd" >>"$DEBUG_LOG"
+    return 0
+}
+
+install_plugin_python_deps() {
+    local cli_py hook_py
+    cli_py=$(command -v python3 2>/dev/null || true)
+    hook_py=$(find_python)
+    install_python_deps_for "$cli_py"
+    if [ -n "$hook_py" ] && [ "$hook_py" != "$cli_py" ]; then
+        install_python_deps_for "$hook_py"
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # Lazy-init: bootstrap ~/.claude-pace-maker/ on first plugin run
@@ -69,6 +130,9 @@ EOF
     if [ -L "$cli_symlink" ] || [ ! -e "$cli_symlink" ] || [ -f "$cli_symlink" ]; then
         ln -sf "$cli_target" "$cli_symlink"
     fi
+
+    # Install requests/pyyaml/claude-agent-sdk for CLI (python3) and hook interpreters
+    install_plugin_python_deps
 }
 
 # Run lazy-init unconditionally (idempotent - only creates missing files)
@@ -81,19 +145,6 @@ ENABLED=$(jq -r '.enabled // true' "$CONFIG_FILE" 2>/dev/null || echo "true")
 if [ "$ENABLED" != "true" ]; then
     exit 0
 fi
-
-# ---------------------------------------------------------------------------
-# Find best available Python 3.10+
-# ---------------------------------------------------------------------------
-find_python() {
-    for py in python3.11 python3.10 python3; do
-        if command -v "$py" >/dev/null 2>&1; then
-            echo "$py"
-            return 0
-        fi
-    done
-    echo "python3"
-}
 
 # ---------------------------------------------------------------------------
 # Resolve Python command and PYTHONPATH
