@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path("/home/jsbattig/Dev/claude-pace-maker")
+REPO_ROOT = Path(__file__).resolve().parent.parent
 HOOK_SH = REPO_ROOT / "scripts" / "hook.sh"
 
 
@@ -99,6 +99,23 @@ class TestScenario1LazyInit:
         assert (
             symlink.exists() or symlink.is_symlink()
         ), "pace-maker must be symlinked to ~/.local/bin/pace-maker by lazy-init"
+
+    def test_lazy_init_links_pacemaker_package(self, fresh_home):
+        """SessionStart full bootstrap symlinks pacemaker package for CLI imports."""
+        run_hook(fresh_home, "session_start")
+        pkg_link = fresh_home / ".claude-pace-maker" / "pacemaker"
+        assert pkg_link.is_symlink() or (
+            pkg_link.is_dir() and (pkg_link / "user_commands.py").exists()
+        ), "pacemaker package must be linked or present for CLI"
+        if pkg_link.is_symlink():
+            target = os.readlink(str(pkg_link))
+            assert "pacemaker" in target
+
+    def test_session_start_writes_bootstrap_ok(self, fresh_home):
+        """SessionStart full bootstrap writes .bootstrap_ok marker."""
+        run_hook(fresh_home, "session_start")
+        marker = fresh_home / ".claude-pace-maker" / ".bootstrap_ok"
+        assert marker.exists(), ".bootstrap_ok must be created on session_start"
 
     def test_hook_exits_zero_after_lazy_init(self, fresh_home):
         """hook.sh completes successfully (exit 0) after lazy-init."""
@@ -258,20 +275,22 @@ class TestScenario7MissingDeps:
             str(pacemaker_dir / "source_code_extensions.json"),
         )
 
-        # Create a fake python3 that prints an error and exits with code 1
+        # Fake all interpreters resolve_python may select (must be first on PATH).
         fake_python_dir = tmp_path / "fake_python"
         fake_python_dir.mkdir()
-        fake_python = fake_python_dir / "python3"
-        fake_python.write_text(
+        fake_body = (
             "#!/bin/bash\n"
             "echo 'ModuleNotFoundError: No module named requests' >&2\n"
             "exit 1\n"
         )
-        fake_python.chmod(0o755)
+        for name in ("python3.11", "python3.10", "python3"):
+            fake_py = fake_python_dir / name
+            fake_py.write_text(fake_body)
+            fake_py.chmod(0o755)
 
         run_hook(
             home,
-            "session_start",
+            "post_tool_use",
             extra_env={
                 "PATH": f"{fake_python_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
             },

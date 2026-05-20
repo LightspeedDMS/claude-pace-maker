@@ -37,6 +37,7 @@ COMMANDS:
   pace-maker on                   Enable pace maker throttling
   pace-maker off                  Disable pace maker throttling
   pace-maker status               Show current status and usage
+  pace-maker doctor               Diagnose and repair plugin bootstrap (CLI, deps, package)
   pace-maker version              Show version information
   pace-maker help                 Show this help message
   pace-maker weekly-limit on      Enable weekly (7-day) limit throttling
@@ -334,8 +335,8 @@ def parse_command(user_input: str) -> Dict[str, Any]:
     normalized = user_input.strip().lower()
     normalized = re.sub(r"\s+", " ", normalized)  # Collapse multiple spaces
 
-    # Pattern 1: pace-maker (on|off|status|help|version)
-    pattern_simple = r"^pace-maker\s+(on|off|status|help|version)$"
+    # Pattern 1: pace-maker (on|off|status|help|version|doctor)
+    pattern_simple = r"^pace-maker\s+(on|off|status|help|version|doctor)$"
     match_simple = re.match(pattern_simple, normalized)
 
     if match_simple:
@@ -711,6 +712,8 @@ def execute_command(
         return _execute_help(config_path)
     elif command == "version":
         return _execute_version()
+    elif command == "doctor":
+        return _execute_doctor()
     elif command == "weekly-limit":
         return _execute_weekly_limit(config_path, subcommand)
     elif command == "tempo":
@@ -1294,6 +1297,80 @@ def _format_secrets_stats(db_path: Optional[str]) -> str:
         log_warning("user_commands", "Failed to get secrets stats", e)
 
     return result
+
+
+def _find_doctor_script() -> Optional[str]:
+    """Locate scripts/doctor.sh from plugin root or Claude plugin cache."""
+    import glob
+    from pathlib import Path
+
+    candidates = []
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    if plugin_root:
+        candidates.append(Path(plugin_root) / "scripts" / "doctor.sh")
+
+    install_source = Path.home() / ".claude-pace-maker" / "install_source"
+    if install_source.is_file():
+        root = install_source.read_text(encoding="utf-8").strip()
+        if root:
+            candidates.append(Path(root) / "scripts" / "doctor.sh")
+
+    script_dir = Path(__file__).resolve().parent
+    repo_root = script_dir.parent.parent
+    candidates.append(repo_root / "scripts" / "doctor.sh")
+
+    for pattern in (
+        str(Path.home() / ".claude" / "*" / "claude-pace-maker" / "scripts" / "doctor.sh"),
+        str(
+            Path.home()
+            / ".claude"
+            / "*"
+            / "claude-pace-maker"
+            / "*"
+            / "scripts"
+            / "doctor.sh"
+        ),
+    ):
+        candidates.extend(Path(p) for p in sorted(glob.glob(pattern), reverse=True))
+
+    seen = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.is_file():
+            return str(path)
+    return None
+
+
+def _execute_doctor() -> Dict[str, Any]:
+    """Run plugin bootstrap doctor script to repair CLI and dependencies."""
+    import subprocess
+
+    doctor = _find_doctor_script()
+    if not doctor:
+        return {
+            "success": False,
+            "message": (
+                "Could not find scripts/doctor.sh.\n"
+                "Install the plugin: claude plugin install claude-pace-maker@lightspeed-claude-plugins\n"
+                "Or run: bash /path/to/claude-pace-maker/scripts/doctor.sh"
+            ),
+        }
+
+    result = subprocess.run(
+        ["bash", doctor],
+        capture_output=True,
+        text=True,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode == 0:
+        return {"success": True, "message": output.strip() or "Bootstrap succeeded."}
+    return {
+        "success": False,
+        "message": output.strip() or "Bootstrap failed. See hook_debug.log.",
+    }
 
 
 def _execute_version() -> Dict[str, Any]:
@@ -3351,6 +3428,7 @@ def main():
             "on",
             "off",
             "status",
+            "doctor",
             "help",
             "version",
             "weekly-limit",
