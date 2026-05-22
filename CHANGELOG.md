@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.28.0] - 2026-05-22
+
+### Added
+- **Plugin bootstrap with `bootstrap-plugin.sh`** — New two-mode bootstrap script replaces ad-hoc dep-install logic scattered across `hook.sh`. `bootstrap_light` (filesystem wiring only, no pip) runs on every hook invocation with ~0ms overhead. `bootstrap_full` (pip deps + verification + `.bootstrap_ok` marker) runs only on `session_start` or when the marker is absent. Marker filename is `sha256(abs_python_path)[:16]` so multiple interpreters get distinct markers; marker content embeds `DEPS_SIGNATURE` so stale markers are detected when deps change.
+  - `scripts/bootstrap-plugin.sh` — `bootstrap_light`, `bootstrap_full`, `bootstrap_verify`, `bootstrap_needs_full`, `resolve_python`, `resolve_cli_python`, `_ensure_python_deps_for` with `flock`-based concurrent install guard and `.failed` marker short-circuit
+  - `scripts/hook.sh` — trimmed to entry point only; sources bootstrap, runs `--light` unconditionally and `--full` only on `session_start` or missing marker
+  - `install.sh` — plugin-mode delegates to `bootstrap_full` instead of duplicating logic
+- **`pace-maker doctor` command** — Diagnoses and repairs broken plugin installs without requiring the `pacemaker` Python package to be importable. Locates plugin root via `CLAUDE_PLUGIN_ROOT` → `install_source` file → glob search, prints symlink/CLI/dep-marker/bootstrap status with verbose output, then triggers `bootstrap_full` and runs `pace-maker status` as a smoke test.
+  - `scripts/doctor.sh` — self-contained diagnostic + repair script
+  - `src/pacemaker/user_commands.py` — `pace-maker doctor` CLI subcommand wired to `_execute_doctor()` / `_find_doctor_script()`
+
+### Fixed
+- **Bare `pip install` fallback violates PEP 668** — When `pip install --user` failed, the bootstrap silently retried with bare `pip install` (no `--user`), bypassing PEP 668 protections on Debian/Ubuntu, Homebrew, and managed CI environments. Fix: removed the `|| bare-pip` fallback entirely. On `--user` failure the script now writes a `.failed` marker immediately and surfaces `Run: pace-maker doctor` to the user. Subsequent invocations short-circuit on the marker with no further pip attempts.
+  - `scripts/bootstrap-plugin.sh` — `_ensure_python_deps_for()`: single `pip install --user` call; failure → `.failed` marker + doctor message
+  - `tests/test_bootstrap_plugin.py` — mutation-discriminating test: shim fails `--user`, succeeds bare pip, logs all calls; asserts no bare-pip call in log
+
 ## [2.27.0] - 2026-05-20
 
 ### Fixed
