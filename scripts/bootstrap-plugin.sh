@@ -135,8 +135,7 @@ _ensure_python_deps_for() {
                 exit 0
             fi
         fi
-        if "$abs_py" -m pip install --user "${packages[@]}" >>"$DEBUG_LOG" 2>&1 \
-            || "$abs_py" -m pip install "${packages[@]}" >>"$DEBUG_LOG" 2>&1; then
+        if "$abs_py" -m pip install --user "${packages[@]}" >>"$DEBUG_LOG" 2>&1; then
             if _deps_imports_ok "$abs_py"; then
                 echo "${abs_py}:${DEPS_SIGNATURE}" >"$marker"
                 rm -f "$failed_marker"
