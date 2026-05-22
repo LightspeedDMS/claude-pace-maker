@@ -45,9 +45,23 @@ claude plugin install claude-pace-maker@claude-plugins
 That's it. The first Claude Code session after installation automatically bootstraps:
 - `~/.claude-pace-maker/config.json` with production defaults
 - `~/.claude-pace-maker/source_code_extensions.json` for validation
+- `~/.claude-pace-maker/pacemaker` symlink to the plugin Python package (required for CLI)
 - `~/.local/bin/pace-maker` CLI symlink (if `~/.local/bin` is in PATH)
+- Python dependencies (`requests`, `pyyaml`, `claude-agent-sdk`) on SessionStart
 
 No `install.sh` or manual `settings.json` editing required.
+
+**CLI not found after `claude plugin install`?** The plugin is registered in Claude, but bootstrap runs on the first session (or manually):
+
+```bash
+# Ensure ~/.local/bin is on PATH, then:
+pace-maker doctor
+
+# Or without a working CLI yet:
+bash "$(find ~/.claude -path '*/claude-pace-maker/scripts/doctor.sh' 2>/dev/null | sort -V | tail -1)"
+```
+
+Add to `~/.bashrc` or `~/.zshrc` if needed: `export PATH="$HOME/.local/bin:$PATH"`
 
 ### Option 2: pipx
 

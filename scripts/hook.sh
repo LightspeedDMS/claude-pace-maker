@@ -4,7 +4,8 @@
 # Single entry point for all 7 hook types when installed as a Claude Code plugin.
 # Invoked as: bash ${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh <hook_type>
 #
-# Implements lazy-init: bootstraps ~/.claude-pace-maker/ on first run.
+# Filesystem bootstrap runs on every hook (--light). Python deps install only on
+# SessionStart or when .bootstrap_ok is missing (--full).
 
 set -e
 
@@ -22,82 +23,32 @@ PACEMAKER_DIR="$HOME/.claude-pace-maker"
 CONFIG_FILE="$PACEMAKER_DIR/config.json"
 DEBUG_LOG="$PACEMAKER_DIR/hook_debug.log"
 
-# ---------------------------------------------------------------------------
-# Lazy-init: bootstrap ~/.claude-pace-maker/ on first plugin run
-# ---------------------------------------------------------------------------
-lazy_init() {
-    # Create config directory if it doesn't exist
-    mkdir -p "$PACEMAKER_DIR"
+# shellcheck source=scripts/bootstrap-plugin.sh
+source "$(dirname "$0")/bootstrap-plugin.sh"
 
-    # Copy config.defaults.json -> config.json if config doesn't exist
-    if [ ! -f "$CONFIG_FILE" ]; then
-        local defaults_src="$PLUGIN_ROOT/config/config.defaults.json"
-        if [ -f "$defaults_src" ]; then
-            cp "$defaults_src" "$CONFIG_FILE"
-        else
-            # Fallback: write minimal defaults inline
-            cat > "$CONFIG_FILE" <<'EOF'
-{
-  "enabled": true,
-  "log_level": 2,
-  "langfuse_enabled": false,
-  "intent_validation_enabled": true,
-  "tdd_enabled": true,
-  "tempo_mode": "auto",
-  "five_hour_limit_enabled": true,
-  "weekly_limit_enabled": false
-}
-EOF
-        fi
-    fi
-
-    # Copy source_code_extensions.json if it doesn't exist
-    local extensions_dst="$PACEMAKER_DIR/source_code_extensions.json"
-    if [ ! -f "$extensions_dst" ]; then
-        local extensions_src="$PLUGIN_ROOT/config/source_code_extensions.json"
-        if [ -f "$extensions_src" ]; then
-            cp "$extensions_src" "$extensions_dst"
-        fi
-    fi
-
-    # Create/update CLI symlink in ~/.local/bin/
-    local local_bin="$HOME/.local/bin"
-    mkdir -p "$local_bin"
-    local cli_target="$PLUGIN_ROOT/scripts/pace-maker"
-    local cli_symlink="$local_bin/pace-maker"
-    # Always update symlink to point to current plugin root (handles plugin upgrades and legacy file-based installs)
-    if [ -L "$cli_symlink" ] || [ ! -e "$cli_symlink" ] || [ -f "$cli_symlink" ]; then
-        ln -sf "$cli_target" "$cli_symlink"
-    fi
-}
-
-# Run lazy-init unconditionally (idempotent - only creates missing files)
-lazy_init
+# Cheap filesystem wiring on every hook (no pip).
+bootstrap_light
 
 # ---------------------------------------------------------------------------
-# Check if pace-maker is enabled
+# Check if pace-maker is enabled (before deps install and hook execution)
 # ---------------------------------------------------------------------------
 ENABLED=$(jq -r '.enabled // true' "$CONFIG_FILE" 2>/dev/null || echo "true")
 if [ "$ENABLED" != "true" ]; then
     exit 0
 fi
 
-# ---------------------------------------------------------------------------
-# Find best available Python 3.10+
-# ---------------------------------------------------------------------------
-find_python() {
-    for py in python3.11 python3.10 python3; do
-        if command -v "$py" >/dev/null 2>&1; then
-            echo "$py"
-            return 0
-        fi
-    done
-    echo "python3"
-}
+# Full bootstrap: SessionStart or first run before .bootstrap_ok exists.
+if [ "$HOOK_TYPE" = "session_start" ] || bootstrap_needs_full; then
+    bootstrap_full || true
+fi
 
 # ---------------------------------------------------------------------------
 # Resolve Python command and PYTHONPATH
 # ---------------------------------------------------------------------------
+find_python() {
+    resolve_python 2>/dev/null || echo "python3"
+}
+
 INSTALL_MARKER="$PACEMAKER_DIR/install_source"
 if [ -f "$INSTALL_MARKER" ]; then
     SOURCE_DIR=$(cat "$INSTALL_MARKER")
@@ -121,7 +72,6 @@ fi
 # Execute pacemaker hook - graceful degradation on Python failure
 # ---------------------------------------------------------------------------
 if ! $PYTHON_CMD -m pacemaker.hook "$HOOK_TYPE" 2>>"$DEBUG_LOG"; then
-    # Log the failure but exit 0 (graceful) to avoid blocking Claude Code
     echo "[hook.sh] pacemaker.hook $HOOK_TYPE failed - check $DEBUG_LOG" >>"$DEBUG_LOG"
 fi
 

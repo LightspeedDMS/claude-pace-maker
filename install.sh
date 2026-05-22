@@ -1122,17 +1122,33 @@ main() {
     echo "Skipping hook registration - plugin system manages hooks via hooks/hooks.json."
     echo ""
     check_dependencies
-    install_python_deps
-    mkdir -p "$PACEMAKER_DIR"
-    create_config
+    PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+    export PLUGIN_ROOT
+    BOOTSTRAP_SCRIPT="$PLUGIN_ROOT/scripts/bootstrap-plugin.sh"
+    if [ ! -f "$BOOTSTRAP_SCRIPT" ]; then
+      echo -e "${RED}Error: bootstrap script not found: $BOOTSTRAP_SCRIPT${NC}" >&2
+      exit 1
+    fi
+    # shellcheck source=scripts/bootstrap-plugin.sh
+    source "$BOOTSTRAP_SCRIPT"
+    BOOTSTRAP_VERBOSE=1
+    export BOOTSTRAP_VERBOSE
+    if ! bootstrap_full; then
+      echo -e "${RED}Plugin bootstrap failed.${NC}" >&2
+      echo "Run: pace-maker doctor" >&2
+      echo "Or install deps manually: python3 -m pip install --user requests pyyaml claude-agent-sdk" >&2
+      exit 1
+    fi
     init_database
     echo ""
     echo -e "${GREEN}Plugin mode installation completed successfully!${NC}"
     echo ""
     echo "Configuration: $PACEMAKER_DIR/config.json"
     echo "Database: $PACEMAKER_DIR/usage.db"
+    echo "CLI command: ~/.local/bin/pace-maker"
     echo ""
     echo "Hooks are registered via hooks/hooks.json (plugin system)."
+    echo "Try running: pace-maker status"
     return 0
   fi
 
