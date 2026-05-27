@@ -1,9 +1,9 @@
 #!/bin/bash
-# Claude Pace Maker - Plugin bootstrap (filesystem wiring + optional Python deps).
+# Claude Pace Maker - Plugin bootstrap (filesystem wiring + managed venv).
 #
 # Usage (sourced or executed):
 #   bootstrap-plugin.sh --light   # config, symlinks, install_source only
-#   bootstrap-plugin.sh --full    # --light + pip deps + .bootstrap_ok marker
+#   bootstrap-plugin.sh --full    # --light + venv deps + .bootstrap_ok marker
 #
 # Requires PLUGIN_ROOT (or CLAUDE_PLUGIN_ROOT) when executed directly.
 
@@ -11,9 +11,13 @@ set -euo pipefail
 
 DEPS_SIGNATURE="requests:pyyaml:claude-agent-sdk"
 PACEMAKER_DIR="${PACEMAKER_DIR:-$HOME/.claude-pace-maker}"
+VENV_DIR="$PACEMAKER_DIR/venv"
+VENV_PYTHON="$VENV_DIR/bin/python3"
+VENV_STAMP="$PACEMAKER_DIR/.venv_stamp"
+VENV_LOCK_FILE="$PACEMAKER_DIR/.venv.lock"
+VENV_LOCK_DIR="$PACEMAKER_DIR/.venv.lock.d"
+VENV_FAILED_MARKER="$PACEMAKER_DIR/.venv.failed"
 BOOTSTRAP_OK_MARKER="$PACEMAKER_DIR/.bootstrap_ok"
-DEPS_DIR="$PACEMAKER_DIR/.python_deps"
-DEPS_LOCK="$PACEMAKER_DIR/.python_deps.lock"
 DEBUG_LOG="$PACEMAKER_DIR/hook_debug.log"
 BOOTSTRAP_VERBOSE="${BOOTSTRAP_VERBOSE:-0}"
 
@@ -41,10 +45,10 @@ _bootstrap_resolve_plugin_root() {
     PLUGIN_ROOT="$(cd "$script_dir/.." && pwd)"
 }
 
-# Find Python 3.10+; print absolute path.
+# Find Python 3.10+ for venv creation; prefer the newest available interpreter.
 resolve_python() {
     local py resolved
-    for py in python3.11 python3.10 python3; do
+    for py in python3.13 python3.12 python3.11 python3.10 python3; do
         if command -v "$py" >/dev/null 2>&1; then
             if "$py" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
                 resolved="$(command -v "$py" 2>/dev/null || true)"
@@ -58,25 +62,13 @@ resolve_python() {
     return 1
 }
 
-# Resolve python3 used by CLI shebang (#!/usr/bin/env python3).
-resolve_cli_python() {
-    local resolved
-    resolved="$(command -v python3 2>/dev/null || true)"
-    if [ -z "$resolved" ]; then
-        return 1
-    fi
-    if "$resolved" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
-        echo "$resolved"
+# Canonical runtime: managed venv Python when ready, else empty.
+resolve_runtime_python() {
+    if [ -x "$VENV_PYTHON" ] && _deps_imports_ok "$VENV_PYTHON"; then
+        echo "$VENV_PYTHON"
         return 0
     fi
     return 1
-}
-
-_deps_marker_path() {
-    local abs_py="$1"
-    local hash
-    hash="$(printf '%s' "$abs_py" | sha256sum 2>/dev/null | awk '{print $1}' | cut -c1-16)"
-    echo "$DEPS_DIR/${hash}"
 }
 
 _deps_imports_ok() {
@@ -84,74 +76,144 @@ _deps_imports_ok() {
     "$py" -c "import requests, yaml, claude_agent_sdk" 2>/dev/null
 }
 
-_ensure_python_deps_for() {
-    local abs_py="$1"
-    local marker failed_marker packages
+_read_venv_stamp() {
+    if [ -f "$VENV_STAMP" ]; then
+        cat "$VENV_STAMP" 2>/dev/null || true
+    fi
+}
 
-    if [ -z "$abs_py" ] || [ ! -x "$abs_py" ]; then
-        return 0
+_write_venv_stamp() {
+    local base_py="$1"
+    echo "${base_py}:${DEPS_SIGNATURE}" >"$VENV_STAMP"
+}
+
+# Portable lock (flock on Linux; mkdir on macOS where flock is often absent).
+_with_venv_install_lock() {
+    if command -v flock >/dev/null 2>&1; then
+        (
+            flock -x 9
+            "$@"
+        ) 9>"$VENV_LOCK_FILE"
+        return $?
     fi
 
-    mkdir -p "$DEPS_DIR"
-    marker="$(_deps_marker_path "$abs_py")"
-    failed_marker="${marker}.failed"
+    local waited=0
+    while ! mkdir "$VENV_LOCK_DIR" 2>/dev/null; do
+        sleep 0.2
+        waited=$((waited + 1))
+        if [ "$waited" -ge 150 ]; then
+            _bootstrap_log "timed out waiting for venv install lock"
+            return 1
+        fi
+    done
+    "$@"
+    local rc=$?
+    rmdir "$VENV_LOCK_DIR" 2>/dev/null || true
+    return "$rc"
+}
 
-    if [ -f "$failed_marker" ]; then
-        _bootstrap_log "skipping pip for $abs_py (previous failure)"
+_venv_needs_recreate() {
+    local base_py="$1"
+    if [ ! -d "$VENV_DIR" ] || [ ! -x "$VENV_PYTHON" ]; then
+        return 0
+    fi
+    local stamp expected
+    stamp="$(_read_venv_stamp)"
+    expected="${base_py}:${DEPS_SIGNATURE}"
+    if [ "$stamp" != "$expected" ]; then
+        return 0
+    fi
+    return 1
+}
+
+_ensure_venv_and_deps() {
+    local base_py="$1"
+    local stamp expected packages
+
+    if [ -z "$base_py" ] || [ ! -x "$base_py" ]; then
         return 1
     fi
 
-    if [ -f "$marker" ]; then
-        local line expected
-        line="$(cat "$marker" 2>/dev/null || true)"
-        expected="${abs_py}:${DEPS_SIGNATURE}"
-        if [ "$line" = "$expected" ]; then
+    mkdir -p "$PACEMAKER_DIR"
+
+    if [ -f "$VENV_FAILED_MARKER" ]; then
+        _bootstrap_log "skipping venv setup (previous failure)"
+        return 1
+    fi
+
+    expected="${base_py}:${DEPS_SIGNATURE}"
+    if [ -x "$VENV_PYTHON" ] && _deps_imports_ok "$VENV_PYTHON"; then
+        stamp="$(_read_venv_stamp)"
+        if [ "$stamp" = "$expected" ]; then
             return 0
         fi
     fi
 
-    if _deps_imports_ok "$abs_py"; then
-        echo "${abs_py}:${DEPS_SIGNATURE}" >"$marker"
-        rm -f "$failed_marker"
+    if _venv_needs_recreate "$base_py"; then
+        if [ -d "$VENV_DIR" ]; then
+            _bootstrap_log "recreating venv at $VENV_DIR (base or deps changed)"
+            rm -rf "$VENV_DIR"
+        fi
+        if ! "$base_py" -m venv "$VENV_DIR" >>"$DEBUG_LOG" 2>&1; then
+            echo "[bootstrap-plugin] venv creation failed for $base_py at $VENV_DIR" >>"$DEBUG_LOG"
+            touch "$VENV_FAILED_MARKER"
+            _bootstrap_user_error "Could not create Python virtual environment at $VENV_DIR."
+            _bootstrap_user_error "Ensure the venv module is available (e.g. brew install python@3.12 or apt install python3-venv)."
+            _bootstrap_user_error "Run: pace-maker doctor   (or: bash \"\$PLUGIN_ROOT/scripts/doctor.sh\")"
+            return 1
+        fi
+        _write_venv_stamp "$base_py"
+    fi
+
+    if _deps_imports_ok "$VENV_PYTHON"; then
+        rm -f "$VENV_FAILED_MARKER"
+        _write_venv_stamp "$base_py"
         return 0
     fi
 
     packages=()
-    "$abs_py" -c "import requests" 2>/dev/null || packages+=("requests")
-    "$abs_py" -c "import yaml" 2>/dev/null || packages+=("pyyaml")
-    "$abs_py" -c "import claude_agent_sdk" 2>/dev/null || packages+=("claude-agent-sdk")
+    "$VENV_PYTHON" -c "import requests" 2>/dev/null || packages+=("requests")
+    "$VENV_PYTHON" -c "import yaml" 2>/dev/null || packages+=("pyyaml")
+    "$VENV_PYTHON" -c "import claude_agent_sdk" 2>/dev/null || packages+=("claude-agent-sdk")
 
     if [ ${#packages[@]} -eq 0 ]; then
-        echo "${abs_py}:${DEPS_SIGNATURE}" >"$marker"
-        rm -f "$failed_marker"
+        rm -f "$VENV_FAILED_MARKER"
+        _write_venv_stamp "$base_py"
         return 0
     fi
 
-    (
-        flock -x 9
-        if [ -f "$marker" ]; then
-            line="$(cat "$marker" 2>/dev/null || true)"
-            if [ "$line" = "${abs_py}:${DEPS_SIGNATURE}" ] && _deps_imports_ok "$abs_py"; then
-                exit 0
-            fi
-        fi
-        if "$abs_py" -m pip install --user "${packages[@]}" >>"$DEBUG_LOG" 2>&1; then
-            if _deps_imports_ok "$abs_py"; then
-                echo "${abs_py}:${DEPS_SIGNATURE}" >"$marker"
-                rm -f "$failed_marker"
-                exit 0
-            fi
-        fi
-        echo "[bootstrap-plugin] pip install failed for $abs_py (${packages[*]})" >>"$DEBUG_LOG"
-        touch "$failed_marker"
-        _bootstrap_user_error "Could not install Python packages (${packages[*]}) for $abs_py."
-        _bootstrap_user_error "Run: pace-maker doctor   (or: bash \"\$PLUGIN_ROOT/scripts/doctor.sh\")"
-        exit 1
-    ) 9>"$DEPS_LOCK"
+    _with_venv_install_lock _pip_install_into_venv "$base_py" "${packages[@]}"
     return $?
 }
 
-# Cheap filesystem bootstrap (no pip).
+_pip_install_into_venv() {
+    local base_py="$1"
+    shift
+    local packages=("$@")
+    local stamp expected
+    expected="${base_py}:${DEPS_SIGNATURE}"
+
+    if [ -x "$VENV_PYTHON" ] && _deps_imports_ok "$VENV_PYTHON"; then
+        stamp="$(_read_venv_stamp)"
+        if [ "$stamp" = "$expected" ]; then
+            return 0
+        fi
+    fi
+    if "$VENV_PYTHON" -m pip install "${packages[@]}" >>"$DEBUG_LOG" 2>&1; then
+        if _deps_imports_ok "$VENV_PYTHON"; then
+            rm -f "$VENV_FAILED_MARKER"
+            _write_venv_stamp "$base_py"
+            return 0
+        fi
+    fi
+    echo "[bootstrap-plugin] pip install failed in venv for ${packages[*]}" >>"$DEBUG_LOG"
+    touch "$VENV_FAILED_MARKER"
+    _bootstrap_user_error "Could not install Python packages (${packages[*]}) in $VENV_DIR."
+    _bootstrap_user_error "Run: pace-maker doctor   (or: bash \"\$PLUGIN_ROOT/scripts/doctor.sh\")"
+    return 1
+}
+
+# Cheap filesystem bootstrap (no venv/pip).
 bootstrap_light() {
     _bootstrap_resolve_plugin_root
 
@@ -214,22 +276,18 @@ EOF
 bootstrap_full() {
     bootstrap_light
 
-    local hook_py cli_py
-    hook_py="$(resolve_python)" || {
+    local base_py
+    base_py="$(resolve_python)" || {
         _bootstrap_user_error "Python 3.10+ not found. Install python3.10+ and run pace-maker doctor."
         return 1
     }
 
-    if ! _ensure_python_deps_for "$hook_py"; then
+    if ! _ensure_venv_and_deps "$base_py"; then
         return 1
     fi
 
-    cli_py="$(resolve_cli_python 2>/dev/null || true)"
-    if [ -n "${cli_py:-}" ] && [ "$cli_py" != "$hook_py" ]; then
-        if ! _ensure_python_deps_for "$cli_py"; then
-            return 1
-        fi
-    fi
+    # Legacy per-interpreter markers from pre-venv bootstrap (safe to remove).
+    rm -rf "${PACEMAKER_DIR}/.python_deps" "${PACEMAKER_DIR}/.python_deps.lock" 2>/dev/null || true
 
     if ! bootstrap_verify; then
         return 1
@@ -240,10 +298,13 @@ bootstrap_full() {
 }
 
 bootstrap_verify() {
-    local hook_py
-    hook_py="$(resolve_python)" || return 1
-    if ! _deps_imports_ok "$hook_py"; then
-        _bootstrap_user_error "Python dependency check failed for $hook_py"
+    local runtime_py
+    runtime_py="$(resolve_runtime_python)" || {
+        _bootstrap_user_error "Python dependency check failed (managed venv at $VENV_DIR)"
+        return 1
+    }
+    if ! _deps_imports_ok "$runtime_py"; then
+        _bootstrap_user_error "Python dependency check failed for $runtime_py"
         return 1
     fi
 
@@ -257,7 +318,13 @@ bootstrap_verify() {
 }
 
 bootstrap_needs_full() {
-    [ ! -f "$BOOTSTRAP_OK_MARKER" ]
+    if [ ! -f "$BOOTSTRAP_OK_MARKER" ]; then
+        return 0
+    fi
+    if ! resolve_runtime_python >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
 }
 
 # Entry when executed directly.

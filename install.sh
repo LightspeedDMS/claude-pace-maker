@@ -1136,7 +1136,6 @@ main() {
     if ! bootstrap_full; then
       echo -e "${RED}Plugin bootstrap failed.${NC}" >&2
       echo "Run: pace-maker doctor" >&2
-      echo "Or install deps manually: python3 -m pip install --user requests pyyaml claude-agent-sdk" >&2
       exit 1
     fi
     init_database

@@ -1,26 +1,36 @@
-#!/usr/bin/env python3
-"""
-pace-maker CLI wrapper.
+#!/bin/bash
+# pace-maker CLI — uses the managed venv at ~/.claude-pace-maker/venv.
+set -euo pipefail
 
-This script provides the user-facing CLI for Claude Pace Maker.
-It executes the main() function from the user_commands module.
-"""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PACEMAKER_DIR="${PACEMAKER_DIR:-$HOME/.claude-pace-maker}"
 
-import sys
-import os
+# shellcheck source=scripts/bootstrap-plugin.sh
+source "${SCRIPT_DIR}/bootstrap-plugin.sh"
 
-# Add the installed pacemaker package to the Python path
-PACEMAKER_LIB = os.path.expanduser("~/.claude-pace-maker")
-if os.path.exists(PACEMAKER_LIB):
-    sys.path.insert(0, PACEMAKER_LIB)
+_bootstrap_resolve_plugin_root
 
-try:
-    from pacemaker.user_commands import main
-    main()
-except ImportError as e:
-    print(f"Error: Could not import pace-maker modules: {e}", file=sys.stderr)
-    print("Please ensure pace-maker is properly installed.", file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f"Error: {e}", file=sys.stderr)
-    sys.exit(1)
+bootstrap_light
+
+if bootstrap_needs_full; then
+    if ! bootstrap_full; then
+        exit 1
+    fi
+fi
+
+RUNTIME_PYTHON="$(resolve_runtime_python)" || {
+    echo "[pace-maker] Managed venv is not ready. Run: pace-maker doctor" >&2
+    exit 1
+}
+
+INSTALL_MARKER="$PACEMAKER_DIR/install_source"
+if [ -f "$INSTALL_MARKER" ]; then
+    SOURCE_DIR="$(cat "$INSTALL_MARKER")"
+    if [[ "$SOURCE_DIR" != *"pipx"* ]]; then
+        export PYTHONPATH="${SOURCE_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+    fi
+elif [ -n "${PLUGIN_ROOT:-}" ]; then
+    export PYTHONPATH="${PLUGIN_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
+exec "$RUNTIME_PYTHON" -m pacemaker.user_commands "$@"

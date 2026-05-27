@@ -43,19 +43,19 @@ if [ "$HOOK_TYPE" = "session_start" ] || bootstrap_needs_full; then
 fi
 
 # ---------------------------------------------------------------------------
-# Resolve Python command and PYTHONPATH
+# Resolve Python command and PYTHONPATH (managed venv is canonical)
 # ---------------------------------------------------------------------------
 find_python() {
-    resolve_python 2>/dev/null || echo "python3"
+    resolve_runtime_python 2>/dev/null || resolve_python 2>/dev/null || echo "python3"
 }
 
 INSTALL_MARKER="$PACEMAKER_DIR/install_source"
 if [ -f "$INSTALL_MARKER" ]; then
     SOURCE_DIR=$(cat "$INSTALL_MARKER")
     if [[ "$SOURCE_DIR" == *"pipx"* ]]; then
-        VENV_PYTHON=$(echo "$SOURCE_DIR" | sed 's|/share/claude-pace-maker|/bin/python3|')
-        if [ -x "$VENV_PYTHON" ]; then
-            PYTHON_CMD="$VENV_PYTHON"
+        PIPX_PYTHON=$(echo "$SOURCE_DIR" | sed 's|/share/claude-pace-maker|/bin/python3|')
+        if [ -x "$PIPX_PYTHON" ]; then
+            PYTHON_CMD="$PIPX_PYTHON"
         else
             PYTHON_CMD=$(find_python)
         fi
