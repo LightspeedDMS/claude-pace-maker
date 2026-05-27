@@ -87,6 +87,13 @@ _write_venv_stamp() {
     echo "${base_py}:${DEPS_SIGNATURE}" >"$VENV_STAMP"
 }
 
+# Record a ready venv only after imports succeed (never on venv create alone).
+_mark_venv_ready() {
+    local base_py="$1"
+    rm -f "$VENV_FAILED_MARKER"
+    _write_venv_stamp "$base_py"
+}
+
 # Clear mkdir-based lock left behind when a prior bootstrap was interrupted.
 _clear_stale_venv_lock_dir() {
     if [ ! -d "$VENV_LOCK_DIR" ]; then
@@ -190,12 +197,10 @@ _ensure_venv_and_deps() {
             _bootstrap_user_error "Run: pace-maker doctor   (or: bash \"\$PLUGIN_ROOT/scripts/doctor.sh\")"
             return 1
         fi
-        _write_venv_stamp "$base_py"
     fi
 
     if _deps_imports_ok "$VENV_PYTHON"; then
-        rm -f "$VENV_FAILED_MARKER"
-        _write_venv_stamp "$base_py"
+        _mark_venv_ready "$base_py"
         return 0
     fi
 
@@ -205,9 +210,10 @@ _ensure_venv_and_deps() {
     "$VENV_PYTHON" -c "import claude_agent_sdk" 2>/dev/null || packages+=("claude-agent-sdk")
 
     if [ ${#packages[@]} -eq 0 ]; then
-        rm -f "$VENV_FAILED_MARKER"
-        _write_venv_stamp "$base_py"
-        return 0
+        if _deps_imports_ok "$VENV_PYTHON"; then
+            _mark_venv_ready "$base_py"
+            return 0
+        fi
     fi
 
     _with_venv_install_lock _pip_install_into_venv "$base_py" "${packages[@]}"
@@ -229,8 +235,7 @@ _pip_install_into_venv() {
     fi
     if "$VENV_PYTHON" -m pip install "${packages[@]}" >>"$DEBUG_LOG" 2>&1; then
         if _deps_imports_ok "$VENV_PYTHON"; then
-            rm -f "$VENV_FAILED_MARKER"
-            _write_venv_stamp "$base_py"
+            _mark_venv_ready "$base_py"
             return 0
         fi
     fi
@@ -303,17 +308,17 @@ EOF
 
 bootstrap_full() {
     export PACEMAKER_BOOTSTRAPPING=1
+    trap 'unset PACEMAKER_BOOTSTRAPPING' RETURN
+
     bootstrap_light
 
     local base_py
     base_py="$(resolve_python)" || {
         _bootstrap_user_error "Python 3.10+ not found. Install python3.10+ and run pace-maker doctor."
-        unset PACEMAKER_BOOTSTRAPPING
         return 1
     }
 
     if ! _ensure_venv_and_deps "$base_py"; then
-        unset PACEMAKER_BOOTSTRAPPING
         return 1
     fi
 
@@ -321,12 +326,10 @@ bootstrap_full() {
     rm -rf "${PACEMAKER_DIR}/.python_deps" "${PACEMAKER_DIR}/.python_deps.lock" 2>/dev/null || true
 
     if ! bootstrap_verify; then
-        unset PACEMAKER_BOOTSTRAPPING
         return 1
     fi
 
     date -u +"%Y-%m-%dT%H:%M:%SZ" >"$BOOTSTRAP_OK_MARKER"
-    unset PACEMAKER_BOOTSTRAPPING
     return 0
 }
 

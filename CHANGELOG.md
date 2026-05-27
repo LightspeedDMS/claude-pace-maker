@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.29.0] - 2026-05-27
+
+### Changed
+- **Managed Python venv for plugin installs** — Bootstrap no longer runs `pip install --user` against the system interpreter (which fails on macOS Homebrew and other PEP 668 environments). Dependencies (`requests`, `pyyaml`, `claude-agent-sdk`) are installed into `~/.claude-pace-maker/venv`. Hooks and the `pace-maker` CLI use that venv via `resolve_runtime_python()`.
+  - `scripts/bootstrap-plugin.sh` — `_ensure_venv_and_deps()`, portable install lock (`flock` on Linux, `mkdir` + pid on macOS), stale lock recovery
+  - `scripts/pace-maker` — bash wrapper with symlink resolution for `~/.local/bin/pace-maker`
+  - `scripts/hook.sh` — prefers managed venv over system Python
+
+### Fixed
+- **CLI symlink broke bootstrap sourcing** — `~/.local/bin/pace-maker` is a symlink; `BASH_SOURCE[0]` resolved to `~/.local/bin`, so `bootstrap-plugin.sh` was not found. Fix: follow symlinks to the plugin `scripts/` directory, with `install_source` fallback.
+- **Silent hang on `pace-maker status`** — Stale `~/.claude-pace-maker/.venv.lock.d` from interrupted bootstraps blocked pip for 30s with no user-visible error; `bootstrap_verify` recursively invoked the CLI before `.bootstrap_ok` existed. Fix: stale lock detection, stderr errors on lock timeout, smoke test via venv Python only, `PACEMAKER_BOOTSTRAPPING` guard.
+
+### Migration (2.28.x → 2.29.0)
+- Upgrade the plugin (`claude plugin install` / marketplace update), then run `pace-maker doctor` or any `pace-maker` command (SessionStart also bootstraps).
+- Optional clean reinstall of runtime state (config/DB preserved if you skip step 3):
+  1. `claude plugin remove claude-pace-maker` (optional)
+  2. `rm -rf ~/.claude/plugins/cache/*/claude-pace-maker` (optional cache clear)
+  3. `rm -rf ~/.claude-pace-maker/.python_deps ~/.claude-pace-maker/.venv.lock.d` (legacy markers/locks)
+  4. Reinstall plugin; first run creates `~/.claude-pace-maker/venv`
+- If bootstrap appears stuck: `rm -rf ~/.claude-pace-maker/.venv.lock.d` then `pace-maker doctor`
+
 ## [2.28.0] - 2026-05-22
 
 ### Added
