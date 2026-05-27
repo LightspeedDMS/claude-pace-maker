@@ -2,8 +2,37 @@
 # pace-maker CLI — uses the managed venv at ~/.claude-pace-maker/venv.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACEMAKER_DIR="${PACEMAKER_DIR:-$HOME/.claude-pace-maker}"
+
+# ~/.local/bin/pace-maker is a symlink; resolve to the plugin scripts/ directory.
+_resolve_cli_script_dir() {
+    local script="${BASH_SOURCE[0]}"
+    while [ -L "$script" ]; do
+        local dir link
+        dir="$(cd -P "$(dirname "$script")" && pwd)"
+        link="$(readlink "$script")"
+        if [[ "$link" == /* ]]; then
+            script="$link"
+        else
+            script="$dir/$link"
+        fi
+    done
+    cd -P "$(dirname "$script")" && pwd
+}
+
+SCRIPT_DIR="$(_resolve_cli_script_dir)"
+if [ ! -f "${SCRIPT_DIR}/bootstrap-plugin.sh" ]; then
+    install_marker="${PACEMAKER_DIR}/install_source"
+    if [ -f "$install_marker" ]; then
+        SCRIPT_DIR="$(cat "$install_marker")/scripts"
+    fi
+fi
+
+if [ ! -f "${SCRIPT_DIR}/bootstrap-plugin.sh" ]; then
+    echo "[pace-maker] Could not locate bootstrap-plugin.sh (resolved CLI dir: ${SCRIPT_DIR})" >&2
+    echo "[pace-maker] Run: pace-maker doctor" >&2
+    exit 1
+fi
 
 # shellcheck source=scripts/bootstrap-plugin.sh
 source "${SCRIPT_DIR}/bootstrap-plugin.sh"
