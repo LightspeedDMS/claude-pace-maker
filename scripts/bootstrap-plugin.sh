@@ -87,7 +87,28 @@ _write_venv_stamp() {
     echo "${base_py}:${DEPS_SIGNATURE}" >"$VENV_STAMP"
 }
 
-# Portable lock (flock on Linux; mkdir on macOS where flock is often absent).
+# Clear mkdir-based lock left behind when a prior bootstrap was interrupted.
+_clear_stale_venv_lock_dir() {
+    if [ ! -d "$VENV_LOCK_DIR" ]; then
+        return 0
+    fi
+    local lock_pid=""
+    if [ -f "$VENV_LOCK_DIR/pid" ]; then
+        lock_pid="$(cat "$VENV_LOCK_DIR/pid" 2>/dev/null || true)"
+        if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+            return 0
+        fi
+        _bootstrap_log "clearing orphaned venv install lock (pid ${lock_pid:-?} not running)"
+        rm -rf "$VENV_LOCK_DIR"
+        return 0
+    fi
+    if find "$VENV_LOCK_DIR" -maxdepth 0 -mmin +2 2>/dev/null | grep -q .; then
+        _bootstrap_log "clearing stale venv install lock at $VENV_LOCK_DIR"
+        rm -rf "$VENV_LOCK_DIR"
+    fi
+}
+
+# Portable lock (flock on Linux; mkdir + pid on macOS where flock is often absent).
 _with_venv_install_lock() {
     if command -v flock >/dev/null 2>&1; then
         (
@@ -99,16 +120,23 @@ _with_venv_install_lock() {
 
     local waited=0
     while ! mkdir "$VENV_LOCK_DIR" 2>/dev/null; do
+        _clear_stale_venv_lock_dir
+        if mkdir "$VENV_LOCK_DIR" 2>/dev/null; then
+            break
+        fi
         sleep 0.2
         waited=$((waited + 1))
         if [ "$waited" -ge 150 ]; then
-            _bootstrap_log "timed out waiting for venv install lock"
+            _bootstrap_user_error "Timed out waiting for venv install lock at $VENV_LOCK_DIR"
+            _bootstrap_user_error "If no other pace-maker command is running, remove the lock and retry:"
+            _bootstrap_user_error "  rm -rf \"$VENV_LOCK_DIR\""
             return 1
         fi
     done
+    echo "$$" >"$VENV_LOCK_DIR/pid"
     "$@"
     local rc=$?
-    rmdir "$VENV_LOCK_DIR" 2>/dev/null || true
+    rm -rf "$VENV_LOCK_DIR"
     return "$rc"
 }
 
@@ -274,15 +302,18 @@ EOF
 }
 
 bootstrap_full() {
+    export PACEMAKER_BOOTSTRAPPING=1
     bootstrap_light
 
     local base_py
     base_py="$(resolve_python)" || {
         _bootstrap_user_error "Python 3.10+ not found. Install python3.10+ and run pace-maker doctor."
+        unset PACEMAKER_BOOTSTRAPPING
         return 1
     }
 
     if ! _ensure_venv_and_deps "$base_py"; then
+        unset PACEMAKER_BOOTSTRAPPING
         return 1
     fi
 
@@ -290,11 +321,28 @@ bootstrap_full() {
     rm -rf "${PACEMAKER_DIR}/.python_deps" "${PACEMAKER_DIR}/.python_deps.lock" 2>/dev/null || true
 
     if ! bootstrap_verify; then
+        unset PACEMAKER_BOOTSTRAPPING
         return 1
     fi
 
     date -u +"%Y-%m-%dT%H:%M:%SZ" >"$BOOTSTRAP_OK_MARKER"
+    unset PACEMAKER_BOOTSTRAPPING
     return 0
+}
+
+_bootstrap_pythonpath() {
+    local install_marker="${PACEMAKER_DIR}/install_source"
+    if [ -f "$install_marker" ]; then
+        local source_dir
+        source_dir="$(cat "$install_marker")"
+        if [[ "$source_dir" != *"pipx"* ]]; then
+            export PYTHONPATH="${source_dir}/src${PYTHONPATH:+:${PYTHONPATH}}"
+            return 0
+        fi
+    fi
+    if [ -n "${PLUGIN_ROOT:-}" ]; then
+        export PYTHONPATH="${PLUGIN_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+    fi
 }
 
 bootstrap_verify() {
@@ -308,11 +356,12 @@ bootstrap_verify() {
         return 1
     fi
 
-    local cli="$HOME/.local/bin/pace-maker"
-    if [ -x "$cli" ] || [ -L "$cli" ]; then
-        if ! "$cli" status >/dev/null 2>&1; then
-            _bootstrap_log "pace-maker status smoke test failed (non-fatal for hooks)"
-        fi
+    # Smoke-test via venv Python directly — never call the pace-maker CLI here (that
+    # would re-enter bootstrap_full before .bootstrap_ok exists and recurse/hang).
+    _bootstrap_resolve_plugin_root
+    _bootstrap_pythonpath
+    if ! "$runtime_py" -m pacemaker.user_commands status >/dev/null 2>&1; then
+        _bootstrap_log "pacemaker.user_commands status smoke test failed (non-fatal for hooks)"
     fi
     return 0
 }

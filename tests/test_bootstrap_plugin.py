@@ -91,6 +91,22 @@ class TestBootstrapVenv:
         assert proc.returncode == 0, proc.stderr
 
 
+class TestStaleVenvLockRecovery:
+    def test_stale_lock_dir_is_cleared_and_bootstrap_succeeds(self, tmp_path):
+        """Orphaned .venv.lock.d from an interrupted bootstrap must not block forever."""
+        home = tmp_path / "home"
+        home.mkdir()
+        pacemaker_dir = home / ".claude-pace-maker"
+        pacemaker_dir.mkdir()
+        stale_lock = pacemaker_dir / ".venv.lock.d"
+        stale_lock.mkdir()
+
+        result = run_bootstrap(home, "--full")
+        assert result.returncode == 0, result.stderr
+        assert not stale_lock.exists(), "stale lock dir should be removed after bootstrap"
+        assert (pacemaker_dir / ".bootstrap_ok").exists()
+
+
 class TestVenvPipNeverTouchesSystemPython:
     def test_venv_pip_failure_writes_failed_marker_no_system_pip(self, tmp_path):
         """When venv pip install fails, .venv.failed is written; system pip is never used."""

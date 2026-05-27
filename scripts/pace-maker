@@ -41,10 +41,15 @@ _bootstrap_resolve_plugin_root
 
 bootstrap_light
 
-if bootstrap_needs_full; then
+# Skip re-entrant bootstrap when bootstrap_verify runs a smoke test.
+if [ "${PACEMAKER_BOOTSTRAPPING:-}" != "1" ] && bootstrap_needs_full; then
+    export PACEMAKER_BOOTSTRAPPING=1
     if ! bootstrap_full; then
+        echo "[pace-maker] Bootstrap failed. Run: pace-maker doctor" >&2
+        echo "[pace-maker] Details: ${PACEMAKER_DIR}/hook_debug.log" >&2
         exit 1
     fi
+    unset PACEMAKER_BOOTSTRAPPING
 fi
 
 RUNTIME_PYTHON="$(resolve_runtime_python)" || {
