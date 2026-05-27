@@ -161,9 +161,11 @@ _venv_needs_recreate() {
     return 1
 }
 
+# Fast path (no lock): venv exists, stamp matches, deps importable.
+# Slow path (under lock): any venv mutation — rm/recreate/pip install.
 _ensure_venv_and_deps() {
     local base_py="$1"
-    local stamp expected packages
+    local stamp expected
 
     if [ -z "$base_py" ] || [ ! -x "$base_py" ]; then
         return 1
@@ -177,6 +179,26 @@ _ensure_venv_and_deps() {
     fi
 
     expected="${base_py}:${DEPS_SIGNATURE}"
+    if [ -x "$VENV_PYTHON" ] && _deps_imports_ok "$VENV_PYTHON"; then
+        stamp="$(_read_venv_stamp)"
+        if [ "$stamp" = "$expected" ]; then
+            return 0
+        fi
+    fi
+
+    _with_venv_install_lock _create_or_repair_venv_locked "$base_py"
+    return $?
+}
+
+# Called under _with_venv_install_lock. Owns ALL venv mutations:
+# rm -rf, python -m venv, pip install. Re-checks state under lock so a
+# concurrent process that already finished the work is detected and no-op'd.
+_create_or_repair_venv_locked() {
+    local base_py="$1"
+    local stamp expected packages
+    expected="${base_py}:${DEPS_SIGNATURE}"
+
+    # Double-checked locking: another process may have just finished bootstrap.
     if [ -x "$VENV_PYTHON" ] && _deps_imports_ok "$VENV_PYTHON"; then
         stamp="$(_read_venv_stamp)"
         if [ "$stamp" = "$expected" ]; then
@@ -210,29 +232,21 @@ _ensure_venv_and_deps() {
     "$VENV_PYTHON" -c "import claude_agent_sdk" 2>/dev/null || packages+=("claude-agent-sdk")
 
     if [ ${#packages[@]} -eq 0 ]; then
-        if _deps_imports_ok "$VENV_PYTHON"; then
-            _mark_venv_ready "$base_py"
-            return 0
-        fi
+        # All individually importable but combined check failed — race against
+        # another process. Treat as ready.
+        _mark_venv_ready "$base_py"
+        return 0
     fi
 
-    _with_venv_install_lock _pip_install_into_venv "$base_py" "${packages[@]}"
-    return $?
+    _pip_install_into_venv "$base_py" "${packages[@]}"
 }
 
+# Always called under the install lock from _create_or_repair_venv_locked.
 _pip_install_into_venv() {
     local base_py="$1"
     shift
     local packages=("$@")
-    local stamp expected
-    expected="${base_py}:${DEPS_SIGNATURE}"
 
-    if [ -x "$VENV_PYTHON" ] && _deps_imports_ok "$VENV_PYTHON"; then
-        stamp="$(_read_venv_stamp)"
-        if [ "$stamp" = "$expected" ]; then
-            return 0
-        fi
-    fi
     if "$VENV_PYTHON" -m pip install "${packages[@]}" >>"$DEBUG_LOG" 2>&1; then
         if _deps_imports_ok "$VENV_PYTHON"; then
             _mark_venv_ready "$base_py"
@@ -369,14 +383,21 @@ bootstrap_verify() {
     return 0
 }
 
+# Cheap check intended for per-hook invocation: only stat() + file read, no
+# python fork. Returns 0 (needs full) when state is missing or the stamp
+# doesn't match the current DEPS_SIGNATURE. The deep import check happens on
+# session_start via bootstrap_full -> _ensure_venv_and_deps which always
+# validates imports under the install lock.
 bootstrap_needs_full() {
-    if [ ! -f "$BOOTSTRAP_OK_MARKER" ]; then
-        return 0
-    fi
-    if ! resolve_runtime_python >/dev/null 2>&1; then
-        return 0
-    fi
-    return 1
+    [ -f "$BOOTSTRAP_OK_MARKER" ] || return 0
+    [ -x "$VENV_PYTHON" ] || return 0
+    [ -f "$VENV_STAMP" ] || return 0
+    local stamp
+    stamp="$(_read_venv_stamp)"
+    case "$stamp" in
+        *":${DEPS_SIGNATURE}") return 1 ;;
+        *) return 0 ;;
+    esac
 }
 
 # Entry when executed directly.

@@ -7,10 +7,16 @@
   - `scripts/bootstrap-plugin.sh` — `_ensure_venv_and_deps()`, portable install lock (`flock` on Linux, `mkdir` + pid on macOS), stale lock recovery
   - `scripts/pace-maker` — bash wrapper with symlink resolution for `~/.local/bin/pace-maker`
   - `scripts/hook.sh` — prefers managed venv over system Python
+- **Cheap `bootstrap_needs_full` for per-hook calls** — Replaces the per-hook deep import check (3-module python fork) with a stat-only check: `BOOTSTRAP_OK_MARKER` + `VENV_PYTHON` executable + `.venv_stamp` suffix matches `DEPS_SIGNATURE`. The deep check still runs on `session_start` via `bootstrap_full` → `_ensure_venv_and_deps`.
+  - `scripts/bootstrap-plugin.sh` — `bootstrap_needs_full()` no longer spawns python
+  - `tests/test_bootstrap_plugin.py` — `TestBootstrapNeedsFullIsCheap` (sentinel-based no-fork assertion + stamp mismatch)
 
 ### Fixed
 - **CLI symlink broke bootstrap sourcing** — `~/.local/bin/pace-maker` is a symlink; `BASH_SOURCE[0]` resolved to `~/.local/bin`, so `bootstrap-plugin.sh` was not found. Fix: follow symlinks to the plugin `scripts/` directory, with `install_source` fallback.
 - **Silent hang on `pace-maker status`** — Stale `~/.claude-pace-maker/.venv.lock.d` from interrupted bootstraps blocked pip for 30s with no user-visible error; `bootstrap_verify` recursively invoked the CLI before `.bootstrap_ok` existed. Fix: stale lock detection, stderr errors on lock timeout, smoke test via venv Python only, `PACEMAKER_BOOTSTRAPPING` guard.
+- **Venv creation race** — `rm -rf $VENV_DIR` and `python -m venv $VENV_DIR` ran OUTSIDE the install lock; two concurrent bootstraps could both decide to recreate, clobbering each other and leaving a corrupt environment. Fix: every venv mutation (rm/create/pip) now runs inside `_with_venv_install_lock`. Added a fast-path check (no lock) for the common "already good" case and a double-checked re-verification under the lock.
+  - `scripts/bootstrap-plugin.sh` — new `_create_or_repair_venv_locked()` owns all mutations
+  - `tests/test_bootstrap_plugin.py` — `TestConcurrentBootstrap` spawns 4 parallel `--full` bootstraps and verifies the resulting venv is intact
 
 ### Migration (2.28.x → 2.29.0)
 - Upgrade the plugin (`claude plugin install` / marketplace update), then run `pace-maker doctor` or any `pace-maker` command (SessionStart also bootstraps).
