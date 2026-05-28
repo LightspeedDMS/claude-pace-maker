@@ -43,28 +43,65 @@ if [ "$HOOK_TYPE" = "session_start" ] || bootstrap_needs_full; then
 fi
 
 # ---------------------------------------------------------------------------
-# Resolve Python command and PYTHONPATH
+# Resolve Python command and PYTHONPATH (managed venv is canonical).
+#
+# When the managed venv isn't ready, fall back to system python — but log
+# loudly so the user (or anyone reading hook_debug.log) sees that the hook
+# is running on an interpreter that doesn't have requests/pyyaml/sdk
+# installed and the pacemaker.hook invocation below will likely fail.
+# Throttled to once per hour via a marker file to keep the log readable.
 # ---------------------------------------------------------------------------
-find_python() {
-    resolve_python 2>/dev/null || echo "python3"
+_log_python_fallback() {
+    local using="$1" reason="$2"
+    local marker="$PACEMAKER_DIR/.python_fallback_warn"
+    local now mtime age=999999
+    now=$(date +%s 2>/dev/null || echo 0)
+    if [ -f "$marker" ]; then
+        mtime=$(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || echo 0)
+        age=$(( now - mtime ))
+    fi
+    if [ "$age" -lt 3600 ]; then
+        return 0
+    fi
+    touch "$marker" 2>/dev/null || true
+    {
+        echo "[hook.sh] WARNING: managed venv at $VENV_DIR is unavailable ($reason)."
+        echo "[hook.sh]          Falling back to: $using"
+        echo "[hook.sh]          Hook will likely fail until you run: pace-maker doctor"
+    } >>"$DEBUG_LOG"
+}
+
+resolve_hook_python() {
+    local venv_py system_py
+    if venv_py=$(resolve_runtime_python 2>/dev/null); then
+        echo "$venv_py"
+        return 0
+    fi
+    if system_py=$(resolve_python 2>/dev/null); then
+        _log_python_fallback "$system_py" "venv missing or deps not importable"
+        echo "$system_py"
+        return 0
+    fi
+    _log_python_fallback "python3" "no Python 3.10+ found"
+    echo "python3"
 }
 
 INSTALL_MARKER="$PACEMAKER_DIR/install_source"
 if [ -f "$INSTALL_MARKER" ]; then
     SOURCE_DIR=$(cat "$INSTALL_MARKER")
     if [[ "$SOURCE_DIR" == *"pipx"* ]]; then
-        VENV_PYTHON=$(echo "$SOURCE_DIR" | sed 's|/share/claude-pace-maker|/bin/python3|')
-        if [ -x "$VENV_PYTHON" ]; then
-            PYTHON_CMD="$VENV_PYTHON"
+        PIPX_PYTHON=$(echo "$SOURCE_DIR" | sed 's|/share/claude-pace-maker|/bin/python3|')
+        if [ -x "$PIPX_PYTHON" ]; then
+            PYTHON_CMD="$PIPX_PYTHON"
         else
-            PYTHON_CMD=$(find_python)
+            PYTHON_CMD=$(resolve_hook_python)
         fi
     else
-        PYTHON_CMD=$(find_python)
+        PYTHON_CMD=$(resolve_hook_python)
         export PYTHONPATH="${SOURCE_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
     fi
 else
-    PYTHON_CMD=$(find_python)
+    PYTHON_CMD=$(resolve_hook_python)
     export PYTHONPATH="${PLUGIN_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 fi
 

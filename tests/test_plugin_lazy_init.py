@@ -301,3 +301,91 @@ class TestScenario7MissingDeps:
             content = debug_log.read_text()
             # Log should contain some error indication
             assert len(content) > 0, "hook_debug.log must contain error output"
+
+
+# ---------------------------------------------------------------------------
+# Fallback-to-system-python visibility (no more silent degradation)
+# ---------------------------------------------------------------------------
+
+
+class TestHookLogsFallbackToSystemPython:
+    """When the managed venv is unavailable, hook.sh must log a clear warning
+    naming the fallback interpreter and pointing the user at `pace-maker
+    doctor`. Previously the fallback was completely silent."""
+
+    @staticmethod
+    def _seed_failed_bootstrap(home):
+        """Pre-write state that forces bootstrap_full to short-circuit
+        without creating a venv, so resolve_hook_python is forced down the
+        system-python fallback path."""
+        pacemaker_dir = home / ".claude-pace-maker"
+        pacemaker_dir.mkdir(exist_ok=True)
+        with open(pacemaker_dir / "config.json", "w") as f:
+            json.dump({"enabled": True, "log_level": 2}, f)
+        # _ensure_venv_and_deps returns 1 immediately when this marker exists,
+        # so bootstrap_full fails and resolve_hook_python falls back.
+        (pacemaker_dir / ".venv.failed").touch()
+        return pacemaker_dir
+
+    def test_warning_emitted_when_venv_missing(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        pacemaker_dir = self._seed_failed_bootstrap(home)
+        run_hook(home, "post_tool_use", input_data="{}")
+
+        debug_log = pacemaker_dir / "hook_debug.log"
+        assert debug_log.exists(), "hook_debug.log should exist after first hook"
+        content = debug_log.read_text()
+        assert "managed venv" in content and "unavailable" in content, (
+            f"hook.sh should warn about unavailable venv; got log:\n{content}"
+        )
+        assert "pace-maker doctor" in content, (
+            f"fallback log should point user at `pace-maker doctor`; got:\n{content}"
+        )
+        # Throttle marker must exist after the first warning.
+        assert (pacemaker_dir / ".python_fallback_warn").exists()
+
+    def test_warning_is_throttled_within_one_hour(self, tmp_path):
+        """Hooks fire dozens of times per session; the fallback warning is
+        throttled to once per hour via a marker file so the log stays
+        readable."""
+        home = tmp_path / "home"
+        home.mkdir()
+        pacemaker_dir = self._seed_failed_bootstrap(home)
+
+        for _ in range(3):
+            run_hook(home, "post_tool_use", input_data="{}")
+
+        debug_log = pacemaker_dir / "hook_debug.log"
+        content = debug_log.read_text()
+        # The unique warning header appears once across 3 hook invocations.
+        assert content.count("managed venv at") == 1, (
+            f"fallback warning must be throttled to once per hour; got "
+            f"{content.count('managed venv at')} occurrences:\n{content}"
+        )
+
+    def test_marker_cleared_after_successful_bootstrap(self, tmp_path):
+        """bootstrap_full clears the throttle marker so a venv that breaks
+        AFTER recovery re-warns the user instead of staying silent."""
+        home = tmp_path / "home"
+        home.mkdir()
+        pacemaker_dir = home / ".claude-pace-maker"
+        pacemaker_dir.mkdir()
+        marker = pacemaker_dir / ".python_fallback_warn"
+        marker.touch()
+        assert marker.exists()
+
+        # Run real bootstrap_full (creates venv + clears marker on success).
+        import subprocess as _sp
+        result = _sp.run(
+            ["bash", str(REPO_ROOT / "scripts" / "bootstrap-plugin.sh"), "--full"],
+            env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists(), (
+            "bootstrap_full must clear .python_fallback_warn so a future "
+            "fallback re-warns the user"
+        )

@@ -1,21 +1,33 @@
 #!/bin/bash
-# Claude Pace Maker - Plugin bootstrap (filesystem wiring + optional Python deps).
+# Claude Pace Maker - Plugin bootstrap (filesystem wiring + managed venv).
 #
 # Usage (sourced or executed):
 #   bootstrap-plugin.sh --light   # config, symlinks, install_source only
-#   bootstrap-plugin.sh --full    # --light + pip deps + .bootstrap_ok marker
+#   bootstrap-plugin.sh --full    # --light + venv deps + .bootstrap_ok marker
 #
 # Requires PLUGIN_ROOT (or CLAUDE_PLUGIN_ROOT) when executed directly.
 
 set -euo pipefail
 
-DEPS_SIGNATURE="requests:pyyaml:claude-agent-sdk"
 PACEMAKER_DIR="${PACEMAKER_DIR:-$HOME/.claude-pace-maker}"
+VENV_DIR="$PACEMAKER_DIR/venv"
+VENV_PYTHON="$VENV_DIR/bin/python3"
+VENV_STAMP="$PACEMAKER_DIR/.venv_stamp"
+VENV_LOCK_FILE="$PACEMAKER_DIR/.venv.lock"
+VENV_LOCK_LINK="$PACEMAKER_DIR/.venv.lock.link"
+VENV_FAILED_MARKER="$PACEMAKER_DIR/.venv.failed"
 BOOTSTRAP_OK_MARKER="$PACEMAKER_DIR/.bootstrap_ok"
-DEPS_DIR="$PACEMAKER_DIR/.python_deps"
-DEPS_LOCK="$PACEMAKER_DIR/.python_deps.lock"
 DEBUG_LOG="$PACEMAKER_DIR/hook_debug.log"
 BOOTSTRAP_VERBOSE="${BOOTSTRAP_VERBOSE:-0}"
+
+# Pinned dependencies are loaded lazily from requirements.txt (single
+# source of truth). DEPS_SIGNATURE is the sha256 of that file so any
+# edit — version bump, comment change, additional dep — invalidates
+# .venv_stamp and triggers a re-install on next bootstrap_full.
+REQUIREMENTS_FILE=""
+DEPS_SIGNATURE=""
+PINNED_PACKAGES=()
+_PINNED_DEPS_LOADED=0
 
 _bootstrap_log() {
     if [ "$BOOTSTRAP_VERBOSE" = "1" ]; then
@@ -41,10 +53,61 @@ _bootstrap_resolve_plugin_root() {
     PLUGIN_ROOT="$(cd "$script_dir/.." && pwd)"
 }
 
-# Find Python 3.10+; print absolute path.
+# Compute sha256 of a file using whichever digest tool is available on
+# the host (sha256sum on Linux, shasum on macOS, openssl as fallback).
+_sha256_of_file() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
+    else
+        return 1
+    fi
+}
+
+# Parse requirements.txt into PINNED_PACKAGES and derive DEPS_SIGNATURE
+# from its sha256. Idempotent — guarded by _PINNED_DEPS_LOADED so
+# sourcing this file repeatedly is cheap. Must be called after
+# _bootstrap_resolve_plugin_root.
+_ensure_pinned_deps_loaded() {
+    [ "$_PINNED_DEPS_LOADED" = "1" ] && return 0
+    _bootstrap_resolve_plugin_root
+    REQUIREMENTS_FILE="$PLUGIN_ROOT/requirements.txt"
+    if [ ! -f "$REQUIREMENTS_FILE" ]; then
+        _bootstrap_user_error "requirements.txt not found at $REQUIREMENTS_FILE"
+        return 1
+    fi
+    PINNED_PACKAGES=()
+    local raw spec
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        # Strip trailing inline comment, then trim whitespace.
+        spec="${raw%%#*}"
+        spec="${spec#"${spec%%[![:space:]]*}"}"
+        spec="${spec%"${spec##*[![:space:]]}"}"
+        [ -z "$spec" ] && continue
+        PINNED_PACKAGES+=("$spec")
+    done <"$REQUIREMENTS_FILE"
+
+    if [ ${#PINNED_PACKAGES[@]} -eq 0 ]; then
+        _bootstrap_user_error "requirements.txt at $REQUIREMENTS_FILE is empty"
+        return 1
+    fi
+
+    DEPS_SIGNATURE="$(_sha256_of_file "$REQUIREMENTS_FILE")"
+    if [ -z "$DEPS_SIGNATURE" ]; then
+        _bootstrap_user_error "no sha256 tool available (need sha256sum, shasum, or openssl)"
+        return 1
+    fi
+    _PINNED_DEPS_LOADED=1
+}
+
+# Find Python 3.10+ for venv creation; prefer the newest available interpreter.
 resolve_python() {
     local py resolved
-    for py in python3.11 python3.10 python3; do
+    for py in python3.13 python3.12 python3.11 python3.10 python3; do
         if command -v "$py" >/dev/null 2>&1; then
             if "$py" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
                 resolved="$(command -v "$py" 2>/dev/null || true)"
@@ -58,100 +121,230 @@ resolve_python() {
     return 1
 }
 
-# Resolve python3 used by CLI shebang (#!/usr/bin/env python3).
-resolve_cli_python() {
-    local resolved
-    resolved="$(command -v python3 2>/dev/null || true)"
-    if [ -z "$resolved" ]; then
-        return 1
-    fi
-    if "$resolved" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
-        echo "$resolved"
+# Canonical runtime: managed venv Python when ready, else empty.
+resolve_runtime_python() {
+    if [ -x "$VENV_PYTHON" ] && _deps_imports_ok "$VENV_PYTHON"; then
+        echo "$VENV_PYTHON"
         return 0
     fi
     return 1
 }
 
-_deps_marker_path() {
-    local abs_py="$1"
-    local hash
-    hash="$(printf '%s' "$abs_py" | sha256sum 2>/dev/null | awk '{print $1}' | cut -c1-16)"
-    echo "$DEPS_DIR/${hash}"
-}
-
+# Verify the interpreter has every pinned dep installed at the exact
+# pinned version. Drives resolve_runtime_python and the venv-ready
+# check inside _create_or_repair_venv_locked, so any drift (manual
+# upgrade, partial install) triggers a repair.
 _deps_imports_ok() {
     local py="$1"
-    "$py" -c "import requests, yaml, claude_agent_sdk" 2>/dev/null
+    _ensure_pinned_deps_loaded || return 1
+    # Comma-joined list of `name==version` specs; Python parses and
+    # asserts each one via importlib.metadata.
+    local pinned_csv
+    pinned_csv="$(IFS=,; echo "${PINNED_PACKAGES[*]}")"
+    PACEMAKER_PINNED_DEPS="$pinned_csv" \
+    "$py" -c '
+import os, sys
+from importlib.metadata import version
+try:
+    # Soundness: top-level imports we actually use at runtime.
+    import requests, yaml, claude_agent_sdk
+    # Pin assertion driven by requirements.txt.
+    for spec in os.environ["PACEMAKER_PINNED_DEPS"].split(","):
+        name, _, pinned = spec.partition("==")
+        if not name or not pinned:
+            sys.exit(1)
+        if version(name) != pinned:
+            sys.exit(1)
+except Exception:
+    sys.exit(1)
+' 2>/dev/null
 }
 
-_ensure_python_deps_for() {
-    local abs_py="$1"
-    local marker failed_marker packages
+_read_venv_stamp() {
+    if [ -f "$VENV_STAMP" ]; then
+        cat "$VENV_STAMP" 2>/dev/null || true
+    fi
+}
 
-    if [ -z "$abs_py" ] || [ ! -x "$abs_py" ]; then
+_write_venv_stamp() {
+    local base_py="$1"
+    _ensure_pinned_deps_loaded || return 1
+    echo "${base_py}:${DEPS_SIGNATURE}" >"$VENV_STAMP"
+}
+
+# Record a ready venv only after imports succeed (never on venv create alone).
+_mark_venv_ready() {
+    local base_py="$1"
+    rm -f "$VENV_FAILED_MARKER"
+    _write_venv_stamp "$base_py"
+}
+
+# Clear a symlink lock left by a crashed bootstrap process. The symlink's
+# target string IS the holder's pid — set atomically at symlink(2) time —
+# so there is no "acquired but pid not yet written" intermediate state to
+# defend against. Just read the pid; if the process is gone, drop the
+# lock.
+_clear_stale_venv_lock_symlink() {
+    [ -L "$VENV_LOCK_LINK" ] || return 0
+    local pid
+    pid="$(readlink "$VENV_LOCK_LINK" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
         return 0
     fi
+    _bootstrap_log "clearing orphaned venv install lock (pid ${pid:-?} not running)"
+    rm -f "$VENV_LOCK_LINK"
+}
 
-    mkdir -p "$DEPS_DIR"
-    marker="$(_deps_marker_path "$abs_py")"
-    failed_marker="${marker}.failed"
+# Atomically acquire the lock. `symlink(2)` is the POSIX-atomic creation
+# primitive for this use case — the lock identity and the holder's pid
+# are bound into a single observable name, set in one syscall. There is
+# no torn-write window: either the symlink exists with a populated
+# target, or it doesn't exist at all. `readlink` is the canonical way to
+# inspect the holder.
+_try_acquire_venv_install_lock() {
+    ln -s "$$" "$VENV_LOCK_LINK" 2>/dev/null
+}
 
-    if [ -f "$failed_marker" ]; then
-        _bootstrap_log "skipping pip for $abs_py (previous failure)"
+# Portable lock (flock on Linux; symlink on macOS where flock is often
+# absent).
+_with_venv_install_lock() {
+    if command -v flock >/dev/null 2>&1; then
+        (
+            flock -x 9
+            "$@"
+        ) 9>"$VENV_LOCK_FILE"
+        return $?
+    fi
+
+    local waited=0
+    while ! _try_acquire_venv_install_lock; do
+        _clear_stale_venv_lock_symlink
+        if _try_acquire_venv_install_lock; then
+            break
+        fi
+        sleep 0.2
+        waited=$((waited + 1))
+        if [ "$waited" -ge 150 ]; then
+            _bootstrap_user_error "Timed out waiting for venv install lock at $VENV_LOCK_LINK"
+            _bootstrap_user_error "If no other pace-maker command is running, remove the lock and retry:"
+            _bootstrap_user_error "  rm -f \"$VENV_LOCK_LINK\""
+            return 1
+        fi
+    done
+    "$@"
+    local rc=$?
+    rm -f "$VENV_LOCK_LINK"
+    return "$rc"
+}
+
+_venv_needs_recreate() {
+    local base_py="$1"
+    if [ ! -d "$VENV_DIR" ] || [ ! -x "$VENV_PYTHON" ]; then
+        return 0
+    fi
+    _ensure_pinned_deps_loaded || return 0
+    local stamp expected
+    stamp="$(_read_venv_stamp)"
+    expected="${base_py}:${DEPS_SIGNATURE}"
+    if [ "$stamp" != "$expected" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# Fast path (no lock): venv exists, stamp matches, deps importable.
+# Slow path (under lock): any venv mutation — rm/recreate/pip install.
+_ensure_venv_and_deps() {
+    local base_py="$1"
+    local stamp expected
+
+    if [ -z "$base_py" ] || [ ! -x "$base_py" ]; then
         return 1
     fi
 
-    if [ -f "$marker" ]; then
-        local line expected
-        line="$(cat "$marker" 2>/dev/null || true)"
-        expected="${abs_py}:${DEPS_SIGNATURE}"
-        if [ "$line" = "$expected" ]; then
+    mkdir -p "$PACEMAKER_DIR"
+
+    if [ -f "$VENV_FAILED_MARKER" ]; then
+        _bootstrap_log "skipping venv setup (previous failure)"
+        return 1
+    fi
+
+    _ensure_pinned_deps_loaded || return 1
+
+    expected="${base_py}:${DEPS_SIGNATURE}"
+    if [ -x "$VENV_PYTHON" ] && _deps_imports_ok "$VENV_PYTHON"; then
+        stamp="$(_read_venv_stamp)"
+        if [ "$stamp" = "$expected" ]; then
             return 0
         fi
     fi
 
-    if _deps_imports_ok "$abs_py"; then
-        echo "${abs_py}:${DEPS_SIGNATURE}" >"$marker"
-        rm -f "$failed_marker"
-        return 0
-    fi
-
-    packages=()
-    "$abs_py" -c "import requests" 2>/dev/null || packages+=("requests")
-    "$abs_py" -c "import yaml" 2>/dev/null || packages+=("pyyaml")
-    "$abs_py" -c "import claude_agent_sdk" 2>/dev/null || packages+=("claude-agent-sdk")
-
-    if [ ${#packages[@]} -eq 0 ]; then
-        echo "${abs_py}:${DEPS_SIGNATURE}" >"$marker"
-        rm -f "$failed_marker"
-        return 0
-    fi
-
-    (
-        flock -x 9
-        if [ -f "$marker" ]; then
-            line="$(cat "$marker" 2>/dev/null || true)"
-            if [ "$line" = "${abs_py}:${DEPS_SIGNATURE}" ] && _deps_imports_ok "$abs_py"; then
-                exit 0
-            fi
-        fi
-        if "$abs_py" -m pip install --user "${packages[@]}" >>"$DEBUG_LOG" 2>&1; then
-            if _deps_imports_ok "$abs_py"; then
-                echo "${abs_py}:${DEPS_SIGNATURE}" >"$marker"
-                rm -f "$failed_marker"
-                exit 0
-            fi
-        fi
-        echo "[bootstrap-plugin] pip install failed for $abs_py (${packages[*]})" >>"$DEBUG_LOG"
-        touch "$failed_marker"
-        _bootstrap_user_error "Could not install Python packages (${packages[*]}) for $abs_py."
-        _bootstrap_user_error "Run: pace-maker doctor   (or: bash \"\$PLUGIN_ROOT/scripts/doctor.sh\")"
-        exit 1
-    ) 9>"$DEPS_LOCK"
+    _with_venv_install_lock _create_or_repair_venv_locked "$base_py"
     return $?
 }
 
-# Cheap filesystem bootstrap (no pip).
+# Called under _with_venv_install_lock. Owns ALL venv mutations:
+# rm -rf, python -m venv, pip install. Re-checks state under lock so a
+# concurrent process that already finished the work is detected and no-op'd.
+_create_or_repair_venv_locked() {
+    local base_py="$1"
+    local stamp expected
+    _ensure_pinned_deps_loaded || return 1
+    expected="${base_py}:${DEPS_SIGNATURE}"
+
+    # Double-checked locking: another process may have just finished bootstrap.
+    if [ -x "$VENV_PYTHON" ] && _deps_imports_ok "$VENV_PYTHON"; then
+        stamp="$(_read_venv_stamp)"
+        if [ "$stamp" = "$expected" ]; then
+            return 0
+        fi
+    fi
+
+    if _venv_needs_recreate "$base_py"; then
+        if [ -d "$VENV_DIR" ]; then
+            _bootstrap_log "recreating venv at $VENV_DIR (base or deps changed)"
+            rm -rf "$VENV_DIR"
+        fi
+        if ! "$base_py" -m venv "$VENV_DIR" >>"$DEBUG_LOG" 2>&1; then
+            echo "[bootstrap-plugin] venv creation failed for $base_py at $VENV_DIR" >>"$DEBUG_LOG"
+            touch "$VENV_FAILED_MARKER"
+            _bootstrap_user_error "Could not create Python virtual environment at $VENV_DIR."
+            _bootstrap_user_error "Ensure the venv module is available (e.g. brew install python@3.12 or apt install python3-venv)."
+            _bootstrap_user_error "Run: pace-maker doctor   (or: bash \"\$PLUGIN_ROOT/scripts/doctor.sh\")"
+            return 1
+        fi
+    fi
+
+    if _deps_imports_ok "$VENV_PYTHON"; then
+        _mark_venv_ready "$base_py"
+        return 0
+    fi
+
+    _pip_install_into_venv "$base_py"
+}
+
+# Always called under the install lock from _create_or_repair_venv_locked.
+# Idempotent: `pip install -r requirements.txt` is a no-op when every
+# pinned spec is already satisfied, installs missing packages, and
+# upgrades/downgrades drifted ones to match the pin.
+_pip_install_into_venv() {
+    local base_py="$1"
+    _ensure_pinned_deps_loaded || return 1
+
+    if "$VENV_PYTHON" -m pip install -r "$REQUIREMENTS_FILE" >>"$DEBUG_LOG" 2>&1; then
+        if _deps_imports_ok "$VENV_PYTHON"; then
+            _mark_venv_ready "$base_py"
+            return 0
+        fi
+    fi
+    echo "[bootstrap-plugin] pip install failed in venv for $REQUIREMENTS_FILE" >>"$DEBUG_LOG"
+    touch "$VENV_FAILED_MARKER"
+    _bootstrap_user_error "Could not install Python packages from $REQUIREMENTS_FILE into $VENV_DIR."
+    _bootstrap_user_error "Run: pace-maker doctor   (or: bash \"\$PLUGIN_ROOT/scripts/doctor.sh\")"
+    return 1
+}
+
+# Cheap filesystem bootstrap (no venv/pip).
 bootstrap_light() {
     _bootstrap_resolve_plugin_root
 
@@ -212,52 +405,87 @@ EOF
 }
 
 bootstrap_full() {
+    export PACEMAKER_BOOTSTRAPPING=1
+    trap 'unset PACEMAKER_BOOTSTRAPPING' RETURN
+
     bootstrap_light
 
-    local hook_py cli_py
-    hook_py="$(resolve_python)" || {
+    local base_py
+    base_py="$(resolve_python)" || {
         _bootstrap_user_error "Python 3.10+ not found. Install python3.10+ and run pace-maker doctor."
         return 1
     }
 
-    if ! _ensure_python_deps_for "$hook_py"; then
+    if ! _ensure_venv_and_deps "$base_py"; then
         return 1
     fi
 
-    cli_py="$(resolve_cli_python 2>/dev/null || true)"
-    if [ -n "${cli_py:-}" ] && [ "$cli_py" != "$hook_py" ]; then
-        if ! _ensure_python_deps_for "$cli_py"; then
-            return 1
-        fi
-    fi
+    # Legacy per-interpreter markers from pre-venv bootstrap (safe to remove).
+    rm -rf "${PACEMAKER_DIR}/.python_deps" "${PACEMAKER_DIR}/.python_deps.lock" 2>/dev/null || true
 
     if ! bootstrap_verify; then
         return 1
     fi
 
     date -u +"%Y-%m-%dT%H:%M:%SZ" >"$BOOTSTRAP_OK_MARKER"
+    # Reset hook.sh's throttle so a future fallback re-warns the user.
+    rm -f "${PACEMAKER_DIR}/.python_fallback_warn" 2>/dev/null || true
     return 0
+}
+
+_bootstrap_pythonpath() {
+    local install_marker="${PACEMAKER_DIR}/install_source"
+    if [ -f "$install_marker" ]; then
+        local source_dir
+        source_dir="$(cat "$install_marker")"
+        if [[ "$source_dir" != *"pipx"* ]]; then
+            export PYTHONPATH="${source_dir}/src${PYTHONPATH:+:${PYTHONPATH}}"
+            return 0
+        fi
+    fi
+    if [ -n "${PLUGIN_ROOT:-}" ]; then
+        export PYTHONPATH="${PLUGIN_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+    fi
 }
 
 bootstrap_verify() {
-    local hook_py
-    hook_py="$(resolve_python)" || return 1
-    if ! _deps_imports_ok "$hook_py"; then
-        _bootstrap_user_error "Python dependency check failed for $hook_py"
+    local runtime_py
+    runtime_py="$(resolve_runtime_python)" || {
+        _bootstrap_user_error "Python dependency check failed (managed venv at $VENV_DIR)"
+        return 1
+    }
+    if ! _deps_imports_ok "$runtime_py"; then
+        _bootstrap_user_error "Python dependency check failed for $runtime_py"
         return 1
     fi
 
-    local cli="$HOME/.local/bin/pace-maker"
-    if [ -x "$cli" ] || [ -L "$cli" ]; then
-        if ! "$cli" status >/dev/null 2>&1; then
-            _bootstrap_log "pace-maker status smoke test failed (non-fatal for hooks)"
-        fi
+    # Smoke-test via venv Python directly — never call the pace-maker CLI here (that
+    # would re-enter bootstrap_full before .bootstrap_ok exists and recurse/hang).
+    _bootstrap_resolve_plugin_root
+    _bootstrap_pythonpath
+    if ! "$runtime_py" -m pacemaker.user_commands status >/dev/null 2>&1; then
+        _bootstrap_log "pacemaker.user_commands status smoke test failed (non-fatal for hooks)"
     fi
     return 0
 }
 
+# Cheap check intended for per-hook invocation: only stat() + file read +
+# a single sha256 of requirements.txt (no python fork). Returns 0 (needs
+# full) when state is missing or the stamp's suffix doesn't match the
+# current sha256 of requirements.txt. The deep import + version-pin check
+# happens on session_start via bootstrap_full -> _ensure_venv_and_deps
+# which always validates under the install lock.
 bootstrap_needs_full() {
-    [ ! -f "$BOOTSTRAP_OK_MARKER" ]
+    [ -f "$BOOTSTRAP_OK_MARKER" ] || return 0
+    [ -x "$VENV_PYTHON" ] || return 0
+    [ -f "$VENV_STAMP" ] || return 0
+    _ensure_pinned_deps_loaded || return 0
+    local stamp
+    stamp="$(_read_venv_stamp)"
+    case "$stamp" in
+        *":${DEPS_SIGNATURE}") return 1 ;;
+        *) return 0 ;;
+    esac
 }
 
 # Entry when executed directly.

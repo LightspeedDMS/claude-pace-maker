@@ -67,13 +67,16 @@ print_diagnostics() {
         log "  Add to shell profile: export PATH=\"\$HOME/.local/bin:\$PATH\""
     fi
 
-    if [ -d "${PACEMAKER_DIR}/.python_deps" ]; then
-        log "python dep markers:"
-        local m
-        for m in "${PACEMAKER_DIR}"/.python_deps/*; do
-            [ -e "$m" ] || continue
-            log "  $(basename "$m"): $(cat "$m" 2>/dev/null || echo '?')"
-        done
+    if [ -d "${PACEMAKER_DIR}/venv" ]; then
+        log "managed venv: ${PACEMAKER_DIR}/venv"
+        if [ -f "${PACEMAKER_DIR}/.venv_stamp" ]; then
+            log "venv stamp: $(cat "${PACEMAKER_DIR}/.venv_stamp" 2>/dev/null || echo '?')"
+        fi
+        if [ -f "${PACEMAKER_DIR}/.venv.failed" ]; then
+            log "venv setup: FAILED (see hook_debug.log)"
+        fi
+    else
+        log "managed venv: not present"
     fi
 
     if [ -f "${PACEMAKER_DIR}/.bootstrap_ok" ]; then
@@ -100,6 +103,9 @@ EOF
     log "Running full bootstrap..."
     print_diagnostics "$plugin_root"
 
+    # Allow retry after a previous failed venv/pip attempt.
+    rm -f "${PACEMAKER_DIR}/.venv.failed"
+
     # shellcheck source=scripts/bootstrap-plugin.sh
     source "${plugin_root}/scripts/bootstrap-plugin.sh"
 
@@ -117,10 +123,7 @@ EOF
 
 Bootstrap failed. Check ${PACEMAKER_DIR}/hook_debug.log for details.
 
-If pip install failed, install dependencies manually, for example:
-  python3 -m pip install --user requests pyyaml claude-agent-sdk
-
-Then re-run:
+If venv setup failed, ensure Python 3.10+ and the venv module are installed, then re-run:
   bash "${plugin_root}/scripts/doctor.sh"
 EOF
     exit 1

@@ -182,7 +182,7 @@ class TestScenario2HookSh:
 
 
 class TestScenario3CLIWrapper:
-    """CLI wrapper at scripts/pace-maker resolves Python path via plugin root."""
+    """CLI wrapper at scripts/pace-maker uses the managed venv via bootstrap-plugin.sh."""
 
     def test_cli_wrapper_exists(self):
         """scripts/pace-maker bash wrapper must exist."""
@@ -192,41 +192,35 @@ class TestScenario3CLIWrapper:
         """scripts/pace-maker must be executable."""
         assert os.access(CLI_WRAPPER, os.X_OK), "scripts/pace-maker must be executable"
 
-    def test_cli_wrapper_is_python_script(self):
-        """scripts/pace-maker must be a Python script (not bash)."""
+    def test_cli_wrapper_is_bash_script(self):
+        """scripts/pace-maker must be a bash wrapper (not system python3)."""
         with open(CLI_WRAPPER) as f:
             first_line = f.readline().strip()
-        assert first_line.startswith(
-            "#!"
-        ), f"scripts/pace-maker must start with a shebang, got: {first_line}"
-        assert (
-            "python3" in first_line
-        ), f"scripts/pace-maker shebang must contain 'python3', got: {first_line}"
+        assert first_line.startswith("#!"), (
+            f"scripts/pace-maker must start with a shebang, got: {first_line}"
+        )
+        assert "bash" in first_line, (
+            f"scripts/pace-maker shebang must invoke bash, got: {first_line}"
+        )
 
-    def test_cli_wrapper_adds_pacemaker_to_path(self):
-        """scripts/pace-maker must add pacemaker module to Python path."""
+    def test_cli_wrapper_sources_bootstrap(self):
+        """scripts/pace-maker must source bootstrap-plugin.sh for venv setup."""
         with open(CLI_WRAPPER) as f:
             content = f.read()
-        assert (
-            "sys.path" in content or "pacemaker" in content
-        ), "CLI wrapper must manipulate sys.path or import pacemaker"
+        assert "bootstrap-plugin.sh" in content, (
+            "CLI wrapper must source bootstrap-plugin.sh"
+        )
 
-    def test_cli_wrapper_invokes_user_commands(self):
-        """scripts/pace-maker must invoke pacemaker.user_commands module."""
+    def test_cli_wrapper_uses_managed_venv(self):
+        """scripts/pace-maker must run user_commands via resolve_runtime_python."""
         with open(CLI_WRAPPER) as f:
             content = f.read()
-        assert (
-            "user_commands" in content
-        ), "CLI wrapper must invoke pacemaker.user_commands module"
-
-    def test_cli_wrapper_imports_and_calls_main(self):
-        """scripts/pace-maker must import pacemaker and call main()."""
-        with open(CLI_WRAPPER) as f:
-            content = f.read()
-        assert (
-            "from pacemaker" in content or "import pacemaker" in content
-        ), "CLI wrapper must import from pacemaker"
-        assert "main()" in content, "CLI wrapper must call main()"
+        assert "resolve_runtime_python" in content, (
+            "CLI wrapper must use managed venv via resolve_runtime_python"
+        )
+        assert "pacemaker.user_commands" in content, (
+            "CLI wrapper must invoke pacemaker.user_commands module"
+        )
 
 
 # ---------------------------------------------------------------------------

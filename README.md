@@ -47,7 +47,7 @@ That's it. The first Claude Code session after installation automatically bootst
 - `~/.claude-pace-maker/source_code_extensions.json` for validation
 - `~/.claude-pace-maker/pacemaker` symlink to the plugin Python package (required for CLI)
 - `~/.local/bin/pace-maker` CLI symlink (if `~/.local/bin` is in PATH)
-- Python dependencies (`requests`, `pyyaml`, `claude-agent-sdk`) on SessionStart
+- A managed Python venv at `~/.claude-pace-maker/venv` with dependencies (`requests`, `pyyaml`, `claude-agent-sdk`) on SessionStart
 
 No `install.sh` or manual `settings.json` editing required.
 

@@ -1,0 +1,16 @@
+# Claude Pace Maker runtime dependencies — managed venv at ~/.claude-pace-maker/venv.
+#
+# These pins are the single source of truth for the bootstrap process:
+#   - `scripts/bootstrap-plugin.sh` reads this file at every bootstrap_full,
+#     installs via `pip install -r`, and embeds the sha256 of this file in
+#     `.venv_stamp`. A drifting venv (manual upgrade, partial install,
+#     yanked release) is detected by `_deps_imports_ok` and repaired back
+#     to these versions on the next hook invocation.
+#   - Bumping any pin here automatically rolls the stamp signature, so
+#     all existing installs re-install on next SessionStart.
+#
+# Dev setup (optional):  pip install -r requirements.txt
+# Security scanning:     pip-audit -r requirements.txt
+requests==2.34.2
+pyyaml==6.0.3
+claude-agent-sdk==0.2.87
