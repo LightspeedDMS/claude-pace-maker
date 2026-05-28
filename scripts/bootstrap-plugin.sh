@@ -121,11 +121,20 @@ resolve_python() {
     return 1
 }
 
-# Canonical runtime: managed venv Python when ready, else empty.
+# Canonical runtime: managed venv Python when stamp matches (no python fork),
+# else empty. The deep import + version-pin check runs on session_start via
+# bootstrap_full → _ensure_venv_and_deps; per-hook calls trust the stamp.
 resolve_runtime_python() {
-    if [ -x "$VENV_PYTHON" ] && _deps_imports_ok "$VENV_PYTHON"; then
-        echo "$VENV_PYTHON"
-        return 0
+    if [ -x "$VENV_PYTHON" ] && [ -f "$VENV_STAMP" ]; then
+        _ensure_pinned_deps_loaded || return 1
+        local stamp
+        stamp="$(_read_venv_stamp)"
+        case "$stamp" in
+            *":${DEPS_SIGNATURE}")
+                echo "$VENV_PYTHON"
+                return 0
+                ;;
+        esac
     fi
     return 1
 }
@@ -208,9 +217,11 @@ _try_acquire_venv_install_lock() {
 # Portable lock (flock on Linux; symlink on macOS where flock is often
 # absent).
 _with_venv_install_lock() {
+    # Always clean stale symlink locks, even when flock is the active mechanism.
+    _clear_stale_venv_lock_symlink
     if command -v flock >/dev/null 2>&1; then
         (
-            flock -x 9
+            flock -w 120 -x 9
             "$@"
         ) 9>"$VENV_LOCK_FILE"
         return $?
@@ -224,15 +235,15 @@ _with_venv_install_lock() {
         fi
         sleep 0.2
         waited=$((waited + 1))
-        if [ "$waited" -ge 150 ]; then
+        if [ "$waited" -ge 600 ]; then
             _bootstrap_user_error "Timed out waiting for venv install lock at $VENV_LOCK_LINK"
             _bootstrap_user_error "If no other pace-maker command is running, remove the lock and retry:"
             _bootstrap_user_error "  rm -f \"$VENV_LOCK_LINK\""
             return 1
         fi
     done
-    "$@"
-    local rc=$?
+    local rc=0
+    "$@" || rc=$?
     rm -f "$VENV_LOCK_LINK"
     return "$rc"
 }
@@ -331,7 +342,7 @@ _pip_install_into_venv() {
     local base_py="$1"
     _ensure_pinned_deps_loaded || return 1
 
-    if "$VENV_PYTHON" -m pip install -r "$REQUIREMENTS_FILE" >>"$DEBUG_LOG" 2>&1; then
+    if "$VENV_PYTHON" -m pip install --no-input -r "$REQUIREMENTS_FILE" >>"$DEBUG_LOG" 2>&1; then
         if _deps_imports_ok "$VENV_PYTHON"; then
             _mark_venv_ready "$base_py"
             return 0
@@ -415,6 +426,11 @@ bootstrap_full() {
         _bootstrap_user_error "Python 3.10+ not found. Install python3.10+ and run pace-maker doctor."
         return 1
     }
+
+    # Allow retry on each session_start — transient failures (network timeout)
+    # should not block permanently. If venv setup fails again, the marker is
+    # re-written by _pip_install_into_venv / _create_or_repair_venv_locked.
+    rm -f "$VENV_FAILED_MARKER"
 
     if ! _ensure_venv_and_deps "$base_py"; then
         return 1

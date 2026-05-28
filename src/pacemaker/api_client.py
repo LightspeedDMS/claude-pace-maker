@@ -170,7 +170,10 @@ def fetch_usage(
                     pass
                 if attempt < _MAX_RETRIES - 1:
                     # Skip within-call retries when server mandates a long wait
-                    if retry_after is not None and retry_after > _RETRY_AFTER_EARLY_EXIT_THRESHOLD:
+                    if (
+                        retry_after is not None
+                        and retry_after > _RETRY_AFTER_EARLY_EXIT_THRESHOLD
+                    ):
                         pass  # fall through to persistent backoff below
                     else:
                         # Retry with short delay before giving up
@@ -254,7 +257,10 @@ def fetch_user_profile(
                     pass
                 if attempt < _MAX_RETRIES - 1:
                     # Skip within-call retries when server mandates a long wait
-                    if retry_after is not None and retry_after > _RETRY_AFTER_EARLY_EXIT_THRESHOLD:
+                    if (
+                        retry_after is not None
+                        and retry_after > _RETRY_AFTER_EARLY_EXIT_THRESHOLD
+                    ):
                         pass  # fall through to persistent backoff below
                     else:
                         delay = _RETRY_BASE_DELAY * (2**attempt)

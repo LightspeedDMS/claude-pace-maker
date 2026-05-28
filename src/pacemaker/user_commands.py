@@ -1320,7 +1320,14 @@ def _find_doctor_script() -> Optional[str]:
     candidates.append(repo_root / "scripts" / "doctor.sh")
 
     for pattern in (
-        str(Path.home() / ".claude" / "*" / "claude-pace-maker" / "scripts" / "doctor.sh"),
+        str(
+            Path.home()
+            / ".claude"
+            / "*"
+            / "claude-pace-maker"
+            / "scripts"
+            / "doctor.sh"
+        ),
         str(
             Path.home()
             / ".claude"

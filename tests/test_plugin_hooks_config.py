@@ -196,31 +196,31 @@ class TestScenario3CLIWrapper:
         """scripts/pace-maker must be a bash wrapper (not system python3)."""
         with open(CLI_WRAPPER) as f:
             first_line = f.readline().strip()
-        assert first_line.startswith("#!"), (
-            f"scripts/pace-maker must start with a shebang, got: {first_line}"
-        )
-        assert "bash" in first_line, (
-            f"scripts/pace-maker shebang must invoke bash, got: {first_line}"
-        )
+        assert first_line.startswith(
+            "#!"
+        ), f"scripts/pace-maker must start with a shebang, got: {first_line}"
+        assert (
+            "bash" in first_line
+        ), f"scripts/pace-maker shebang must invoke bash, got: {first_line}"
 
     def test_cli_wrapper_sources_bootstrap(self):
         """scripts/pace-maker must source bootstrap-plugin.sh for venv setup."""
         with open(CLI_WRAPPER) as f:
             content = f.read()
-        assert "bootstrap-plugin.sh" in content, (
-            "CLI wrapper must source bootstrap-plugin.sh"
-        )
+        assert (
+            "bootstrap-plugin.sh" in content
+        ), "CLI wrapper must source bootstrap-plugin.sh"
 
     def test_cli_wrapper_uses_managed_venv(self):
         """scripts/pace-maker must run user_commands via resolve_runtime_python."""
         with open(CLI_WRAPPER) as f:
             content = f.read()
-        assert "resolve_runtime_python" in content, (
-            "CLI wrapper must use managed venv via resolve_runtime_python"
-        )
-        assert "pacemaker.user_commands" in content, (
-            "CLI wrapper must invoke pacemaker.user_commands module"
-        )
+        assert (
+            "resolve_runtime_python" in content
+        ), "CLI wrapper must use managed venv via resolve_runtime_python"
+        assert (
+            "pacemaker.user_commands" in content
+        ), "CLI wrapper must invoke pacemaker.user_commands module"
 
 
 # ---------------------------------------------------------------------------

@@ -314,35 +314,64 @@ class TestHookLogsFallbackToSystemPython:
     doctor`. Previously the fallback was completely silent."""
 
     @staticmethod
-    def _seed_failed_bootstrap(home):
-        """Pre-write state that forces bootstrap_full to short-circuit
-        without creating a venv, so resolve_hook_python is forced down the
-        system-python fallback path."""
+    def _seed_failed_bootstrap(home, tmp_path):
+        """Create state where bootstrap_full fails because no Python 3.10+
+        is on PATH. Shims for all python3 variants intercept the version
+        check that resolve_python() uses and exit 1, so bootstrap aborts
+        at 'Python 3.10+ not found' and resolve_hook_python falls back."""
         pacemaker_dir = home / ".claude-pace-maker"
         pacemaker_dir.mkdir(exist_ok=True)
         with open(pacemaker_dir / "config.json", "w") as f:
             json.dump({"enabled": True, "log_level": 2}, f)
-        # _ensure_venv_and_deps returns 1 immediately when this marker exists,
-        # so bootstrap_full fails and resolve_hook_python falls back.
-        (pacemaker_dir / ".venv.failed").touch()
-        return pacemaker_dir
+        import shutil as _shutil
+
+        real_py = _shutil.which("python3") or "/usr/bin/python3"
+        fake_bin = tmp_path / "fake_python_bin"
+        fake_bin.mkdir(exist_ok=True)
+        shim_script = (
+            "#!/bin/bash\n"
+            'for arg in "$@"; do\n'
+            '    case "$arg" in\n'
+            "        *sys.version_info*) exit 1 ;;\n"
+            "    esac\n"
+            "done\n"
+            f'exec {real_py} "$@"\n'
+        )
+        for name in (
+            "python3",
+            "python3.10",
+            "python3.11",
+            "python3.12",
+            "python3.13",
+            "python3.14",
+        ):
+            shim = fake_bin / name
+            shim.write_text(shim_script)
+            shim.chmod(0o755)
+        return pacemaker_dir, fake_bin
 
     def test_warning_emitted_when_venv_missing(self, tmp_path):
         home = tmp_path / "home"
         home.mkdir()
-        pacemaker_dir = self._seed_failed_bootstrap(home)
-        run_hook(home, "post_tool_use", input_data="{}")
+        pacemaker_dir, fake_bin = self._seed_failed_bootstrap(home, tmp_path)
+        run_hook(
+            home,
+            "post_tool_use",
+            input_data="{}",
+            extra_env={
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+            },
+        )
 
         debug_log = pacemaker_dir / "hook_debug.log"
         assert debug_log.exists(), "hook_debug.log should exist after first hook"
         content = debug_log.read_text()
-        assert "managed venv" in content and "unavailable" in content, (
-            f"hook.sh should warn about unavailable venv; got log:\n{content}"
-        )
-        assert "pace-maker doctor" in content, (
-            f"fallback log should point user at `pace-maker doctor`; got:\n{content}"
-        )
-        # Throttle marker must exist after the first warning.
+        assert (
+            "managed venv" in content and "unavailable" in content
+        ), f"hook.sh should warn about unavailable venv; got log:\n{content}"
+        assert (
+            "pace-maker doctor" in content
+        ), f"fallback log should point user at `pace-maker doctor`; got:\n{content}"
         assert (pacemaker_dir / ".python_fallback_warn").exists()
 
     def test_warning_is_throttled_within_one_hour(self, tmp_path):
@@ -351,14 +380,20 @@ class TestHookLogsFallbackToSystemPython:
         readable."""
         home = tmp_path / "home"
         home.mkdir()
-        pacemaker_dir = self._seed_failed_bootstrap(home)
+        pacemaker_dir, fake_bin = self._seed_failed_bootstrap(home, tmp_path)
 
         for _ in range(3):
-            run_hook(home, "post_tool_use", input_data="{}")
+            run_hook(
+                home,
+                "post_tool_use",
+                input_data="{}",
+                extra_env={
+                    "PATH": f"{fake_bin}:/usr/bin:/bin",
+                },
+            )
 
         debug_log = pacemaker_dir / "hook_debug.log"
         content = debug_log.read_text()
-        # The unique warning header appears once across 3 hook invocations.
         assert content.count("managed venv at") == 1, (
             f"fallback warning must be throttled to once per hour; got "
             f"{content.count('managed venv at')} occurrences:\n{content}"
@@ -377,6 +412,7 @@ class TestHookLogsFallbackToSystemPython:
 
         # Run real bootstrap_full (creates venv + clears marker on success).
         import subprocess as _sp
+
         result = _sp.run(
             ["bash", str(REPO_ROOT / "scripts" / "bootstrap-plugin.sh"), "--full"],
             env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},

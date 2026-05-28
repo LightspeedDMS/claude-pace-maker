@@ -29,6 +29,7 @@ def _parse_requirements():
 
 def _requirements_sha256():
     import hashlib
+
     return hashlib.sha256(REQUIREMENTS_TXT.read_bytes()).hexdigest()
 
 
@@ -123,28 +124,15 @@ class TestBootstrapVenv:
         )
         assert downgrade.returncode == 0, downgrade.stderr
 
-        # Drift must invalidate the runtime resolver.
-        check = subprocess.run(
-            ["bash", "-c",
-             f"source {BOOTSTRAP_SH}; "
-             "if resolve_runtime_python >/dev/null 2>&1; then echo OK; else echo DRIFT_DETECTED; fi"],
-            env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},
-            capture_output=True,
-            text=True,
-        )
-        assert "DRIFT_DETECTED" in check.stdout, (
-            f"resolve_runtime_python should reject drifted versions; got: {check.stdout!r}"
-        )
-
         # bootstrap_full must repair back to the pinned version.
         # Remove .bootstrap_ok so bootstrap_full's _ensure_venv_and_deps path runs.
         (home / ".claude-pace-maker" / ".bootstrap_ok").unlink()
         repair = run_bootstrap(home, "--full")
         assert repair.returncode == 0, repair.stderr
         version_check = subprocess.run(
-            [str(venv_python), "-c",
-             "import requests; print(requests.__version__)"],
-            capture_output=True, text=True,
+            [str(venv_python), "-c", "import requests; print(requests.__version__)"],
+            capture_output=True,
+            text=True,
         )
         assert version_check.stdout.strip() == PINS["requests"], (
             f"requests should be repaired to pinned {PINS['requests']}, "
@@ -164,19 +152,24 @@ class TestBootstrapVenv:
         # Simulate an old install where requirements.txt was a different
         # version of itself by rewriting the stamp suffix to a wrong sha.
         base_py = original.split(":", 1)[0]
-        stamp.write_text(f"{base_py}:0000000000000000000000000000000000000000000000000000000000000000\n")
+        stamp.write_text(
+            f"{base_py}:0000000000000000000000000000000000000000000000000000000000000000\n"
+        )
 
         check = subprocess.run(
-            ["bash", "-c",
-             f"source {BOOTSTRAP_SH}; "
-             "if bootstrap_needs_full; then echo NEEDS_FULL; else echo OK; fi"],
+            [
+                "bash",
+                "-c",
+                f"source {BOOTSTRAP_SH}; "
+                "if bootstrap_needs_full; then echo NEEDS_FULL; else echo OK; fi",
+            ],
             env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},
             capture_output=True,
             text=True,
         )
-        assert "NEEDS_FULL" in check.stdout, (
-            f"stamp with wrong sha must report needs_full; got: {check.stdout!r}"
-        )
+        assert (
+            "NEEDS_FULL" in check.stdout
+        ), f"stamp with wrong sha must report needs_full; got: {check.stdout!r}"
 
 
 class TestConcurrentBootstrap:
@@ -210,21 +203,23 @@ class TestConcurrentBootstrap:
             results.append((p.returncode, out.decode(), err.decode()))
 
         for i, (rc, out, err) in enumerate(results):
-            assert rc == 0, (
-                f"parallel bootstrap #{i} failed (rc={rc})\nstdout={out}\nstderr={err}"
-            )
+            assert (
+                rc == 0
+            ), f"parallel bootstrap #{i} failed (rc={rc})\nstdout={out}\nstderr={err}"
 
         venv_python = home / ".claude-pace-maker" / "venv" / "bin" / "python3"
-        assert venv_python.exists(), "managed venv python missing after concurrent bootstrap"
+        assert (
+            venv_python.exists()
+        ), "managed venv python missing after concurrent bootstrap"
 
         check = subprocess.run(
             [str(venv_python), "-c", "import requests, yaml, claude_agent_sdk"],
             capture_output=True,
             text=True,
         )
-        assert check.returncode == 0, (
-            f"venv is broken after concurrent bootstrap: {check.stderr}"
-        )
+        assert (
+            check.returncode == 0
+        ), f"venv is broken after concurrent bootstrap: {check.stderr}"
         assert (home / ".claude-pace-maker" / ".bootstrap_ok").exists()
         assert not (home / ".claude-pace-maker" / ".venv.failed").exists()
 
@@ -248,7 +243,7 @@ class TestBootstrapNeedsFullIsCheap:
         else:
             venv_python.unlink()
         venv_python.write_text(
-            f"#!/usr/bin/env bash\necho \"$*\" >> {sentinel}\nexit 0\n"
+            f'#!/usr/bin/env bash\necho "$*" >> {sentinel}\nexit 0\n'
         )
         venv_python.chmod(0o755)
 
@@ -273,6 +268,51 @@ class TestBootstrapNeedsFullIsCheap:
         )
         assert not sentinel.exists(), (
             f"bootstrap_needs_full forked the venv python — cheap check regressed. "
+            f"Sentinel contents: {sentinel.read_text()}"
+        )
+
+    def test_resolve_runtime_python_does_not_fork_venv_python(self, tmp_path):
+        """resolve_runtime_python must use the stamp-based fast path (no
+        Python fork) when the stamp matches. Same sentinel approach as
+        test_needs_full_does_not_fork_venv_python."""
+        home = tmp_path / "home"
+        home.mkdir()
+        first = run_bootstrap(home, "--full")
+        assert first.returncode == 0, first.stderr
+
+        venv_python = home / ".claude-pace-maker" / "venv" / "bin" / "python3"
+        assert venv_python.exists()
+        sentinel = tmp_path / "resolve_runtime_invoked.log"
+        if venv_python.is_symlink():
+            venv_python.unlink()
+        else:
+            venv_python.unlink()
+        venv_python.write_text(
+            f'#!/usr/bin/env bash\necho "$*" >> {sentinel}\nexit 0\n'
+        )
+        venv_python.chmod(0o755)
+
+        check_script = (
+            f"source {BOOTSTRAP_SH}; "
+            'result=$(resolve_runtime_python 2>/dev/null) && echo "GOT=$result" || echo FAILED'
+        )
+        proc = subprocess.run(
+            ["bash", "-c", check_script],
+            env={
+                **os.environ,
+                "HOME": str(home),
+                "PLUGIN_ROOT": str(REPO_ROOT),
+            },
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "GOT=" in proc.stdout, (
+            f"resolve_runtime_python should succeed when stamp matches; "
+            f"got stdout={proc.stdout!r} stderr={proc.stderr!r}"
+        )
+        assert not sentinel.exists(), (
+            f"resolve_runtime_python forked the venv python — stamp fast path regressed. "
             f"Sentinel contents: {sentinel.read_text()}"
         )
 
@@ -309,6 +349,29 @@ class TestBootstrapNeedsFullIsCheap:
         )
 
 
+class TestVenvFailedMarkerAutoRetry:
+    def test_bootstrap_full_clears_failed_marker_and_retries(self, tmp_path):
+        """bootstrap_full must clear .venv.failed before _ensure_venv_and_deps
+        so that transient failures (network timeout during pip install) are
+        retried automatically on each session_start rather than requiring
+        manual `pace-maker doctor` intervention."""
+        home = tmp_path / "home"
+        home.mkdir()
+        pacemaker_dir = home / ".claude-pace-maker"
+        pacemaker_dir.mkdir()
+        failed_marker = pacemaker_dir / ".venv.failed"
+        failed_marker.touch()
+        assert failed_marker.exists()
+
+        result = run_bootstrap(home, "--full")
+        assert result.returncode == 0, result.stderr
+        assert not failed_marker.exists(), (
+            ".venv.failed must be cleared by bootstrap_full so transient "
+            "failures auto-retry on next session_start"
+        )
+        assert (pacemaker_dir / ".bootstrap_ok").exists()
+
+
 class TestStaleVenvLockRecovery:
     def test_symlink_with_dead_pid_is_cleared_and_bootstrap_succeeds(self, tmp_path):
         """A symlink lock left by a crashed bootstrap (target string is a
@@ -321,6 +384,7 @@ class TestStaleVenvLockRecovery:
         stale_lock = pacemaker_dir / ".venv.lock.link"
 
         import sys
+
         proc = subprocess.run(
             [sys.executable, "-c", "import os; print(os.getpid())"],
             capture_output=True,
@@ -332,10 +396,11 @@ class TestStaleVenvLockRecovery:
 
         result = run_bootstrap(home, "--full")
         assert result.returncode == 0, result.stderr
-        assert not stale_lock.is_symlink(), (
-            "stale lock symlink should be removed after bootstrap"
-        )
+        assert (
+            not stale_lock.is_symlink()
+        ), "stale lock symlink should be removed after bootstrap"
         assert (pacemaker_dir / ".bootstrap_ok").exists()
+
 
 class TestVenvLockSymlinkAcquire:
     """The symlink lock binds the pid into the link target at symlink(2)
@@ -351,7 +416,7 @@ class TestVenvLockSymlinkAcquire:
         pacemaker_dir = home / ".claude-pace-maker"
         pacemaker_dir.mkdir()
 
-        check = f'''
+        check = f"""
 source {BOOTSTRAP_SH}
 _try_acquire_venv_install_lock || {{ echo ACQUIRE_FAILED; exit 1; }}
 if [ -L "$VENV_LOCK_LINK" ]; then
@@ -362,7 +427,7 @@ fi
 echo "LINK_TARGET=$(readlink "$VENV_LOCK_LINK")"
 echo "MY_PID=$$"
 rm -f "$VENV_LOCK_LINK"
-'''
+"""
         proc = subprocess.run(
             ["bash", "-c", check],
             env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},
@@ -370,23 +435,29 @@ rm -f "$VENV_LOCK_LINK"
             text=True,
         )
         assert proc.returncode == 0, proc.stderr
-        assert "SYMLINK_EXISTS=1" in proc.stdout, (
-            f"Symlink must exist after acquire; stdout={proc.stdout!r}"
-        )
+        assert (
+            "SYMLINK_EXISTS=1" in proc.stdout
+        ), f"Symlink must exist after acquire; stdout={proc.stdout!r}"
         my_pid = next(
-            (line.split("=", 1)[1] for line in proc.stdout.splitlines()
-             if line.startswith("MY_PID=")),
+            (
+                line.split("=", 1)[1]
+                for line in proc.stdout.splitlines()
+                if line.startswith("MY_PID=")
+            ),
             None,
         )
         target = next(
-            (line.split("=", 1)[1] for line in proc.stdout.splitlines()
-             if line.startswith("LINK_TARGET=")),
+            (
+                line.split("=", 1)[1]
+                for line in proc.stdout.splitlines()
+                if line.startswith("LINK_TARGET=")
+            ),
             None,
         )
         assert my_pid is not None and target is not None
-        assert target == my_pid, (
-            f"symlink target {target!r} should equal acquiring shell pid {my_pid!r}"
-        )
+        assert (
+            target == my_pid
+        ), f"symlink target {target!r} should equal acquiring shell pid {my_pid!r}"
 
     def test_acquire_fails_when_lock_is_held(self, tmp_path):
         """A second acquire attempt while the lock is held must fail
@@ -410,9 +481,9 @@ rm -f "$VENV_LOCK_LINK"
             text=True,
         )
         assert proc.returncode == 0, proc.stderr
-        assert "FAILED" in proc.stdout, (
-            f"acquire must fail when symlink is held; stdout={proc.stdout!r}"
-        )
+        assert (
+            "FAILED" in proc.stdout
+        ), f"acquire must fail when symlink is held; stdout={proc.stdout!r}"
         assert lock_link.is_symlink()
         assert os.readlink(str(lock_link)) == held_pid
 
@@ -436,9 +507,9 @@ rm -f "$VENV_LOCK_LINK"
             text=True,
         )
         assert proc.returncode == 0, proc.stderr
-        assert "PRESERVED" in proc.stdout, (
-            f"live holder must not be cleared; stdout={proc.stdout!r}"
-        )
+        assert (
+            "PRESERVED" in proc.stdout
+        ), f"live holder must not be cleared; stdout={proc.stdout!r}"
 
 
 def _install_python_shim(fake_bin: Path, real_python: str, pip_call_log: Path) -> Path:
@@ -513,8 +584,30 @@ class TestVenvPipNeverTouchesSystemPython:
         home = tmp_path / "home"
         home.mkdir()
 
-        real_python = shutil.which("python3")
+        # resolve_python() requires Python 3.10+; use the first available
+        # 3.10+ interpreter so the shim passes the version check and bootstrap
+        # reaches the pip-failure path.  Fall back to plain python3 only if no
+        # versioned binary is found (test will then skip if it's too old).
+        real_python = (
+            shutil.which("python3.13")
+            or shutil.which("python3.12")
+            or shutil.which("python3.11")
+            or shutil.which("python3.10")
+            or shutil.which("python3")
+        )
         assert real_python is not None, "python3 not found on PATH"
+        import subprocess as _sp
+
+        ver_check = _sp.run(
+            [
+                real_python,
+                "-c",
+                "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)",
+            ],
+            capture_output=True,
+        )
+        if ver_check.returncode != 0:
+            pytest.skip(f"No Python 3.10+ available (found {real_python})")
 
         fake_bin = tmp_path / "fake_bin"
         fake_bin.mkdir()
@@ -549,6 +642,6 @@ class TestVenvPipNeverTouchesSystemPython:
             "Expected at least one pip call invoked from the managed venv. "
             f"All calls: {calls}"
         )
-        assert len(system_calls) == 0, (
-            f"System pip must not be invoked; got: {system_calls}\nAll calls: {calls}"
-        )
+        assert (
+            len(system_calls) == 0
+        ), f"System pip must not be invoked; got: {system_calls}\nAll calls: {calls}"
