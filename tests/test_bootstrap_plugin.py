@@ -222,17 +222,15 @@ class TestBootstrapNeedsFullIsCheap:
 
 
 class TestStaleVenvLockRecovery:
-    def test_lock_dir_with_dead_pid_is_cleared_and_bootstrap_succeeds(self, tmp_path):
-        """A lock dir left by a crashed bootstrap (pid file points to a dead
-        process) must be auto-cleared so the next invocation proceeds without
-        waiting on the lock timeout. This is the realistic orphan scenario —
-        ``_with_venv_install_lock`` always writes ``pid`` right after mkdir."""
+    def test_symlink_with_dead_pid_is_cleared_and_bootstrap_succeeds(self, tmp_path):
+        """A symlink lock left by a crashed bootstrap (target string is a
+        dead pid) must be auto-cleared so the next invocation proceeds
+        without waiting on the lock timeout."""
         home = tmp_path / "home"
         home.mkdir()
         pacemaker_dir = home / ".claude-pace-maker"
         pacemaker_dir.mkdir()
-        stale_lock = pacemaker_dir / ".venv.lock.d"
-        stale_lock.mkdir()
+        stale_lock = pacemaker_dir / ".venv.lock.link"
 
         import sys
         proc = subprocess.run(
@@ -242,12 +240,117 @@ class TestStaleVenvLockRecovery:
         )
         dead_pid = proc.stdout.strip()
         assert dead_pid.isdigit()
-        (stale_lock / "pid").write_text(f"{dead_pid}\n")
+        os.symlink(dead_pid, str(stale_lock))
 
         result = run_bootstrap(home, "--full")
         assert result.returncode == 0, result.stderr
-        assert not stale_lock.exists(), "stale lock dir should be removed after bootstrap"
+        assert not stale_lock.is_symlink(), (
+            "stale lock symlink should be removed after bootstrap"
+        )
         assert (pacemaker_dir / ".bootstrap_ok").exists()
+
+class TestVenvLockSymlinkAcquire:
+    """The symlink lock binds the pid into the link target at symlink(2)
+    time. There is no torn-write window: either the symlink doesn't
+    exist, or it exists with a populated target. These tests cover the
+    invariants that flow from that property."""
+
+    def test_acquired_symlink_target_is_acquiring_pid(self, tmp_path):
+        """Acquire returns the lock with the acquiring shell's pid as the
+        symlink target — readable via readlink in one syscall."""
+        home = tmp_path / "home"
+        home.mkdir()
+        pacemaker_dir = home / ".claude-pace-maker"
+        pacemaker_dir.mkdir()
+
+        check = f'''
+source {BOOTSTRAP_SH}
+_try_acquire_venv_install_lock || {{ echo ACQUIRE_FAILED; exit 1; }}
+if [ -L "$VENV_LOCK_LINK" ]; then
+    echo SYMLINK_EXISTS=1
+else
+    echo SYMLINK_EXISTS=0
+fi
+echo "LINK_TARGET=$(readlink "$VENV_LOCK_LINK")"
+echo "MY_PID=$$"
+rm -f "$VENV_LOCK_LINK"
+'''
+        proc = subprocess.run(
+            ["bash", "-c", check],
+            env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "SYMLINK_EXISTS=1" in proc.stdout, (
+            f"Symlink must exist after acquire; stdout={proc.stdout!r}"
+        )
+        my_pid = next(
+            (line.split("=", 1)[1] for line in proc.stdout.splitlines()
+             if line.startswith("MY_PID=")),
+            None,
+        )
+        target = next(
+            (line.split("=", 1)[1] for line in proc.stdout.splitlines()
+             if line.startswith("LINK_TARGET=")),
+            None,
+        )
+        assert my_pid is not None and target is not None
+        assert target == my_pid, (
+            f"symlink target {target!r} should equal acquiring shell pid {my_pid!r}"
+        )
+
+    def test_acquire_fails_when_lock_is_held(self, tmp_path):
+        """A second acquire attempt while the lock is held must fail
+        without touching the existing symlink."""
+        home = tmp_path / "home"
+        home.mkdir()
+        pacemaker_dir = home / ".claude-pace-maker"
+        pacemaker_dir.mkdir()
+        lock_link = pacemaker_dir / ".venv.lock.link"
+        held_pid = str(os.getpid())
+        os.symlink(held_pid, str(lock_link))
+
+        check = (
+            f"source {BOOTSTRAP_SH}; "
+            "if _try_acquire_venv_install_lock; then echo ACQUIRED; else echo FAILED; fi"
+        )
+        proc = subprocess.run(
+            ["bash", "-c", check],
+            env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "FAILED" in proc.stdout, (
+            f"acquire must fail when symlink is held; stdout={proc.stdout!r}"
+        )
+        assert lock_link.is_symlink()
+        assert os.readlink(str(lock_link)) == held_pid
+
+    def test_live_pid_holder_is_not_cleared(self, tmp_path):
+        """_clear_stale_venv_lock_symlink must leave a live holder alone."""
+        home = tmp_path / "home"
+        home.mkdir()
+        pacemaker_dir = home / ".claude-pace-maker"
+        pacemaker_dir.mkdir()
+        lock_link = pacemaker_dir / ".venv.lock.link"
+        os.symlink(str(os.getpid()), str(lock_link))
+
+        check = (
+            f"source {BOOTSTRAP_SH}; _clear_stale_venv_lock_symlink; "
+            '[ -L "$VENV_LOCK_LINK" ] && echo PRESERVED || echo REMOVED'
+        )
+        proc = subprocess.run(
+            ["bash", "-c", check],
+            env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "PRESERVED" in proc.stdout, (
+            f"live holder must not be cleared; stdout={proc.stdout!r}"
+        )
 
 
 def _install_python_shim(fake_bin: Path, real_python: str, pip_call_log: Path) -> Path:

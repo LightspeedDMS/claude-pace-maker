@@ -55,14 +55,6 @@ RUNTIME_PYTHON="$(resolve_runtime_python)" || {
     exit 1
 }
 
-INSTALL_MARKER="$PACEMAKER_DIR/install_source"
-if [ -f "$INSTALL_MARKER" ]; then
-    SOURCE_DIR="$(cat "$INSTALL_MARKER")"
-    if [[ "$SOURCE_DIR" != *"pipx"* ]]; then
-        export PYTHONPATH="${SOURCE_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
-    fi
-elif [ -n "${PLUGIN_ROOT:-}" ]; then
-    export PYTHONPATH="${PLUGIN_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
-fi
+_bootstrap_pythonpath
 
 exec "$RUNTIME_PYTHON" -m pacemaker.user_commands "$@"

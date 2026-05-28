@@ -4,28 +4,29 @@
 
 ### Changed
 - **Managed Python venv for plugin installs** — Bootstrap no longer runs `pip install --user` against the system interpreter (which fails on macOS Homebrew and other PEP 668 environments). Dependencies (`requests`, `pyyaml`, `claude-agent-sdk`) are installed into `~/.claude-pace-maker/venv`. Hooks and the `pace-maker` CLI use that venv via `resolve_runtime_python()`.
-  - `scripts/bootstrap-plugin.sh` — `_ensure_venv_and_deps()`, portable install lock (`flock` on Linux, `mkdir` + pid on macOS), stale lock recovery
-  - `scripts/pace-maker` — bash wrapper with symlink resolution for `~/.local/bin/pace-maker`
-  - `scripts/hook.sh` — prefers managed venv over system Python
+  - `scripts/bootstrap-plugin.sh` — `_ensure_venv_and_deps()` with a fast path (no lock when the venv is already healthy) and a slow path (`_create_or_repair_venv_locked()` under the install lock) that owns every venv mutation (`rm -rf`, `python -m venv`, `pip install`). Portable install lock: `flock` on Linux, `symlink(2)`-based lock at `.venv.lock.link` elsewhere (`ln -s "$$" $VENV_LOCK_LINK` binds the holder's pid into the link target in one atomic syscall, so the lock identity and the holder identity are bound into a single observable name; `readlink` + `kill -0` detects stale holders).
+  - `scripts/pace-maker` — bash wrapper that follows `~/.local/bin/pace-maker` through symlinks back to the plugin `scripts/` directory (with `install_source` fallback) before sourcing `bootstrap-plugin.sh`. Uses `_bootstrap_pythonpath` for `PYTHONPATH` setup so the install_source / pipx / `PLUGIN_ROOT` branching lives in one place.
+  - `scripts/hook.sh` — prefers the managed venv over system Python via `resolve_hook_python()`. When the venv is unavailable (missing or deps not importable), the fallback to system Python is now logged loudly to `hook_debug.log` (named interpreter, reason, `pace-maker doctor` pointer); throttled to once per hour via `.python_fallback_warn` and cleared on successful `bootstrap_full` so a future regression re-warns.
 - **Cheap `bootstrap_needs_full` for per-hook calls** — Replaces the per-hook deep import check (3-module python fork) with a stat-only check: `BOOTSTRAP_OK_MARKER` + `VENV_PYTHON` executable + `.venv_stamp` suffix matches `DEPS_SIGNATURE`. The deep check still runs on `session_start` via `bootstrap_full` → `_ensure_venv_and_deps`.
   - `scripts/bootstrap-plugin.sh` — `bootstrap_needs_full()` no longer spawns python
   - `tests/test_bootstrap_plugin.py` — `TestBootstrapNeedsFullIsCheap` (sentinel-based no-fork assertion + stamp mismatch)
 
-### Fixed
-- **CLI symlink broke bootstrap sourcing** — `~/.local/bin/pace-maker` is a symlink; `BASH_SOURCE[0]` resolved to `~/.local/bin`, so `bootstrap-plugin.sh` was not found. Fix: follow symlinks to the plugin `scripts/` directory, with `install_source` fallback.
-- **Silent hang on `pace-maker status`** — Stale `~/.claude-pace-maker/.venv.lock.d` from interrupted bootstraps blocked pip for 30s with no user-visible error; `bootstrap_verify` recursively invoked the CLI before `.bootstrap_ok` existed. Fix: stale lock detection, stderr errors on lock timeout, smoke test via venv Python only, `PACEMAKER_BOOTSTRAPPING` guard.
-- **Venv creation race** — `rm -rf $VENV_DIR` and `python -m venv $VENV_DIR` ran OUTSIDE the install lock; two concurrent bootstraps could both decide to recreate, clobbering each other and leaving a corrupt environment. Fix: every venv mutation (rm/create/pip) now runs inside `_with_venv_install_lock`. Added a fast-path check (no lock) for the common "already good" case and a double-checked re-verification under the lock.
-  - `scripts/bootstrap-plugin.sh` — new `_create_or_repair_venv_locked()` owns all mutations
-  - `tests/test_bootstrap_plugin.py` — `TestConcurrentBootstrap` spawns 4 parallel `--full` bootstraps and verifies the resulting venv is intact
+### Tests
+- `TestBootstrapVenv` — venv created, dependencies installed and importable, second `--full` run is idempotent, `.venv_stamp` records base python and deps signature
+- `TestConcurrentBootstrap` — 4 parallel `--full` bootstraps don't corrupt the venv (verifies all mutations are serialized inside `_with_venv_install_lock`)
+- `TestStaleVenvLockRecovery` — a symlink lock whose target pid is dead is auto-cleared on the next bootstrap (no 30s pip wait, no manual cleanup required)
+- `TestVenvLockSymlinkAcquire` — symlink target after acquire equals the acquirer's pid; second acquire fails when the lock is held; live pid holder is preserved by `_clear_stale_venv_lock_symlink`
+- `TestVenvPipNeverTouchesSystemPython` — `pip install` always runs through the venv interpreter (PEP 668 compliance), enforced via a python-call shim that fails the test if any pip invocation comes from outside `.claude-pace-maker/venv`
+- `TestHookLogsFallbackToSystemPython` — fallback warning is emitted to `hook_debug.log`, throttled to once per hour, and the throttle marker is cleared on successful `bootstrap_full`
 
 ### Migration (2.28.x → 2.29.0)
 - Upgrade the plugin (`claude plugin install` / marketplace update), then run `pace-maker doctor` or any `pace-maker` command (SessionStart also bootstraps).
 - Optional clean reinstall of runtime state (config/DB preserved if you skip step 3):
   1. `claude plugin remove claude-pace-maker` (optional)
   2. `rm -rf ~/.claude/plugins/cache/*/claude-pace-maker` (optional cache clear)
-  3. `rm -rf ~/.claude-pace-maker/.python_deps ~/.claude-pace-maker/.venv.lock.d` (legacy markers/locks)
+  3. `rm -rf ~/.claude-pace-maker/.python_deps` (legacy per-interpreter dep marker from pre-venv versions)
   4. Reinstall plugin; first run creates `~/.claude-pace-maker/venv`
-- If bootstrap appears stuck: `rm -rf ~/.claude-pace-maker/.venv.lock.d` then `pace-maker doctor`
+- If bootstrap appears stuck: `rm -f ~/.claude-pace-maker/.venv.lock.link` then `pace-maker doctor`
 
 ## [2.28.0] - 2026-05-22
 

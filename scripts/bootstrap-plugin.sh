@@ -15,7 +15,7 @@ VENV_DIR="$PACEMAKER_DIR/venv"
 VENV_PYTHON="$VENV_DIR/bin/python3"
 VENV_STAMP="$PACEMAKER_DIR/.venv_stamp"
 VENV_LOCK_FILE="$PACEMAKER_DIR/.venv.lock"
-VENV_LOCK_DIR="$PACEMAKER_DIR/.venv.lock.d"
+VENV_LOCK_LINK="$PACEMAKER_DIR/.venv.lock.link"
 VENV_FAILED_MARKER="$PACEMAKER_DIR/.venv.failed"
 BOOTSTRAP_OK_MARKER="$PACEMAKER_DIR/.bootstrap_ok"
 DEBUG_LOG="$PACEMAKER_DIR/hook_debug.log"
@@ -94,28 +94,34 @@ _mark_venv_ready() {
     _write_venv_stamp "$base_py"
 }
 
-# Clear mkdir-based lock left behind when a prior bootstrap was interrupted.
-_clear_stale_venv_lock_dir() {
-    if [ ! -d "$VENV_LOCK_DIR" ]; then
+# Clear a symlink lock left by a crashed bootstrap process. The symlink's
+# target string IS the holder's pid — set atomically at symlink(2) time —
+# so there is no "acquired but pid not yet written" intermediate state to
+# defend against. Just read the pid; if the process is gone, drop the
+# lock.
+_clear_stale_venv_lock_symlink() {
+    [ -L "$VENV_LOCK_LINK" ] || return 0
+    local pid
+    pid="$(readlink "$VENV_LOCK_LINK" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
         return 0
     fi
-    local lock_pid=""
-    if [ -f "$VENV_LOCK_DIR/pid" ]; then
-        lock_pid="$(cat "$VENV_LOCK_DIR/pid" 2>/dev/null || true)"
-        if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
-            return 0
-        fi
-        _bootstrap_log "clearing orphaned venv install lock (pid ${lock_pid:-?} not running)"
-        rm -rf "$VENV_LOCK_DIR"
-        return 0
-    fi
-    if find "$VENV_LOCK_DIR" -maxdepth 0 -mmin +2 2>/dev/null | grep -q .; then
-        _bootstrap_log "clearing stale venv install lock at $VENV_LOCK_DIR"
-        rm -rf "$VENV_LOCK_DIR"
-    fi
+    _bootstrap_log "clearing orphaned venv install lock (pid ${pid:-?} not running)"
+    rm -f "$VENV_LOCK_LINK"
 }
 
-# Portable lock (flock on Linux; mkdir + pid on macOS where flock is often absent).
+# Atomically acquire the lock. `symlink(2)` is the POSIX-atomic creation
+# primitive for this use case — the lock identity and the holder's pid
+# are bound into a single observable name, set in one syscall. There is
+# no torn-write window: either the symlink exists with a populated
+# target, or it doesn't exist at all. `readlink` is the canonical way to
+# inspect the holder.
+_try_acquire_venv_install_lock() {
+    ln -s "$$" "$VENV_LOCK_LINK" 2>/dev/null
+}
+
+# Portable lock (flock on Linux; symlink on macOS where flock is often
+# absent).
 _with_venv_install_lock() {
     if command -v flock >/dev/null 2>&1; then
         (
@@ -126,24 +132,23 @@ _with_venv_install_lock() {
     fi
 
     local waited=0
-    while ! mkdir "$VENV_LOCK_DIR" 2>/dev/null; do
-        _clear_stale_venv_lock_dir
-        if mkdir "$VENV_LOCK_DIR" 2>/dev/null; then
+    while ! _try_acquire_venv_install_lock; do
+        _clear_stale_venv_lock_symlink
+        if _try_acquire_venv_install_lock; then
             break
         fi
         sleep 0.2
         waited=$((waited + 1))
         if [ "$waited" -ge 150 ]; then
-            _bootstrap_user_error "Timed out waiting for venv install lock at $VENV_LOCK_DIR"
+            _bootstrap_user_error "Timed out waiting for venv install lock at $VENV_LOCK_LINK"
             _bootstrap_user_error "If no other pace-maker command is running, remove the lock and retry:"
-            _bootstrap_user_error "  rm -rf \"$VENV_LOCK_DIR\""
+            _bootstrap_user_error "  rm -f \"$VENV_LOCK_LINK\""
             return 1
         fi
     done
-    echo "$$" >"$VENV_LOCK_DIR/pid"
     "$@"
     local rc=$?
-    rm -rf "$VENV_LOCK_DIR"
+    rm -f "$VENV_LOCK_LINK"
     return "$rc"
 }
 
@@ -344,6 +349,8 @@ bootstrap_full() {
     fi
 
     date -u +"%Y-%m-%dT%H:%M:%SZ" >"$BOOTSTRAP_OK_MARKER"
+    # Reset hook.sh's throttle so a future fallback re-warns the user.
+    rm -f "${PACEMAKER_DIR}/.python_fallback_warn" 2>/dev/null || true
     return 0
 }
 
