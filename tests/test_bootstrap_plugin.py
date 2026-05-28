@@ -11,6 +11,32 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP_SH = REPO_ROOT / "scripts" / "bootstrap-plugin.sh"
+REQUIREMENTS_TXT = REPO_ROOT / "requirements.txt"
+
+
+def _parse_requirements():
+    """Read the pinned specs from requirements.txt (the single source of
+    truth) so tests track it without duplicating versions."""
+    assert REQUIREMENTS_TXT.exists(), f"requirements.txt missing at {REQUIREMENTS_TXT}"
+    specs = []
+    for raw in REQUIREMENTS_TXT.read_text().splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line:
+            specs.append(line)
+    assert specs, f"no pinned specs parsed from {REQUIREMENTS_TXT}"
+    return specs
+
+
+def _requirements_sha256():
+    import hashlib
+    return hashlib.sha256(REQUIREMENTS_TXT.read_bytes()).hexdigest()
+
+
+PINNED_SPECS = _parse_requirements()
+PINS = {}
+for _spec in PINNED_SPECS:
+    _name, _, _ver = _spec.partition("==")
+    PINS[_name] = _ver
 
 
 def run_bootstrap(home, mode="--light", extra_env=None):
@@ -64,31 +90,93 @@ class TestBootstrapVenv:
         assert venv_python.exists(), "managed venv python3 must exist after --full"
         assert venv_python.is_file()
 
-    def test_venv_stamp_records_base_python_and_deps(self, tmp_path):
+    def test_venv_stamp_records_base_python_and_requirements_sha256(self, tmp_path):
+        """Stamp format is `<base_py>:<sha256(requirements.txt)>`. The hash
+        suffix means ANY edit to requirements.txt — version bump, comment
+        change, added dep — auto-invalidates the stamp and re-bootstraps."""
         home = tmp_path / "home"
         home.mkdir()
         run_bootstrap(home, "--full")
         stamp = home / ".claude-pace-maker" / ".venv_stamp"
         assert stamp.exists(), ".venv_stamp must be written after --full"
         content = stamp.read_text().strip()
-        assert ":" in content
-        assert "requests:pyyaml:claude-agent-sdk" in content
+        expected_sha = _requirements_sha256()
+        assert content.endswith(f":{expected_sha}"), (
+            f"stamp suffix should match sha256 of requirements.txt ({expected_sha}); "
+            f"got: {content!r}"
+        )
 
-    def test_deps_importable_in_venv(self, tmp_path):
+    def test_drifted_version_is_repaired_on_next_bootstrap(self, tmp_path):
+        """If a dep is manually downgraded inside the venv, the next
+        bootstrap_full must detect the drift via _deps_imports_ok's
+        exact-version assertion (driven by requirements.txt) and
+        re-install the pinned version via `pip install -r`."""
         home = tmp_path / "home"
         home.mkdir()
         run_bootstrap(home, "--full")
         venv_python = home / ".claude-pace-maker" / "venv" / "bin" / "python3"
-        proc = subprocess.run(
-            [
-                str(venv_python),
-                "-c",
-                "import requests, yaml, claude_agent_sdk",
-            ],
+
+        downgrade = subprocess.run(
+            [str(venv_python), "-m", "pip", "install", "--quiet", "requests==2.32.0"],
             capture_output=True,
             text=True,
         )
-        assert proc.returncode == 0, proc.stderr
+        assert downgrade.returncode == 0, downgrade.stderr
+
+        # Drift must invalidate the runtime resolver.
+        check = subprocess.run(
+            ["bash", "-c",
+             f"source {BOOTSTRAP_SH}; "
+             "if resolve_runtime_python >/dev/null 2>&1; then echo OK; else echo DRIFT_DETECTED; fi"],
+            env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},
+            capture_output=True,
+            text=True,
+        )
+        assert "DRIFT_DETECTED" in check.stdout, (
+            f"resolve_runtime_python should reject drifted versions; got: {check.stdout!r}"
+        )
+
+        # bootstrap_full must repair back to the pinned version.
+        # Remove .bootstrap_ok so bootstrap_full's _ensure_venv_and_deps path runs.
+        (home / ".claude-pace-maker" / ".bootstrap_ok").unlink()
+        repair = run_bootstrap(home, "--full")
+        assert repair.returncode == 0, repair.stderr
+        version_check = subprocess.run(
+            [str(venv_python), "-c",
+             "import requests; print(requests.__version__)"],
+            capture_output=True, text=True,
+        )
+        assert version_check.stdout.strip() == PINS["requests"], (
+            f"requests should be repaired to pinned {PINS['requests']}, "
+            f"got {version_check.stdout.strip()!r}"
+        )
+
+    def test_requirements_file_edit_invalidates_stamp(self, tmp_path):
+        """The cheap bootstrap_needs_full check must report 'needs full'
+        when requirements.txt changes — even if no code in
+        bootstrap-plugin.sh did. This is the key benefit of hashing the
+        file rather than hardcoding versions in shell."""
+        home = tmp_path / "home"
+        home.mkdir()
+        run_bootstrap(home, "--full")
+        stamp = home / ".claude-pace-maker" / ".venv_stamp"
+        original = stamp.read_text().strip()
+        # Simulate an old install where requirements.txt was a different
+        # version of itself by rewriting the stamp suffix to a wrong sha.
+        base_py = original.split(":", 1)[0]
+        stamp.write_text(f"{base_py}:0000000000000000000000000000000000000000000000000000000000000000\n")
+
+        check = subprocess.run(
+            ["bash", "-c",
+             f"source {BOOTSTRAP_SH}; "
+             "if bootstrap_needs_full; then echo NEEDS_FULL; else echo OK; fi"],
+            env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},
+            capture_output=True,
+            text=True,
+        )
+        assert "NEEDS_FULL" in check.stdout, (
+            f"stamp with wrong sha must report needs_full; got: {check.stdout!r}"
+        )
 
 
 class TestConcurrentBootstrap:

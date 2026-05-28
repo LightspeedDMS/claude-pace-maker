@@ -9,7 +9,6 @@
 
 set -euo pipefail
 
-DEPS_SIGNATURE="requests:pyyaml:claude-agent-sdk"
 PACEMAKER_DIR="${PACEMAKER_DIR:-$HOME/.claude-pace-maker}"
 VENV_DIR="$PACEMAKER_DIR/venv"
 VENV_PYTHON="$VENV_DIR/bin/python3"
@@ -20,6 +19,15 @@ VENV_FAILED_MARKER="$PACEMAKER_DIR/.venv.failed"
 BOOTSTRAP_OK_MARKER="$PACEMAKER_DIR/.bootstrap_ok"
 DEBUG_LOG="$PACEMAKER_DIR/hook_debug.log"
 BOOTSTRAP_VERBOSE="${BOOTSTRAP_VERBOSE:-0}"
+
+# Pinned dependencies are loaded lazily from requirements.txt (single
+# source of truth). DEPS_SIGNATURE is the sha256 of that file so any
+# edit — version bump, comment change, additional dep — invalidates
+# .venv_stamp and triggers a re-install on next bootstrap_full.
+REQUIREMENTS_FILE=""
+DEPS_SIGNATURE=""
+PINNED_PACKAGES=()
+_PINNED_DEPS_LOADED=0
 
 _bootstrap_log() {
     if [ "$BOOTSTRAP_VERBOSE" = "1" ]; then
@@ -43,6 +51,57 @@ _bootstrap_resolve_plugin_root() {
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     PLUGIN_ROOT="$(cd "$script_dir/.." && pwd)"
+}
+
+# Compute sha256 of a file using whichever digest tool is available on
+# the host (sha256sum on Linux, shasum on macOS, openssl as fallback).
+_sha256_of_file() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
+    else
+        return 1
+    fi
+}
+
+# Parse requirements.txt into PINNED_PACKAGES and derive DEPS_SIGNATURE
+# from its sha256. Idempotent — guarded by _PINNED_DEPS_LOADED so
+# sourcing this file repeatedly is cheap. Must be called after
+# _bootstrap_resolve_plugin_root.
+_ensure_pinned_deps_loaded() {
+    [ "$_PINNED_DEPS_LOADED" = "1" ] && return 0
+    _bootstrap_resolve_plugin_root
+    REQUIREMENTS_FILE="$PLUGIN_ROOT/requirements.txt"
+    if [ ! -f "$REQUIREMENTS_FILE" ]; then
+        _bootstrap_user_error "requirements.txt not found at $REQUIREMENTS_FILE"
+        return 1
+    fi
+    PINNED_PACKAGES=()
+    local raw spec
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        # Strip trailing inline comment, then trim whitespace.
+        spec="${raw%%#*}"
+        spec="${spec#"${spec%%[![:space:]]*}"}"
+        spec="${spec%"${spec##*[![:space:]]}"}"
+        [ -z "$spec" ] && continue
+        PINNED_PACKAGES+=("$spec")
+    done <"$REQUIREMENTS_FILE"
+
+    if [ ${#PINNED_PACKAGES[@]} -eq 0 ]; then
+        _bootstrap_user_error "requirements.txt at $REQUIREMENTS_FILE is empty"
+        return 1
+    fi
+
+    DEPS_SIGNATURE="$(_sha256_of_file "$REQUIREMENTS_FILE")"
+    if [ -z "$DEPS_SIGNATURE" ]; then
+        _bootstrap_user_error "no sha256 tool available (need sha256sum, shasum, or openssl)"
+        return 1
+    fi
+    _PINNED_DEPS_LOADED=1
 }
 
 # Find Python 3.10+ for venv creation; prefer the newest available interpreter.
@@ -71,9 +130,34 @@ resolve_runtime_python() {
     return 1
 }
 
+# Verify the interpreter has every pinned dep installed at the exact
+# pinned version. Drives resolve_runtime_python and the venv-ready
+# check inside _create_or_repair_venv_locked, so any drift (manual
+# upgrade, partial install) triggers a repair.
 _deps_imports_ok() {
     local py="$1"
-    "$py" -c "import requests, yaml, claude_agent_sdk" 2>/dev/null
+    _ensure_pinned_deps_loaded || return 1
+    # Comma-joined list of `name==version` specs; Python parses and
+    # asserts each one via importlib.metadata.
+    local pinned_csv
+    pinned_csv="$(IFS=,; echo "${PINNED_PACKAGES[*]}")"
+    PACEMAKER_PINNED_DEPS="$pinned_csv" \
+    "$py" -c '
+import os, sys
+from importlib.metadata import version
+try:
+    # Soundness: top-level imports we actually use at runtime.
+    import requests, yaml, claude_agent_sdk
+    # Pin assertion driven by requirements.txt.
+    for spec in os.environ["PACEMAKER_PINNED_DEPS"].split(","):
+        name, _, pinned = spec.partition("==")
+        if not name or not pinned:
+            sys.exit(1)
+        if version(name) != pinned:
+            sys.exit(1)
+except Exception:
+    sys.exit(1)
+' 2>/dev/null
 }
 
 _read_venv_stamp() {
@@ -84,6 +168,7 @@ _read_venv_stamp() {
 
 _write_venv_stamp() {
     local base_py="$1"
+    _ensure_pinned_deps_loaded || return 1
     echo "${base_py}:${DEPS_SIGNATURE}" >"$VENV_STAMP"
 }
 
@@ -157,6 +242,7 @@ _venv_needs_recreate() {
     if [ ! -d "$VENV_DIR" ] || [ ! -x "$VENV_PYTHON" ]; then
         return 0
     fi
+    _ensure_pinned_deps_loaded || return 0
     local stamp expected
     stamp="$(_read_venv_stamp)"
     expected="${base_py}:${DEPS_SIGNATURE}"
@@ -183,6 +269,8 @@ _ensure_venv_and_deps() {
         return 1
     fi
 
+    _ensure_pinned_deps_loaded || return 1
+
     expected="${base_py}:${DEPS_SIGNATURE}"
     if [ -x "$VENV_PYTHON" ] && _deps_imports_ok "$VENV_PYTHON"; then
         stamp="$(_read_venv_stamp)"
@@ -200,7 +288,8 @@ _ensure_venv_and_deps() {
 # concurrent process that already finished the work is detected and no-op'd.
 _create_or_repair_venv_locked() {
     local base_py="$1"
-    local stamp expected packages
+    local stamp expected
+    _ensure_pinned_deps_loaded || return 1
     expected="${base_py}:${DEPS_SIGNATURE}"
 
     # Double-checked locking: another process may have just finished bootstrap.
@@ -231,36 +320,26 @@ _create_or_repair_venv_locked() {
         return 0
     fi
 
-    packages=()
-    "$VENV_PYTHON" -c "import requests" 2>/dev/null || packages+=("requests")
-    "$VENV_PYTHON" -c "import yaml" 2>/dev/null || packages+=("pyyaml")
-    "$VENV_PYTHON" -c "import claude_agent_sdk" 2>/dev/null || packages+=("claude-agent-sdk")
-
-    if [ ${#packages[@]} -eq 0 ]; then
-        # All individually importable but combined check failed — race against
-        # another process. Treat as ready.
-        _mark_venv_ready "$base_py"
-        return 0
-    fi
-
-    _pip_install_into_venv "$base_py" "${packages[@]}"
+    _pip_install_into_venv "$base_py"
 }
 
 # Always called under the install lock from _create_or_repair_venv_locked.
+# Idempotent: `pip install -r requirements.txt` is a no-op when every
+# pinned spec is already satisfied, installs missing packages, and
+# upgrades/downgrades drifted ones to match the pin.
 _pip_install_into_venv() {
     local base_py="$1"
-    shift
-    local packages=("$@")
+    _ensure_pinned_deps_loaded || return 1
 
-    if "$VENV_PYTHON" -m pip install "${packages[@]}" >>"$DEBUG_LOG" 2>&1; then
+    if "$VENV_PYTHON" -m pip install -r "$REQUIREMENTS_FILE" >>"$DEBUG_LOG" 2>&1; then
         if _deps_imports_ok "$VENV_PYTHON"; then
             _mark_venv_ready "$base_py"
             return 0
         fi
     fi
-    echo "[bootstrap-plugin] pip install failed in venv for ${packages[*]}" >>"$DEBUG_LOG"
+    echo "[bootstrap-plugin] pip install failed in venv for $REQUIREMENTS_FILE" >>"$DEBUG_LOG"
     touch "$VENV_FAILED_MARKER"
-    _bootstrap_user_error "Could not install Python packages (${packages[*]}) in $VENV_DIR."
+    _bootstrap_user_error "Could not install Python packages from $REQUIREMENTS_FILE into $VENV_DIR."
     _bootstrap_user_error "Run: pace-maker doctor   (or: bash \"\$PLUGIN_ROOT/scripts/doctor.sh\")"
     return 1
 }
@@ -390,15 +469,17 @@ bootstrap_verify() {
     return 0
 }
 
-# Cheap check intended for per-hook invocation: only stat() + file read, no
-# python fork. Returns 0 (needs full) when state is missing or the stamp
-# doesn't match the current DEPS_SIGNATURE. The deep import check happens on
-# session_start via bootstrap_full -> _ensure_venv_and_deps which always
-# validates imports under the install lock.
+# Cheap check intended for per-hook invocation: only stat() + file read +
+# a single sha256 of requirements.txt (no python fork). Returns 0 (needs
+# full) when state is missing or the stamp's suffix doesn't match the
+# current sha256 of requirements.txt. The deep import + version-pin check
+# happens on session_start via bootstrap_full -> _ensure_venv_and_deps
+# which always validates under the install lock.
 bootstrap_needs_full() {
     [ -f "$BOOTSTRAP_OK_MARKER" ] || return 0
     [ -x "$VENV_PYTHON" ] || return 0
     [ -f "$VENV_STAMP" ] || return 0
+    _ensure_pinned_deps_loaded || return 0
     local stamp
     stamp="$(_read_venv_stamp)"
     case "$stamp" in
