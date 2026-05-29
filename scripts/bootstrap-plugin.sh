@@ -40,11 +40,23 @@ _bootstrap_user_error() {
 }
 
 # Resolve PLUGIN_ROOT from env or script location.
+#
+# CLAUDE_PLUGIN_ROOT is only honored when it points at a directory that
+# actually contains scripts/bootstrap-plugin.sh — i.e. it really is a
+# claude-pace-maker plugin root. The pace-maker CLI is frequently invoked
+# from other plugins' hooks (e.g. the developer plugin's SessionStart
+# wiring), which inherit CLAUDE_PLUGIN_ROOT pointing at THEIR plugin
+# directory. Blindly trusting that value here would make bootstrap_light
+# write ~/.local/bin/pace-maker → <foreign>/scripts/pace-maker (broken).
+# The script-location fallback is the safe default — the function is
+# defined inside the pace-maker plugin's bootstrap-plugin.sh, so
+# ${BASH_SOURCE[0]}/.. is always the pace-maker plugin root.
 _bootstrap_resolve_plugin_root() {
     if [ -n "${PLUGIN_ROOT:-}" ]; then
         return 0
     fi
-    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] \
+        && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap-plugin.sh" ]; then
         PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
         return 0
     fi

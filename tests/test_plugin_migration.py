@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path("/home/jsbattig/Dev/claude-pace-maker")
+REPO_ROOT = Path(__file__).resolve().parent.parent
 MIGRATE_SH = REPO_ROOT / "migrate-to-plugin.sh"
 INSTALL_SH = REPO_ROOT / "install.sh"
 
