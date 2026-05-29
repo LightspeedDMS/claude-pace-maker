@@ -192,32 +192,29 @@ class TestScenario3CLIWrapper:
         """scripts/pace-maker must be executable."""
         assert os.access(CLI_WRAPPER, os.X_OK), "scripts/pace-maker must be executable"
 
-    def test_cli_wrapper_is_bash_script(self):
-        """scripts/pace-maker must be a bash wrapper (not system python3)."""
+    def test_cli_wrapper_is_python_script(self):
+        """scripts/pace-maker must be a Python wrapper."""
         with open(CLI_WRAPPER) as f:
             first_line = f.readline().strip()
         assert first_line.startswith(
             "#!"
         ), f"scripts/pace-maker must start with a shebang, got: {first_line}"
         assert (
-            "bash" in first_line
-        ), f"scripts/pace-maker shebang must invoke bash, got: {first_line}"
+            "python" in first_line
+        ), f"scripts/pace-maker shebang must invoke python, got: {first_line}"
 
-    def test_cli_wrapper_sources_bootstrap(self):
-        """scripts/pace-maker must source bootstrap-plugin.sh for venv setup."""
+    def test_cli_wrapper_adds_pacemaker_to_path(self):
+        """scripts/pace-maker must add ~/.claude-pace-maker to sys.path."""
         with open(CLI_WRAPPER) as f:
             content = f.read()
         assert (
-            "bootstrap-plugin.sh" in content
-        ), "CLI wrapper must source bootstrap-plugin.sh"
+            ".claude-pace-maker" in content
+        ), "CLI wrapper must reference ~/.claude-pace-maker for module discovery"
 
-    def test_cli_wrapper_uses_managed_venv(self):
-        """scripts/pace-maker must run user_commands via resolve_runtime_python."""
+    def test_cli_wrapper_invokes_user_commands(self):
+        """scripts/pace-maker must import and run pacemaker.user_commands."""
         with open(CLI_WRAPPER) as f:
             content = f.read()
-        assert (
-            "resolve_runtime_python" in content
-        ), "CLI wrapper must use managed venv via resolve_runtime_python"
         assert (
             "pacemaker.user_commands" in content
         ), "CLI wrapper must invoke pacemaker.user_commands module"
