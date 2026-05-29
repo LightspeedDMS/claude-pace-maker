@@ -34,6 +34,16 @@ if [ ! -f "${SCRIPT_DIR}/bootstrap-plugin.sh" ]; then
     exit 1
 fi
 
+# Pin PLUGIN_ROOT to the resolved CLI script dir's parent BEFORE sourcing
+# bootstrap-plugin.sh. Without this, _bootstrap_resolve_plugin_root would
+# fall back to an inherited CLAUDE_PLUGIN_ROOT — which is set to a foreign
+# plugin's path when the CLI is invoked from another plugin's hook (e.g.
+# the developer plugin's SessionStart wiring). That foreign path is then
+# used as cli_target by bootstrap_light and rewrites ~/.local/bin/pace-maker
+# to a non-existent file under the foreign plugin's scripts/ directory.
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+export PLUGIN_ROOT
+
 # shellcheck source=scripts/bootstrap-plugin.sh
 source "${SCRIPT_DIR}/bootstrap-plugin.sh"
 
