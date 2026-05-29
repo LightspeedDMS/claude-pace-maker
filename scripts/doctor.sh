@@ -14,7 +14,14 @@ log() {
 }
 
 find_plugin_root() {
-    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+    # CLAUDE_PLUGIN_ROOT is only honored when it actually points at a
+    # claude-pace-maker plugin root (contains scripts/bootstrap-plugin.sh).
+    # The doctor is occasionally invoked from another plugin's hook context
+    # where the inherited CLAUDE_PLUGIN_ROOT points at the caller plugin,
+    # not pace-maker — using that path would run bootstrap_full against the
+    # wrong tree.
+    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] \
+        && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap-plugin.sh" ]; then
         printf '%s' "$CLAUDE_PLUGIN_ROOT"
         return 0
     fi

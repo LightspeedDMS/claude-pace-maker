@@ -17,7 +17,7 @@ import subprocess
 from pathlib import Path
 
 
-REPO_ROOT = Path("/home/jsbattig/Dev/claude-pace-maker")
+REPO_ROOT = Path(__file__).resolve().parent.parent
 HOOK_SH = REPO_ROOT / "scripts" / "hook.sh"
 HOOKS_JSON = REPO_ROOT / "hooks" / "hooks.json"
 PLUGIN_JSON = REPO_ROOT / ".claude-plugin" / "plugin.json"

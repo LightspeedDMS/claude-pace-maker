@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.29.1] - 2026-05-29
+
+### Fixed
+- **`pace-maker` CLI no longer corrupts its own `~/.local/bin/pace-maker` symlink when invoked from another plugin's hook context** — When a sibling plugin's hook (e.g. the developer plugin's SessionStart wiring) ran the `pace-maker` CLI as a smoke test or via `pace-maker langfuse provision-url ...`, the invocation inherited `CLAUDE_PLUGIN_ROOT` pointing at the *caller's* plugin directory. `_bootstrap_resolve_plugin_root` blindly trusted that value, so `bootstrap_light` rewrote `~/.local/bin/pace-maker` → `<foreign-plugin>/scripts/pace-maker` — a broken symlink (the foreign plugin has no `scripts/pace-maker`). Two-layer defense:
+  - `scripts/pace-maker` — pins `PLUGIN_ROOT` to the resolved CLI script dir's parent *before* sourcing `bootstrap-plugin.sh`, so an inherited foreign `CLAUDE_PLUGIN_ROOT` is never consulted on the CLI path.
+  - `scripts/bootstrap-plugin.sh` (`_bootstrap_resolve_plugin_root`) and `scripts/doctor.sh` (`find_plugin_root`) — only honor `CLAUDE_PLUGIN_ROOT` when it actually points at a claude-pace-maker plugin root (contains `scripts/bootstrap-plugin.sh`); otherwise fall back to the script-location derivation. A legitimate `CLAUDE_PLUGIN_ROOT` (the real pace-maker hook path) is still honored.
+
+### Tests (`tests/test_pace_maker_cli_foreign_plugin_root.py`)
+- `test_status_does_not_rewrite_symlink_to_foreign_plugin` — seeds a real `~/.local/bin/pace-maker` symlink, invokes the CLI through it with `CLAUDE_PLUGIN_ROOT` pointing at a foreign plugin dir, and asserts the symlink target survives unchanged and still resolves to an existing file.
+- `test_foreign_claude_plugin_root_is_rejected` — `_bootstrap_resolve_plugin_root` falls back to script-location derivation when `CLAUDE_PLUGIN_ROOT` lacks `scripts/bootstrap-plugin.sh`.
+- `test_valid_claude_plugin_root_is_still_accepted` — negative regression: a legitimate `CLAUDE_PLUGIN_ROOT` (real plugin root) is still honored, confirming env-based override was not disabled wholesale.
+
 ## [2.29.0] - 2026-05-27
 
 ### Changed
