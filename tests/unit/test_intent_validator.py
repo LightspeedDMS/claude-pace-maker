@@ -172,50 +172,6 @@ def test_stop_hook_prompt_contains_e2e_enforcement_for_story_epic():
     assert "BLOCKED" in template
 
 
-def test_stop_hook_prompt_requires_e2e_declaration_for_story_epic():
-    """Stop hook prompt must demand declaration of E2E approach for story/epic work."""
-    from pacemaker.intent_validator import get_prompt_template
-
-    template = get_prompt_template()
-
-    # Must mention manual-test-executor or equivalent real-world execution method
-    assert (
-        "manual-test-executor" in template
-        or "execute-e2e" in template
-        or "end-to-end" in template.lower()
-    )
-
-
-def test_stop_hook_prompt_excludes_coded_tests_as_e2e_evidence():
-    """Stop hook prompt must explicitly state coded tests (pytest/unit tests) do NOT
-    satisfy E2E validation, and must require real application execution with no mocks.
-    """
-    import re
-    from pacemaker.intent_validator import get_prompt_template
-
-    template = get_prompt_template()
-
-    # Pytest/unit tests must be explicitly negated — negation must appear near "pytest"
-    assert re.search(
-        r"(not|does not|do not|NOT)\b.{0,80}\bpytest\b",
-        template,
-        re.IGNORECASE | re.DOTALL,
-    ), "Prompt must explicitly state pytest does NOT satisfy E2E requirement"
-
-    # Must prohibit mocks with explicit NO language
-    assert re.search(
-        r"\bNO\s+mocks?\b",
-        template,
-    ), "Prompt must contain 'NO mocks' to prohibit mock-based validation"
-
-    # Must require executing the real application (not test code)
-    assert re.search(
-        r"actually\s+(EXECUTE|run|invoke)\b.{0,60}\b(application|feature|system)\b",
-        template,
-        re.IGNORECASE | re.DOTALL,
-    ), "Prompt must require actually executing the real application/system"
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1042,7 +998,8 @@ def test_stage1_gate_yes_calls_stage2():
     from pacemaker.intent_validator import validate_intent_and_code
 
     with patch(
-        "pacemaker.intent_validator._call_stage2_validation", return_value="APPROVED"
+        "pacemaker.intent_validator._call_stage2_validation",
+        return_value=("APPROVED", "test-reviewer"),
     ) as mock_stage2:
         result = validate_intent_and_code(
             messages=[
@@ -1125,7 +1082,7 @@ def test_validate_intent_and_code_stage2_approved_includes_reviewer():
     from pacemaker.intent_validator import validate_intent_and_code
 
     with patch(
-        "pacemaker.inference.registry.resolve_and_call_with_reviewer",
+        "pacemaker.inference.resolve_and_call_with_reviewer",
         return_value=("APPROVED", "codex-gpt5"),
     ):
         result = validate_intent_and_code(
@@ -1150,7 +1107,7 @@ def test_validate_intent_and_code_stage2_blocked_includes_reviewer():
     from pacemaker.intent_validator import validate_intent_and_code
 
     with patch(
-        "pacemaker.inference.registry.resolve_and_call_with_reviewer",
+        "pacemaker.inference.resolve_and_call_with_reviewer",
         return_value=("Code review feedback here.", "anthropic-sdk"),
     ):
         result = validate_intent_and_code(

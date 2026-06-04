@@ -11,12 +11,12 @@ from ..constants import DEFAULT_DB_PATH
 
 
 # Call context → default model hint when hook_model is "auto"
-# These match the CURRENT hardcoded defaults in intent_validator.py and code_reviewer.py
+# These are the historical defaults for each validation context.
 _AUTO_DEFAULTS = {
-    "stop_hook": "sonnet",  # call_sdk_validation_async: tries sonnet first
-    "intent_validation": "sonnet",  # _call_sdk_intent_validation_async
-    "stage2_unified": "opus",  # _call_unified_validation_async: tries opus first
-    "code_review": "sonnet",  # _call_sdk_review_async: tries sonnet first
+    "stop_hook": "sonnet",  # historical default for the stop-hook validator
+    "intent_validation": "sonnet",  # historical default for intent declaration check
+    "stage2_unified": "opus",  # historical default for unified stage-2 validation
+    "code_review": "sonnet",  # historical default for the code-review validator
 }
 
 # Reviewer name constants — identify which provider actually served the request

@@ -98,6 +98,35 @@ def _guard_production_db(tmp_path, monkeypatch):
     monkeypatch.setenv("PACEMAKER_CENTRAL_BASE", str(fake_central))
 
 
+_BLOCKED_CLI_NAMES = {"codex", "gemini", "claude"}
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+@pytest.fixture(autouse=True)
+def _block_real_external_cli_calls(request, monkeypatch):
+    """Fail fast if a test makes a real external CLI call (codex/gemini/claude).
+
+    These must be mocked — a real call (often in a background reviewer thread)
+    blocks on a network timeout and Python waits for the lingering thread at exit,
+    making the suite slow. e2e tests are exempt (they may use real systems).
+    """
+    # e2e tests may legitimately hit real systems — don't guard those.
+    if os.sep + "e2e" + os.sep in str(request.node.fspath):
+        return
+
+    def _guarded_run(cmd, *args, **kwargs):
+        argv0 = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else cmd
+        name = os.path.basename(str(argv0)) if argv0 else ""
+        if name in _BLOCKED_CLI_NAMES:
+            raise RuntimeError(
+                f"Real external CLI call in a non-e2e test (cmd={cmd!r}). "
+                f"Mock the provider/inference call instead of hitting {name}."
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _guarded_run)
+
+
 # ---------------------------------------------------------------------------
 # Memory-localization shared fixtures
 # ---------------------------------------------------------------------------

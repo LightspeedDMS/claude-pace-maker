@@ -15,6 +15,21 @@
 
 ---
 
+## End-to-End Testing Philosophy
+
+**This project does NOT use scripted/automated end-to-end tests** — they consume too much time and are explicitly unwanted here.
+
+**What "end-to-end" means in this project**: Claude itself executes and inspects what pace-maker is doing when finishing agentic work — run the hooks/CLI, observe pace-maker's actual behavior, and report the real observed evidence. E2E verification here is **agentic/manual (performed by Claude)**, never a test script.
+
+**Therefore:**
+- Do NOT write scripted/automated E2E test files for this project.
+- Do NOT enforce scripted-E2E evidence in validation prompts (e.g. demanding "E2E TEST COMPLETION REPORT" formats, "pytest does NOT satisfy E2E", "execute the real application", etc.). Two stop-hook prompt tests that asserted this requirement were removed for this reason.
+- When end-to-end verification is needed, run pace-maker and inspect its behavior directly, then report the real observed output.
+
+**Related — unit tests must never make real external calls**: all `codex`/`gemini`/`claude` CLI/SDK calls in tests MUST be mocked. An autouse guard in `tests/conftest.py` blocks real ones — a real call that leaked into a `ThreadPoolExecutor` reviewer thread caused ~30s interpreter-exit hangs (invisible to pytest's own timer, which made the suite appear fast while wall-clock was ~6x longer). Mock at the namespace the code imports from (e.g. `pacemaker.inference.resolve_and_call_with_reviewer`, `pacemaker.inference.competitive.get_provider`), NOT the `...registry` submodule.
+
+---
+
 ## Related Codebase: Claude Usage Reporting
 
 **IMPORTANT**: When the user says "claude usage" or "claude-usage", they mean the **claude-usage-reporting** codebase located at:

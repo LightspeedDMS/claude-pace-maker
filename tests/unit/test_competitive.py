@@ -353,10 +353,7 @@ class TestRunCompetitive:
 
     def test_synthesizer_timeout_causes_first_survivor_wins(self):
         """First survivor returned when synthesizer times out (exceeds SYNTHESIS_TIMEOUT_SEC)."""
-        from pacemaker.inference.competitive import (
-            run_competitive,
-            SYNTHESIS_TIMEOUT_SEC,
-        )
+        from pacemaker.inference.competitive import run_competitive
         from pacemaker.inference.codex_provider import CodexProvider
 
         # Reviewers return immediately
@@ -366,11 +363,14 @@ class TestRunCompetitive:
         anthropic_mock = MagicMock()
         anthropic_mock.query.return_value = "APPROVED"
 
-        # Synthesizer sleeps longer than SYNTHESIS_TIMEOUT_SEC to trigger timeout
-        synth_sleep_s = SYNTHESIS_TIMEOUT_SEC + 5
+        # Synthesizer sleeps longer than the PATCHED timeout (1s).
+        # Use a fixed 3s — do NOT derive from the real SYNTHESIS_TIMEOUT_SEC constant
+        # (which is 30s): capturing it before the patch context enters would create a
+        # background thread sleeping 35s and cause a ~35s interpreter-exit hang.
+        _SYNTH_SLEEP_S = 3
 
         def _slow_synth_query(*args, **kwargs):
-            time.sleep(synth_sleep_s)
+            time.sleep(_SYNTH_SLEEP_S)
             return "SHOULD NOT REACH"
 
         synth_mock = MagicMock()

@@ -1011,6 +1011,69 @@ class TestGeminiShortAliases:
             os.unlink(tmp_path)
 
 
+class TestResolveModel:
+    """Tests for _resolve_model pass-through behavior.
+
+    After the change, _resolve_model must pass alias strings (sonnet/opus/haiku)
+    straight through to the SDK so the SDK picks the latest model per family,
+    rather than pinning a specific version ID.
+    """
+
+    def test_opus_alias_passes_through(self):
+        """_resolve_model('opus') must return 'opus', not a pinned claude-* ID."""
+        from pacemaker.inference.anthropic_provider import _resolve_model
+
+        assert _resolve_model("opus") == "opus"
+
+    def test_sonnet_alias_passes_through(self):
+        """_resolve_model('sonnet') must return 'sonnet', not a pinned claude-* ID."""
+        from pacemaker.inference.anthropic_provider import _resolve_model
+
+        assert _resolve_model("sonnet") == "sonnet"
+
+    def test_haiku_alias_passes_through(self):
+        """_resolve_model('haiku') must return 'haiku', not a pinned claude-* ID."""
+        from pacemaker.inference.anthropic_provider import _resolve_model
+
+        assert _resolve_model("haiku") == "haiku"
+
+    def test_explicit_full_id_passes_through(self):
+        """Explicit claude-* ID must be returned unchanged (escape hatch preserved)."""
+        from pacemaker.inference.anthropic_provider import _resolve_model
+
+        assert _resolve_model("claude-opus-4-8") == "claude-opus-4-8"
+
+    def test_empty_hint_defaults_to_sonnet_alias(self):
+        """Empty model_hint must default to 'sonnet' (the alias, not a pinned ID)."""
+        from pacemaker.inference.anthropic_provider import _resolve_model
+
+        assert _resolve_model("") == "sonnet"
+
+    def test_unknown_hint_defaults_to_sonnet_alias(self):
+        """Unrecognized hint must default to 'sonnet' (the alias, not a pinned ID)."""
+        from pacemaker.inference.anthropic_provider import _resolve_model
+
+        assert _resolve_model("totally-unknown") == "sonnet"
+
+    def test_no_alias_resolves_to_pinned_claude_id(self):
+        """None of the three aliases must resolve to a pinned claude-* string."""
+        from pacemaker.inference.anthropic_provider import _resolve_model
+
+        for alias in ("sonnet", "opus", "haiku"):
+            result = _resolve_model(alias)
+            assert not result.startswith("claude-"), (
+                f"_resolve_model('{alias}') returned pinned ID '{result}' — "
+                "should pass alias through without version-pinning"
+            )
+
+    def test_fallback_map_uses_alias_keys(self):
+        """_FALLBACK_MAP must map alias keys: 'opus'->'sonnet' and 'sonnet'->'opus'."""
+        from pacemaker.inference.anthropic_provider import _FALLBACK_MAP
+
+        assert _FALLBACK_MAP.get("opus") == "sonnet"
+        assert _FALLBACK_MAP.get("sonnet") == "opus"
+
+
 class TestConfigDefault:
     """Tests for hook_model config default."""
 
@@ -1025,3 +1088,136 @@ class TestConfigDefault:
         from pacemaker.constants import DEFAULT_CONFIG
 
         assert DEFAULT_CONFIG["hook_model"] == "auto"
+
+
+class TestAnthropicProviderEffortLevel:
+    """Verify effort='high' is passed to BOTH FreshOptions constructions.
+
+    The provider does fresh imports inside _query_async:
+        from claude_agent_sdk import query as fresh_query
+        from claude_agent_sdk.types import ClaudeAgentOptions as FreshOptions,
+                                           ResultMessage as FreshResult
+
+    We monkeypatch ALL THREE module attributes before calling .query() so that:
+    - FreshOptions records its kwargs
+    - FreshResult is the same StubResult class (so isinstance passes)
+    - fresh_query yields StubResult instances
+    No real SDK call, no network, no subprocess.
+    """
+
+    def test_primary_path_passes_effort_high(self):
+        """Primary FreshOptions must receive effort='high' and the resolved model."""
+        import sys
+        import types
+        from pacemaker.inference.anthropic_provider import AnthropicProvider
+
+        recorded_kwargs: list[dict] = []
+
+        # Stub for ClaudeAgentOptions — records kwargs on construction.
+        class StubOptions:
+            def __init__(self, **kwargs):
+                recorded_kwargs.append(kwargs)
+
+        # StubResult must be the same class we patch into ResultMessage so that
+        # isinstance(message, FreshResult) passes inside _query_async.
+        class StubResult:
+            result = "APPROVED"
+
+        # Async generator that yields one StubResult immediately.
+        async def stub_query(prompt, options):
+            yield StubResult()
+
+        fake_sdk = types.ModuleType("claude_agent_sdk")
+        fake_sdk.query = stub_query
+        fake_types = types.ModuleType("claude_agent_sdk.types")
+        fake_types.ClaudeAgentOptions = StubOptions
+        fake_types.ResultMessage = StubResult
+        fake_sdk.types = fake_types
+
+        saved_sdk = sys.modules.get("claude_agent_sdk")
+        saved_types = sys.modules.get("claude_agent_sdk.types")
+        try:
+            sys.modules["claude_agent_sdk"] = fake_sdk
+            sys.modules["claude_agent_sdk.types"] = fake_types
+            provider = AnthropicProvider()
+            result = provider.query("hi", "sys", "opus", 1024)
+        finally:
+            if saved_sdk is not None:
+                sys.modules["claude_agent_sdk"] = saved_sdk
+            else:
+                sys.modules.pop("claude_agent_sdk", None)
+            if saved_types is not None:
+                sys.modules["claude_agent_sdk.types"] = saved_types
+            else:
+                sys.modules.pop("claude_agent_sdk.types", None)
+
+        assert result == "APPROVED"
+        assert len(recorded_kwargs) >= 1, "FreshOptions was never constructed"
+        primary_kwargs = recorded_kwargs[0]
+        assert (
+            primary_kwargs.get("effort") == "high"
+        ), f"Expected effort='high' in primary FreshOptions, got: {primary_kwargs}"
+        assert (
+            primary_kwargs.get("model") == "opus"
+        ), f"Expected model='opus' in primary FreshOptions, got: {primary_kwargs}"
+
+    def test_fallback_path_passes_effort_high(self):
+        """Fallback FreshOptions (triggered by usage-limit response) must also get effort='high'."""
+        import sys
+        import types
+        from pacemaker.inference.anthropic_provider import AnthropicProvider
+
+        recorded_kwargs: list[dict] = []
+
+        class StubOptions:
+            def __init__(self, **kwargs):
+                recorded_kwargs.append(kwargs)
+
+        # First call returns a usage-limit string; second call returns a real answer.
+        call_count = 0
+
+        # StubResult patched into ResultMessage so isinstance check passes.
+        class StubResult:
+            def __init__(self, text):
+                self.result = text
+
+        async def stub_query(prompt, options):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                yield StubResult("usage limit reached, resets soon")
+            else:
+                yield StubResult("APPROVED")
+
+        fake_sdk = types.ModuleType("claude_agent_sdk")
+        fake_sdk.query = stub_query
+        fake_types = types.ModuleType("claude_agent_sdk.types")
+        fake_types.ClaudeAgentOptions = StubOptions
+        fake_types.ResultMessage = StubResult
+        fake_sdk.types = fake_types
+
+        saved_sdk = sys.modules.get("claude_agent_sdk")
+        saved_types = sys.modules.get("claude_agent_sdk.types")
+        try:
+            sys.modules["claude_agent_sdk"] = fake_sdk
+            sys.modules["claude_agent_sdk.types"] = fake_types
+            provider = AnthropicProvider()
+            result = provider.query("hi", "sys", "sonnet", 1024)
+        finally:
+            if saved_sdk is not None:
+                sys.modules["claude_agent_sdk"] = saved_sdk
+            else:
+                sys.modules.pop("claude_agent_sdk", None)
+            if saved_types is not None:
+                sys.modules["claude_agent_sdk.types"] = saved_types
+            else:
+                sys.modules.pop("claude_agent_sdk.types", None)
+
+        assert result == "APPROVED"
+        assert (
+            len(recorded_kwargs) == 2
+        ), f"Expected 2 FreshOptions constructions (primary + fallback), got {len(recorded_kwargs)}"
+        fallback_kwargs = recorded_kwargs[1]
+        assert (
+            fallback_kwargs.get("effort") == "high"
+        ), f"Expected effort='high' in fallback FreshOptions, got: {fallback_kwargs}"

@@ -8,18 +8,20 @@ from .provider import InferenceProvider, ProviderError
 from ..logger import log_debug
 
 
-# Model name mapping
-_MODEL_MAP = {
-    "sonnet": "claude-sonnet-4-5",
-    "opus": "claude-opus-4-5",
-    "haiku": "claude-haiku-4-5-20251001",
+# Known short aliases — passed straight through to the SDK so it resolves each
+# family to its latest model version.  No pinned IDs here; pinning is the SDK's job.
+_KNOWN_ALIASES = ("sonnet", "opus", "haiku")
+_DEFAULT_MODEL = "sonnet"
+
+# Fallback pairs (alias keys): if one family hits a usage limit, try the other.
+_FALLBACK_MAP = {
+    "sonnet": "opus",
+    "opus": "sonnet",
 }
 
-# Fallback pairs: if one hits limit, try the other
-_FALLBACK_MAP = {
-    "claude-sonnet-4-5": "claude-opus-4-5",
-    "claude-opus-4-5": "claude-sonnet-4-5",
-}
+# Thinking-effort level applied to every Anthropic SDK call.
+# SDK supports "low" | "medium" | "high" | "max"; "high" per project requirement.
+_EFFORT_LEVEL = "high"
 
 
 @contextlib.contextmanager
@@ -44,12 +46,18 @@ def _is_limit_error(response: str) -> bool:
 
 
 def _resolve_model(model_hint: str) -> str:
-    """Resolve model hint to full Anthropic model name."""
-    if model_hint in _MODEL_MAP:
-        return _MODEL_MAP[model_hint]
+    """Resolve model hint to the string passed to the Claude Agent SDK.
+
+    Known short aliases (sonnet/opus/haiku) are passed through unchanged so the
+    SDK resolves each family to its current latest model — no version pinning here.
+    Explicit claude-* strings are also returned as-is (escape hatch for callers that
+    need a specific version).  Empty or unrecognised hints default to _DEFAULT_MODEL.
+    """
+    if model_hint in _KNOWN_ALIASES:
+        return model_hint
     if model_hint.startswith("claude-"):
         return model_hint
-    return _MODEL_MAP.get("sonnet", "claude-sonnet-4-5")
+    return _DEFAULT_MODEL
 
 
 class AnthropicProvider(InferenceProvider):
@@ -94,6 +102,7 @@ class AnthropicProvider(InferenceProvider):
         options = FreshOptions(
             max_turns=1,
             model=model,
+            effort=_EFFORT_LEVEL,
             max_thinking_tokens=max(max_thinking_tokens, 1024),
             system_prompt=system_prompt or "You are a helpful assistant.",
             disallowed_tools=[
@@ -128,6 +137,7 @@ class AnthropicProvider(InferenceProvider):
                 options_fb = FreshOptions(
                     max_turns=1,
                     model=fallback_model,
+                    effort=_EFFORT_LEVEL,
                     max_thinking_tokens=max(max_thinking_tokens, 1024),
                     system_prompt=system_prompt or "You are a helpful assistant.",
                     disallowed_tools=[

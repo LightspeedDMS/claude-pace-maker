@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.30.0] - 2026-06-04
+
+### Changed
+- **Hook-model short aliases now resolve to the latest model in each family.** `opus`/`sonnet`/`haiku` are passed through to the Claude Agent SDK unchanged instead of being converted to pinned model IDs, so intent-validation and code-review calls always use the newest model per family. Previously `opus` → `claude-opus-4-5` and `sonnet` → `claude-sonnet-4-5` (stale pins); now the SDK resolves each family. Explicit `claude-*` IDs still pass through unchanged. (`src/pacemaker/inference/anthropic_provider.py`)
+- **All Anthropic SDK reviewer/validator calls now run at `effort="high"`** (Claude Agent SDK thinking-depth control), applied to both the primary and the usage-limit fallback call. (`src/pacemaker/inference/anthropic_provider.py`)
+
+### Removed
+- **Deleted dead legacy async SDK helpers** that carried the same stale pinned model IDs and had zero production callers: `_fresh_sdk_call`, `call_sdk_validation_async`, `_call_sdk_intent_validation_async`, `_call_unified_validation_async` (`intent_validator.py`) and `_call_sdk_review_async` (`code_reviewer.py`). All live paths route through `resolve_and_call*` → registry → provider.
+
+### Fixed
+- **Unit tests no longer make real external CLI calls.** Some tests invoked the real `codex` CLI — synchronously, and (sneakier) inside `ThreadPoolExecutor` reviewer threads, where a leaked real call made the process hang ~30s at interpreter exit (invisible to pytest's own timer, which reported the file as fast while wall-clock was ~6x longer). Corrected the mock targets to patch the namespace the code imports from (`pacemaker.inference.*`, not the `...registry` submodule) and added an autouse guard in `tests/conftest.py` that fails fast on any real `codex`/`gemini`/`claude` call in a non-e2e test. The `effort`-level tests were rewritten to stub `claude_agent_sdk` via `sys.modules` so they run under interpreters without the SDK installed.
+
+### Docs
+- Recorded the project's end-to-end testing philosophy in `CLAUDE.md`: no scripted/automated E2E tests — "end-to-end" means Claude itself executing and inspecting pace-maker when finishing agentic work. Removed two stop-hook prompt tests (`test_stop_hook_prompt_requires_e2e_declaration_for_story_epic`, `test_stop_hook_prompt_excludes_coded_tests_as_e2e_evidence`) that enforced scripted-E2E evidence, to match this philosophy.
+
 ## [2.29.1] - 2026-05-29
 
 ### Fixed

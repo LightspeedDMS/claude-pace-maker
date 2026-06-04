@@ -11,14 +11,6 @@ from typing import List
 from .logger import log_warning, log_info
 from .inference import resolve_and_call
 
-# Try to import Claude Agent SDK
-try:
-    import claude_agent_sdk  # type: ignore[import-not-found]  # noqa: F401
-
-    SDK_AVAILABLE = True
-except ImportError:
-    SDK_AVAILABLE = False
-
 
 def build_review_prompt(intent: str, code: str) -> str:
     """
@@ -78,60 +70,6 @@ RESPONSE FORMAT:
 
 Be strict: Even small additions or modifications outside the declared intent are violations.
 Only return empty response if the code implements EXACTLY what was declared, nothing more."""
-
-
-async def _call_sdk_review_async(prompt: str) -> str:
-    """
-    Call SDK for code review with Sonnet + fallback to Opus.
-
-    Args:
-        prompt: Review prompt
-
-    Returns:
-        SDK response text (feedback or empty)
-    """
-    if not SDK_AVAILABLE:
-        raise ImportError("Claude Agent SDK not available")
-
-    # Fresh import to avoid cached state
-    from claude_agent_sdk import query as fresh_query
-    from claude_agent_sdk.types import (  # type: ignore[import-not-found]
-        ClaudeAgentOptions as FreshOptions,
-        ResultMessage as FreshResult,
-    )
-
-    # Try Sonnet first with thinking tokens for better review
-    options = FreshOptions(
-        max_turns=1,
-        model="claude-sonnet-4-5",
-        max_thinking_tokens=4000,
-        system_prompt="You are a code reviewer. Provide feedback only if code doesn't match intent. Return empty response if code is correct.",
-        disallowed_tools=["Write", "Edit", "Bash", "TodoWrite", "Read", "Grep", "Glob"],
-    )
-
-    response_text = ""
-    try:
-        async for message in fresh_query(prompt=prompt, options=options):
-            if isinstance(message, FreshResult):
-                if hasattr(message, "result") and message.result:
-                    response_text = message.result.strip()
-    except Exception as e:
-        # If Sonnet hit usage limit, try Opus
-        error_str = str(e).lower()
-        if "usage limit" in error_str or "limit reached" in error_str:
-            log_info("code_reviewer", "Sonnet hit usage limit, trying Opus")
-            options.model = "claude-opus-4-5"
-            try:
-                async for message in fresh_query(prompt=prompt, options=options):
-                    if isinstance(message, FreshResult):
-                        if hasattr(message, "result") and message.result:
-                            response_text = message.result.strip()
-            except Exception as opus_e:
-                log_warning("code_reviewer", "SDK review call failed", opus_e)
-        else:
-            log_warning("code_reviewer", "SDK review call failed", e)
-
-    return response_text
 
 
 def call_sdk_review(prompt: str, hook_model: str = "auto") -> str:
