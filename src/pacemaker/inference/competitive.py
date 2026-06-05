@@ -73,7 +73,10 @@ def _build_synthesis_prompt(succeeded: list, original_prompt: str) -> str:
         f"Independent reviewer verdicts:\n{verdicts_block}\n\n"
         "Rules (apply mechanically, do not override):\n"
         "- If ALL reviewers output APPROVED -> output exactly: APPROVED\n"
-        "- If ANY reviewer outputs BLOCKED -> output: BLOCKED: [combined reasons from all blocking reviewers, de-duplicated]\n"
+        "- If ANY reviewer outputs BLOCKED -> output: BLOCKED: [combined reasons, attributed to reviewer label(s) that raised each concern]\n"
+        "  - Prefix each concern with the reviewer label(s): [label]: concern text\n"
+        "  - If multiple reviewers raise the same concern, merge them into ONE bullet: [codex-gpt5, gem-pro]: concern\n"
+        "  - De-duplicate concerns — mention each distinct issue once, with all raising labels listed\n"
         "- Do not add new concerns not raised by reviewers\n"
         "- Do not remove or downgrade concerns raised by reviewers\n"
         '- Output ONLY "APPROVED" or "BLOCKED: [reason]" -- no other text, no preamble'

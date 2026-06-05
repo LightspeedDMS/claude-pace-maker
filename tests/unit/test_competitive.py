@@ -166,6 +166,42 @@ class TestBuildSynthesisPrompt:
         assert "Is this code safe?" in prompt
         assert "BLOCKED" in prompt  # output contract instruction
 
+    def test_build_synthesis_prompt_blocked_requires_attribution(self):
+        """Prompt instructs synthesizer to attribute each BLOCKED concern to the reviewer label(s)
+        that raised it. Asserts on stable substrings added to the rules block."""
+        from pacemaker.inference.competitive import _build_synthesis_prompt
+
+        succeeded = [
+            ("APPROVED", "codex-gpt5"),
+            ("BLOCKED: risky rm -rf call", "gem-pro"),
+        ]
+        prompt = _build_synthesis_prompt(succeeded, "delete command check")
+
+        # The rules block must instruct label-based attribution
+        assert "reviewer label(s)" in prompt
+        assert "merge them into ONE bullet" in prompt
+        # The example label format used in the rules block to illustrate attribution.
+        # Use the merge example "[codex-gpt5, gem-pro]" — unique to the rules block,
+        # never a verdict header, so this assertion exclusively guards the rules text.
+        assert (
+            "[codex-gpt5, gem-pro]" in prompt
+        )  # merge example — unique to rules block, never a verdict header
+
+    def test_build_synthesis_prompt_approved_stays_exact(self):
+        """APPROVED branch must instruct synthesizer to output exactly 'APPROVED' with no
+        attribution or extra text. Guards the APPROVED contract used by intent_validator.py.
+        """
+        from pacemaker.inference.competitive import _build_synthesis_prompt
+
+        succeeded = [
+            ("APPROVED", "codex-gpt5"),
+            ("APPROVED", "anthropic-sdk"),
+        ]
+        prompt = _build_synthesis_prompt(succeeded, "safe operation check")
+
+        # The rules block must preserve the exact-APPROVED contract
+        assert "output exactly: APPROVED" in prompt
+
 
 # ---------------------------------------------------------------------------
 # run_competitive() tests — only external provider boundaries are mocked
