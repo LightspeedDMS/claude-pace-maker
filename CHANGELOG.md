@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.30.1] - 2026-06-05
+
+### Changed
+- **Competitive synthesis now attributes BLOCKED concerns to the reviewer label(s) that raised them.** When the synthesizer consolidates verdicts, each concern is prefixed with the reviewer label(s) (e.g. `[codex-gpt5]: concern`). If multiple reviewers flag the same concern it is merged into one bullet with combined labels (e.g. `[codex-gpt5, anthropic-sdk]: concern`). Previously all blocking reasons were combined into a plain de-duplicated list with no attribution. (`src/pacemaker/inference/competitive.py`)
+
 ## [2.30.0] - 2026-06-04
 
 ### Changed
