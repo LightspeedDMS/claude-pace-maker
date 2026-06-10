@@ -49,7 +49,7 @@ def get_provider(hook_model: str):
     Returns:
         InferenceProvider instance
     """
-    if hook_model in ("auto", "sonnet", "opus", "haiku"):
+    if hook_model in ("auto", "sonnet", "opus", "haiku", "fable"):
         from .anthropic_provider import AnthropicProvider
 
         return AnthropicProvider()

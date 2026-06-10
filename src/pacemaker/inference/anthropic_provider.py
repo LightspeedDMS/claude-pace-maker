@@ -10,13 +10,14 @@ from ..logger import log_debug
 
 # Known short aliases — passed straight through to the SDK so it resolves each
 # family to its latest model version.  No pinned IDs here; pinning is the SDK's job.
-_KNOWN_ALIASES = ("sonnet", "opus", "haiku")
+_KNOWN_ALIASES = ("sonnet", "opus", "haiku", "fable")
 _DEFAULT_MODEL = "sonnet"
 
 # Fallback pairs (alias keys): if one family hits a usage limit, try the other.
 _FALLBACK_MAP = {
     "sonnet": "opus",
     "opus": "sonnet",
+    "fable": "opus",
 }
 
 # Thinking-effort level applied to every Anthropic SDK call.

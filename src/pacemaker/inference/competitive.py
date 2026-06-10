@@ -14,7 +14,7 @@ from .anthropic_provider import AnthropicProvider
 from .provider import ProviderError
 from .model_aliases import KNOWN_MODELS, SHORT_ALIASES
 
-_ANTHROPIC_MODELS = {"auto", "sonnet", "opus", "haiku"}
+_ANTHROPIC_MODELS = {"auto", "sonnet", "opus", "haiku", "fable"}
 
 _REVIEWER_CODEX = "codex-gpt5"
 _REVIEWER_GEMINI_FLASH = "gem-flash"

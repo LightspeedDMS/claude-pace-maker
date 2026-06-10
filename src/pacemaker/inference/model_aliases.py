@@ -13,6 +13,7 @@ KNOWN_MODELS = {
     "sonnet",
     "opus",
     "haiku",
+    "fable",
     "gpt-5.4",
     "gpt-5.5",
     "gemini-flash",

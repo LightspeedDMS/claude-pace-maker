@@ -84,6 +84,7 @@ COMMANDS:
   pace-maker hook-model auto                   Use auto model selection for hook inference
   pace-maker hook-model sonnet                 Use Sonnet for hook inference
   pace-maker hook-model opus                   Use Opus for hook inference
+  pace-maker hook-model fable                  Use Fable for hook inference
   pace-maker hook-model gpt-5.5                Use GPT-5.5 (via Codex CLI) for hook inference (preferred / latest)
   pace-maker hook-model gpt-5.4                Use GPT-5.4 (via Codex CLI) for hook inference
   pace-maker hook-model gpt-5                  Alias for gpt-5.5 (latest Codex model)
@@ -558,7 +559,9 @@ def parse_command(user_input: str) -> Dict[str, Any]:
         }
 
     # Pattern 19: pace-maker prefer-model (opus|sonnet|haiku|auto)
-    pattern_prefer_model = r"^pace-maker\s+prefer-model\s+(opus|sonnet|haiku|auto)$"
+    pattern_prefer_model = (
+        r"^pace-maker\s+prefer-model\s+(opus|sonnet|haiku|fable|auto)$"
+    )
     match_prefer_model = re.match(pattern_prefer_model, normalized)
 
     if match_prefer_model:
@@ -572,7 +575,7 @@ def parse_command(user_input: str) -> Dict[str, Any]:
     # Single model: auto|sonnet|opus|haiku|gpt-5.5|gpt-5.4 (aliases: gpt-5|gpt|codex)|gemini-flash|gemini-pro (incl. short aliases)
     pattern_hook_model_single = (
         r"^pace-maker\s+hook-model\s+"
-        r"(auto|sonnet|opus|haiku|gpt-5\.5|gpt-5\.4|gpt-5|gpt|codex|gemini-flash|gemini-pro|gem-flash|gem-pro)$"
+        r"(auto|sonnet|opus|haiku|fable|gpt-5\.5|gpt-5\.4|gpt-5|gpt|codex|gemini-flash|gemini-pro|gem-flash|gem-pro)$"
     )
     match_hook_model = re.match(pattern_hook_model_single, normalized)
 
@@ -1729,12 +1732,12 @@ def _execute_prefer_model(
     config_path: str, subcommand: Optional[str]
 ) -> Dict[str, Any]:
     """Set preferred subagent model for quota balancing."""
-    valid_models = ["opus", "sonnet", "haiku", "auto"]
+    valid_models = ["opus", "sonnet", "haiku", "fable", "auto"]
 
     if subcommand not in valid_models:
         return {
             "success": False,
-            "message": f"Invalid model: {subcommand}\nUsage: pace-maker prefer-model [opus|sonnet|haiku|auto]",
+            "message": f"Invalid model: {subcommand}\nUsage: pace-maker prefer-model [opus|sonnet|haiku|fable|auto]",
         }
 
     try:
@@ -1802,6 +1805,7 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
         "sonnet",
         "opus",
         "haiku",
+        "fable",
         "gpt-5.4",
         "gpt-5.5",
         "gemini-flash",
@@ -1813,7 +1817,7 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
             "success": False,
             "message": (
                 f"Invalid model: {subcommand}\n"
-                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|gpt-5.4|gpt-5.5|gemini-flash|gemini-pro]"
+                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|fable|gpt-5.4|gpt-5.5|gemini-flash|gemini-pro]"
             ),
         }
 
