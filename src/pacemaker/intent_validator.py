@@ -22,6 +22,34 @@ from .constants import DEFAULT_CONFIG
 from .logger import log_warning, log_debug
 
 
+def _strip_llm_noise(text: str) -> str:
+    """Strip all § intel/sentiment lines from an LLM response."""
+    lines = text.splitlines()
+    return "\n".join(line for line in lines if not line.strip().startswith("§"))
+
+
+def _find_verdict(text: str) -> str:
+    """Search for APPROVED or BLOCKED: as a standalone line anywhere in text.
+
+    Returns "APPROVED", the raw BLOCKED line, or "" if neither found.
+    BLOCKED takes priority over APPROVED when both appear.
+    """
+    cleaned = _strip_llm_noise(text)
+    blocked_line = ""
+    has_approved = False
+    for line in cleaned.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("BLOCKED:"):
+            blocked_line = stripped
+        elif stripped.upper() == "APPROVED":
+            has_approved = True
+    if blocked_line:
+        return blocked_line
+    if has_approved:
+        return "APPROVED"
+    return ""
+
+
 def get_config(key: str) -> Any:
     """
     Get configuration value for the given key.
@@ -166,13 +194,13 @@ def parse_sdk_response(response_text: str) -> Dict[str, Any]:
     Returns:
         Decision dict for Claude Code Stop hook
     """
-    trimmed = response_text.strip()
+    verdict = _find_verdict(response_text)
 
-    if trimmed == "APPROVED":
+    if verdict == "APPROVED":
         return {"continue": True}
 
-    elif trimmed.startswith("BLOCKED:"):
-        feedback = trimmed.replace("BLOCKED:", "").strip()
+    elif verdict.upper().startswith("BLOCKED:"):
+        feedback = verdict[len("BLOCKED:") :].strip()
         return {"decision": "block", "reason": feedback}
 
     else:
@@ -831,7 +859,7 @@ System failing closed to prevent bypassing intent declaration requirements.""",
         )
         log_debug("intent_validator", f"Stage 2 reviewer: {reviewer}")
 
-        if stage2_feedback.strip().upper() == "APPROVED":
+        if _find_verdict(stage2_feedback) == "APPROVED":
             # APPROVED response = approved
             log_debug("intent_validator", "=== STAGE 2 APPROVED ===")
             return {"approved": True, "reviewer": reviewer}
