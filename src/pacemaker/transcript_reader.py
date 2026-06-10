@@ -174,7 +174,13 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
 
     try:
         log_debug("transcript_reader", f"Reading transcript: {transcript_path}")
-        messages = []
+
+        # Group JSONL entries by requestId so that thinking, text, and
+        # tool_use blocks from the same Claude turn are combined into one
+        # logical message.  Without this, n=2 can miss the INTENT: text
+        # when it's in a separate JSONL entry from the tool_use.
+        grouped_order = []
+        grouped = {}
 
         with open(transcript_path, "r") as f:
             for line in f:
@@ -186,10 +192,31 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
 
                 content = message.get("content", [])
                 msg_parts = _extract_message_parts(content)
-                messages.append(msg_parts)
+
+                request_id = entry.get("requestId")
+                if not request_id:
+                    standalone_key = id(msg_parts)
+                    grouped_order.append(standalone_key)
+                    grouped[standalone_key] = msg_parts
+                    continue
+
+                if request_id in grouped:
+                    existing = grouped[request_id]
+                    if msg_parts["text"]:
+                        if existing["text"]:
+                            existing["text"] += "\n" + msg_parts["text"]
+                        else:
+                            existing["text"] = msg_parts["text"]
+                    existing["tools"].extend(msg_parts["tools"])
+                else:
+                    grouped_order.append(request_id)
+                    grouped[request_id] = msg_parts
+
+        messages = [grouped[key] for key in grouped_order]
 
         log_debug(
-            "transcript_reader", f"Total assistant messages found: {len(messages)}"
+            "transcript_reader",
+            f"Total assistant turns found: {len(messages)}",
         )
 
         # Get last N messages
