@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.31.1] - 2026-06-10
+
+### Fixed
+- **APPROVED/BLOCKED verdict now found anywhere in reviewer response.** LLM reviewers (especially Fable) prepend `§` intel/sentiment lines and append narrative explanations after their verdict. `_strip_llm_noise()` strips all `§` lines, and `_find_verdict()` searches for APPROVED/BLOCKED as standalone lines anywhere in the cleaned response. BLOCKED takes priority when both appear. Previously the exact first-line match caused false rejections. (`src/pacemaker/intent_validator.py`)
+- **JSONL entries grouped by `requestId` in transcript reader.** Claude Code emits each content block (thinking, text, tool_use) as a separate JSONL entry sharing the same `requestId`. The transcript reader now combines entries with the same `requestId` into a single logical message, so intent text and tool_use from the same turn are seen together by validation. (`src/pacemaker/transcript_reader.py`)
+- **Intent extraction supports both grouped and ungrouped JSONL formats.** `extract_current_assistant_message` checks 1 message back for ungrouped (legacy/no requestId) JSONL where intent text and tool_use are separate entries. When `messages[-1]` already contains intent (grouped format), no backward merge is performed. Never searches beyond `messages[-2]` to avoid picking up stale intent declarations from previous turns. (`src/pacemaker/intent_validator.py`)
+
 ## [2.31.0] - 2026-06-09
 
 ### Added
