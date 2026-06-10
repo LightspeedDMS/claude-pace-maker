@@ -466,19 +466,52 @@ def _is_core_path(file_path: str) -> bool:
 
 
 def _is_version_bump(intent_text: str) -> bool:
-    """Return True if intent_text describes a version bump with a digit."""
-    if re.search(
-        r"(?i)(bump|update|change|set)\s+(the\s+)?version\b.*?\d",
-        intent_text,
-        re.DOTALL,
-    ):
-        return True
-    return bool(re.search(r"(?i)version\s+bump\b.*?\d", intent_text, re.DOTALL))
+    """Return True if intent_text describes a version bump.
+
+    Robust to phrasings where the word "version" is embedded in a token such
+    as ``__version__`` or wrapped in backticks/quotes (no clean word boundary).
+    A bump is recognized when EITHER:
+      - a bump verb (bump|update|change|set|version bump) co-occurs with a
+        version token (``version`` anywhere, including ``__version__``,
+        backticked or quoted forms) AND a digit appears, OR
+      - a bump verb co-occurs with a semver literal (``X.Y.Z``).
+    A semver literal alone, without a bump verb, is NOT treated as a bump to
+    avoid over-matching unrelated text.
+    """
+    has_bump_verb = bool(
+        re.search(r"(?i)\b(bump|update|change|set)\b", intent_text)
+        or re.search(r"(?i)version\s+bump", intent_text)
+    )
+    if not has_bump_verb:
+        return False
+
+    has_version_token_with_digit = bool(
+        re.search(r"(?i)version\b.*?\d", intent_text, re.DOTALL)
+        or re.search(r"(?i)version[`'\"]*.*?\d", intent_text, re.DOTALL)
+    )
+    has_semver = bool(re.search(r"\d+\.\d+\.\d+", intent_text))
+    return has_version_token_with_digit or has_semver
 
 
 def _has_tdd_declaration(intent_text: str) -> bool:
-    """Return True if a structured TDD or skip-TDD declaration is present."""
-    if re.search(r"(?i)(test\s+coverage|covered\s+by|\btest\s*:)\s*\S+", intent_text):
+    """Return True if a structured TDD or skip-TDD declaration is present.
+
+    Accepts the exact markers the NO_TDD feedback message prescribes
+    (``TEST FILE:`` / ``TEST SCOPE:``) as well as the legacy
+    ``Test coverage:`` / ``covered by`` / ``test:`` forms. A marker only
+    counts when it is followed by an actual declaration body (``\\S``) so a
+    bare colon with nothing after it is not a false positive.
+    """
+    # Colon-markers: the prescribed "TEST FILE:" / "TEST SCOPE:" plus legacy
+    # "Test coverage:" / "test:" — require a same-line declaration body after
+    # the colon so a bare colon (nothing after) is not a false positive.
+    if re.search(
+        r"(?i)\b(test\s+file|test\s+scope|test\s+coverage|test)\s*:[^\S\n]*\S",
+        intent_text,
+    ):
+        return True
+    # "covered by <something>" — legacy form without a colon.
+    if re.search(r"(?i)covered\s+by\s+\S+", intent_text):
         return True
     return bool(re.search(r"(?i)user\s+permission\s+(to\s+)?skip\s+tdd", intent_text))
 
@@ -712,6 +745,7 @@ def validate_intent_and_code(
     file_path: str,
     tool_name: str,
     hook_model: str = "auto",
+    current_message_override: str = "",
 ) -> dict:
     """
     Two-stage pre-tool validation with short-circuit logic.
@@ -739,8 +773,12 @@ def validate_intent_and_code(
         {"approved": False, "feedback": "..."} if violations found
     """
     try:
-        # STAGE 1: Fast declaration check (CURRENT message only)
-        current_message = extract_current_assistant_message(messages)
+        # STAGE 1: Fast declaration check (CURRENT message only).
+        # Prefer the requestId-anchored current-turn message (Fix 3) when the
+        # caller supplied it; fall back to the n-back heuristic otherwise.
+        current_message = current_message_override or extract_current_assistant_message(
+            messages
+        )
         log_debug("intent_validator", "=== STAGE 1 VALIDATION START ===")
         log_debug("intent_validator", f"File path: {file_path}")
         log_debug("intent_validator", f"Tool name: {tool_name}")
@@ -764,6 +802,17 @@ def validate_intent_and_code(
         log_debug(
             "intent_validator", f"Stage 1 regex response: '{stage1_response_upper}'"
         )
+
+        # Fix 4: always-on (WARNING-level) diagnostic on a Stage-1 REJECTION so
+        # false-rejects are diagnosable from the standard log even when DEBUG
+        # logging is off. Short prefix only (no full code dumps / secrets).
+        if stage1_response_upper in ("NO", "NO_TDD"):
+            log_warning(
+                "intent_validator",
+                f"Stage 1 rejection: verdict={stage1_response_upper} "
+                f"file={file_path} "
+                f"current_message[:200]={current_message[:200]!r}",
+            )
 
         if stage1_response_upper == "NO":
             # Intent declaration missing

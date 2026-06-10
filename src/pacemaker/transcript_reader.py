@@ -7,7 +7,8 @@ for use in intent validation context building.
 """
 
 import json
-from typing import List, Union
+import re
+from typing import Any, Dict, List, Union
 
 from .logger import log_warning
 
@@ -248,6 +249,114 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
     except Exception as e:
         log_warning("transcript_reader", "Failed to extract messages for validation", e)
         return []
+
+
+def get_current_turn_message_for_validation(transcript_path: str) -> str:
+    """Extract the current assistant turn anchored on the last Write/Edit
+    tool_use's requestId.
+
+    Fix 3: the INTENT/skip declaration that belongs to the same logical turn
+    as the tool_use being validated shares the tool_use entry's requestId.
+    A fixed n-back window can miss that declaration when the turn is
+    fragmented across JSONL entries (e.g. a separate prose block, or an
+    interrupt-style turn in between). Anchoring on the tool_use's requestId
+    captures exactly the same-turn text+tools and — critically — never pulls
+    in a STALE INTENT from a prior turn (which carries a different requestId).
+
+    Returns the merged, tool-formatted text of the requestId group containing
+    the most-recent Write/Edit tool_use. Returns "" when no such tool_use is
+    present. When entries lack a requestId (older Claude Code), falls back to
+    the last assistant entry that carries the tool_use.
+
+    Intent-marker gate (best-of-both): the override is only authoritative when
+    the anchored turn's TEXT actually carries an ``INTENT:`` marker. If the
+    same-turn group has a tool_use but NO intent marker in its text, this
+    returns "" so the caller's ``override or n-back`` falls through to the
+    1-back-tolerant n-back path (``extract_current_assistant_message``), which
+    rescues an INTENT declared in the immediately-preceding assistant message
+    (fragmented turn / pre-flush state) AND still enforces deep-stale
+    protection. The marker is checked on TEXT only (not on tool content), so a
+    bare ``intent:`` appearing inside the edited file's code never qualifies.
+
+    Args:
+        transcript_path: Path to JSONL transcript file
+
+    Returns:
+        Formatted current-turn message when the anchored turn carries an
+        INTENT marker; "" otherwise (no tool_use, or no same-turn INTENT).
+    """
+    try:
+        # Preserve discovery order so "last" tool_use is well defined.
+        entries = []  # list of (request_id_or_None, msg_parts)
+        with open(transcript_path, "r") as f:
+            for line in f:
+                entry = json.loads(line)
+                message = entry.get("message", {})
+                if message.get("role") != "assistant":
+                    continue
+                msg_parts = _extract_message_parts(message.get("content", []))
+                entries.append((entry.get("requestId"), msg_parts))
+
+        # Find the LAST entry carrying a Write/Edit tool_use — that anchors
+        # the current turn.
+        anchor_index = None
+        for i in range(len(entries) - 1, -1, -1):
+            if _has_write_or_edit(entries[i][1]):
+                anchor_index = i
+                break
+
+        if anchor_index is None:
+            return ""
+
+        anchor_request_id, anchor_parts = entries[anchor_index]
+
+        # Staleness/pre-flush gate: if a LATER assistant turn (different
+        # requestId) appears after the anchored tool_use, the transcript has
+        # moved on — the anchor belongs to a PRIOR turn and the real current
+        # edit's tool_use is not yet flushed. Defer to the n-back path, which
+        # sees the already-flushed same-turn INTENT. (A later entry sharing the
+        # anchor's requestId is still the same turn and does NOT make it stale.)
+        if anchor_request_id is not None:
+            for request_id, _parts in entries[anchor_index + 1 :]:
+                if request_id is not None and request_id != anchor_request_id:
+                    return ""
+
+        # When requestId is present, merge ALL entries sharing it (same logical
+        # turn). When absent, fall back to the anchor entry alone.
+        if anchor_request_id is not None:
+            merged: Dict[str, Any] = {"text": "", "tools": []}
+            for request_id, parts in entries:
+                if request_id != anchor_request_id:
+                    continue
+                if parts["text"]:
+                    merged["text"] = (
+                        merged["text"] + "\n" + parts["text"]
+                        if merged["text"]
+                        else parts["text"]
+                    )
+                merged["tools"].extend(parts["tools"])
+        else:
+            merged = anchor_parts
+
+        # Intent-marker gate: only authoritative when the anchored turn's TEXT
+        # carries an INTENT marker. Otherwise defer to the n-back rescue.
+        if not re.search(r"(?i)\bintent\s*:", merged["text"]):
+            return ""
+
+        return _format_message_with_tools(merged)
+
+    except Exception as e:
+        log_warning(
+            "transcript_reader",
+            "Failed to extract current-turn message for validation",
+            e,
+        )
+        return ""
+
+
+def _has_write_or_edit(msg_parts: dict) -> bool:
+    """Return True if msg_parts contains a Write or Edit tool_use."""
+    return any(tool.get("name") in ("Write", "Edit") for tool in msg_parts["tools"])
 
 
 def _extract_text_only(content: Union[list, str]) -> str:

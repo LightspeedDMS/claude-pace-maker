@@ -1124,3 +1124,257 @@ def test_validate_intent_and_code_stage2_blocked_includes_reviewer():
     assert result["approved"] is False
     assert "reviewer" in result
     assert result["reviewer"] == "anthropic-sdk"
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: validator accepts the EXACT TDD format the feedback prescribes
+# ---------------------------------------------------------------------------
+
+
+def test_fix1_test_file_and_scope_prescribed_format_accepted():
+    """The feedback prescribes 'TEST FILE:' + 'TEST SCOPE:' — that must pass."""
+    result = _check(
+        "INTENT: Modify src/auth.py to add validate_input().\n"
+        "TEST FILE: tests/test_auth.py\n"
+        "TEST SCOPE: validates that XSS payloads are rejected.\n"
+        "src/auth.py",
+        "src/auth.py",
+    )
+    assert result == "YES"
+
+
+def test_fix1_test_file_only_accepted():
+    """'TEST FILE:' alone (the primary prescribed marker) must pass."""
+    result = _check(
+        "INTENT: Modify src/auth.py to add validate_input().\n"
+        "TEST FILE: tests/test_auth.py\n"
+        "src/auth.py",
+        "src/auth.py",
+    )
+    assert result == "YES"
+
+
+def test_fix1_test_coverage_still_accepted():
+    """Existing 'Test coverage:' marker still passes."""
+    result = _check(
+        "INTENT: Modify src/auth.py to add validate_input().\n"
+        "Test coverage: tests/test_auth.py::test_validate_input\n"
+        "src/auth.py",
+        "src/auth.py",
+    )
+    assert result == "YES"
+
+
+def test_fix1_user_permission_skip_tdd_still_accepted():
+    """Existing skip-TDD permission marker still passes."""
+    result = _check(
+        "INTENT: Modify src/auth.py to add validate_input().\n"
+        "User permission to skip TDD: user said 'skip tests for this'.\n"
+        "src/auth.py",
+        "src/auth.py",
+    )
+    assert result == "YES"
+
+
+def test_fix1_no_declaration_core_path_still_no_tdd():
+    """A core-path edit with NO test declaration is still NO_TDD."""
+    result = _check(
+        "INTENT: Modify src/auth.py to add validate_input() for security.\n"
+        "src/auth.py",
+        "src/auth.py",
+    )
+    assert result == "NO_TDD"
+
+
+def test_fix1_test_scope_word_alone_does_not_falsely_pass():
+    """'TEST SCOPE:' without a real declaration body should not match by accident.
+
+    A bare mention without content after the colon must NOT be treated as a
+    declaration (anti-false-positive)."""
+    result = _check(
+        "INTENT: Modify src/auth.py to add validate_input().\nTEST SCOPE:\nsrc/auth.py",
+        "src/auth.py",
+    )
+    assert result == "NO_TDD"
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: robust version-bump detection (backticked/underscored + semver)
+# ---------------------------------------------------------------------------
+
+
+def test_fix2_backticked_dunder_version_semver_bump():
+    """bump `__version__` from \"10.114.0\" to \"10.115.0\" must be a version bump."""
+    result = _check(
+        'INTENT: bump `__version__` from "10.114.0" to "10.115.0" in src/__init__.py.\n'
+        "src/__init__.py",
+        "src/__init__.py",
+    )
+    assert result == "YES"
+
+
+def test_fix2_dunder_version_no_word_boundary_bump():
+    """update __version__ to 2.3.4 — 'version' inside __version__ must still match."""
+    result = _check(
+        "INTENT: update __version__ to 2.3.4 in src/__init__.py.\nsrc/__init__.py",
+        "src/__init__.py",
+    )
+    assert result == "YES"
+
+
+def test_fix2_casual_version_mention_not_a_bump():
+    """A casual 'version' mention with no bump intent and no semver is NOT a bump."""
+    result = _check(
+        "INTENT: Modify src/auth.py to add a function. This is the new version of "
+        "the parser logic.\nsrc/auth.py",
+        "src/auth.py",
+    )
+    assert result == "NO_TDD"
+
+
+def test_fix2_bare_bump_no_semver_no_version_word_not_a_bump():
+    """'bump the counter' with no version token and no semver is NOT a bump."""
+    result = _check(
+        "INTENT: Modify src/auth.py to bump the retry counter to 5.\nsrc/auth.py",
+        "src/auth.py",
+    )
+    assert result == "NO_TDD"
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: Stage-1 rejection emits an always-on (WARNING-level) diagnostic log
+# ---------------------------------------------------------------------------
+
+
+def test_fix4_stage1_no_emits_warning_log():
+    """Stage-1 NO rejection logs a WARNING with verdict + file + msg prefix."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_and_code
+
+    with patch("pacemaker.intent_validator.log_warning") as mock_warn:
+        result = validate_intent_and_code(
+            messages=["No intent marker here at all."],
+            code="def bar(): pass",
+            file_path="src/foo.py",
+            tool_name="Write",
+            hook_model="gpt-5",
+        )
+
+    assert result["approved"] is False
+    rejection_logs = [
+        c for c in mock_warn.call_args_list if "Stage 1 rejection" in str(c)
+    ]
+    assert rejection_logs, "expected a Stage-1 rejection WARNING log"
+    logged = str(rejection_logs[0])
+    assert "NO" in logged
+    assert "src/foo.py" in logged
+    assert "No intent marker" in logged
+
+
+def test_fix4_stage1_no_tdd_emits_warning_log():
+    """Stage-1 NO_TDD rejection logs a WARNING with verdict NO_TDD + file."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_and_code
+
+    with patch("pacemaker.intent_validator.log_warning") as mock_warn:
+        result = validate_intent_and_code(
+            messages=[
+                "INTENT: Modify src/auth.py to add validate_input().\nsrc/auth.py"
+            ],
+            code="def validate_input(): pass",
+            file_path="src/auth.py",
+            tool_name="Write",
+            hook_model="gpt-5",
+        )
+
+    assert result["approved"] is False
+    rejection_logs = [
+        c for c in mock_warn.call_args_list if "Stage 1 rejection" in str(c)
+    ]
+    assert rejection_logs, "expected a Stage-1 rejection WARNING log"
+    logged = str(rejection_logs[0])
+    assert "NO_TDD" in logged
+    assert "src/auth.py" in logged
+
+
+def test_fix4_stage1_pass_does_not_emit_rejection_log():
+    """Stage-1 pass path emits NO rejection WARNING (no spam on success)."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_and_code
+
+    with patch(
+        "pacemaker.inference.resolve_and_call_with_reviewer",
+        return_value=("", "anthropic-sdk"),
+    ):
+        with patch("pacemaker.intent_validator.log_warning") as mock_warn:
+            validate_intent_and_code(
+                messages=[
+                    "INTENT: Modify scripts/foo.py to add bar().\n"
+                    "Test coverage: tests/test_foo.py::test_bar"
+                ],
+                code="def bar(): pass",
+                file_path="scripts/foo.py",
+                tool_name="Write",
+                hook_model="gpt-5",
+            )
+
+    rejection_logs = [
+        c for c in mock_warn.call_args_list if "Stage 1 rejection" in str(c)
+    ]
+    assert not rejection_logs, "Stage-1 pass must not emit a rejection WARNING"
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 wiring: validate_intent_and_code honors current_message_override
+# (the requestId-anchored same-turn message) for the Stage-1 check.
+# ---------------------------------------------------------------------------
+
+
+def test_fix3_override_carries_intent_passes_stage1():
+    """Override carries the same-turn INTENT+TEST FILE → Stage 1 passes even
+    when the n-back `messages` list lacks the declaration."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_and_code
+
+    with patch(
+        "pacemaker.intent_validator._call_stage2_validation",
+        return_value=("APPROVED", "test-reviewer"),
+    ):
+        result = validate_intent_and_code(
+            messages=["Acknowledged, continuing."],  # n-back lost the INTENT
+            code="def bar(): pass",
+            file_path="src/auth.py",
+            tool_name="Write",
+            hook_model="gpt-5",
+            current_message_override=(
+                "INTENT: Modify src/auth.py to add bar().\n"
+                "TEST FILE: tests/test_auth.py\nsrc/auth.py"
+            ),
+        )
+
+    assert result["approved"] is True
+
+
+def test_fix3_empty_override_falls_back_to_nback():
+    """Empty override → falls back to extract_current_assistant_message over
+    `messages` (preserves prior behavior)."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_and_code
+
+    with patch(
+        "pacemaker.intent_validator._call_stage2_validation",
+        return_value=("APPROVED", "test-reviewer"),
+    ):
+        result = validate_intent_and_code(
+            messages=[
+                "INTENT: Modify src/auth.py to add bar().\n"
+                "TEST FILE: tests/test_auth.py\nsrc/auth.py"
+            ],
+            code="def bar(): pass",
+            file_path="src/auth.py",
+            tool_name="Write",
+            hook_model="gpt-5",
+            current_message_override="",
+        )
+
+    assert result["approved"] is True

@@ -1,0 +1,503 @@
+[
+  {
+    "fixture": "case_00_testfile_sameturn.jsonl",
+    "category": "testfile_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/__init__.py",
+    "tool_name": "Edit",
+    "source": "737e0603-0b0c-4955-b12e-d79cdfc36439.jsonl",
+    "source_line": 1594,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "TEST-FILE",
+      "version"
+    ],
+    "note": "\"\\u26d4 TDD Required for Core Code\\n\\nYou're modifying core code: /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/__init__.py\\n\\nNo test declaration fo"
+  },
+  {
+    "fixture": "case_00_testfile_sameturn_preflush.jsonl",
+    "category": "testfile_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/__init__.py",
+    "tool_name": "Edit",
+    "source": "737e0603-0b0c-4955-b12e-d79cdfc36439.jsonl",
+    "source_line": 1594,
+    "tool_use_in_fixture": false,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "TEST-FILE",
+      "version"
+    ],
+    "note": "pre-flush variant: transcript BEFORE the tool_use entry was appended"
+  },
+  {
+    "fixture": "case_01_testfile_sameturn.jsonl",
+    "category": "testfile_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/services/activated_reaper_service.py",
+    "tool_name": "Edit",
+    "source": "91c9d43d-db19-465e-b510-4b49c8ce5c8c.jsonl",
+    "source_line": 1508,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "TEST-FILE",
+      "test-coverage"
+    ],
+    "note": "\"\\u26d4 Intent declaration required\\n\\nYou must declare your intent BEFORE using Write/Edit tools.\\n\\n\\u26a0\\ufe0f  CRITICAL: Start with \\\"INTENT:\\\" marker!\\n\\n"
+  },
+  {
+    "fixture": "case_01_testfile_sameturn_preflush.jsonl",
+    "category": "testfile_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/services/activated_reaper_service.py",
+    "tool_name": "Edit",
+    "source": "91c9d43d-db19-465e-b510-4b49c8ce5c8c.jsonl",
+    "source_line": 1508,
+    "tool_use_in_fixture": false,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "TEST-FILE",
+      "test-coverage"
+    ],
+    "note": "SPEC: pre-flush state - the current tool_use entry is not yet in the transcript and the last Write/Edit anchor belongs to a DIFFERENT file's prior turn. The override must not mask the n-back path which sees the already-flushed same-turn INTENT (TEST FILE format)."
+  },
+  {
+    "fixture": "case_02_testfile_sameturn.jsonl",
+    "category": "testfile_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/handlers/xray.py",
+    "tool_name": "Edit",
+    "source": "a76c9d1b-1728-40f2-b629-06af8d4b9f01.jsonl",
+    "source_line": 1030,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "TEST-FILE",
+      "test-coverage"
+    ],
+    "note": "\"<tool_use_error>File has been modified since read, either by the user or by a linter. Read it again before attempting t"
+  },
+  {
+    "fixture": "case_03_testfile_sameturn.jsonl",
+    "category": "testfile_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/__init__.py",
+    "tool_name": "Edit",
+    "source": "a76c9d1b-1728-40f2-b629-06af8d4b9f01.jsonl",
+    "source_line": 3333,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "TEST-FILE",
+      "test-coverage",
+      "version"
+    ],
+    "note": "\"\\u26d4 Intent declaration required\\n\\nYou must declare your intent BEFORE using Write/Edit tools.\\n\\n\\u26a0\\ufe0f  CRITICAL: Start with \\\"INTENT:\\\" marker!\\n\\n"
+  },
+  {
+    "fixture": "case_04_versionbump_sameturn.jsonl",
+    "category": "versionbump_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/claude-pace-maker/src/pacemaker/__init__.py",
+    "tool_name": "Edit",
+    "source": "a8d78c27-6544-4f13-adca-03ca1bc24449.jsonl",
+    "source_line": 731,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "version"
+    ],
+    "note": "\"\\u26d4 TDD Required for Core Code\\n\\nYou're modifying core code: /home/jsbattig/Dev/claude-pace-maker/src/pacemaker/__init__.py\\n\\nNo test declaration found in"
+  },
+  {
+    "fixture": "case_05_versionbump_sameturn.jsonl",
+    "category": "versionbump_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/claude-pace-maker/src/pacemaker/__init__.py",
+    "tool_name": "Edit",
+    "source": "89ab0960-a7a6-4e36-bf37-e024472c5eeb.jsonl",
+    "source_line": 3550,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "version"
+    ],
+    "note": "\"The file /home/jsbattig/Dev/claude-pace-maker/src/pacemaker/__init__.py has been updated successfully. (file state is c"
+  },
+  {
+    "fixture": "case_06_versionbump_sameturn.jsonl",
+    "category": "versionbump_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/__init__.py",
+    "tool_name": "Edit",
+    "source": "340a1b48-1079-425f-8f95-733ce9b35f5f.jsonl",
+    "source_line": 346,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "version"
+    ],
+    "note": "\"\\u26d4 Intent declaration required\\n\\nYou must declare your intent BEFORE using Write/Edit tools.\\n\\n\\u26a0\\ufe0f  CRITICAL: Start with \\\"INTENT:\\\" marker!\\n\\n"
+  },
+  {
+    "fixture": "case_07_versionbump_sameturn.jsonl",
+    "category": "versionbump_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/__init__.py",
+    "tool_name": "Edit",
+    "source": "340a1b48-1079-425f-8f95-733ce9b35f5f.jsonl",
+    "source_line": 350,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "version"
+    ],
+    "note": "\"\\u26d4 TDD Required for Core Code\\n\\nYou're modifying core code: /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/__init__.py\\n\\nNo test declaration fo"
+  },
+  {
+    "fixture": "case_08_versionbump_sameturn.jsonl",
+    "category": "versionbump_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/__init__.py",
+    "tool_name": "Edit",
+    "source": "340a1b48-1079-425f-8f95-733ce9b35f5f.jsonl",
+    "source_line": 5287,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "version"
+    ],
+    "note": "\"\\u26d4 TDD Required for Core Code\\n\\nYou're modifying core code: /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/__init__.py\\n\\nNo test declaration fo"
+  },
+  {
+    "fixture": "case_09_skiptdd_sameturn.jsonl",
+    "category": "skiptdd_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/llm-creds-provider/src/services/quota-cache.ts",
+    "tool_name": "Edit",
+    "source": "f5cbd8b2-e2ee-4566-9ea7-aad60d9282a8.jsonl",
+    "source_line": 1260,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "skip-tdd"
+    ],
+    "note": "\"\\u26d4 Intent declaration required\\n\\nYou must declare your intent BEFORE using Write/Edit tools.\\n\\n\\u26a0\\ufe0f  CRITICAL: Start with \\\"INTENT:\\\" marker!\\n\\n"
+  },
+  {
+    "fixture": "case_09_skiptdd_sameturn_preflush.jsonl",
+    "category": "skiptdd_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/llm-creds-provider/src/services/quota-cache.ts",
+    "tool_name": "Edit",
+    "source": "f5cbd8b2-e2ee-4566-9ea7-aad60d9282a8.jsonl",
+    "source_line": 1260,
+    "tool_use_in_fixture": false,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "skip-tdd"
+    ],
+    "note": "pre-flush variant: transcript BEFORE the tool_use entry was appended"
+  },
+  {
+    "fixture": "case_10_skiptdd_sameturn.jsonl",
+    "category": "skiptdd_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/llm-creds-provider/src/services/quota-cache.ts",
+    "tool_name": "Edit",
+    "source": "f5cbd8b2-e2ee-4566-9ea7-aad60d9282a8.jsonl",
+    "source_line": 1267,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "skip-tdd"
+    ],
+    "note": "\"File created successfully at: /home/jsbattig/Dev/llm-creds-provider/src/services/quota-cache.ts (file state is current "
+  },
+  {
+    "fixture": "case_10_skiptdd_sameturn_preflush.jsonl",
+    "category": "skiptdd_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/llm-creds-provider/src/services/quota-cache.ts",
+    "tool_name": "Edit",
+    "source": "f5cbd8b2-e2ee-4566-9ea7-aad60d9282a8.jsonl",
+    "source_line": 1267,
+    "tool_use_in_fixture": false,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "skip-tdd"
+    ],
+    "note": "pre-flush variant: transcript BEFORE the tool_use entry was appended"
+  },
+  {
+    "fixture": "case_11_skiptdd_sameturn.jsonl",
+    "category": "skiptdd_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/handlers/admin/mcp_credentials.py",
+    "tool_name": "Edit",
+    "source": "1540f2bd-70b0-43d2-8f44-6cbc3b68cc10.jsonl",
+    "source_line": 1441,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "skip-tdd"
+    ],
+    "note": "\"The file /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/handlers/admin/mcp_credentials.py has been"
+  },
+  {
+    "fixture": "case_12_skiptdd_sameturn.jsonl",
+    "category": "skiptdd_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/handlers/admin/mcp_credentials.py",
+    "tool_name": "Edit",
+    "source": "1540f2bd-70b0-43d2-8f44-6cbc3b68cc10.jsonl",
+    "source_line": 1451,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "skip-tdd"
+    ],
+    "note": "\"The file /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/handlers/admin/mcp_credentials.py has been"
+  },
+  {
+    "fixture": "case_13_testcov_sameturn.jsonl",
+    "category": "testcov_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/claude-pace-maker/src/pacemaker/inference/random_failover.py",
+    "tool_name": "Edit",
+    "source": "749d3059-f47b-473c-b77d-4fee4e474403.jsonl",
+    "source_line": 1023,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "test-coverage"
+    ],
+    "note": "\"\\u26d4 Code Review Violations Found\\n\\n- Declared operator-mixing rejection is not implemented.\\n  - Where: `parse_rand"
+  },
+  {
+    "fixture": "case_14_testcov_sameturn.jsonl",
+    "category": "testcov_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/claude-pace-maker/src/pacemaker/inference/random_failover.py",
+    "tool_name": "Edit",
+    "source": "749d3059-f47b-473c-b77d-4fee4e474403.jsonl",
+    "source_line": 1029,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "test-coverage"
+    ],
+    "note": "\"\\u26d4 Code Review Violations Found\\n\\n- Mismatched behavior: operator mixing is not rejected as declared.\\n  - Where: "
+  },
+  {
+    "fixture": "case_15_testcov_sameturn.jsonl",
+    "category": "testcov_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/claude-pace-maker/src/pacemaker/inference/random_failover.py",
+    "tool_name": "Edit",
+    "source": "749d3059-f47b-473c-b77d-4fee4e474403.jsonl",
+    "source_line": 1033,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "test-coverage"
+    ],
+    "note": "\"\\u26d4 Code Review Violations Found\\n\\n- Declared parser behavior no longer matches the stated intent.\\n  - Where: `_pa"
+  },
+  {
+    "fixture": "case_16_testcov_sameturn.jsonl",
+    "category": "testcov_sameturn",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/claude-pace-maker/src/pacemaker/inference/random_failover.py",
+    "tool_name": "Edit",
+    "source": "749d3059-f47b-473c-b77d-4fee4e474403.jsonl",
+    "source_line": 1037,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "test-coverage"
+    ],
+    "note": "\"\\u26d4 Code Review Violations Found\\n\\n- Scope creep beyond declared intent.\\n  - Where: `_validate_dispatcher_args(..."
+  },
+  {
+    "fixture": "case_17_intent_preceding.jsonl",
+    "category": "intent_preceding",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/storage/background_index_rebuilder.py",
+    "tool_name": "Edit",
+    "source": "31410a0b-3e6e-492f-b329-34dc7f08b796.jsonl",
+    "source_line": 7232,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [
+      "test-coverage"
+    ],
+    "note": "SPEC: INTENT declared in the immediately-preceding assistant message (different requestId; fragmented turn). Historically ALLOWED. The requestId-anchored override MUST NOT regress this: when the override group lacks an intent marker, the 1-back n-back path must still rescue it (best-of-both)."
+  },
+  {
+    "fixture": "case_18_intent_preceding.jsonl",
+    "category": "intent_preceding",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/services/health_service.py",
+    "tool_name": "Edit",
+    "source": "3957e4d0-f5d5-4142-b8e5-dcf49eea0fd1.jsonl",
+    "source_line": 573,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "test-coverage"
+    ],
+    "note": "SPEC: INTENT declared in the immediately-preceding assistant message (different requestId; fragmented turn). Historically ALLOWED. The requestId-anchored override MUST NOT regress this: when the override group lacks an intent marker, the 1-back n-back path must still rescue it (best-of-both)."
+  },
+  {
+    "fixture": "case_19_intent_preceding.jsonl",
+    "category": "intent_preceding",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/web/dependency_map_routes.py",
+    "tool_name": "Edit",
+    "source": "5933ab4f-fc7f-4223-8c32-acf3f074c836.jsonl",
+    "source_line": 3282,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "test-coverage"
+    ],
+    "note": "SPEC: INTENT declared in the immediately-preceding assistant message (different requestId; fragmented turn). Historically ALLOWED. The requestId-anchored override MUST NOT regress this: when the override group lacks an intent marker, the 1-back n-back path must still rescue it (best-of-both)."
+  },
+  {
+    "fixture": "case_20_intent_preceding.jsonl",
+    "category": "intent_preceding",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/protocol.py",
+    "tool_name": "Edit",
+    "source": "6611e175-04c2-4659-8582-27351bf0cf6c.jsonl",
+    "source_line": 180,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "test-coverage"
+    ],
+    "note": "SPEC: INTENT declared in the immediately-preceding assistant message (different requestId; fragmented turn). Historically ALLOWED. The requestId-anchored override MUST NOT regress this: when the override group lacks an intent marker, the 1-back n-back path must still rescue it (best-of-both)."
+  },
+  {
+    "fixture": "case_21_intent_no_decl.jsonl",
+    "category": "intent_no_decl",
+    "expected_stage1": "NO_TDD",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/web/routes.py",
+    "tool_name": "Edit",
+    "source": "1540f2bd-70b0-43d2-8f44-6cbc3b68cc10.jsonl",
+    "source_line": 6807,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [],
+    "note": "\"\\u26d4 TDD Required for Core Code\\n\\nYou're modifying core code: /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/web/routes.py\\n\\nNo test decla"
+  },
+  {
+    "fixture": "case_22_intent_no_decl.jsonl",
+    "category": "intent_no_decl",
+    "expected_stage1": "NO_TDD",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/web/routes.py",
+    "tool_name": "Edit",
+    "source": "91c9d43d-db19-465e-b510-4b49c8ce5c8c.jsonl",
+    "source_line": 1497,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [],
+    "note": "\"The file /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/web/routes.py has been updated successfully. ("
+  },
+  {
+    "fixture": "case_23_md_under_src.jsonl",
+    "category": "md_under_src",
+    "expected_stage1": "NO_TDD",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/tool_docs/search/store_xray_pattern.md",
+    "tool_name": "Edit",
+    "source": "91c9d43d-db19-465e-b510-4b49c8ce5c8c.jsonl",
+    "source_line": 2867,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [],
+    "note": "\"The file /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/tool_docs/search/store_xray_pattern.md has"
+  },
+  {
+    "fixture": "case_24_md_under_src.jsonl",
+    "category": "md_under_src",
+    "expected_stage1": "NO_TDD",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/tool_docs/search/store_xray_pattern.md",
+    "tool_name": "Edit",
+    "source": "91c9d43d-db19-465e-b510-4b49c8ce5c8c.jsonl",
+    "source_line": 2874,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [],
+    "note": "\"The file /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/tool_docs/search/store_xray_pattern.md has"
+  },
+  {
+    "fixture": "case_25_no_intent.jsonl",
+    "category": "intent_preceding_adversarial",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/Dev/claude-pace-maker/src/pacemaker/__init__.py",
+    "tool_name": "Edit",
+    "source": "749d3059-f47b-473c-b77d-4fee4e474403.jsonl",
+    "source_line": 3137,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [],
+    "note": "POLICY: 1-back tolerance. The INTENT (+skip-TDD permission) for this same file sits in the immediately-preceding assistant turn; under the accepted 'declaration may be in the preceding message' semantics this passes Stage-1. The historical BLOCK reflected the old current-message-only semantics. Deep-stale protection is covered by case_29 (true no-intent) and case_26 (marker only inside tool content)."
+  },
+  {
+    "fixture": "case_26_no_intent.jsonl",
+    "category": "no_decl_marker_from_tool_content",
+    "expected_stage1": "NO_TDD",
+    "file_path": "/home/jsbattig/Dev/claude-pace-maker/src/pacemaker/transcript_reader.py",
+    "tool_name": "Edit",
+    "source": "ef52762f-bc4a-4b00-9eb7-61dfabdc091b.jsonl",
+    "source_line": 728,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [],
+    "note": "intent: marker appears only inside the edited file's code content ([TOOL:] block); no real declaration -> must remain blocked (NO_TDD)"
+  },
+  {
+    "fixture": "case_27_non_core.jsonl",
+    "category": "non_core",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/.cidx-server/data/golden-repos/cidx-meta/dependency-map/_pass2_body_type-system-utilities.md",
+    "tool_name": "Edit",
+    "source": "020c636c-5349-4349-9727-5b8c4161e984.jsonl",
+    "source_line": 86,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [],
+    "note": "\"File created successfully at: /home/jsbattig/.cidx-server/data/golden-repos/cidx-meta/dependency-map/_pass2_body_type-s"
+  },
+  {
+    "fixture": "case_28_non_core.jsonl",
+    "category": "non_core",
+    "expected_stage1": "YES",
+    "file_path": "/home/jsbattig/.cidx-server/data/golden-repos/cidx-meta/dependency-map/_refinement_markup-processing.md",
+    "tool_name": "Edit",
+    "source": "036497a9-2016-49c8-977f-4e12fccf92bf.jsonl",
+    "source_line": 64,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "ALLOWED",
+    "decl_tags": [
+      "test-coverage"
+    ],
+    "note": "\"The file /home/jsbattig/.cidx-server/data/golden-repos/cidx-meta/dependency-map/_refinement_markup-processing.md has be"
+  },
+  {
+    "fixture": "case_29_no_intent_true.jsonl",
+    "category": "no_intent_true",
+    "expected_stage1": "NO",
+    "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/web/templates/dependency_map.html",
+    "tool_name": "Edit",
+    "source": "340a1b48-1079-425f-8f95-733ce9b35f5f.jsonl",
+    "source_line": 2541,
+    "tool_use_in_fixture": true,
+    "historical_outcome": "BLOCKED_BY_HOOK",
+    "decl_tags": [],
+    "note": "true no-intent case: no INTENT marker anywhere in extraction window"
+  }
+]

@@ -212,12 +212,16 @@ class TestPreToolHook:
         run_pre_tool_hook()
 
         # Verify validate_intent_and_code received correct args
+        # Fix 3: hook.py also passes the requestId-anchored current-turn
+        # message. The transcript path does not exist in this test, so the
+        # override resolves to "" (safe fallback to the n-back heuristic).
         mock_validate.assert_called_once_with(
             messages=messages,
             code="new code",
             file_path="/path/to/config.py",
             tool_name="Edit",
             hook_model="auto",
+            current_message_override="",
         )
 
     @patch("pacemaker.hook.load_config")

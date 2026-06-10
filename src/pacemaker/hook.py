@@ -33,6 +33,7 @@ from .constants import (
 )
 from .transcript_reader import (
     get_last_n_messages_for_validation,
+    get_current_turn_message_for_validation,
 )
 from .logger import log_warning, log_debug, log_info
 
@@ -2762,6 +2763,15 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # 6. Read last 2 messages for validation (text + tool_use are separate entries)
         messages = get_last_n_messages_for_validation(transcript_path, n=2)
 
+        # 6b. Fix 3: anchor the Stage-1 current-turn message on the requestId
+        # group of the Write/Edit tool_use being validated. This reliably
+        # captures a same-turn INTENT/skip declaration that a fixed n-back
+        # window can miss (fragmented turn / interrupt), while never pulling in
+        # a stale prior-turn INTENT. Empty string falls back to the n-back path.
+        current_message_override = get_current_turn_message_for_validation(
+            transcript_path
+        )
+
         # Activity events: IV/TD/CC blue (validation in-progress) — settings-aware
         try:
             _sid = session_id or "unknown"
@@ -2783,6 +2793,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             file_path=file_path,
             tool_name=tool_name,
             hook_model=config.get("hook_model", "auto"),
+            current_message_override=current_message_override,
         )
 
         # 8. Return result
