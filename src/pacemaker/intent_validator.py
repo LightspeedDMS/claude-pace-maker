@@ -419,17 +419,15 @@ def validate_intent_declared(
 
 def extract_current_assistant_message(messages: List[str]) -> str:
     """
-    Extract the CURRENT assistant message by finding "intent:" marker.
+    Extract the CURRENT assistant message.
 
-    Searches backward up to 3 messages to find intent declaration.
-    Case-insensitive search for "intent:" anywhere in message text.
-    Handles intermediate tool calls (Read, Grep, etc.) between intent and Write/Edit.
+    With requestId grouping, text and tool_use from the same turn are
+    already combined in messages[-1]. The 1-back check handles the
+    ungrouped fallback (missing requestId / older Claude Code) where
+    they are separate entries.
 
-    Args:
-        messages: List of messages (most recent last)
-
-    Returns:
-        Combined text with intent declaration + current tool call
+    Only checks messages[-2] — never further back, to avoid picking up
+    stale intent declarations from previous turns.
     """
     if not messages:
         return ""
@@ -437,17 +435,15 @@ def extract_current_assistant_message(messages: List[str]) -> str:
     if len(messages) == 1:
         return messages[-1]
 
-    # Current tool message (always last)
     current_tool = messages[-1]
 
-    # Search backward up to 3 messages for "intent:" marker (case-insensitive)
-    for i in range(min(3, len(messages) - 1)):
-        msg = messages[-(i + 2)]  # Check messages[-2], messages[-3], messages[-4]
-        if msg and "intent:" in msg.lower():
-            return f"{msg}\n\n{current_tool}"
+    if "intent:" in current_tool.lower():
+        return current_tool
 
-    # Fallback: if no intent: found, return just the current tool
-    # (This will trigger validation failure as expected)
+    prev = messages[-2]
+    if prev and "intent:" in prev.lower():
+        return f"{prev}\n\n{current_tool}"
+
     return current_tool
 
 
