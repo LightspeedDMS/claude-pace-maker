@@ -440,6 +440,18 @@ install_python_deps() {
   if [ "$sdk_installed" = "1" ]; then
     local sdk_version=$("$python_cmd" -c "import claude_agent_sdk; print(claude_agent_sdk.__version__)" 2>/dev/null || echo "unknown")
     echo -e "${GREEN}✓ claude-agent-sdk already installed (version $sdk_version)${NC}"
+    echo "Upgrading claude-agent-sdk to latest..."
+    if "$python_cmd" -m pip install --user --upgrade claude-agent-sdk >/dev/null 2>&1 || \
+       "$python_cmd" -m pip install --break-system-packages --upgrade claude-agent-sdk >/dev/null 2>&1; then
+      local new_sdk_version=$("$python_cmd" -c "import claude_agent_sdk; print(claude_agent_sdk.__version__)" 2>/dev/null || echo "unknown")
+      if [ "$new_sdk_version" != "$sdk_version" ]; then
+        echo -e "${GREEN}✓ claude-agent-sdk upgraded: $sdk_version → $new_sdk_version${NC}"
+      else
+        echo -e "${GREEN}✓ claude-agent-sdk already at latest ($sdk_version)${NC}"
+      fi
+    else
+      echo -e "${YELLOW}⚠ Could not upgrade claude-agent-sdk (current: $sdk_version)${NC}"
+    fi
   else
     echo -e "${YELLOW}⚠ claude-agent-sdk not found${NC}"
   fi

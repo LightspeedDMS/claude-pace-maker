@@ -13,4 +13,4 @@
 # Security scanning:     pip-audit -r requirements.txt
 requests==2.34.2
 pyyaml==6.0.3
-claude-agent-sdk==0.2.87
+claude-agent-sdk==0.2.95

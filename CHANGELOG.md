@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.31.0] - 2026-06-09
+
+### Added
+- **Fable (Claude Fable 5) model support.** `fable` is now a recognized Anthropic model throughout the inference stack — `KNOWN_MODELS`, `AnthropicProvider` aliases, competitive pipeline `_ANTHROPIC_MODELS`, registry routing, and CLI commands (`pace-maker hook-model fable`, `pace-maker prefer-model fable`). Fallback on usage limits is opus. (`src/pacemaker/inference/model_aliases.py`, `anthropic_provider.py`, `competitive.py`, `registry.py`, `user_commands.py`)
+- **install.sh auto-upgrades claude-agent-sdk** on every run for global (non-plugin) installs. Previously the SDK was only installed if missing; now existing installs are upgraded to the latest version. (`install.sh`)
+
+### Changed
+- **claude-agent-sdk pinned to 0.2.95** (was 0.2.87). Required for Fable model support via the Claude Agent SDK. Plugin venv installs automatically rebuild on next SessionStart due to requirements.txt signature change. (`requirements.txt`)
+
 ## [2.30.1] - 2026-06-05
 
 ### Changed
