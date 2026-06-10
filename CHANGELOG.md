@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.31.2] - 2026-06-10
+
+### Fixed
+- **Stage-1 TDD regex now accepts the exact format its own rejection feedback prescribes.** `_has_tdd_declaration()` accepts `TEST FILE:` / `TEST SCOPE:` (with a same-line body) alongside the legacy `Test coverage:` / `test:` / `covered by` / `user permission to skip TDD` forms. Previously the NO_TDD feedback instructed a format the regex rejected, so following the instructions verbatim still blocked. (`src/pacemaker/intent_validator.py`)
+- **Version-bump detection robust to backticked/underscored forms.** `_is_version_bump()` now recognizes `` bump `__version__` from "X.Y.Z" to "X.Y.Z" `` and semver literals near a bump verb, without over-matching casual "version" mentions. (`src/pacemaker/intent_validator.py`)
+- **Same-turn INTENT extraction anchored on the Write/Edit tool_use's requestId group.** New `get_current_turn_message_for_validation()` captures a fragmented same-turn INTENT/skip declaration reliably, with two gates: a prose-only intent-marker gate (markers inside written file content never qualify) and a staleness/pre-flush gate (defers to the n-back path when the anchor belongs to a prior turn or the current tool_use is not yet flushed). INTENT in the immediately-preceding message keeps working. (`src/pacemaker/transcript_reader.py`, `intent_validator.py`, `hook.py`)
+- **Stage-1 rejections now log at WARNING** (verdict + file + 200-char message prefix) so false-reject reports are diagnosable from the standard log; previously the diagnostic trail was DEBUG-only and suppressed by the default log level. (`src/pacemaker/intent_validator.py`)
+- **pyproject.toml version synced** (was stale at 2.29.2 since 2.31.x; `test_plugin_json_version_matches_pyproject` passes again).
+
+### Added
+- **Real-transcript replay regression suite.** 34 fixture cases harvested from ~2,600 actual Claude Code transcripts (30 distinct real Write/Edit calls incl. pre-flush variants and must-block adversarial cases), each reconstructing the transcript exactly as the pre-tool hook saw it, with per-case provenance, historical outcome, and adjudication notes. Corpus-quality guards prevent pruning the net. This suite caught a real over-anchoring regression in an earlier draft of the requestId fix before it shipped. (`tests/test_real_transcript_replay.py`, `tests/fixtures/real_transcript_replay/`)
+
 ## [2.31.1] - 2026-06-10
 
 ### Fixed
