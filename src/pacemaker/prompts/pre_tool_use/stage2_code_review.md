@@ -33,7 +33,7 @@ the file, prefer APPROVED over a false rejection. A missed issue is recoverable;
 a false block wastes developer time and erodes trust in the review system.
 ════════════════════════════════════════════════════════════════
 
-YOUR TASK - THREE VALIDATION CHECKS:
+YOUR TASK - FOUR VALIDATION CHECKS:
 
 ════════════════════════════════════════════════════════════════
 CHECK 0: INTENT SPECIFICITY (CRITICAL — prevents vague declarations from passing)
@@ -85,6 +85,43 @@ Check PROPOSED CODE against these clean code rules:
 If violations found, include them in feedback with specific examples.
 
 ════════════════════════════════════════════════════════════════
+CHECK 3: CLEAR BUG DETECTION
+════════════════════════════════════════════════════════════════
+
+Scan the PROPOSED CODE for bugs that are unambiguously present in the fragment
+itself. Apply the same partial-context discipline as CHECK 1: only flag an issue
+if the bug is CLEARLY present within the shown fragment — not speculative, not
+"might be missing elsewhere."
+
+Bugs to catch:
+
+  ✗ SILENT FAILURE: Return value of a function that can fail is ignored with no
+    error check (e.g. file.Close(), os.Remove(), conn.Write() result discarded)
+
+  ✗ OFF-BY-ONE: Loop bounds or slice indices that are clearly one step too far
+    or too short (e.g. `i <= len(arr)`, `range[0:n+1]` where n is last index)
+
+  ✗ WRONG BOOLEAN LOGIC: Condition is inverted or uses wrong operator in a way
+    that makes the guard always true, always false, or backwards
+    (e.g. `if err == nil {{ return err }}`, `&&` where `||` is required)
+
+  ✗ RESOURCE LEAK: A resource is opened or allocated in the fragment and there
+    is no corresponding close/free/defer visible in the fragment or a clear
+    defer pattern
+
+  ✗ UNBOUNDED LOOP: A loop in the fragment has no clear termination condition or
+    counter that provably reaches its bound
+
+  ✗ UNREACHABLE / DEAD CODE: A return, panic, or continue makes subsequent lines
+    in the same block unreachable
+
+  ✗ NIL / NULL DEREF: A pointer or nullable value is dereferenced immediately
+    after being assigned from a call that can return nil/null, with no nil check
+
+If violations found, include them in feedback with a CLASSIFICATION: BUG line.
+If no bug violations, continue silently to the RESPONSE FORMAT section.
+
+════════════════════════════════════════════════════════════════
 RESPONSE FORMAT
 ════════════════════════════════════════════════════════════════
 
@@ -107,10 +144,12 @@ If violations found:
 
 CLASSIFICATION VALUES (required for all rejections):
 
-  CLEAN_CODE     — Use for ALL stage 2 rejections: style violations, quality issues,
-                   scope creep, missing functionality, unauthorized changes, or any
-                   mismatch between intent and code. Stage 2 IS the code review stage,
-                   so every stage 2 rejection is a code review issue.
+  CLEAN_CODE     — Style violations, quality issues, scope creep, missing functionality,
+                   unauthorized changes, or any mismatch between intent and code.
+
+  BUG            — A clear, unambiguous logic bug present in the fragment: silent failure,
+                   off-by-one, wrong boolean logic, resource leak, unbounded loop,
+                   unreachable code, or nil/null deref (CHECK 3 violations).
 
   INTENT_MISMATCH — Reserved for future use. Do not use unless explicitly instructed.
 
@@ -124,3 +163,10 @@ OR
 [detailed feedback]
 
 CLASSIFICATION: CLEAN_CODE
+
+OR
+
+⛔ Code Review Violations Found
+[detailed feedback]
+
+CLASSIFICATION: BUG

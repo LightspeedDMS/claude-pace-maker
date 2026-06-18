@@ -709,22 +709,21 @@ def generate_validation_prompt(
     return prompt
 
 
-def _parse_stage2_classification(feedback: str) -> bool:
+def _parse_stage2_classification(feedback: str) -> str:
     """Parse the structured CLASSIFICATION line from a stage 2 rejection response.
 
-    Returns True (clean_code_failure) when the rejection is a code review issue,
-    False when it is an intent/functionality mismatch.
+    Returns the classification string: "clean_code", "bug", or "intent_mismatch".
 
     Stage 2 IS the code review stage, so the default for any stage 2 rejection
-    is clean_code_failure=True. Only an explicit CLASSIFICATION: INTENT_MISMATCH
-    overrides this to False.
+    is "clean_code". Only explicit CLASSIFICATION values override this.
 
     Expected format in response (anywhere in text):
-        CLASSIFICATION: CLEAN_CODE       → clean_code_failure = True
-        CLASSIFICATION: INTENT_MISMATCH  → clean_code_failure = False
+        CLASSIFICATION: CLEAN_CODE       → "clean_code"
+        CLASSIFICATION: BUG              → "bug"
+        CLASSIFICATION: INTENT_MISMATCH  → "intent_mismatch"
 
     If the CLASSIFICATION line is absent or contains an unrecognised value,
-    defaults to True (safe default: all stage 2 rejections are code-review issues).
+    defaults to "clean_code" (safe default: all stage 2 rejections are code-review issues).
     """
     for line in feedback.splitlines():
         stripped = line.strip()
@@ -732,11 +731,13 @@ def _parse_stage2_classification(feedback: str) -> bool:
         if upper.startswith("CLASSIFICATION:"):
             value = upper[len("CLASSIFICATION:") :].strip()
             if value == "INTENT_MISMATCH":
-                return False
-            # CLEAN_CODE or any unknown value → default clean_code_failure=True
-            return True
-    # No CLASSIFICATION line found → default to True
-    return True
+                return "intent_mismatch"
+            if value == "BUG":
+                return "bug"
+            # CLEAN_CODE or any unknown value → safe default
+            return "clean_code"
+    # No CLASSIFICATION line found → safe default
+    return "clean_code"
 
 
 def validate_intent_and_code(
@@ -913,14 +914,13 @@ System failing closed to prevent bypassing intent declaration requirements.""",
             log_debug("intent_validator", "=== STAGE 2 BLOCKED (has feedback) ===")
 
             # Parse structured CLASSIFICATION line from stage 2 response.
-            # Stage 2 IS the code review stage, so all rejections default to
-            # clean_code_failure=True unless explicitly classified as INTENT_MISMATCH.
-            is_clean_code_failure = _parse_stage2_classification(stage2_feedback)
+            _classification = _parse_stage2_classification(stage2_feedback)
 
             return {
                 "approved": False,
                 "feedback": stage2_feedback,
-                "clean_code_failure": is_clean_code_failure,
+                "clean_code_failure": _classification == "clean_code",
+                "bug_failure": _classification == "bug",
                 "reviewer": reviewer,
             }
 

@@ -10,6 +10,7 @@ Validates that:
 5. Keyword matching logic is entirely removed (not present in codebase)
 6. The CLASSIFICATION line can appear anywhere in the response
 7. Classification is case-insensitive
+8. CLASSIFICATION: BUG sets bug_failure = True and clean_code_failure = False
 """
 
 from unittest.mock import patch
@@ -183,6 +184,41 @@ CLASSIFICATION: UNKNOWN_FUTURE_VALUE"""
         assert result["approved"] is False
         # Unknown values should default to clean_code (safe default for stage 2)
         assert result.get("clean_code_failure") is True
+
+    def test_classification_bug_sets_bug_failure(self):
+        """CLASSIFICATION: BUG sets bug_failure=True."""
+        response = """⛔ Code Review Violations Found
+
+CHECK 3: CLEAR BUG DETECTION
+Off-by-one error: loop runs one step past the last valid index.
+
+CLASSIFICATION: BUG"""
+        result = self._make_stage2_result(response)
+        assert result["approved"] is False
+        assert result.get("bug_failure") is True
+
+    def test_classification_bug_clears_clean_code_failure(self):
+        """CLASSIFICATION: BUG sets clean_code_failure=False (bug and clean-code are distinct)."""
+        response = """⛔ Code Review Violations Found
+
+CHECK 3: CLEAR BUG DETECTION
+Silent failure: return value of Write() is discarded.
+
+CLASSIFICATION: BUG"""
+        result = self._make_stage2_result(response)
+        assert result["approved"] is False
+        assert result.get("clean_code_failure") is False
+
+    def test_classification_bug_lowercase(self):
+        """CLASSIFICATION: bug (lowercase) sets bug_failure=True."""
+        response = """⛔ Code Review Violations Found
+
+CLASSIFICATION: bug
+
+Resource opened but never closed."""
+        result = self._make_stage2_result(response)
+        assert result["approved"] is False
+        assert result.get("bug_failure") is True
 
 
 class TestStage2RejectionCategorization:

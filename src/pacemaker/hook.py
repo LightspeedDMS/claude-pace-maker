@@ -2804,6 +2804,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 record_activity_event(DEFAULT_DB_PATH, "IV", "green", _sid)
                 record_activity_event(DEFAULT_DB_PATH, "TD", "green", _sid)
                 record_activity_event(DEFAULT_DB_PATH, "CC", "green", _sid)
+                record_activity_event(DEFAULT_DB_PATH, "BG", "green", _sid)
             except Exception:
                 pass  # Activity recording must never break pre-tool hook
             return _merge_csa_reminder({"continue": True}, _csa_result)
@@ -2812,6 +2813,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             # Determine category based on failure type
             if result.get("tdd_failure", False):
                 category = "intent_validation_tdd"
+            elif result.get("bug_failure", False):
+                category = "intent_validation_bug"
             elif result.get("clean_code_failure", False):
                 category = "intent_validation_cleancode"
             else:
@@ -2836,6 +2839,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                     "intent_validation": "IV",
                     "intent_validation_tdd": "TD",
                     "intent_validation_cleancode": "CC",
+                    "intent_validation_bug": "BG",
                 }
                 _event_type = _category_to_event_type.get(category, "IV")
                 _project_name = os.path.basename(os.getcwd())
@@ -2868,9 +2872,11 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 _cc_status = (
                     "red" if category == "intent_validation_cleancode" else "green"
                 )
+                _bg_status = "red" if category == "intent_validation_bug" else "green"
                 record_activity_event(DEFAULT_DB_PATH, "IV", _iv_status, _sid)
                 record_activity_event(DEFAULT_DB_PATH, "TD", _td_status, _sid)
                 record_activity_event(DEFAULT_DB_PATH, "CC", _cc_status, _sid)
+                record_activity_event(DEFAULT_DB_PATH, "BG", _bg_status, _sid)
             except Exception:
                 pass  # Activity recording must never break pre-tool hook
 

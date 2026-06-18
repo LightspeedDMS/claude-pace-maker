@@ -76,17 +76,23 @@ class TestBlockageCategoriesConstant:
 
         assert "other" in BLOCKAGE_CATEGORIES
 
-    def test_blockage_categories_has_exactly_seven_categories(self):
-        """BLOCKAGE_CATEGORIES must have exactly 7 categories.
+    def test_blockage_categories_contains_intent_validation_bug(self):
+        """BLOCKAGE_CATEGORIES should include 'intent_validation_bug'."""
+        from pacemaker.constants import BLOCKAGE_CATEGORIES
+
+        assert "intent_validation_bug" in BLOCKAGE_CATEGORIES
+
+    def test_blockage_categories_has_exactly_eight_categories(self):
+        """BLOCKAGE_CATEGORIES must have exactly 8 categories.
 
         Categories: intent_validation, intent_validation_tdd, intent_validation_cleancode,
-        intent_validation_dangerbash, pacing_tempo, pacing_quota, other.
+        intent_validation_bug, intent_validation_dangerbash, pacing_tempo, pacing_quota, other.
         """
         from pacemaker.constants import BLOCKAGE_CATEGORIES
 
-        # 7 categories: intent_validation, intent_validation_tdd, intent_validation_cleancode,
-        # intent_validation_dangerbash, pacing_tempo, pacing_quota, other
-        assert len(BLOCKAGE_CATEGORIES) == 7
+        # 8 categories: intent_validation, intent_validation_tdd, intent_validation_cleancode,
+        # intent_validation_bug, intent_validation_dangerbash, pacing_tempo, pacing_quota, other
+        assert len(BLOCKAGE_CATEGORIES) == 8
 
 
 # ==============================================================================

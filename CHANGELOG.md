@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.32.1] - 2026-06-18
+
+### Added
+- **CHECK 3: Clear Bug Detection in Stage 2 code review.** The LLM-based validation stage now screens proposed code for seven unambiguous bug classes: silent failure (ignored return value), off-by-one (loop bounds/slice indices), wrong boolean logic (inverted guard), resource leak (open without close/defer), unbounded loop (no termination condition), unreachable/dead code (return/panic before subsequent lines), and nil/null deref (no nil check after nullable call). Bugs produce a new `CLASSIFICATION: BUG` response, which maps to the new `intent_validation_bug` blockage category and `BG` activity event type, keeping bug blocks separate from clean-code blocks in telemetry. (`src/pacemaker/prompts/pre_tool_use/stage2_code_review.md`, `intent_validator.py`, `constants.py`, `hook.py`)
+
 ## [2.32.0] - 2026-06-18
 
 ### Added

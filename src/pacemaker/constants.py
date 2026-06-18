@@ -76,6 +76,7 @@ BLOCKAGE_CATEGORIES = (
     "intent_validation",  # Missing/vague INTENT: marker
     "intent_validation_tdd",  # TDD declaration missing for core code
     "intent_validation_cleancode",  # Clean code rule violation
+    "intent_validation_bug",  # Clear logic bug detected in proposed code
     "intent_validation_dangerbash",  # Danger bash command intent mismatch
     "pacing_tempo",  # Tempo validation blocked
     "pacing_quota",  # Throttle delay applied
@@ -88,6 +89,7 @@ BLOCKAGE_CATEGORY_LABELS: Dict[str, str] = {
     "intent_validation": "Intent Validation",
     "intent_validation_tdd": "Intent TDD",
     "intent_validation_cleancode": "Clean Code",
+    "intent_validation_bug": "Bug Detected",
     "intent_validation_dangerbash": "Danger Bash",
     "pacing_tempo": "Pacing Tempo",
     "pacing_quota": "Pacing Quota",
