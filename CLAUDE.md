@@ -562,3 +562,65 @@ Mirrors `PACEMAKER_SESSION_REGISTRY_PATH` pattern. `core.py` raises `RuntimeErro
 - `src/pacemaker/user_commands.py` — command patterns (25, 26) and dispatch
 - `install.sh` line 596 — copies `memory_localization/` subdir to `~/.claude/hooks/pacemaker/`
 - `tests/test_memory_localization_*.py` — 33 tests (classification, linking, seed/restore)
+
+---
+
+## Antigravity CLI (agy) Provider
+
+**Story #72**: Adds `agy` CLI as an inference provider for hook model validation, enabling Gemini Flash/Pro thinking modes, GPT-OSS, and Claude-via-agy as reviewers.
+
+### CLI Invocation Pattern
+
+```
+agy --print <full_prompt>                         # bare "agy" — no --model flag
+agy --print <full_prompt> --model "<model_name>"  # all agy-* variants
+```
+
+System prompt is embedded directly in the prompt text (not a separate flag):
+```
+SYSTEM INSTRUCTIONS:
+<system_prompt>
+
+USER REQUEST:
+<user_prompt>
+```
+
+### Model Name Table (authoritative)
+
+| pace-maker alias | agy --model argument | Notes |
+|---|---|---|
+| `agy` | (no --model flag) | agy's own default |
+| `agy-flash` | `Gemini 3.5 Flash (Medium)` | default thinking level |
+| `agy-flash-low` | `Gemini 3.5 Flash (Low)` | |
+| `agy-flash-medium` | `Gemini 3.5 Flash (Medium)` | |
+| `agy-flash-high` | `Gemini 3.5 Flash (High)` | |
+| `agy-pro` | `Gemini 3.1 Pro (High)` | defaults to high |
+| `agy-pro-low` | `Gemini 3.1 Pro (Low)` | |
+| `agy-pro-high` | `Gemini 3.1 Pro (High)` | |
+| `agy-gpt-oss` | `GPT-OSS 120B (Medium)` | |
+| `agy-sonnet` | `Claude Sonnet 4.6 (Thinking)` | Claude via agy |
+| `agy-opus` | `Claude Opus 4.6 (Thinking)` | Claude via agy |
+
+### Reviewer Label
+
+The reviewer label returned by `resolve_and_call_with_reviewer()` for agy providers equals the `hook_model` value exactly (e.g. `"agy-flash-high"`). This is different from gemini providers which map to short labels (`"gem-flash"`).
+
+### Failure Modes & Fallback
+
+All 5 ProviderError cases trigger Anthropic SDK fallback (reviewer: `"anthropic-sdk"`):
+1. `TimeoutExpired` — agy CLI timed out after 120s
+2. `FileNotFoundError` — agy CLI not installed
+3. `OSError` — OS error
+4. Non-zero returncode — agy CLI failed (exit N)
+5. Empty stdout — agy CLI returned empty response
+
+### Key Files
+- `src/pacemaker/inference/agy_provider.py` — `AgyProvider` class, `_MODEL_MAP`
+- `src/pacemaker/inference/model_aliases.py` — 11 agy tokens in `KNOWN_MODELS`
+- `src/pacemaker/inference/registry.py` — `get_provider()` agy routing, `is_agy_provider` reviewer label
+- `src/pacemaker/user_commands.py` — regex pattern, valid_models list, confirmation messages
+- `claude-usage-reporting/claude_usage/code_mode/display.py` — `REVIEWER_TAGS` agy entries (`"[Agy]"`, `"bright_green"`)
+- `tests/test_agy_provider.py` — 29 unit tests (MODEL_MAP, command construction, failure modes)
+- `tests/test_agy_registry.py` — 22 tests (KNOWN_MODELS, get_provider routing, reviewer labels, fallback)
+- `tests/test_agy_user_commands.py` — 24 tests (regex, execution, status display)
+- `claude-usage-reporting/tests/test_agy_display_tags.py` — 21 tests (REVIEWER_TAGS, colors, regex)

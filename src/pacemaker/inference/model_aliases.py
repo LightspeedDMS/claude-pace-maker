@@ -18,6 +18,18 @@ KNOWN_MODELS = {
     "gpt-5.5",
     "gemini-flash",
     "gemini-pro",
+    # Antigravity CLI (agy) models — Story #72
+    "agy",
+    "agy-flash",
+    "agy-flash-low",
+    "agy-flash-medium",
+    "agy-flash-high",
+    "agy-pro",
+    "agy-pro-low",
+    "agy-pro-high",
+    "agy-gpt-oss",
+    "agy-sonnet",
+    "agy-opus",
 }
 
 SHORT_ALIASES = {

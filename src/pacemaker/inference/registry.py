@@ -61,6 +61,10 @@ def get_provider(hook_model: str):
         from .gemini_provider import GeminiProvider
 
         return GeminiProvider()
+    elif hook_model == "agy" or hook_model.startswith("agy-"):
+        from .agy_provider import AgyProvider
+
+        return AgyProvider()
     else:
         log_warning(
             "registry", f"Unknown hook_model '{hook_model}', falling back to Anthropic"
@@ -155,11 +159,13 @@ def resolve_and_call_with_reviewer(
 
     from .codex_provider import CodexProvider
     from .gemini_provider import GeminiProvider
+    from .agy_provider import AgyProvider
 
     provider = get_provider(hook_model)
     model_hint = resolve_model_for_call(hook_model, call_context)
     is_codex_provider = isinstance(provider, CodexProvider)
     is_gemini_provider = isinstance(provider, GeminiProvider)
+    is_agy_provider = isinstance(provider, AgyProvider)
 
     try:
         response = provider.query(
@@ -173,6 +179,8 @@ def resolve_and_call_with_reviewer(
                 if hook_model == "gemini-flash"
                 else _REVIEWER_GEMINI_PRO
             )
+        elif is_agy_provider:
+            reviewer = hook_model  # preserve the full alias (e.g. "agy-flash-high")
         else:
             reviewer = _REVIEWER_SDK
         return response, reviewer

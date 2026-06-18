@@ -4,6 +4,7 @@ from .provider import InferenceProvider, ProviderError
 from .anthropic_provider import AnthropicProvider
 from .codex_provider import CodexProvider
 from .gemini_provider import GeminiProvider
+from .agy_provider import AgyProvider
 from .registry import (
     get_provider,
     resolve_and_call,
@@ -18,6 +19,7 @@ __all__ = [
     "AnthropicProvider",
     "CodexProvider",
     "GeminiProvider",
+    "AgyProvider",
     "get_provider",
     "resolve_and_call",
     "resolve_and_call_with_reviewer",

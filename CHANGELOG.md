@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.32.0] - 2026-06-18
+
+### Added
+- **Antigravity CLI (agy) inference provider.** `agy` and ten model aliases (`agy-flash`, `agy-flash-low`, `agy-flash-medium`, `agy-flash-high`, `agy-pro`, `agy-pro-low`, `agy-pro-high`, `agy-gpt-oss`, `agy-sonnet`, `agy-opus`) are now supported as `hook_model` values. Bare `agy` invokes the CLI without `--model`; named aliases pass the corresponding display name via `--model`. All standard failure modes (timeout, not found, non-zero exit, empty stdout) raise `ProviderError` and fall through to the Anthropic SDK fallback. (`src/pacemaker/inference/agy_provider.py`, `model_aliases.py`, `registry.py`, `user_commands.py`) (Story #72)
+
 ## [2.31.2] - 2026-06-10
 
 ### Fixed

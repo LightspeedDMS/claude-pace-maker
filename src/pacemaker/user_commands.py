@@ -92,6 +92,17 @@ COMMANDS:
   pace-maker hook-model codex                  Alias for gpt-5.5 (descriptive alias)
   pace-maker hook-model gemini-flash           Use Gemini Flash for hook inference
   pace-maker hook-model gemini-pro             Use Gemini Pro for hook inference
+  pace-maker hook-model agy                    Use agy (Antigravity CLI, default model) for hook inference
+  pace-maker hook-model agy-flash              Use agy Gemini Flash (Medium) for hook inference
+  pace-maker hook-model agy-flash-low          Use agy Gemini Flash (Low) for hook inference
+  pace-maker hook-model agy-flash-medium       Use agy Gemini Flash (Medium) for hook inference
+  pace-maker hook-model agy-flash-high         Use agy Gemini Flash (High) for hook inference
+  pace-maker hook-model agy-pro                Use agy Gemini Pro (High) for hook inference
+  pace-maker hook-model agy-pro-low            Use agy Gemini Pro (Low) for hook inference
+  pace-maker hook-model agy-pro-high           Use agy Gemini Pro (High) for hook inference
+  pace-maker hook-model agy-gpt-oss            Use agy GPT-OSS 120B (Medium) for hook inference
+  pace-maker hook-model agy-sonnet             Use agy Claude Sonnet 4.6 (Thinking) for hook inference
+  pace-maker hook-model agy-opus               Use agy Claude Opus 4.6 (Thinking) for hook inference
   pace-maker hook-model "<r1>+<r2>[+<r3>]-><synth>"
                                                Use competitive multi-model review
 
@@ -575,7 +586,9 @@ def parse_command(user_input: str) -> Dict[str, Any]:
     # Single model: auto|sonnet|opus|haiku|gpt-5.5|gpt-5.4 (aliases: gpt-5|gpt|codex)|gemini-flash|gemini-pro (incl. short aliases)
     pattern_hook_model_single = (
         r"^pace-maker\s+hook-model\s+"
-        r"(auto|sonnet|opus|haiku|fable|gpt-5\.5|gpt-5\.4|gpt-5|gpt|codex|gemini-flash|gemini-pro|gem-flash|gem-pro)$"
+        r"(auto|sonnet|opus|haiku|fable|gpt-5\.5|gpt-5\.4|gpt-5|gpt|codex|gemini-flash|gemini-pro|gem-flash|gem-pro"
+        r"|agy|agy-flash|agy-flash-low|agy-flash-medium|agy-flash-high"
+        r"|agy-pro|agy-pro-low|agy-pro-high|agy-gpt-oss|agy-sonnet|agy-opus)$"
     )
     match_hook_model = re.match(pattern_hook_model_single, normalized)
 
@@ -1810,6 +1823,17 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
         "gpt-5.5",
         "gemini-flash",
         "gemini-pro",
+        "agy",
+        "agy-flash",
+        "agy-flash-low",
+        "agy-flash-medium",
+        "agy-flash-high",
+        "agy-pro",
+        "agy-pro-low",
+        "agy-pro-high",
+        "agy-gpt-oss",
+        "agy-sonnet",
+        "agy-opus",
     ]
 
     if subcommand not in valid_models:
@@ -1817,7 +1841,7 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
             "success": False,
             "message": (
                 f"Invalid model: {subcommand}\n"
-                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|fable|gpt-5.4|gpt-5.5|gemini-flash|gemini-pro]"
+                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|fable|gpt-5.4|gpt-5.5|gemini-flash|gemini-pro|agy|agy-flash|...]"
             ),
         }
 
@@ -1856,6 +1880,31 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
                 "Hook inference will use Gemini CLI (gemini-2.5-pro) "
                 "with Anthropic fallback.\n"
                 "Requires: gemini CLI installed and authenticated."
+            )
+        elif subcommand == "agy":
+            message = (
+                "✓ Hook model set to agy\n"
+                "Hook inference will use Antigravity CLI (agy, default model) with Anthropic fallback.\n"
+                "Requires: agy CLI installed and pre-authenticated."
+            )
+        elif subcommand.startswith("agy-"):
+            _agy_model_names = {
+                "agy-flash": "Gemini 3.5 Flash (Medium)",
+                "agy-flash-low": "Gemini 3.5 Flash (Low)",
+                "agy-flash-medium": "Gemini 3.5 Flash (Medium)",
+                "agy-flash-high": "Gemini 3.5 Flash (High)",
+                "agy-pro": "Gemini 3.1 Pro (High)",
+                "agy-pro-low": "Gemini 3.1 Pro (Low)",
+                "agy-pro-high": "Gemini 3.1 Pro (High)",
+                "agy-gpt-oss": "GPT-OSS 120B (Medium)",
+                "agy-sonnet": "Claude Sonnet 4.6 (Thinking)",
+                "agy-opus": "Claude Opus 4.6 (Thinking)",
+            }
+            display_name = _agy_model_names.get(subcommand, subcommand)
+            message = (
+                f"✓ Hook model set to {subcommand}\n"
+                f'Hook inference will use Antigravity CLI (agy --model "{display_name}") with Anthropic fallback.\n'
+                "Requires: agy CLI installed and pre-authenticated."
             )
         else:
             message = (
