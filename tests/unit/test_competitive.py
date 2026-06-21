@@ -818,3 +818,69 @@ class TestGpt55Support:
         reviewers2, _ = result2
         assert "gpt-5.5" in reviewers2
         assert "codex" not in reviewers2
+
+
+# ---------------------------------------------------------------------------
+# AgyProvider label in competitive pipeline tests
+# ---------------------------------------------------------------------------
+
+
+class TestAgyProviderLabelInCompetitive:
+    """Tests that AgyProvider gets the model alias as label, not 'anthropic-sdk'.
+
+    Bug: _call_single_reviewer() handles CodexProvider and GeminiProvider but
+    falls through to label = _REVIEWER_SDK for AgyProvider instead of using
+    the model alias (e.g. 'agy-gpt-oss').
+    """
+
+    def test_agy_provider_label_is_model_alias_in_competitive(self):
+        """AgyProvider in competitive pipeline must return model alias as label, not 'anthropic-sdk'."""
+        from pacemaker.inference.competitive import _call_single_reviewer
+        from pacemaker.inference.agy_provider import AgyProvider
+
+        agy_mock = MagicMock(spec=AgyProvider)
+        agy_mock.query.return_value = "APPROVED"
+
+        with patch(
+            "pacemaker.inference.competitive.get_provider", return_value=agy_mock
+        ):
+            response, label = _call_single_reviewer(
+                "agy-gpt-oss", "review this", "", "intent_validation", 4000
+            )
+
+        assert response == "APPROVED"
+        assert label == "agy-gpt-oss", f"Expected 'agy-gpt-oss', got '{label}'"
+
+    def test_agy_flash_high_label_in_competitive(self):
+        """AgyProvider with 'agy-flash-high' model returns 'agy-flash-high' as label."""
+        from pacemaker.inference.competitive import _call_single_reviewer
+        from pacemaker.inference.agy_provider import AgyProvider
+
+        agy_mock = MagicMock(spec=AgyProvider)
+        agy_mock.query.return_value = "BLOCKED: unsafe"
+
+        with patch(
+            "pacemaker.inference.competitive.get_provider", return_value=agy_mock
+        ):
+            response, label = _call_single_reviewer(
+                "agy-flash-high", "review this", "", "intent_validation", 4000
+            )
+
+        assert label == "agy-flash-high", f"Expected 'agy-flash-high', got '{label}'"
+
+    def test_agy_bare_label_in_competitive(self):
+        """AgyProvider with bare 'agy' model returns 'agy' as label."""
+        from pacemaker.inference.competitive import _call_single_reviewer
+        from pacemaker.inference.agy_provider import AgyProvider
+
+        agy_mock = MagicMock(spec=AgyProvider)
+        agy_mock.query.return_value = "APPROVED"
+
+        with patch(
+            "pacemaker.inference.competitive.get_provider", return_value=agy_mock
+        ):
+            response, label = _call_single_reviewer(
+                "agy", "review this", "", "intent_validation", 4000
+            )
+
+        assert label == "agy", f"Expected 'agy', got '{label}'"

@@ -306,3 +306,71 @@ class TestCLIIntegration:
         path = tmp_config()
         result = execute_command("hook-model", path, subcommand="sonnet*opus|haiku")
         assert result["success"] is False
+
+
+class TestAgyReviewerNameInRandomFailover:
+    """Tests that AgyProvider gets the model alias as reviewer name in random/failover.
+
+    Bug: _reviewer_name_for() returns 'anthropic-sdk' for AgyProvider instead
+    of the model alias (e.g. 'agy-gpt-oss').
+    """
+
+    def test_reviewer_name_for_agy_gpt_oss(self):
+        """_reviewer_name_for returns 'agy-gpt-oss' for AgyProvider."""
+        from pacemaker.inference.random_failover import _reviewer_name_for
+        from pacemaker.inference.agy_provider import AgyProvider
+
+        provider = MagicMock(spec=AgyProvider)
+        result = _reviewer_name_for("agy-gpt-oss", provider)
+        assert result == "agy-gpt-oss", f"Expected 'agy-gpt-oss', got '{result}'"
+
+    def test_reviewer_name_for_agy_flash_high(self):
+        """_reviewer_name_for returns 'agy-flash-high' for AgyProvider."""
+        from pacemaker.inference.random_failover import _reviewer_name_for
+        from pacemaker.inference.agy_provider import AgyProvider
+
+        provider = MagicMock(spec=AgyProvider)
+        result = _reviewer_name_for("agy-flash-high", provider)
+        assert result == "agy-flash-high", f"Expected 'agy-flash-high', got '{result}'"
+
+    def test_run_random_uses_agy_model_alias_as_reviewer(self):
+        """run_random returns 'agy-gpt-oss' as reviewer when AgyProvider is chosen."""
+        from pacemaker.inference.agy_provider import AgyProvider
+
+        agy_mock = MagicMock(spec=AgyProvider)
+        agy_mock.query.return_value = "APPROVED"
+
+        with (
+            patch(
+                "pacemaker.inference.random_failover.get_provider",
+                return_value=agy_mock,
+            ),
+            patch(
+                "pacemaker.inference.random_failover._random.choice",
+                return_value="agy-gpt-oss",
+            ),
+        ):
+            result, reviewer = run_random(
+                ["agy-gpt-oss", "sonnet"], "prompt", "system", "intent_validation"
+            )
+
+        assert result == "APPROVED"
+        assert reviewer == "agy-gpt-oss", f"Expected 'agy-gpt-oss', got '{reviewer}'"
+
+    def test_run_failover_uses_agy_model_alias_as_reviewer(self):
+        """run_failover returns 'agy-gpt-oss' as reviewer when AgyProvider succeeds first."""
+        from pacemaker.inference.agy_provider import AgyProvider
+
+        agy_mock = MagicMock(spec=AgyProvider)
+        agy_mock.query.return_value = "APPROVED"
+
+        with patch(
+            "pacemaker.inference.random_failover.get_provider",
+            return_value=agy_mock,
+        ):
+            result, reviewer = run_failover(
+                ["agy-gpt-oss", "sonnet"], "prompt", "system", "intent_validation"
+            )
+
+        assert result == "APPROVED"
+        assert reviewer == "agy-gpt-oss", f"Expected 'agy-gpt-oss', got '{reviewer}'"
