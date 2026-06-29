@@ -9,6 +9,7 @@ from pacemaker.intent_validator import (
     _strip_llm_noise,
     parse_sdk_response,
 )
+from pacemaker.inference.verdict import verdict_passes
 
 
 # ---------------------------------------------------------------------------
@@ -166,39 +167,47 @@ class TestParseSdkResponseApprovedInNarrativeIsBlocked:
 
 class TestStage2ApprovedParsing:
     """
-    Stage 2 uses `stage2_feedback.strip().upper() == "APPROVED"`.
-    We verify _strip_llm_noise can be composed with that check correctly —
-    callers of the helper need: _first_non_noise_line(text).upper() == "APPROVED".
+    Stage 2 now uses verdict_passes(stage2_feedback) — guarded-lenient starts-with
+    matching via the canonical verdict primitive (story #76 B1).
 
-    We expose this indirectly by testing _strip_llm_noise + first-line logic.
+    "APPROVED.", "APPROVED — ok", "APPROVED\\n\\nnarrative" all pass.
+    "NOT APPROVED" fails. BLOCKED: wins over APPROVED.
     """
 
-    def _is_approved_stage2(self, text: str) -> bool:
-        """Replicate the fixed Stage 2 logic for testing."""
-        cleaned = _strip_llm_noise(text)
-        lines = [line for line in cleaned.splitlines() if line.strip()]
-        if not lines:
-            return False
-        return lines[0].strip().upper() == "APPROVED"
-
     def test_clean_approved(self):
-        assert self._is_approved_stage2("APPROVED") is True
+        assert verdict_passes("APPROVED") is True
 
     def test_section_then_approved(self):
-        assert self._is_approved_stage2("§ intel\nAPPROVED") is True
+        # § noise is stripped by _find_verdict before reaching verdict_passes,
+        # but verdict_passes also handles this correctly because it scans all lines.
+        assert verdict_passes("§ intel\nAPPROVED") is True
 
     def test_approved_then_narrative(self):
-        assert self._is_approved_stage2("APPROVED\nnarrative here") is True
+        assert verdict_passes("APPROVED\nnarrative here") is True
 
     def test_section_approved_narrative(self):
-        assert self._is_approved_stage2("§ intel\nAPPROVED\nnarrative") is True
+        assert verdict_passes("§ intel\nAPPROVED\nnarrative") is True
 
     def test_blocked_not_approved(self):
-        assert self._is_approved_stage2("BLOCKED: reason") is False
+        assert verdict_passes("BLOCKED: reason") is False
 
     def test_blocked_with_approved_in_body_not_approved(self):
         text = "BLOCKED: reason\nwould have been APPROVED otherwise"
-        assert self._is_approved_stage2(text) is False
+        assert verdict_passes(text) is False
 
     def test_empty_not_approved(self):
-        assert self._is_approved_stage2("") is False
+        assert verdict_passes("") is False
+
+    # --- NEW guarded-lenient cases (story #76 deliberate leniency change) ---
+
+    def test_approved_with_period_passes(self):
+        """APPROVED. → passes (old strict equality would have blocked this)."""
+        assert verdict_passes("APPROVED.") is True
+
+    def test_approved_with_dash_comment_passes(self):
+        """APPROVED — ok → passes (old strict equality would have blocked this)."""
+        assert verdict_passes("APPROVED — ok") is True
+
+    def test_not_approved_fails(self):
+        """NOT APPROVED → fails (line starts with NOT, not APPROVED)."""
+        assert verdict_passes("NOT APPROVED") is False

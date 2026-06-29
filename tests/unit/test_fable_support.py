@@ -83,36 +83,7 @@ class TestCompetitiveFable:
 
 
 # ---------------------------------------------------------------------------
-# 5. random_failover.py — parse_random and parse_failover accept fable
-# ---------------------------------------------------------------------------
-class TestRandomFailoverFable:
-    def test_parse_random_with_fable(self):
-        from pacemaker.inference.random_failover import parse_random
-
-        result = parse_random("fable*sonnet")
-        assert result == ["fable", "sonnet"]
-
-    def test_parse_failover_with_fable(self):
-        from pacemaker.inference.random_failover import parse_failover
-
-        result = parse_failover("fable|sonnet")
-        assert result == ["fable", "sonnet"]
-
-    def test_parse_random_fable_duplicate_rejected(self):
-        from pacemaker.inference.random_failover import parse_random
-
-        with pytest.raises(ValueError, match="Duplicate"):
-            parse_random("fable*fable")
-
-    def test_parse_failover_fable_duplicate_rejected(self):
-        from pacemaker.inference.random_failover import parse_failover
-
-        with pytest.raises(ValueError, match="Duplicate"):
-            parse_failover("fable|fable")
-
-
-# ---------------------------------------------------------------------------
-# 6. user_commands.py — CLI regex patterns recognise "fable"
+# 5. user_commands.py — CLI regex patterns recognise "fable"
 # ---------------------------------------------------------------------------
 class TestUserCommandsFable:
     def test_prefer_model_regex_accepts_fable(self):

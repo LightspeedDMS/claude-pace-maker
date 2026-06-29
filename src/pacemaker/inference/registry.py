@@ -57,6 +57,11 @@ def get_provider(hook_model: str):
         from .codex_provider import CodexProvider
 
         return CodexProvider()
+    elif hook_model.startswith("codex-"):
+        # codex-<profile> tokens (Story #74): bind a named ~/.codex profile
+        from .codex_provider import CodexProvider
+
+        return CodexProvider()
     elif hook_model in ("gemini-flash", "gemini-pro"):
         from .gemini_provider import GeminiProvider
 
@@ -129,7 +134,7 @@ def resolve_and_call_with_reviewer(
     """
     # Competitive mode detection — must be checked before single-model path
     if "+" in hook_model:
-        from .competitive import parse_competitive, run_competitive
+        from .competitive import parse_competitive, run_mechanical
 
         try:
             parsed = parse_competitive(hook_model)
@@ -147,9 +152,9 @@ def resolve_and_call_with_reviewer(
             )
             hook_model = "auto"
         else:
-            reviewers, synthesizer = parsed
-            return run_competitive(
-                reviewers,
+            verifiers, synthesizer = parsed
+            return run_mechanical(
+                verifiers,
                 synthesizer,
                 prompt,
                 system_prompt,
@@ -172,7 +177,12 @@ def resolve_and_call_with_reviewer(
             prompt, system_prompt, model_hint, max_thinking_tokens
         )
         if is_codex_provider:
-            reviewer = _REVIEWER_CODEX
+            # codex-<profile> tokens return the verbatim hook_model as reviewer
+            # (e.g. "codex-beast"); plain codex/gpt-5.5 map to "codex-gpt5"
+            if hook_model.startswith("codex-"):
+                reviewer = hook_model
+            else:
+                reviewer = _REVIEWER_CODEX
         elif is_gemini_provider:
             reviewer = (
                 _REVIEWER_GEMINI_FLASH

@@ -11,7 +11,7 @@ from .registry import (
     resolve_and_call_with_reviewer,
     resolve_model_for_call,
 )
-from .competitive import parse_competitive, run_competitive
+from .competitive import parse_competitive, run_mechanical
 
 __all__ = [
     "InferenceProvider",
@@ -25,5 +25,5 @@ __all__ = [
     "resolve_and_call_with_reviewer",
     "resolve_model_for_call",
     "parse_competitive",
-    "run_competitive",
+    "run_mechanical",
 ]

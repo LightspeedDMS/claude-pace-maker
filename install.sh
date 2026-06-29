@@ -653,18 +653,36 @@ install_cli() {
   if [ -f "$SCRIPT_DIR/bin/pace-maker" ]; then
     CLI_SOURCE="$SCRIPT_DIR/bin/pace-maker"
     echo "Installing pace-maker command to ~/.local/bin/pace-maker..."
-    cp "$CLI_SOURCE" "$HOME/.local/bin/pace-maker"
-    chmod +x "$HOME/.local/bin/pace-maker"
+    _src_resolved="$(readlink -f "$CLI_SOURCE" 2>/dev/null || echo "$CLI_SOURCE")"
+    _dst_resolved="$(readlink -f "$HOME/.local/bin/pace-maker" 2>/dev/null || echo "")"
+    if [ "$_src_resolved" = "$_dst_resolved" ]; then
+      echo "  (already installed — same file, skipping copy)"
+    else
+      cp "$CLI_SOURCE" "$HOME/.local/bin/pace-maker"
+      chmod +x "$HOME/.local/bin/pace-maker"
+    fi
   elif [ -f "$SCRIPT_DIR/scripts/pace-maker" ]; then
     CLI_SOURCE="$SCRIPT_DIR/scripts/pace-maker"
     echo "Installing pace-maker command to ~/.local/bin/pace-maker..."
-    cp "$CLI_SOURCE" "$HOME/.local/bin/pace-maker"
-    chmod +x "$HOME/.local/bin/pace-maker"
+    _src_resolved="$(readlink -f "$CLI_SOURCE" 2>/dev/null || echo "$CLI_SOURCE")"
+    _dst_resolved="$(readlink -f "$HOME/.local/bin/pace-maker" 2>/dev/null || echo "")"
+    if [ "$_src_resolved" = "$_dst_resolved" ]; then
+      echo "  (already installed — same file, skipping copy)"
+    else
+      cp "$CLI_SOURCE" "$HOME/.local/bin/pace-maker"
+      chmod +x "$HOME/.local/bin/pace-maker"
+    fi
   elif [ -f "$SCRIPT_DIR/pace-maker" ]; then
     CLI_SOURCE="$SCRIPT_DIR/pace-maker"
     echo "Installing pace-maker command to ~/.local/bin/pace-maker..."
-    cp "$CLI_SOURCE" "$HOME/.local/bin/pace-maker"
-    chmod +x "$HOME/.local/bin/pace-maker"
+    _src_resolved="$(readlink -f "$CLI_SOURCE" 2>/dev/null || echo "$CLI_SOURCE")"
+    _dst_resolved="$(readlink -f "$HOME/.local/bin/pace-maker" 2>/dev/null || echo "")"
+    if [ "$_src_resolved" = "$_dst_resolved" ]; then
+      echo "  (already installed — same file, skipping copy)"
+    else
+      cp "$CLI_SOURCE" "$HOME/.local/bin/pace-maker"
+      chmod +x "$HOME/.local/bin/pace-maker"
+    fi
   else
     # pipx case: pace-maker entry point lives in the venv bin, 2 dirs up from the share dir
     # SCRIPT_DIR = <venv>/share/claude-pace-maker/ → venv root = dirname(dirname(SCRIPT_DIR))
@@ -705,7 +723,13 @@ open(path, 'w').writelines(lines)
   if [ -d "$SCRIPT_DIR/src/pacemaker" ]; then
     echo "Installing Python modules to $PACEMAKER_DIR/pacemaker..."
     mkdir -p "$PACEMAKER_DIR/pacemaker"
-    cp -r "$SCRIPT_DIR/src/pacemaker"/* "$PACEMAKER_DIR/pacemaker/"
+    _src_dir_resolved="$(readlink -f "$SCRIPT_DIR/src/pacemaker" 2>/dev/null || echo "$SCRIPT_DIR/src/pacemaker")"
+    _dst_dir_resolved="$(readlink -f "$PACEMAKER_DIR/pacemaker" 2>/dev/null || echo "")"
+    if [ "$_src_dir_resolved" = "$_dst_dir_resolved" ]; then
+      echo "  (already installed — same directory, skipping copy)"
+    else
+      cp -r "$SCRIPT_DIR/src/pacemaker"/* "$PACEMAKER_DIR/pacemaker/"
+    fi
 
     # Update CLI wrapper to use installed modules
     cat > "$HOME/.local/bin/pace-maker" <<'EOF'

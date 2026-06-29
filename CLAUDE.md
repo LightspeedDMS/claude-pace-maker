@@ -341,6 +341,26 @@ The `codex_usage.py` module handles both subscription and PAYG (Pay-As-You-Go) C
 
 ---
 
+## Codex Profile Provider
+
+**argv includes `--skip-git-repo-check`** — both branches in `CodexProvider.query()` pass this flag immediately after `exec`:
+
+```
+# Profile mode
+["codex", "exec", "--skip-git-repo-check", "-", "--profile", <name>, "-s", "read-only"]
+
+# Non-profile mode
+["codex", "exec", "--skip-git-repo-check", "-", "-m", <model>, "-s", "read-only"]
+```
+
+**Why this is necessary**: codex 0.139 introduced a trusted-directory guard that causes exit 1 with the message "Not inside a trusted directory and --skip-git-repo-check was not specified." when codex is invoked from a working directory that is not in codex's trust list. This guard fires when the pace-maker hook runs from a user's project directory — causing `ProviderError` and silent fallback to the Anthropic SDK, making the configured codex/gpt-5.5 reviewer silently downgrade to `anthropic-sdk`.
+
+**Why it is safe**: pace-maker already invokes codex with `-s read-only` (codex's own sandbox flag). The git-repo guard provides no additional protection when the sandbox is active — codex cannot write or execute anything regardless. `--skip-git-repo-check` is codex's own prescribed remedy for this exact scenario.
+
+**Key file**: `src/pacemaker/inference/codex_provider.py`
+
+---
+
 ## Running Tests
 
 **NEVER run tests as a single pytest process** (`python -m pytest tests/`). SQLite WAL contention causes hangs when multiple test files create DBs concurrently in the same process.
@@ -427,7 +447,7 @@ This applies to:
 
 ## Competitive Review Pipeline
 
-**Syntax**: `hook_model = "m1+m2[+m3]->synthesizer"` (2-3 reviewers + 1 synthesizer)
+**Syntax**: `hook_model = "m1+m2[+m3]->synthesizer"` (2-3 verifiers + 1 synthesizer)
 
 **Supported models**: auto, sonnet, opus, haiku, gpt-5, gemini-flash, gemini-pro
 
@@ -435,24 +455,48 @@ This applies to:
 
 **Key file**: `src/pacemaker/inference/competitive.py`
 
-**Wiring**: `resolve_and_call_with_reviewer()` in `registry.py` detects `+` in hook_model and delegates to `run_competitive()`
+**Wiring**: `resolve_and_call_with_reviewer()` in `registry.py` detects `+` in hook_model and delegates to `run_mechanical()` (Story #77: renamed from `run_competitive`)
 
-**Failure modes**:
-- 2+ survivors → synthesize via synthesizer model
-- 1 survivor → pass through without synthesis (survivor's label returned)
-- All fail, no Anthropic in reviewers → SDK solo fallback (label: "sdk-fallback")
-- All fail, Anthropic was a reviewer → fail per caller semantics (empty string returned)
-- Synthesizer fails → first survivor wins
+### Story #77 (B2) — Mechanical N-verifier runner
+
+**Decision computed in code, not by LLM**: `run_mechanical()` replaces the old `run_competitive()`. The synthesizer is demoted to a message-only formatter and can NEVER flip the verdict.
+
+**Algorithm**:
+1. Dispatch all verifiers in parallel via `_dispatch_reviewers()`.
+2. Zero survivors → return `("", expression)` — gate semantics handle fail-open/closed (stop: fail-open to avoid infinite loop; pre-tool: fail-closed via `verdict_passes("")=False`).
+3. Evaluate each survivor with `verdict_passes_for_context(resp, call_context)`.
+4. **Mechanical decision (in code)**:
+   - Pre-tool gate: ALL verifiers must respond AND pass → APPROVED (fail-closed; missing verifier = FAIL).
+   - Stop gate: all present survivors must pass (missing verifiers ignored); zero survivors → `""` (OQ-1 fail-open).
+5. PASS → return `("APPROVED", expression)`.
+6. FAIL → build message from failing survivors only:
+   - Exactly 1 failing → raw feedback, synthesizer NOT called.
+   - 2+ failing → synthesizer called to FORMAT the message (message-only; cannot decide).
+   - Synthesizer error/timeout/empty → concatenate raw failing feedbacks.
+   - Edge case (pre-tool, missing verifier, all present passed) → `"a required verifier did not respond (fail-closed)"`.
+7. Return `("BLOCKED: " + message, expression)` — `BLOCKED:` prefix applied mechanically; synthesizer output is only the message body.
+
+**Synthesizer-cannot-flip guarantee**: `BLOCKED:` prefix is hardcoded in `run_mechanical()`. Even if the synthesizer returns `"APPROVED"`, the result is `"BLOCKED: APPROVED"` which `has_block_marker()` reads as blocked. The synthesizer can NEVER override a FAIL decision.
+
+**Failure modes** (Story #77 behavior):
+- All verifiers pass → `APPROVED` (synthesizer NOT called)
+- 1 verifier fails (non-positive response) → `BLOCKED: <raw feedback>` (synthesizer NOT called)
+- 2+ verifiers fail → `BLOCKED: <synthesizer-merged message>` (synthesizer called to format only)
+- Synthesizer fails/times out/returns empty → `BLOCKED: <concat raw feedbacks>`
+- Missing verifier (pre-tool infra failure) → `BLOCKED: a required verifier did not respond (fail-closed)`
+- Missing verifier (stop gate) → IGNORED (survivor-only evaluation)
+- Zero survivors (pre-tool) → `""` → `verdict_passes("")=False` → gate blocks
+- Zero survivors (stop) → `""` → `parse_sdk_response("")→{"continue": True}` → fail-open (OQ-1)
+
+**Synthesizer prompt**: Externalized to `src/pacemaker/prompts/common/mechanical_failure_synthesis.md` (Messi Rule 11). Instructions: merge failing reviews into ONE message; do NOT output APPROVED/BLOCKED/COMPLETE; you are a FORMATTER not a judge.
 
 **Tag format**: `[expression]` in feedback_text (no REVIEWER: prefix), e.g. `[gpt-5+gemini-flash->sonnet]`
 
 **CLI**: `pace-maker hook-model gpt-5+gemini-flash->sonnet` — validates via `parse_competitive()`, stores canonical form
 
-**Synthesis prompt**: Synthesizer is a formatter, not a judge — applies verdicts mechanically: any BLOCK from any reviewer → BLOCKED with combined reasons; all APPROVED → APPROVED. Does not add new concerns or remove existing ones.
+**Reviewer verdict logging**: Each reviewer's raw response is logged at DEBUG level (first 300 chars via `MAX_REVIEW_LOG_CHARS`) via `log_debug("competitive", f"Reviewer {model} verdict: ...")`.
 
-**Reviewer verdict logging**: Each reviewer's raw response is logged at DEBUG level (first 300 chars via `MAX_REVIEW_LOG_CHARS`) via `log_debug("competitive", f"Reviewer {model} verdict: ...")` for synthesis quality evaluation.
-
-**Timeouts**: `REVIEWER_WAIT_TIMEOUT_SEC = 60` (per-reviewer via `futures_wait`), `SYNTHESIS_TIMEOUT_SEC = 30` (synthesis via `future.result(timeout=...)`), outer hook timeout = 120s (in `~/.claude/settings.json`). Timeout → first-survivor-wins for synthesis; partial reviewer results always preserved.
+**Timeouts**: `REVIEWER_WAIT_TIMEOUT_SEC = 60` (per-reviewer via `futures_wait`), `SYNTHESIS_TIMEOUT_SEC = 30` (synthesis via `future.result(timeout=...)`), outer hook timeout = 120s (in `~/.claude/settings.json`).
 
 **Status display**: `pace-maker status` shows full expression (e.g. `opus+gpt-5->haiku`) in ANSI blue — no separate "reviewers:" breakdown line.
 
@@ -460,49 +504,9 @@ This applies to:
 
 **Concurrency**: `ThreadPoolExecutor` with `futures_wait(timeout=REVIEWER_WAIT_TIMEOUT_SEC)` — partial results preserved on timeout; `executor.shutdown(wait=False)` avoids blocking on in-flight threads.
 
----
+**AgyProvider label fix** (Story #77): `_call_single_reviewer()` now returns the verbatim model alias as label for AgyProvider (e.g. `"agy-flash-high"`). Previously fell through to `"anthropic-sdk"` — fixed by adding `elif isinstance(provider, AgyProvider): label = model`.
 
-## Random Selection & Sequential Failover
-
-**Story #67**: Adds two new hook model expression shapes for multi-model dispatch without synthesis overhead.
-
-**Random syntax**: `hook_model = "m1*m2[*mN]"` — picks one model uniformly at random per invocation.
-
-**Failover syntax**: `hook_model = "m1|m2[|mN]"` — tries models left-to-right, advances on failure.
-
-**Supported models**: sonnet, opus, haiku, gpt-5.4, gpt-5.5, gemini-flash, gemini-pro
-
-**Short aliases**: gem-flash→gemini-flash, gem-pro→gemini-pro, gpt-5→gpt-5.5, codex→gpt-5.5 (accepted at CLI, stored canonically)
-
-**Key file**: `src/pacemaker/inference/random_failover.py`
-
-**Wiring**: `resolve_and_call_with_reviewer()` in `registry.py` detects `*` and `|` in hook_model (after competitive `+` detection) and delegates to `run_random()` / `run_failover()` via shared `_try_expression_dispatch()` helper.
-
-**Operator precedence in registry**: competitive (`+`) → random (`*`) → failover (`|`) → single model. Mixed operators (e.g. `sonnet*opus|haiku`) are rejected at parse time.
-
-**Failure modes — Random**:
-- Chosen model succeeds → return response with provider-specific reviewer label
-- Chosen model fails (ProviderError, TimeoutError, OSError) → SDK fallback (label: "anthropic-sdk")
-
-**Failure modes — Failover**:
-- First model succeeds → return immediately (no further models tried)
-- Model fails → advance to next in list
-- All models fail → SDK fallback (label: "anthropic-sdk")
-
-**CLI**: `pace-maker hook-model sonnet*opus` or `pace-maker hook-model sonnet|opus` — validates via `parse_random()` / `parse_failover()`, canonicalizes aliases, stores canonical form.
-
-**Validation rules**: Minimum 2 models, no duplicates (including after alias resolution), no mixing operators, all models must be in `KNOWN_MODELS`.
-
-**Status display**: `pace-maker status` shows random expressions in ANSI magenta (`\033[35m`), failover expressions in ANSI yellow (`\033[33m`).
-
-**claude-usage display**: Hook Model shows `rand` in `bright_magenta` for random, `fo` in `bright_yellow` for failover; governance feed shows `[Rand]` / `[FO]` tags respectively.
-
-### Key Files
-- `src/pacemaker/inference/random_failover.py` — parsers, dispatchers, SDK fallback
-- `src/pacemaker/inference/model_aliases.py` — `KNOWN_MODELS`, `SHORT_ALIASES` used by parser
-- `src/pacemaker/inference/registry.py` — `_try_expression_dispatch()` helper, routing in `resolve_and_call_with_reviewer()`
-- `src/pacemaker/user_commands.py` — CLI validation, status display colors, help text
-- `tests/test_random_failover.py` — 48 tests (parsers, dispatchers, routing, CLI, status)
+**Tests**: `tests/test_mechanical.py` (65 tests) — migrated from `tests/unit/test_competitive.py` + full Story #77 truth tables, synthesizer-cannot-flip safety test, stop-gate matrix, N=2/N=3 coverage.
 
 ---
 
@@ -624,3 +628,141 @@ All 5 ProviderError cases trigger Anthropic SDK fallback (reviewer: `"anthropic-
 - `tests/test_agy_registry.py` — 22 tests (KNOWN_MODELS, get_provider routing, reviewer labels, fallback)
 - `tests/test_agy_user_commands.py` — 24 tests (regex, execution, status display)
 - `claude-usage-reporting/tests/test_agy_display_tags.py` — 21 tests (REVIEWER_TAGS, colors, regex)
+
+---
+
+## Codex Profile Provider (Story #74)
+
+**Grammar:** `codex-<profile>` — regex `^codex-[A-Za-z0-9][A-Za-z0-9._-]*$`
+
+A `codex-<profile>` token binds pace-maker to a named profile in `~/.codex/` (e.g. `~/.codex/beast.config.toml`). The profile pins model+base_url+wire_api so `-m` is NOT passed; the profile config owns the model. pace-maker validates the token **shape only** — unknown profile names are rejected by codex CLI at runtime (non-zero exit → ProviderError → Anthropic fallback).
+
+### CLI Invocation
+
+**Profile mode** (`codex-beast`, `codex-local-llama`, etc.):
+```
+codex exec - --profile <profile-name> -s read-only
+```
+No `-m` flag. The `--profile` name is the substring after `"codex-"`.
+
+**Non-profile mode** (plain `codex`, `gpt-5.5`, `gpt-5`, etc.) — unchanged:
+```
+codex exec - -m <resolved-model> -s read-only
+```
+
+The function `_parse_codex_target(model_hint) -> (profile|None, model|None)` in `codex_provider.py` handles the dispatch:
+- `model_hint.startswith("codex-")` → `(profile, None)` — profile mode
+- else → `(None, SHORT_ALIASES.get(model_hint, model_hint) or "o3")` — model mode
+
+### Reviewer Label
+
+`resolve_and_call_with_reviewer()` returns the `hook_model` token **verbatim** as the reviewer label for all `codex-<profile>` tokens (e.g. `"codex-beast"`). Plain codex aliases (`codex`, `gpt-5.5`, etc.) still map to `"codex-gpt5"`.
+
+### Failure Modes & Fallback
+
+Identical to plain codex — all 5 ProviderError cases trigger Anthropic SDK fallback (reviewer: `"anthropic-sdk"`):
+1. `TimeoutExpired` — codex CLI timed out after 120s
+2. `FileNotFoundError` — codex CLI not installed
+3. `OSError` — OS error
+4. Non-zero returncode — unknown profile name or codex CLI error
+5. Empty stdout — codex CLI returned empty response
+
+**Do NOT read or parse `~/.codex/config.toml`.** Profile existence is validated by codex at runtime only.
+
+### is_known_model()
+
+`model_aliases.is_known_model(token) -> bool` accepts:
+- Every token in `KNOWN_MODELS`
+- Every key in `SHORT_ALIASES` (e.g. `codex`, `gpt-5`, `gem-flash` — not in `KNOWN_MODELS` but valid CLI tokens; accepted here so story #75 CLI does not regress)
+- Any token matching the `codex-<profile>` regex above
+
+### CLI / Expression / Monitor Surfacing (Story #75)
+
+#### Single-model CLI token
+
+`pace-maker hook-model codex-beast` — the `pattern_hook_model_single` regex in `user_commands.py` includes an `|codex-[a-z0-9][a-z0-9._-]*` alternative. Confirmation message names the profile: "Hook model set to codex profile 'beast'...".
+
+After short-alias normalization (which leaves `codex-<profile>` untouched), validation uses `is_known_model(subcommand)` instead of a static `valid_models` list — so any valid-shape profile is accepted without requiring an enumeration.
+
+#### Competitive / synthesizer slot
+
+`parse_competitive()` uses `is_known_model(token)` for all slots, so `codex-<profile>` is accepted as a reviewer AND as the synthesizer:
+- `codex-beast+haiku->sonnet` — codex-beast is reviewer
+- `haiku+sonnet->codex-beast` — codex-beast is synthesizer
+
+The competitive pattern regex (`[a-z0-9.\-]+`) already covered the allowed characters; no regex change was needed there.
+
+#### Reviewer label in competitive
+
+In `_call_single_reviewer` (competitive.py), a `codex-` prefix check now returns the verbatim token as the label; plain `gpt-5.5`/`gpt-5.4` keep `"codex-gpt5"`.
+
+#### `pace-maker status`
+
+The existing `.upper()` fallback in `_HOOK_MODEL_DISPLAY.get(hook_model, hook_model.upper())` renders `codex-beast` as `CODEX-BEAST`. No special case needed.
+
+#### claude-usage monitor `[Codex]` tag
+
+`claude-usage-reporting/claude_usage/code_mode/display.py` exports `get_reviewer_tag_info(reviewer_id)` (Story #75):
+1. Exact `REVIEWER_TAGS` dict lookup first (preserves `codex-gpt5 → [Codex]/yellow` and all existing entries).
+2. `startswith("codex-")` prefix fallback for dynamic profile tokens → `("[Codex]", "yellow")`.
+
+The governance feed renderer calls `get_reviewer_tag_info()` instead of `REVIEWER_TAGS.get()` directly.
+
+### Key Files
+- `src/pacemaker/inference/codex_provider.py` — `_parse_codex_target()`, updated `CodexProvider.query()`
+- `src/pacemaker/inference/model_aliases.py` — `is_known_model()`, `_CODEX_PROFILE_RE`
+- `src/pacemaker/inference/registry.py` — `get_provider()` `codex-` branch, verbatim reviewer label
+- `src/pacemaker/inference/competitive.py` — `is_known_model` token validation, verbatim label for `codex-<profile>`
+- `src/pacemaker/user_commands.py` — `codex-[a-z0-9][a-z0-9._-]*` in single-model regex, `is_known_model` validation, profile confirmation message
+- `claude-usage-reporting/claude_usage/code_mode/display.py` — `get_reviewer_tag_info()`, `_CODEX_PROFILE_TAG`
+- `tests/test_codex_profile.py` — 45 tests (is_known_model, _parse_codex_target, argv, routing, label) — Story #74
+- `tests/test_codex_profile_story75.py` — 31 tests (competitive parser, reviewer labels, synthesizer routing, CLI regex, execute, status) — Story #75
+- `claude-usage-reporting/tests/test_codex_profile_display_tags.py` — 20 tests (exact entry unaffected, prefix resolution, ordering) — Story #75
+
+---
+
+## Canonical Verdict-Normalization Primitive (Story #76 B1)
+
+**File**: `src/pacemaker/inference/verdict.py` — STDLIB-ONLY leaf module (no imports from other pacemaker modules; safe to import from any gate).
+
+### Functions
+
+| Function | Signature | Purpose |
+|---|---|---|
+| `is_positive` | `(text, positive_token="APPROVED") -> bool` | True iff ANY line, stripped+uppercased, STARTS WITH the token. Guarded-lenient. |
+| `has_block_marker` | `(text) -> bool` | True iff ANY line starts with `BLOCKED:`. |
+| `has_complete_marker` | `(text) -> bool` | True iff ANY line starts with `COMPLETE:`. |
+| `verdict_passes` | `(text, positive_token="APPROVED") -> bool` | BLOCKED wins; then `is_positive`. Fail-closed. |
+| `verdict_passes_for_context` | `(text, call_context) -> bool` | Default → `verdict_passes`. `stop_hook` → APPROVED OR COMPLETE: (BLOCKED still wins). |
+
+### Contract (truth table)
+
+| Input | Default verdict | `stop_hook` verdict |
+|---|---|---|
+| `APPROVED` | PASS | PASS |
+| `APPROVED.` | PASS | PASS |
+| `APPROVED\n\nnice work` | PASS | PASS |
+| `NOT APPROVED` | FAIL | FAIL |
+| `(empty)` | FAIL | FAIL |
+| `BLOCKED: x` | FAIL | FAIL |
+| `APPROVED\nBLOCKED: x` | FAIL (BLOCKED priority) | FAIL |
+| `COMPLETE: done` | FAIL | PASS |
+| `BLOCKED: x\nCOMPLETE: y` | FAIL | FAIL (BLOCKED wins over COMPLETE) |
+
+### Matching strategy — guarded-lenient (starts-with)
+
+Positive detection uses **starts-with**, NOT equality. This means `APPROVED.`, `APPROVED — ok`, `APPROVED\n(reasoning)` all PASS. `NOT APPROVED` FAILS because that line starts with `NOT`, not `APPROVED`. This is a **deliberate leniency change** from the old strict `== "APPROVED"` equality.
+
+BLOCKED always wins: if any line starts with `BLOCKED:`, `verdict_passes` returns False regardless of APPROVED lines.
+
+Fail-closed: empty / whitespace-only input → all predicates False.
+
+### Gate convergence (all three gates use this primitive)
+
+1. **Stop-hook** (`intent_validator.py:parse_sdk_response`): `_find_verdict` uses `is_positive`/`has_block_marker` internally; `parse_sdk_response` is unchanged externally (positive→`{"continue":True}`, BLOCKED→`{"decision":"block"}`, unparseable→fail-open).
+2. **Stage 2 Write/Edit gate** (`intent_validator.py` line ~908): replaced `_find_verdict(stage2_feedback) == "APPROVED"` with `verdict_passes(stage2_feedback)`. **Deliberate leniency**: `APPROVED.` and `APPROVED — ok` now PASS (old strict equality would block them).
+3. **Danger-bash Phase 2** (`hook.py` line ~2657): replaced `response.strip().upper() == "APPROVED"` with `_verdict_passes(response)`. **Deliberate leniency**: trailing commentary after APPROVED now PASSES.
+
+### Tests
+
+- `tests/test_verdict.py` — 57 parametrized unit tests covering the full truth table, all three sub-functions, context-aware dispatch, and the lenient-flip cases. 100% coverage on `verdict.py`.

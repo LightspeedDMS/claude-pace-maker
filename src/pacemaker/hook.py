@@ -2614,6 +2614,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             pass
 
                         from .inference import resolve_and_call_with_reviewer
+                        from .inference.verdict import verdict_passes as _verdict_passes
 
                         matched_descriptions = ", ".join(
                             f"{m['id']}: {m['description']}" for m in matched
@@ -2654,8 +2655,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             max_thinking_tokens=2000,
                         )
 
-                        if response.strip().upper() == "APPROVED":
-                            # Phase 2 passed
+                        if _verdict_passes(response):
+                            # Phase 2 passed (guarded-lenient: APPROVED starts-with)
                             try:
                                 record_activity_event(
                                     DEFAULT_DB_PATH, "DB", "green", _sid

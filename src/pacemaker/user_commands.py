@@ -588,7 +588,8 @@ def parse_command(user_input: str) -> Dict[str, Any]:
         r"^pace-maker\s+hook-model\s+"
         r"(auto|sonnet|opus|haiku|fable|gpt-5\.5|gpt-5\.4|gpt-5|gpt|codex|gemini-flash|gemini-pro|gem-flash|gem-pro"
         r"|agy|agy-flash|agy-flash-low|agy-flash-medium|agy-flash-high"
-        r"|agy-pro|agy-pro-low|agy-pro-high|agy-gpt-oss|agy-sonnet|agy-opus)$"
+        r"|agy-pro|agy-pro-low|agy-pro-high|agy-gpt-oss|agy-sonnet|agy-opus"
+        r"|codex-[a-z0-9][a-z0-9._-]*)$"
     )
     match_hook_model = re.match(pattern_hook_model_single, normalized)
 
@@ -1261,6 +1262,8 @@ def _format_blockage_stats(db_path: Optional[str]) -> str:
             "intent_validation",
             "intent_validation_tdd",
             "intent_validation_cleancode",
+            "intent_validation_bug",
+            "intent_validation_dangerbash",
             "pacing_tempo",
             "pacing_quota",
         ]:
@@ -1780,6 +1783,7 @@ def _execute_prefer_model(
 def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
     """Set hook inference model for intent validation and code review."""
     from .inference.competitive import parse_competitive, SHORT_ALIASES
+    from .inference.model_aliases import is_known_model
 
     # Try competitive expression first (contains + and ->)
     if subcommand and ("+" in subcommand):
@@ -1813,35 +1817,13 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
     # Normalize short aliases to canonical names before validation and storage (e.g. gpt-5/gpt/codex → gpt-5.5)
     subcommand = SHORT_ALIASES.get(subcommand, subcommand)  # type: ignore[arg-type]
 
-    valid_models = [
-        "auto",
-        "sonnet",
-        "opus",
-        "haiku",
-        "fable",
-        "gpt-5.4",
-        "gpt-5.5",
-        "gemini-flash",
-        "gemini-pro",
-        "agy",
-        "agy-flash",
-        "agy-flash-low",
-        "agy-flash-medium",
-        "agy-flash-high",
-        "agy-pro",
-        "agy-pro-low",
-        "agy-pro-high",
-        "agy-gpt-oss",
-        "agy-sonnet",
-        "agy-opus",
-    ]
-
-    if subcommand not in valid_models:
+    # is_known_model accepts KNOWN_MODELS, SHORT_ALIASES, and codex-<profile> tokens
+    if not is_known_model(subcommand):
         return {
             "success": False,
             "message": (
                 f"Invalid model: {subcommand}\n"
-                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|fable|gpt-5.4|gpt-5.5|gemini-flash|gemini-pro|agy|agy-flash|...]"
+                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|fable|gpt-5.4|gpt-5.5|gemini-flash|gemini-pro|agy|agy-flash|codex-<profile>|...]"
             ),
         }
 
@@ -1905,6 +1887,13 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
                 f"✓ Hook model set to {subcommand}\n"
                 f'Hook inference will use Antigravity CLI (agy --model "{display_name}") with Anthropic fallback.\n'
                 "Requires: agy CLI installed and pre-authenticated."
+            )
+        elif subcommand.startswith("codex-"):
+            profile_name = subcommand[len("codex-") :]
+            message = (
+                f"✓ Hook model set to codex profile '{profile_name}'\n"
+                f"Hook inference will use Codex CLI (--profile {profile_name}) with Anthropic fallback.\n"
+                "Requires: codex CLI installed, authenticated, and the named profile configured."
             )
         else:
             message = (

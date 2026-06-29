@@ -20,6 +20,7 @@ from .transcript_reader import (
 )
 from .constants import DEFAULT_CONFIG
 from .logger import log_warning, log_debug
+from .inference.verdict import is_positive, verdict_passes
 
 
 def _strip_llm_noise(text: str) -> str:
@@ -33,19 +34,23 @@ def _find_verdict(text: str) -> str:
 
     Returns "APPROVED", the raw BLOCKED line, or "" if neither found.
     BLOCKED takes priority over APPROVED when both appear.
+
+    Positive detection uses guarded-lenient starts-with matching (via
+    is_positive from inference.verdict), so "APPROVED.", "APPROVED — ok" etc.
+    are accepted.  Strict equality is deliberately NOT used here.
     """
     cleaned = _strip_llm_noise(text)
+    # Collect the first BLOCKED: line (we need the raw text for the reason).
     blocked_line = ""
-    has_approved = False
     for line in cleaned.splitlines():
         stripped = line.strip()
         if stripped.upper().startswith("BLOCKED:"):
             blocked_line = stripped
-        elif stripped.upper() == "APPROVED":
-            has_approved = True
+            break
     if blocked_line:
         return blocked_line
-    if has_approved:
+    # Positive detection via canonical primitive (starts-with, not equality).
+    if is_positive(cleaned, "APPROVED"):
         return "APPROVED"
     return ""
 
@@ -905,8 +910,8 @@ System failing closed to prevent bypassing intent declaration requirements.""",
         )
         log_debug("intent_validator", f"Stage 2 reviewer: {reviewer}")
 
-        if _find_verdict(stage2_feedback) == "APPROVED":
-            # APPROVED response = approved
+        if verdict_passes(stage2_feedback):
+            # APPROVED (guarded-lenient) response = approved
             log_debug("intent_validator", "=== STAGE 2 APPROVED ===")
             return {"approved": True, "reviewer": reviewer}
         else:

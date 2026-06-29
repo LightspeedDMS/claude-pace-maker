@@ -3,16 +3,16 @@
 from concurrent.futures import (
     ThreadPoolExecutor,
     wait as futures_wait,
-    TimeoutError as FuturesTimeoutError,
 )
 
 from ..logger import log_warning, log_debug
 from .registry import get_provider, resolve_model_for_call
 from .codex_provider import CodexProvider
 from .gemini_provider import GeminiProvider
-from .anthropic_provider import AnthropicProvider
+from .agy_provider import AgyProvider
 from .provider import ProviderError
-from .model_aliases import KNOWN_MODELS, SHORT_ALIASES
+from .model_aliases import SHORT_ALIASES, is_known_model
+from .verdict import verdict_passes_for_context
 
 _ANTHROPIC_MODELS = {"auto", "sonnet", "opus", "haiku", "fable"}
 
@@ -48,7 +48,7 @@ def parse_competitive(hook_model: str):
     reviewers = [SHORT_ALIASES.get(r, r) for r in reviewers]
     synthesizer = SHORT_ALIASES.get(synthesizer, synthesizer)
     for token in reviewers + [synthesizer]:
-        if token not in KNOWN_MODELS:
+        if not is_known_model(token):
             raise ValueError(f"Invalid model: {token}")
     if len(reviewers) != len(set(reviewers)):
         raise ValueError("Duplicate models in reviewer list not allowed")
@@ -59,28 +59,6 @@ def parse_competitive(hook_model: str):
     if len(reviewers) > MAX_REVIEWERS:
         raise ValueError(f"Competitive mode supports at most {MAX_REVIEWERS} reviewers")
     return reviewers, synthesizer
-
-
-def _build_synthesis_prompt(succeeded: list, original_prompt: str) -> str:
-    """Build synthesis prompt from surviving reviewer verdicts."""
-    verdicts_block = "\n\n".join(
-        f"[{label}]: {response}" for response, label in succeeded
-    )
-    return (
-        "You are a synthesis formatter. Multiple AI reviewers have independently reviewed "
-        "the same code/command. Your job is to consolidate their verdicts — not re-judge.\n\n"
-        f"Original submission under review:\n{original_prompt}\n\n"
-        f"Independent reviewer verdicts:\n{verdicts_block}\n\n"
-        "Rules (apply mechanically, do not override):\n"
-        "- If ALL reviewers output APPROVED -> output exactly: APPROVED\n"
-        "- If ANY reviewer outputs BLOCKED -> output: BLOCKED: [combined reasons, attributed to reviewer label(s) that raised each concern]\n"
-        "  - Prefix each concern with the reviewer label(s): [label]: concern text\n"
-        "  - If multiple reviewers raise the same concern, merge them into ONE bullet: [codex-gpt5, gem-pro]: concern\n"
-        "  - De-duplicate concerns — mention each distinct issue once, with all raising labels listed\n"
-        "- Do not add new concerns not raised by reviewers\n"
-        "- Do not remove or downgrade concerns raised by reviewers\n"
-        '- Output ONLY "APPROVED" or "BLOCKED: [reason]" -- no other text, no preamble'
-    )
 
 
 def _call_single_reviewer(
@@ -107,11 +85,16 @@ def _call_single_reviewer(
         raise
 
     if isinstance(provider, CodexProvider):
-        label = _REVIEWER_CODEX
+        # codex-<profile> tokens use the verbatim token as reviewer label;
+        # plain codex model tokens (gpt-5.5, gpt-5.4, etc.) keep the legacy label.
+        label = model if model.startswith("codex-") else _REVIEWER_CODEX
     elif isinstance(provider, GeminiProvider):
         label = (
             _REVIEWER_GEMINI_FLASH if model == "gemini-flash" else _REVIEWER_GEMINI_PRO
         )
+    elif isinstance(provider, AgyProvider):
+        # AgyProvider uses the verbatim model alias as label (e.g. "agy-flash-high")
+        label = model
     else:
         label = _REVIEWER_SDK
     return response, label
@@ -176,48 +159,51 @@ def _dispatch_reviewers(
     return succeeded
 
 
-def _sdk_fallback(
-    prompt: str,
-    system_prompt: str,
-    call_context: str,
-    max_thinking_tokens: int,
-    expression: str,
-) -> tuple:
-    """Attempt Anthropic SDK solo fallback. Returns (response, label)."""
-    log_warning(
-        "competitive",
-        "All reviewers failed, no Anthropic in competitors — SDK solo fallback",
-    )
-    try:
-        sdk = AnthropicProvider()
-        fallback_hint = resolve_model_for_call("auto", call_context)
-        resp = sdk.query(prompt, system_prompt, fallback_hint, max_thinking_tokens)
-        return resp, "sdk-fallback"
-    except Exception as e:
-        log_warning("competitive", f"SDK fallback also failed: {e}")
-        return "", expression
-
-
-def _synthesize(
-    succeeded: list,
+def _format_failure_message(
+    failing: list,
     synthesizer: str,
-    prompt: str,
+    original_prompt: str,
     system_prompt: str,
     call_context: str,
     max_thinking_tokens: int,
-    expression: str,
-) -> tuple:
-    """Call synthesizer with all surviving verdicts. Returns (response, label)."""
-    log_debug(
-        "competitive",
-        f"{len(succeeded)} survivors — calling synthesizer '{synthesizer}'",
+) -> str:
+    """Call synthesizer to format a combined message from 2+ failing verifier verdicts.
+
+    Synthesizer is a MESSAGE-ONLY formatter — the caller applies the 'BLOCKED:' prefix.
+    On synthesizer error/timeout/empty: falls back to concatenated raw feedbacks.
+    The synthesizer can NEVER influence the pass/fail decision — only the message body.
+    """
+    # Load externalized synthesis prompt (Messi Rule 11 — externalize prompts)
+    try:
+        from ..prompt_loader import PromptLoader
+
+        loader = PromptLoader()
+        template = loader.load_prompt(
+            "mechanical_failure_synthesis.md", subfolder="common"
+        )
+    except Exception as e:
+        log_warning(
+            "competitive",
+            f"Failed to load synthesis prompt template: {e} — using inline fallback",
+        )
+        template = (
+            "Merge these failing reviews into ONE concise user-facing message. "
+            "You are a FORMATTER, not a judge. Do NOT decide. "
+            "Do NOT output APPROVED, BLOCKED, or COMPLETE. Just merge the concerns."
+        )
+
+    failing_block = "\n\n".join(f"[{label}]: {resp}" for resp, label in failing)
+    synthesis_prompt = (
+        f"{template}\n\n"
+        f"Failing reviewer verdicts to merge:\n{failing_block}\n\n"
+        f"Original submission under review:\n{original_prompt}"
     )
-    synthesis_prompt = _build_synthesis_prompt(succeeded, prompt)
-    synth_executor = ThreadPoolExecutor(max_workers=1)
+
+    executor = ThreadPoolExecutor(max_workers=1)
     try:
         synth_provider = get_provider(synthesizer)
         synth_hint = resolve_model_for_call(synthesizer, call_context)
-        future = synth_executor.submit(
+        future = executor.submit(
             synth_provider.query,
             synthesis_prompt,
             system_prompt,
@@ -225,69 +211,120 @@ def _synthesize(
             max_thinking_tokens,
         )
         try:
-            synth_response = future.result(timeout=SYNTHESIS_TIMEOUT_SEC)
-            log_debug("competitive", f"Synthesis complete, len={len(synth_response)}")
-            return synth_response, expression
-        except FuturesTimeoutError:
-            log_warning(
-                "competitive",
-                f"Synthesizer '{synthesizer}' timed out after {SYNTHESIS_TIMEOUT_SEC}s"
-                " — first survivor wins",
-            )
-            return succeeded[0]
+            result = future.result(timeout=SYNTHESIS_TIMEOUT_SEC)
+            if not result:
+                raise ValueError("Synthesizer returned empty response")
+            log_debug("competitive", f"Synthesis complete, len={len(result)}")
+            return result
         except Exception as e:
             log_warning(
                 "competitive",
-                f"Synthesizer '{synthesizer}' failed: {e} — first survivor wins",
+                f"Synthesizer '{synthesizer}' failed: {e} — concatenating raw feedbacks",
             )
-            return succeeded[0]
+            return "\n".join(f"[{label}]: {resp}" for resp, label in failing)
     finally:
-        synth_executor.shutdown(wait=False)
+        executor.shutdown(wait=False)
 
 
-def run_competitive(
-    reviewers: list,
+def run_mechanical(
+    verifiers: list,
     synthesizer: str,
     prompt: str,
     system_prompt: str,
     call_context: str,
     max_thinking_tokens: int = DEFAULT_MAX_THINKING_TOKENS,
 ) -> tuple:
-    """Dispatch reviewers in parallel, synthesize results.
+    """N-verifier mechanical decision engine with message-only synthesizer.
+
+    Decision is computed in code (PASS iff all verifiers PASS for the gate type).
+    Synthesizer is demoted to message-only formatter — it can NEVER flip the verdict.
+    'BLOCKED:' prefix is applied mechanically by this function regardless of what
+    the synthesizer returns, closing the false-allow-via-encoded-message trap.
+
+    Pre-tool gate (call_context != 'stop_hook'):
+    - ALL verifiers must respond AND pass → APPROVED (fail-closed)
+    - Missing verifier (infra failure) → BLOCKED
+    - Zero survivors → '' (verdict_passes('') = False → gate blocks)
+
+    Stop gate (call_context == 'stop_hook'):
+    - All present survivors must pass → APPROVED (missing verifiers ignored)
+    - Any non-passing survivor → BLOCKED
+    - Zero survivors → '' (parse_sdk_response('') → fail-open, avoids infinite stop loop)
 
     Returns (response, reviewer_label) tuple.
     """
-    expression = "+".join(reviewers) + "->" + synthesizer
+    expression = "+".join(verifiers) + "->" + synthesizer
     log_debug(
         "competitive",
-        f"Dispatching {len(reviewers)} reviewers in parallel: {reviewers}",
+        f"Dispatching {len(verifiers)} verifiers in parallel: {verifiers}",
     )
 
-    succeeded = _dispatch_reviewers(
-        reviewers, prompt, system_prompt, call_context, max_thinking_tokens
+    survivors = _dispatch_reviewers(
+        verifiers, prompt, system_prompt, call_context, max_thinking_tokens
     )
 
-    if len(succeeded) == 0:
-        if not (set(reviewers) & _ANTHROPIC_MODELS):
-            return _sdk_fallback(
-                prompt, system_prompt, call_context, max_thinking_tokens, expression
-            )
-        log_warning(
+    # Zero survivors: return empty string and let gate semantics handle it.
+    # Stop gate: parse_sdk_response('') → {"continue": True} — fail-open (avoids infinite loop)
+    # Pre-tool gate: verdict_passes('') → False → block — fail-closed
+    if len(survivors) == 0:
+        log_debug(
             "competitive",
-            "All reviewers failed (SDK was a competitor) — fail per caller semantics",
+            "Zero survivors — returning '' (stop: fail-open, pre-tool: fail-closed)",
         )
         return "", expression
 
-    if len(succeeded) == 1:
-        log_debug("competitive", "Single survivor — passing through without synthesis")
-        return succeeded[0]
+    # Evaluate each survivor with context-aware positive predicate
+    passed = [
+        verdict_passes_for_context(resp, call_context) for resp, _label in survivors
+    ]
 
-    return _synthesize(
-        succeeded,
-        synthesizer,
-        prompt,
-        system_prompt,
-        call_context,
-        max_thinking_tokens,
-        expression,
-    )
+    # Mechanical decision — computed in code, NOT delegated to the LLM
+    is_stop = call_context == "stop_hook"
+    if is_stop:
+        # Stop gate: missing verifiers are ignored; all present survivors must pass
+        overall_pass = all(passed)
+    else:
+        # Pre-tool gate: every verifier must respond AND pass (fail-closed)
+        overall_pass = (len(survivors) == len(verifiers)) and all(passed)
+
+    if overall_pass:
+        log_debug(
+            "competitive",
+            f"Mechanical APPROVED ({len(survivors)}/{len(verifiers)} verifiers passed)",
+        )
+        return "APPROVED", expression
+
+    # Build failure message from failing survivors only
+    failing = [(resp, label) for (resp, label), p in zip(survivors, passed) if not p]
+
+    if not failing:
+        # All present survivors passed but a verifier was missing (pre-tool fail-closed edge case)
+        message = "a required verifier did not respond (fail-closed)"
+        log_debug(
+            "competitive",
+            "BLOCKED: missing verifier, all present passed — fail-closed",
+        )
+    elif len(failing) == 1:
+        # Single failing verifier: raw response used; synthesizer NOT called
+        message = failing[0][0]
+        log_debug(
+            "competitive",
+            "Single failing verifier — raw message used, synthesizer skipped",
+        )
+    else:
+        # 2+ failing verifiers: synthesizer formats the combined message
+        log_debug(
+            "competitive",
+            f"{len(failing)} failing verifiers — calling synthesizer '{synthesizer}' for message",
+        )
+        message = _format_failure_message(
+            failing,
+            synthesizer,
+            prompt,
+            system_prompt,
+            call_context,
+            max_thinking_tokens,
+        )
+
+    # BLOCKED: prefix applied mechanically — synthesizer output cannot override FAIL decision
+    return "BLOCKED: " + message, expression
