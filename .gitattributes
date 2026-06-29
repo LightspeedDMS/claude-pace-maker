@@ -1,0 +1,6 @@
+# Shell scripts must always check out with LF line endings, even on machines
+# where core.autocrlf=true (e.g. Windows, or a plugin-install/packaging
+# environment). The repo stores these files as LF, but an autocrlf=true
+# checkout rewrites them to CRLF, which bash cannot parse — breaking every
+# hook (hook.sh runs on UserPromptSubmit and blocks the prompt). See EVO-63622.
+*.sh text eol=lf
