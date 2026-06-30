@@ -153,6 +153,23 @@ def _run_pre_tool(
         stack.enter_context(
             patch("pacemaker.hook.get_last_n_messages_for_validation", return_value=[])
         )
+        # transcript_path is a fixed, nonexistent "/tmp/fake.jsonl" placeholder
+        # (this suite tests CSA wiring, not transcript content). Without this
+        # patch, get_current_turn_message_for_validation would hit the real
+        # missing-file retry loop on every parametrized case that reaches this
+        # point (approved_write/approved_edit/blocked/exception), burning the
+        # full ~5s retry budget (v2.33.2) AND — since v2.33.2 also makes the
+        # None-branch fail CLOSED — incorrectly short-circuiting into the
+        # deferred/race block instead of the validate_intent_and_code path
+        # these cases are actually meant to exercise. Returning a non-None
+        # string here is sufficient: validate_intent_and_code itself is
+        # mocked above, so only "is it None" matters to this gate.
+        stack.enter_context(
+            patch(
+                "pacemaker.hook.get_current_turn_message_for_validation",
+                return_value="INTENT: test\nTest coverage: n/a",
+            )
+        )
         if intent_raises is not None:
             stack.enter_context(
                 patch(

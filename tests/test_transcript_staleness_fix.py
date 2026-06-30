@@ -615,14 +615,25 @@ class TestBackwardCompatibility:
 
 
 # ---------------------------------------------------------------------------
-# Test group 7: hook-level fail-open — Write/Edit gate (requirement #2)
+# Test group 7: hook-level fail-CLOSED — Write/Edit gate (v2.33.2)
 # ---------------------------------------------------------------------------
 
 
-class TestHookLevelFailOpen:
+class TestHookLevelFailClosed:
     """Hook-level: when the current tool_use is absent from the transcript,
-    Write/Edit gate must return continue=True (fail-open) and record NO
-    blockage event — the short-circuit must be silent/transparent."""
+    the Write/Edit gate now mirrors the danger-bash gate (group 8 below) and
+    BLOCKS (fail-closed) with a re-issue message, instead of silently
+    continuing.
+
+    v2.33.2 change: this branch previously failed OPEN (continue=True),
+    which meant intent validation enforced NOTHING for any edit that raced
+    the transcript flush — confirmed live via the intent_validation_deferred
+    telemetry canary. The danger-bash gate already proved fail-closed +
+    re-issue works in practice: the agent re-issues the IDENTICAL tool call,
+    the re-issue's turn is then flushed, the tool-matched anchor binds to it,
+    and validation proceeds normally on the second attempt. This brings the
+    Write/Edit gate in line with that proven pattern.
+    """
 
     def _make_config(self, tmp_path) -> str:
         cfg = str(tmp_path / "config.json")
@@ -637,14 +648,20 @@ class TestHookLevelFailOpen:
         initialize_database(db)
         return db
 
-    def test_write_gate_fails_open_when_transcript_not_ready(self, tmp_path):
-        """Write gate returns continue=True when the matching tool_use is absent
-        from the transcript (TOCTOU race).  Hardening item #2 allows an
-        intent_validation_deferred telemetry event — only BLOCKING events are
-        forbidden (the short-circuit must never block the tool call).
+    def test_write_gate_fails_closed_when_transcript_not_ready(self, tmp_path):
+        """Write gate returns decision=block (fail-closed) when the matching
+        tool_use is absent from the transcript (TOCTOU race), and still
+        records the intent_validation_deferred telemetry event.
 
         Uses a non-existent transcript path to trigger the fail-fast sentinel
-        (file missing → immediate None, equivalent to 'turn not yet flushed').
+        (file missing → immediate None on every retry attempt — no entry will
+        ever appear). The real retry loop runs (not mocked) so this is a true
+        integration check of the missing-file path; only the literal
+        time.sleep wait is neutralized (stdlib timing call, not business
+        logic) so the test stays instant despite the ~5s retry budget
+        (coordinator refinement, v2.33.2 — see
+        TestRetryDefaultsWidenedTo5Seconds below for dedicated timing
+        coverage of the retry loop itself).
         """
         from pacemaker.hook import run_pre_tool_hook
         import sqlite3
@@ -652,14 +669,14 @@ class TestHookLevelFailOpen:
 
         config_path = self._make_config(tmp_path)
         db_path = self._make_db(tmp_path)
-        # Non-existent transcript — fail-fast returns None (no retries)
+        # Non-existent transcript — fail-fast returns None on every attempt.
         missing_transcript = str(tmp_path / "no_such_transcript.jsonl")
 
         hook_data = json.dumps(
             {
                 "tool_name": "Write",
                 "tool_input": {"file_path": "/src/target.py", "content": "x = 1\n"},
-                "session_id": "test-failopen",
+                "session_id": "test-failclosed",
                 "transcript_path": missing_transcript,
             }
         )
@@ -668,36 +685,44 @@ class TestHookLevelFailOpen:
             patch("pacemaker.hook.DEFAULT_CONFIG_PATH", config_path),
             patch("pacemaker.hook.DEFAULT_DB_PATH", db_path),
             patch("sys.stdin") as mock_stdin,
+            patch("pacemaker.transcript_reader.time.sleep"),
         ):
             mock_stdin.read.return_value = hook_data
             result = run_pre_tool_hook()
 
-        # 1. Must fail-open (continue, not block)
+        # 1. Must fail-CLOSED (block, not continue) — the v2.33.2 behavior
+        #    change this test suite exists to lock in.
         assert (
-            result.get("continue") is True
-        ), f"Write gate must fail-open when transcript not ready; got: {result}"
+            result.get("decision") == "block"
+        ), f"Write gate must fail-CLOSED when transcript not ready; got: {result}"
         assert (
-            "decision" not in result
-        ), f"Fail-open must NOT carry a block decision; got: {result}"
+            result.get("continue") is not True
+        ), f"Fail-closed must NOT also signal continue=True; got: {result}"
+        reason = result.get("reason", "").lower()
+        assert "transcript" in reason and "re-issue" in reason, (
+            f"Block reason must explain the transcript-timing race and "
+            f"instruct re-issuing the identical tool call; got: {result.get('reason')!r}"
+        )
 
-        # 2. No BLOCKING blockage events allowed. Only the deferred telemetry
-        #    canary (intent_validation_deferred) is permitted.
+        # 2. intent_validation_deferred telemetry must still be recorded —
+        #    this is how the race is surfaced in usage.db / the monitor.
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute(
             "SELECT COUNT(*) FROM blockage_events "
-            "WHERE category != 'intent_validation_deferred'"
+            "WHERE category = 'intent_validation_deferred'"
         )
-        blocking_count = cursor.fetchone()[0]
+        deferred_count = cursor.fetchone()[0]
         conn.close()
-        assert blocking_count == 0, (
-            f"No BLOCKING events must be recorded for Write/Edit fail-open; "
-            f"found {blocking_count} non-deferred event(s)"
+        assert deferred_count >= 1, (
+            "Expected an intent_validation_deferred blockage event when the "
+            "Write gate fails closed on the transcript-flush race."
         )
 
-    def test_edit_gate_fails_open_when_transcript_not_ready(self, tmp_path):
-        """Edit gate returns continue=True and records NO blockage event when
-        the matching tool_use is absent (symmetry check for Edit tool)."""
+    def test_edit_gate_fails_closed_when_transcript_not_ready(self, tmp_path):
+        """Edit gate returns decision=block (fail-closed) and records the
+        deferred telemetry event when the matching tool_use is absent
+        (symmetry check for Edit tool)."""
         from pacemaker.hook import run_pre_tool_hook
         import sqlite3
         from unittest.mock import patch
@@ -714,7 +739,7 @@ class TestHookLevelFailOpen:
                     "old_string": "old",
                     "new_string": "new",
                 },
-                "session_id": "test-failopen-edit",
+                "session_id": "test-failclosed-edit",
                 "transcript_path": missing_transcript,
             }
         )
@@ -723,27 +748,27 @@ class TestHookLevelFailOpen:
             patch("pacemaker.hook.DEFAULT_CONFIG_PATH", config_path),
             patch("pacemaker.hook.DEFAULT_DB_PATH", db_path),
             patch("sys.stdin") as mock_stdin,
+            patch("pacemaker.transcript_reader.time.sleep"),
         ):
             mock_stdin.read.return_value = hook_data
             result = run_pre_tool_hook()
 
         assert (
-            result.get("continue") is True
-        ), f"Edit gate must fail-open when transcript not ready; got: {result}"
-        assert "decision" not in result
+            result.get("decision") == "block"
+        ), f"Edit gate must fail-CLOSED when transcript not ready; got: {result}"
+        assert result.get("continue") is not True
 
-        # Only BLOCKING events are forbidden; intent_validation_deferred is allowed.
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute(
             "SELECT COUNT(*) FROM blockage_events "
-            "WHERE category != 'intent_validation_deferred'"
+            "WHERE category = 'intent_validation_deferred'"
         )
-        blocking_count = cursor.fetchone()[0]
+        deferred_count = cursor.fetchone()[0]
         conn.close()
-        assert blocking_count == 0, (
-            f"No BLOCKING events must be recorded for Edit fail-open; "
-            f"found {blocking_count} non-deferred event(s)"
+        assert deferred_count >= 1, (
+            "Expected an intent_validation_deferred blockage event when the "
+            "Edit gate fails closed on the transcript-flush race."
         )
 
 
@@ -776,6 +801,12 @@ class TestDangerBashFailClosed:
 
         Uses a non-existent transcript so the fail-fast path returns None
         immediately. The danger-bash gate must not pass the command through.
+
+        v2.33.2: the bash call site no longer pins its own ``_max_retries``
+        override — it now shares the same ~5s default budget as the
+        Write/Edit gate (single source of truth). The real retry loop still
+        runs (missing file → None on every attempt); only the literal
+        time.sleep wait is neutralized so this test stays instant.
         """
         from pacemaker.hook import run_pre_tool_hook
         from unittest.mock import patch
@@ -800,6 +831,7 @@ class TestDangerBashFailClosed:
             patch("pacemaker.hook.DEFAULT_CONFIG_PATH", config_path),
             patch("pacemaker.hook.DEFAULT_DB_PATH", db_path),
             patch("sys.stdin") as mock_stdin,
+            patch("pacemaker.transcript_reader.time.sleep"),
         ):
             mock_stdin.read.return_value = hook_data
             result = run_pre_tool_hook()
@@ -835,6 +867,7 @@ class TestDangerBashFailClosed:
             patch("pacemaker.hook.DEFAULT_CONFIG_PATH", config_path),
             patch("pacemaker.hook.DEFAULT_DB_PATH", db_path),
             patch("sys.stdin") as mock_stdin,
+            patch("pacemaker.transcript_reader.time.sleep"),
         ):
             mock_stdin.read.return_value = hook_data
             result = run_pre_tool_hook()
@@ -842,3 +875,92 @@ class TestDangerBashFailClosed:
         assert (
             result.get("decision") == "block"
         ), f"git reset --hard must fail-CLOSED when transcript not ready; got: {result}"
+
+
+# ---------------------------------------------------------------------------
+# Test group 9: ~5s retry-window defaults (coordinator refinement, v2.33.2)
+# ---------------------------------------------------------------------------
+
+
+class TestRetryDefaultsWidenedTo5Seconds:
+    """The default retry window was widened from ~1s (10 x 0.1s) to ~5s
+    (20 x 0.25s, 21 reads total) so more in-window transcript flushes are
+    caught before the gate falls back to fail-closed + re-issue. Fewer,
+    longer-spaced reads avoid hammering large (~27MB on busy sessions)
+    transcripts that get re-read on every attempt.
+
+    Both the Write/Edit gate and the danger-bash gate call
+    ``get_current_turn_message_for_validation`` without overriding these
+    parameters (the bash gate's old explicit ``_max_retries=10`` override was
+    removed in v2.33.2), so changing the function default covers both gates
+    uniformly — single source of truth, no drift between the two call sites.
+    """
+
+    def test_default_max_retries_is_20(self):
+        import inspect
+
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        sig = inspect.signature(get_current_turn_message_for_validation)
+        assert sig.parameters["_max_retries"].default == 20
+
+    def test_default_retry_sleep_is_quarter_second(self):
+        import inspect
+
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        sig = inspect.signature(get_current_turn_message_for_validation)
+        assert sig.parameters["_retry_sleep"].default == 0.25
+
+    def test_default_total_wait_is_5_seconds(self):
+        """20 retries * 0.25s sleep = 5.0s total max wait (Messi Rule 14:
+        provable termination bound, well under the 60s hook timeout)."""
+        import inspect
+
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        sig = inspect.signature(get_current_turn_message_for_validation)
+        max_retries = sig.parameters["_max_retries"].default
+        retry_sleep = sig.parameters["_retry_sleep"].default
+        total_wait = max_retries * retry_sleep
+        assert total_wait == 5.0, (
+            f"Expected exactly 5.0s total max wait, got {total_wait}s "
+            f"({max_retries} retries x {retry_sleep}s sleep)"
+        )
+
+    def test_default_total_reads_is_21(self):
+        """range(_max_retries + 1) => 21 attempts with the new defaults —
+        fewer reads than a naive 50x0.1s scheme would require, per the
+        coordinator's explicit guidance to avoid hammering large transcripts."""
+        import inspect
+
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        sig = inspect.signature(get_current_turn_message_for_validation)
+        max_retries = sig.parameters["_max_retries"].default
+        assert max_retries + 1 == 21
+
+    def test_early_return_on_match_does_not_sleep(self, tmp_path, monkeypatch):
+        """When the matching turn IS already flushed, the NEW default params
+        must not sleep at all — the 5s figure is a MAX wait on the
+        not-yet-flushed path, never a fixed per-edit delay."""
+        import time as time_module
+
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        sleep_calls = []
+        monkeypatch.setattr(time_module, "sleep", lambda s: sleep_calls.append(s))
+
+        transcript = _flushed_write(tmp_path)
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"file_path": TARGET, "content": CUR_CONTENT},
+            tool_name="Write",
+            # No _max_retries/_retry_sleep override — exercises the REAL
+            # ~5s-ceiling defaults to prove early-return holds there too.
+        )
+        assert result is not None
+        assert "INTENT:" in result
+        assert (
+            sleep_calls == []
+        ), f"Expected zero sleep calls on first-attempt match; got {sleep_calls}"

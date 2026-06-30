@@ -2543,11 +2543,15 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
                         # Bug #83: tool-matched anchor for Bash gate.
                         # Fail closed if transcript not yet flushed.
+                        # No _max_retries override here (v2.33.2): shares the
+                        # ~5s default retry budget with the Write/Edit gate
+                        # below (transcript_reader.get_current_turn_message_
+                        # for_validation's defaults are the single source of
+                        # truth for both pre-tool gates).
                         _bash_anchor = get_current_turn_message_for_validation(
                             transcript_path,
                             tool_input={"command": command},
                             tool_name="Bash",
-                            _max_retries=10,
                         )
                         if _bash_anchor is None:
                             _sid = session_id or "unknown"
@@ -2805,23 +2809,75 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         )
 
         if current_message_override is None:
+            # Bug #83 follow-up (v2.33.2): mirror the danger-bash gate's
+            # fail-CLOSED handling (see the `if _bash_anchor is None:` block
+            # above) instead of failing open. Failing open here meant intent
+            # validation enforced NOTHING for any Write/Edit that raced the
+            # transcript flush — confirmed live via this exact telemetry
+            # category plus a raced edit that passed unvalidated. Fail-closed
+            # is safe because the block is transient: the agent re-issues the
+            # IDENTICAL tool call, that turn is then flushed, the tool-matched
+            # anchor binds to it, and validation proceeds normally on the
+            # second attempt (same recovery path already proven by the
+            # danger-bash gate). Not wrapped in _merge_csa_reminder, matching
+            # the danger-bash template exactly.
+            _sid = session_id or "unknown"
+            _is_subagent = "/agent-" in (transcript_path or "")
             log_warning(
                 "hook",
-                "Intent validation deferred: transcript not yet flushed for "
-                f"current {tool_name} tool_use on {file_path}. Failing open.",
+                "Intent validation: transcript not yet flushed for current "
+                f"{tool_name} tool_use on {file_path} "
+                f"(subagent={_is_subagent}). Failing closed — re-issue.",
             )
             record_blockage(
                 db_path=DEFAULT_DB_PATH,
                 category="intent_validation_deferred",
                 reason=(
                     "Transcript not yet flushed: current tool_use absent. "
-                    "Failing open (TOCTOU race guard)."
+                    "Failing closed — re-issue (TOCTOU race guard)."
                 ),
                 hook_type="pre_tool_use",
-                session_id=session_id or "unknown",
-                details={"tool": tool_name, "file_path": file_path},
+                session_id=_sid,
+                details={
+                    "tool": tool_name,
+                    "file_path": file_path,
+                    "subagent": _is_subagent,
+                },
             )
-            return _merge_csa_reminder({"continue": True}, _csa_result)
+            try:
+                record_activity_event(DEFAULT_DB_PATH, "IV", "red", _sid)
+                _project_name = os.path.basename(os.getcwd())
+                record_governance_event(
+                    db_path=DEFAULT_DB_PATH,
+                    event_type="IV",
+                    project_name=_project_name,
+                    session_id=_sid,
+                    feedback_text=(
+                        f"[RegEx] Transcript-flush race: current {tool_name} "
+                        f"tool_use on {file_path} not yet flushed. Failing "
+                        f"closed — re-issue the identical tool call."
+                    ),
+                )
+            except Exception:
+                pass
+            return {
+                "decision": "block",
+                "reason": (
+                    "⛔ Intent validation deferred — transcript timing race "
+                    "(not a rejection)\n\n"
+                    f"The current {tool_name} tool call has not yet been "
+                    "flushed to the conversation transcript. This is a "
+                    "TRANSIENT TIMING ISSUE, not a rejection of your intent "
+                    "or code.\n\n"
+                    f"RE-ISSUE THE IDENTICAL {tool_name} TOOL CALL with the "
+                    "SAME INTENT: declaration in the same message. The "
+                    "re-issue will find the now-flushed turn and validate "
+                    "normally.\n\n"
+                    "IMPORTANT: the file_path and content must be IDENTICAL "
+                    "to this attempt — the validator binds to the exact "
+                    "tool call content, and a different edit will not match."
+                ),
+            }
 
         # Activity events: IV/TD/CC blue (validation in-progress) — settings-aware
         try:

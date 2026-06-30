@@ -34,17 +34,21 @@ FIDELITY CONTRACT
     override = get_current_turn_message_for_validation(transcript_path,
                    tool_input=tool_input, tool_name=tool_name, _max_retries=0)
     if override is None:
-        return {"continue": True}   # fail-open (TOCTOU race / pre-flush)
+        return {"decision": "block", ...}   # fail-CLOSED (TOCTOU race / pre-flush), v2.33.2
     current  = override or extract_current_assistant_message(messages)
     verdict  = _regex_stage1_check(current, file_path, exclusions)
 
 This helper now uses the SHIPPED tool-matched anchor path (bug #83 fix).
 Flushed fixtures supply the real tool_input extracted from the fixture file;
 pre-flush fixtures supply a sentinel that cannot match, producing None →
-fail-open → "YES".  A future Claude Code format change that breaks the
-tool-matched anchor (e.g. changes the JSONL schema so inputs no longer match)
-will cause flushed fixtures with expected NO/NO_TDD verdicts to return "YES"
-instead — tripping a RED test immediately.
+fail-CLOSED → "NO" (v2.33.2 — previously "YES" under the old fail-open
+behavior; see tests/test_intent_validation_failclosed_race.py for the
+dedicated Bug A regression suite covering this exact branch).  A future
+Claude Code format change that breaks the tool-matched anchor (e.g. changes
+the JSONL schema so inputs no longer match) will cause flushed fixtures with
+expected NO/NO_TDD verdicts to return "NO" anyway (same verdict, masking the
+break) — see ``test_flushed_fixtures_matcher_returns_non_none`` below, which
+exists specifically to catch that case independently of the verdict string.
 
 If the hook glue changes, update this helper IN THE SAME COMMIT so the
 replay stays faithful to production behavior.
@@ -170,8 +174,10 @@ def _replay_stage1(
     Pre-flush fixtures (tool_use_in_fixture=False):
         The current tool_use is NOT yet in the transcript.  A sentinel
         tool_input that cannot match any existing entry is supplied, causing
-        get_current_turn_message_for_validation to return None → fail-open
-        → "YES".  This matches hook.py's behaviour (bug #83 TOCTOU guard).
+        get_current_turn_message_for_validation to return None → fail-CLOSED
+        → "NO".  This matches hook.py's v2.33.2 behaviour (bug #83 TOCTOU
+        guard now fails closed + re-issue, mirroring the danger-bash gate,
+        instead of the old fail-open pass-through).
 
     _max_retries=0 is passed in both cases: fixtures are static files,
     re-reading them will never produce a different result.
@@ -211,9 +217,9 @@ def _replay_stage1(
         _retry_sleep=0,
     )
 
-    # Mimic hook.py ~2827: None → fail-open → {"continue": True} → "YES"
+    # Mimic hook.py ~2807 (v2.33.2): None → fail-CLOSED → {"decision": "block"} → "NO"
     if override is None:
-        return "YES"
+        return "NO"
 
     current = override or extract_current_assistant_message(messages)
     return _regex_stage1_check(current, file_path, PINNED_EXCLUSIONS)

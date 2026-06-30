@@ -239,6 +239,7 @@ class TestPreToolHook:
     @patch("pacemaker.extension_registry.load_extensions")
     @patch("pacemaker.extension_registry.is_source_code_file")
     @patch("pacemaker.hook.get_last_n_messages_for_validation")
+    @patch("pacemaker.hook.get_current_turn_message_for_validation")
     @patch("pacemaker.intent_validator.validate_intent_and_code")
     @patch("pacemaker.hook.get_transcript_path")
     @patch("sys.stdin")
@@ -247,12 +248,20 @@ class TestPreToolHook:
         mock_stdin,
         mock_get_transcript_path,
         mock_validate,
+        mock_get_override,
         mock_get_messages,
         mock_is_source,
         mock_load_ext,
         mock_load_config,
     ):
-        """Should read last 2 messages (text + tool_use are separate transcript entries)."""
+        """Should read last 2 messages (text + tool_use are separate transcript entries).
+
+        get_current_turn_message_for_validation is mocked (non-None) because
+        "/tmp/transcript.jsonl" is a placeholder path this test never creates
+        on disk — without the mock, the real retry loop would treat it as
+        "never flushed" and (v2.33.2) fail CLOSED instead of reaching
+        validate_intent_and_code, which is what this test actually verifies.
+        """
         hook_data = {
             "session_id": "test-session",
             "tool_name": "Write",
@@ -264,6 +273,7 @@ class TestPreToolHook:
         mock_is_source.return_value = True
         mock_get_transcript_path.return_value = "/tmp/transcript.jsonl"
         mock_get_messages.return_value = ["INTENT: Modify test.py to add code"]
+        mock_get_override.return_value = "INTENT: Modify test.py to add code"
         mock_validate.return_value = {"approved": True}
 
         run_pre_tool_hook()

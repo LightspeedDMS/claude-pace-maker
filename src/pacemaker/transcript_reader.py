@@ -453,15 +453,18 @@ def get_current_turn_message_for_validation(
     tool_input: Optional[dict] = None,
     tool_name: Optional[str] = None,
     *,
-    _max_retries: int = 10,
-    _retry_sleep: float = 0.1,
+    _max_retries: int = 20,
+    _retry_sleep: float = 0.25,
 ) -> Optional[str]:
     """Extract the current assistant turn message for intent validation.
 
     When ``tool_input`` is provided (bug #83 fix): uses a content-matched
     anchor to find the exact tool_use being validated.  Returns None when
-    the matching entry is not yet in the transcript (TOCTOU race), allowing
-    the caller to fail-open gracefully.
+    the matching entry is not yet in the transcript (TOCTOU race) — the
+    caller decides how to react (as of v2.33.2, both the Write/Edit gate and
+    the danger-bash gate fail CLOSED on this signal: block + instruct the
+    agent to re-issue the identical tool call, rather than silently passing
+    the unvalidated edit through).
 
     When ``tool_input`` is None (legacy path): returns str (never None) using
     the old last-Write/Edit anchor for backward compatibility.
@@ -470,11 +473,23 @@ def get_current_turn_message_for_validation(
         transcript_path: Path to JSONL transcript file.
         tool_input: PreToolUse tool_input dict.  None => legacy path.
         tool_name: Tool name (Write/Edit/Bash).  Required with tool_input.
-        _max_retries: Max re-reads after first miss (bounded per Messi Rule 14).
-        _retry_sleep: Seconds between attempts.
+        _max_retries: Max re-reads after first miss (bounded per Messi Rule
+            14). Default 20 => 21 total reads, ~5.0s max wait at the default
+            _retry_sleep (coordinator refinement, v2.33.2 — widened from the
+            original ~1.0s/10 reads to catch more in-window transcript
+            flushes before falling back to fail-closed + re-issue). Both the
+            Write/Edit gate and the danger-bash gate call this function
+            without overriding these parameters, so this default is the
+            single source of truth for the wait ceiling on both pre-tool
+            gates.
+        _retry_sleep: Seconds between attempts. Default 0.25s — fewer,
+            longer-spaced reads than a naive finer-grained scheme, since the
+            transcript can be tens of MB on busy sessions and is re-read in
+            full on every attempt; ≪ the 60s outer hook timeout.
 
     Returns:
-        None  -- tool_input given but matching turn absent (fail-open signal).
+        None  -- tool_input given but matching turn absent (not-yet-flushed
+                 signal; caller decides the reaction).
         ""    -- matching turn found but no INTENT: in TEXT (n-back fallback).
         str   -- matching turn with INTENT: in TEXT (use directly).
         (When tool_input is None, always returns str per legacy contract.)

@@ -18,7 +18,7 @@
   {
     "fixture": "case_00_testfile_sameturn_preflush.jsonl",
     "category": "testfile_sameturn",
-    "expected_stage1": "YES",
+    "expected_stage1": "NO",
     "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/__init__.py",
     "tool_name": "Edit",
     "source": "737e0603-0b0c-4955-b12e-d79cdfc36439.jsonl",
@@ -29,7 +29,7 @@
       "TEST-FILE",
       "version"
     ],
-    "note": "pre-flush variant: transcript BEFORE the tool_use entry was appended"
+    "note": "pre-flush variant: transcript BEFORE the tool_use entry was appended [v2.33.2: pre-flush now fails CLOSED, not open \u2014 expected_stage1 flipped YES->NO. The live hook blocks with a re-issue message (transcript-flush race) instead of silently passing through; the agent re-issues the identical tool call once the turn is flushed, which then validates normally on Stage 1.]"
   },
   {
     "fixture": "case_01_testfile_sameturn.jsonl",
@@ -50,7 +50,7 @@
   {
     "fixture": "case_01_testfile_sameturn_preflush.jsonl",
     "category": "testfile_sameturn",
-    "expected_stage1": "YES",
+    "expected_stage1": "NO",
     "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/services/activated_reaper_service.py",
     "tool_name": "Edit",
     "source": "91c9d43d-db19-465e-b510-4b49c8ce5c8c.jsonl",
@@ -61,7 +61,7 @@
       "TEST-FILE",
       "test-coverage"
     ],
-    "note": "SPEC: pre-flush state - the current tool_use entry is not yet in the transcript and the last Write/Edit anchor belongs to a DIFFERENT file's prior turn. The override must not mask the n-back path which sees the already-flushed same-turn INTENT (TEST FILE format)."
+    "note": "SPEC: pre-flush state - the current tool_use entry is not yet in the transcript and the last Write/Edit anchor belongs to a DIFFERENT file's prior turn. The override must not mask the n-back path which sees the already-flushed same-turn INTENT (TEST FILE format). [v2.33.2: pre-flush now fails CLOSED, not open \u2014 expected_stage1 flipped YES->NO. The live hook blocks with a re-issue message (transcript-flush race) instead of silently passing through; the agent re-issues the identical tool call once the turn is flushed, which then validates normally on Stage 1.]"
   },
   {
     "fixture": "case_02_testfile_sameturn.jsonl",
@@ -189,7 +189,7 @@
   {
     "fixture": "case_09_skiptdd_sameturn_preflush.jsonl",
     "category": "skiptdd_sameturn",
-    "expected_stage1": "YES",
+    "expected_stage1": "NO",
     "file_path": "/home/jsbattig/Dev/llm-creds-provider/src/services/quota-cache.ts",
     "tool_name": "Edit",
     "source": "f5cbd8b2-e2ee-4566-9ea7-aad60d9282a8.jsonl",
@@ -199,7 +199,7 @@
     "decl_tags": [
       "skip-tdd"
     ],
-    "note": "pre-flush variant: transcript BEFORE the tool_use entry was appended"
+    "note": "pre-flush variant: transcript BEFORE the tool_use entry was appended [v2.33.2: pre-flush now fails CLOSED, not open \u2014 expected_stage1 flipped YES->NO. The live hook blocks with a re-issue message (transcript-flush race) instead of silently passing through; the agent re-issues the identical tool call once the turn is flushed, which then validates normally on Stage 1.]"
   },
   {
     "fixture": "case_10_skiptdd_sameturn.jsonl",
@@ -219,7 +219,7 @@
   {
     "fixture": "case_10_skiptdd_sameturn_preflush.jsonl",
     "category": "skiptdd_sameturn",
-    "expected_stage1": "YES",
+    "expected_stage1": "NO",
     "file_path": "/home/jsbattig/Dev/llm-creds-provider/src/services/quota-cache.ts",
     "tool_name": "Edit",
     "source": "f5cbd8b2-e2ee-4566-9ea7-aad60d9282a8.jsonl",
@@ -229,7 +229,7 @@
     "decl_tags": [
       "skip-tdd"
     ],
-    "note": "pre-flush variant: transcript BEFORE the tool_use entry was appended"
+    "note": "pre-flush variant: transcript BEFORE the tool_use entry was appended [v2.33.2: pre-flush now fails CLOSED, not open \u2014 expected_stage1 flipped YES->NO. The live hook blocks with a re-issue message (transcript-flush race) instead of silently passing through; the agent re-issues the identical tool call once the turn is flushed, which then validates normally on Stage 1.]"
   },
   {
     "fixture": "case_11_skiptdd_sameturn.jsonl",

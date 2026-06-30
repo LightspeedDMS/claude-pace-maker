@@ -78,7 +78,7 @@ BLOCKAGE_CATEGORIES = (
     "intent_validation_cleancode",  # Clean code rule violation
     "intent_validation_bug",  # Clear logic bug detected in proposed code
     "intent_validation_dangerbash",  # Danger bash command intent mismatch
-    "intent_validation_deferred",  # Transcript not yet flushed — telemetry canary (fail-open)
+    "intent_validation_deferred",  # Transcript not yet flushed — fails CLOSED + re-issue (v2.33.2)
     "pacing_tempo",  # Tempo validation blocked
     "pacing_quota",  # Throttle delay applied
     "other",  # Catch-all for unexpected blockages

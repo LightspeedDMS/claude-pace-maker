@@ -1,24 +1,30 @@
-"""Telemetry canary tests for the Write/Edit fail-open (transcript-not-ready) branch.
+"""Telemetry canary tests for the Write/Edit fail-CLOSED (transcript-not-ready)
+branch.
 
-Hardening item #2 from the bug-#83 architect review.
+Hardening item #2 from the bug-#83 architect review; behavior flipped from
+fail-open to fail-closed in v2.33.2 (see tests/test_intent_validation_failclosed_race.py
+for the dedicated Bug A core-regression suite).
 
 WHY THIS EXISTS
 ===============
 When ``get_current_turn_message_for_validation`` returns ``None`` (the
 transcript-flush race: Claude Code hasn't written the current tool_use to disk
-yet), the Write/Edit gate silently fails open and returns ``{"continue": True}``.
-Before this hardening, the only signal was a log_debug entry — invisible at the
-default log level.  If a future Claude Code format change made the matcher always
-return ``None``, validation would silently turn off with nothing observable.
+yet), the Write/Edit gate used to silently fail open and return
+``{"continue": True}`` — confirmed live to mean intent validation enforced
+NOTHING for any edit that raced the flush. v2.33.2 changes this branch to fail
+CLOSED instead, mirroring the danger-bash gate's proven pattern: block with a
+re-issue message; the agent re-issues the IDENTICAL tool call, the re-issue's
+turn is then flushed, and validation proceeds normally on the second attempt.
 
 WHAT THIS TESTS
 ===============
-1. A WARNING-level log is emitted on the fail-open branch (visible at default
+1. A WARNING-level log is emitted on the fail-closed branch (visible at default
    log level and in log aggregators).
 2. A ``record_blockage`` call is made with category
    ``"intent_validation_deferred"`` so the event appears in usage.db and
    blockage-stats dashboards.
-3. The gate still returns ``{"continue": True}`` — fail-open semantics UNCHANGED.
+3. The gate now returns ``{"decision": "block", ...}`` (NOT ``{"continue": True}``)
+   — the v2.33.2 fail-CLOSED behavior change.
 
 MOCKING NOTE
 ============
@@ -82,7 +88,8 @@ def _config_enabled() -> dict:
 
 
 class TestDeferredCanary:
-    """The fail-open branch must emit an observable signal (WARNING + blockage)."""
+    """The fail-closed branch must emit an observable signal (WARNING + blockage)
+    in addition to blocking (v2.33.2)."""
 
     def setup_method(self):
         self.tmp_dir = tempfile.mkdtemp()
@@ -133,24 +140,26 @@ class TestDeferredCanary:
         ):
             return run_pre_tool_hook()
 
-    def test_fail_open_returns_continue_true_for_edit(self):
-        """Fail-open must still return {continue: True} — behaviour UNCHANGED."""
+    def test_fail_closed_returns_block_decision_for_edit(self):
+        """v2.33.2: must now return decision=block (fail-closed), not continue."""
         result = self._run_hook_with_none_override("Edit", self.db_path)
         assert (
-            result.get("continue") is True
-        ), f"Expected {{continue: True}} from fail-open branch, got: {result}"
+            result.get("decision") == "block"
+        ), f"Expected decision=block from fail-closed branch, got: {result}"
+        assert result.get("continue") is not True
 
-    def test_fail_open_returns_continue_true_for_write(self):
-        """Fail-open must still return {continue: True} for Write tool too."""
+    def test_fail_closed_returns_block_decision_for_write(self):
+        """v2.33.2: must now return decision=block (fail-closed) for Write too."""
         result = self._run_hook_with_none_override("Write", self.db_path)
-        assert result.get("continue") is True
+        assert result.get("decision") == "block"
+        assert result.get("continue") is not True
 
-    def test_fail_open_emits_warning_log(self):
-        """Fail-open branch must log at WARNING level (visible at default log_level)."""
+    def test_fail_closed_emits_warning_log(self):
+        """Fail-closed branch must still log at WARNING level (visible at default log_level)."""
         with patch("pacemaker.hook.log_warning") as mock_warn:
             self._run_hook_with_none_override("Edit", self.db_path)
 
-        # At least one call should mention transcript-not-flushed / fail-open
+        # At least one call should mention transcript-not-flushed / deferred
         warning_calls = [str(c) for c in mock_warn.call_args_list]
         matching = [
             c
@@ -160,12 +169,12 @@ class TestDeferredCanary:
             or "flushed" in c.lower()
         ]
         assert matching, (
-            "Expected a WARNING log mentioning transcript-not-flushed / deferred on fail-open; "
+            "Expected a WARNING log mentioning transcript-not-flushed / deferred on fail-closed; "
             f"got calls: {warning_calls}"
         )
 
-    def test_fail_open_records_deferred_blockage_event(self):
-        """Fail-open branch must record intent_validation_deferred in usage.db."""
+    def test_fail_closed_records_deferred_blockage_event(self):
+        """Fail-closed branch must record intent_validation_deferred in usage.db."""
         self._run_hook_with_none_override("Edit", self.db_path)
 
         conn = sqlite3.connect(self.db_path)
@@ -179,12 +188,12 @@ class TestDeferredCanary:
 
         assert rows, (
             "Expected an 'intent_validation_deferred' blockage event in usage.db "
-            "when Write/Edit gate hits the None / fail-open branch, but found none."
+            "when Write/Edit gate hits the None / fail-closed branch, but found none."
         )
         categories = {r[0] for r in rows}
         assert "intent_validation_deferred" in categories
 
-    def test_fail_open_blockage_event_has_correct_hook_type(self):
+    def test_fail_closed_blockage_event_has_correct_hook_type(self):
         """Deferred blockage event must have hook_type='pre_tool_use'."""
         self._run_hook_with_none_override("Edit", self.db_path)
 
@@ -203,7 +212,7 @@ class TestDeferredCanary:
             "pre_tool_use" in hook_types
         ), f"Expected hook_type='pre_tool_use', got: {hook_types}"
 
-    def test_fail_open_blockage_event_for_write_too(self):
+    def test_fail_closed_blockage_event_for_write_too(self):
         """Deferred blockage event is recorded for Write tool, not only Edit."""
         self._run_hook_with_none_override("Write", self.db_path)
 
