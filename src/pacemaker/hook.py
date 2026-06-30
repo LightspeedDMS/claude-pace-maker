@@ -2541,6 +2541,36 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             f"Danger bash rules matched: {matched_ids} for command: {command[:100]}",
                         )
 
+                        # Bug #83: tool-matched anchor for Bash gate.
+                        # Fail closed if transcript not yet flushed.
+                        _bash_anchor = get_current_turn_message_for_validation(
+                            transcript_path,
+                            tool_input={"command": command},
+                            tool_name="Bash",
+                            _max_retries=10,
+                        )
+                        if _bash_anchor is None:
+                            _sid = session_id or "unknown"
+                            record_blockage(
+                                db_path=DEFAULT_DB_PATH,
+                                category="intent_validation_dangerbash",
+                                reason=(
+                                    "Danger Bash: transcript not yet flushed "
+                                    "— failing closed for safety."
+                                ),
+                                hook_type="pre_tool_use",
+                                session_id=_sid,
+                                details={"tool": "Bash", "command": command[:500]},
+                            )
+                            return {
+                                "decision": "block",
+                                "reason": (
+                                    "⛔ Dangerous Bash command detected — transcript not ready\n\n"
+                                    "The current turn has not been written to the transcript yet. "
+                                    "Cannot verify INTENT: declaration. Failing closed for safety."
+                                ),
+                            }
+
                         # Phase 1: Check for INTENT: marker (fast reject, no LLM)
                         # Use n=4 and extract_current_assistant_message to search
                         # backward for INTENT: across multiple messages, same as
@@ -2614,7 +2644,6 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             pass
 
                         from .inference import resolve_and_call_with_reviewer
-                        from .inference.verdict import verdict_passes as _verdict_passes
 
                         matched_descriptions = ", ".join(
                             f"{m['id']}: {m['description']}" for m in matched
@@ -2655,8 +2684,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             max_thinking_tokens=2000,
                         )
 
-                        if _verdict_passes(response):
-                            # Phase 2 passed (guarded-lenient: APPROVED starts-with)
+                        if response.strip().upper() == "APPROVED":
+                            # Phase 2 passed
                             try:
                                 record_activity_event(
                                     DEFAULT_DB_PATH, "DB", "green", _sid
@@ -2770,8 +2799,29 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # window can miss (fragmented turn / interrupt), while never pulling in
         # a stale prior-turn INTENT. Empty string falls back to the n-back path.
         current_message_override = get_current_turn_message_for_validation(
-            transcript_path
+            transcript_path,
+            tool_input=tool_input,
+            tool_name=tool_name,
         )
+
+        if current_message_override is None:
+            log_warning(
+                "hook",
+                "Intent validation deferred: transcript not yet flushed for "
+                f"current {tool_name} tool_use on {file_path}. Failing open.",
+            )
+            record_blockage(
+                db_path=DEFAULT_DB_PATH,
+                category="intent_validation_deferred",
+                reason=(
+                    "Transcript not yet flushed: current tool_use absent. "
+                    "Failing open (TOCTOU race guard)."
+                ),
+                hook_type="pre_tool_use",
+                session_id=session_id or "unknown",
+                details={"tool": tool_name, "file_path": file_path},
+            )
+            return _merge_csa_reminder({"continue": True}, _csa_result)
 
         # Activity events: IV/TD/CC blue (validation in-progress) — settings-aware
         try:

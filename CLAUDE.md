@@ -443,6 +443,31 @@ This applies to:
 - Clean code rules and core paths configuration
 - Any code that affects the pre-tool validation hook
 
+### Transcript-flush race (TOCTOU) — bug #83
+
+**Symptom**: At PreToolUse fire time, Claude Code has NOT yet flushed the current assistant turn (the INTENT: text + tool_use) to the transcript JSONL. Any transcript-based extractor therefore selects the PREVIOUS turn, causing:
+- **False-rejects**: current INTENT missed → Stage 1 RegEx blocks a valid edit
+- **False-passes**: stale same-file INTENT from prior turn accepted → Stage 2 validates current code against wrong intent → wrongly APPROVES
+
+**Root cause**: `get_current_turn_message_for_validation()` anchored on the LAST Write/Edit tool_use in transcript (regardless of content), and `extract_current_assistant_message()` picked `messages[-1]` (previous turn when current is unflushed).
+
+**Fix (bug #83, landed in intent validation code)**:
+
+1. **Tool-matched anchor** — `get_current_turn_message_for_validation(transcript_path, tool_input, tool_name)` now locates the transcript tool_use whose `input` EXACTLY matches the current hook's `tool_input` (Write: `file_path`+`content`, Edit: `file_path`+`new_string`, Bash: `command`). Never matches a prior tool_use with different content.
+
+2. **Bounded retry** — if no match found (turn not yet flushed), re-reads the transcript up to `_max_retries=10` times with `_retry_sleep=0.1s` (Messi Rule 14: provable termination, total wait ≤ 1s). Catches the typical flush-delay race.
+
+3. **Fail-open on not-ready** — if still no match after retries, returns `None` (not `""`). The hook interprets `None` as "transcript-not-ready" and returns `{"continue": True}` (Messi Rule 13: no silent stale validation). Never evaluates the previous turn.
+
+4. **Defense-in-depth** — `extract_current_assistant_message(messages, file_path=file_path)` cross-checks the selected message via `_mentions_file`. If it carries an INTENT: marker but mentions a different file → discards and returns `""`, preventing false-passes from wrong-file stale turns. Messages without an INTENT: marker are returned as-is (no silent discard — their Stage-1 rejection log is preserved).
+
+**Key files**:
+- `src/pacemaker/transcript_reader.py` — `_tool_input_matches()`, `_find_turn_matching_tool_input()`, updated `get_current_turn_message_for_validation()`
+- `src/pacemaker/intent_validator.py` — `extract_current_assistant_message(file_path="")` hardening; `validate_intent_and_code` threads `file_path` through
+- `src/pacemaker/hook.py` — Write/Edit gate (~line 2772): threads `tool_input`/`tool_name`, handles `None`; Danger-bash gate (~line 2544): same pattern
+
+**Tests**: `tests/test_transcript_staleness_fix.py` — 21 tests covering lagged/flushed/stale-same-file scenarios, bounded retry, Bash gate, `extract_current_assistant_message` hardening.
+
 ---
 
 ## Competitive Review Pipeline

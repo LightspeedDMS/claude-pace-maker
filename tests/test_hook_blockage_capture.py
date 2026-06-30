@@ -61,15 +61,21 @@ class TestIntentValidationBlockageCapture:
         Path(self.config_path).unlink(missing_ok=True)
 
     def test_intent_validation_failure_records_blockage(self):
-        """Intent validation failure should record a blockage event."""
+        """Intent validation failure should record a blockage event.
+
+        Transcript must contain the matching Write tool_use so the tool-matched
+        anchor (bug #83 fix) finds the current turn rather than short-circuiting
+        with fail-open. Text entry has no INTENT so override="" and
+        validate_intent_and_code is reached via n-back path.
+        """
         from pacemaker.hook import run_pre_tool_hook
 
-        # Create a mock transcript
+        # Create a transcript WITH the matching Write tool_use
         transcript_file = tempfile.NamedTemporaryFile(
             suffix=".jsonl", delete=False, mode="w"
         )
         transcript_path = transcript_file.name
-        # Write a message without INTENT: marker
+        # Text entry without INTENT: marker
         transcript_file.write(
             json.dumps(
                 {
@@ -77,6 +83,27 @@ class TestIntentValidationBlockageCapture:
                         "role": "assistant",
                         "content": [
                             {"type": "text", "text": "I will write some code."}
+                        ],
+                    }
+                }
+            )
+            + "\n"
+        )
+        # Matching tool_use entry (same file_path + content as hook_data below)
+        transcript_file.write(
+            json.dumps(
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Write",
+                                "input": {
+                                    "file_path": "/src/example.py",
+                                    "content": "print('hello')",
+                                },
+                            }
                         ],
                     }
                 }
@@ -130,10 +157,16 @@ class TestIntentValidationBlockageCapture:
             Path(transcript_path).unlink(missing_ok=True)
 
     def test_intent_validation_tdd_failure_records_correct_category(self):
-        """TDD validation failure should use intent_validation_tdd category."""
+        """TDD validation failure should use intent_validation_tdd category.
+
+        Transcript contains matching Write tool_use under the same requestId as
+        the INTENT text, so the tool-matched anchor returns the full override
+        message and validate_intent_and_code is reached.
+        """
         from pacemaker.hook import run_pre_tool_hook
 
-        # Create a mock transcript
+        # Create a transcript WITH matching Write tool_use and INTENT text
+        # sharing a requestId so the anchor merges them into one turn.
         transcript_file = tempfile.NamedTemporaryFile(
             suffix=".jsonl", delete=False, mode="w"
         )
@@ -141,12 +174,35 @@ class TestIntentValidationBlockageCapture:
         transcript_file.write(
             json.dumps(
                 {
+                    "requestId": "req_TDD",
                     "message": {
                         "role": "assistant",
                         "content": [
                             {"type": "text", "text": "INTENT: modify src/core.py"}
                         ],
-                    }
+                    },
+                }
+            )
+            + "\n"
+        )
+        # Matching tool_use shares requestId so the anchor merges text + tool_use
+        transcript_file.write(
+            json.dumps(
+                {
+                    "requestId": "req_TDD",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Write",
+                                "input": {
+                                    "file_path": "/src/core.py",
+                                    "content": "def foo(): pass",
+                                },
+                            }
+                        ],
+                    },
                 }
             )
             + "\n"
@@ -195,19 +251,46 @@ class TestIntentValidationBlockageCapture:
             Path(transcript_path).unlink(missing_ok=True)
 
     def test_intent_validation_blockage_includes_details(self):
-        """Blockage should include tool name and file path in details."""
+        """Blockage should include tool name and file path in details.
+
+        Transcript contains matching Edit tool_use (no INTENT in text) so the
+        tool-matched anchor returns "" and validate_intent_and_code is reached.
+        """
         from pacemaker.hook import run_pre_tool_hook
 
         transcript_file = tempfile.NamedTemporaryFile(
             suffix=".jsonl", delete=False, mode="w"
         )
         transcript_path = transcript_file.name
+        # Text without INTENT
         transcript_file.write(
             json.dumps(
                 {
                     "message": {
                         "role": "assistant",
                         "content": [{"type": "text", "text": "Writing code now."}],
+                    }
+                }
+            )
+            + "\n"
+        )
+        # Matching Edit tool_use (same file_path + new_string as hook_data below)
+        transcript_file.write(
+            json.dumps(
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Edit",
+                                "input": {
+                                    "file_path": "/path/to/file.py",
+                                    "old_string": "foo",
+                                    "new_string": "bar",
+                                },
+                            }
+                        ],
                     }
                 }
             )

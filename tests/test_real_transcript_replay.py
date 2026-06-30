@@ -31,9 +31,20 @@ FIDELITY CONTRACT
 ``validate_intent_and_code`` exactly:
 
     messages = get_last_n_messages_for_validation(transcript_path, n=2)
-    override = get_current_turn_message_for_validation(transcript_path)
+    override = get_current_turn_message_for_validation(transcript_path,
+                   tool_input=tool_input, tool_name=tool_name, _max_retries=0)
+    if override is None:
+        return {"continue": True}   # fail-open (TOCTOU race / pre-flush)
     current  = override or extract_current_assistant_message(messages)
     verdict  = _regex_stage1_check(current, file_path, exclusions)
+
+This helper now uses the SHIPPED tool-matched anchor path (bug #83 fix).
+Flushed fixtures supply the real tool_input extracted from the fixture file;
+pre-flush fixtures supply a sentinel that cannot match, producing None →
+fail-open → "YES".  A future Claude Code format change that breaks the
+tool-matched anchor (e.g. changes the JSONL schema so inputs no longer match)
+will cause flushed fixtures with expected NO/NO_TDD verdicts to return "YES"
+instead — tripping a RED test immediately.
 
 If the hook glue changes, update this helper IN THE SAME COMMIT so the
 replay stays faithful to production behavior.
@@ -44,6 +55,7 @@ suite is deterministic and independent of the developer's live config.
 
 import json
 import os
+from typing import Optional
 
 import pytest
 
@@ -88,10 +100,121 @@ def _load_manifest():
 MANIFEST = _load_manifest()
 
 
-def _replay_stage1(fixture_path: str, file_path: str) -> str:
-    """Mirror the pre-tool hook's Stage-1 path exactly (see module docstring)."""
+# ---------------------------------------------------------------------------
+# Tool-input extraction helper
+# ---------------------------------------------------------------------------
+
+
+def _extract_tool_input_from_fixture(
+    fixture_path: str, tool_name: str, file_path: str
+) -> Optional[dict]:
+    """Extract the last matching tool_use input from a fixture file.
+
+    Scans the fixture forward and returns the input dict from the LAST
+    assistant tool_use block whose ``name`` matches ``tool_name`` and, for
+    Write/Edit, whose ``file_path`` matches ``file_path``.
+
+    Returns None when no matching entry is found (expected for pre-flush
+    fixtures where the current tool_use has not yet been appended).
+    """
+    last_match: Optional[dict] = None
+    with open(fixture_path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            raw = raw.strip()
+            if not raw:
+                continue
+            entry = json.loads(raw)
+            msg = entry.get("message", {})
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", [])
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                if block.get("name") != tool_name:
+                    continue
+                inp = block.get("input", {})
+                if tool_name in ("Write", "Edit"):
+                    if inp.get("file_path") == file_path:
+                        last_match = inp
+                elif tool_name == "Bash":
+                    last_match = inp
+                else:
+                    last_match = inp
+    return last_match
+
+
+# ---------------------------------------------------------------------------
+# Stage-1 replay helper — SHIPPED PATH (bug #83 fix)
+# ---------------------------------------------------------------------------
+
+
+def _replay_stage1(
+    fixture_path: str,
+    file_path: str,
+    tool_name: str,
+    tool_use_in_fixture: bool,
+) -> str:
+    """Mirror the pre-tool hook's Stage-1 path exactly (see module docstring).
+
+    Uses the SHIPPED tool-matched anchor path introduced in bug #83:
+
+    Flushed fixtures (tool_use_in_fixture=True):
+        Extracts the actual tool_input from the fixture, passes it to
+        get_current_turn_message_for_validation.  The matcher finds the
+        exact current-turn tool_use and returns that turn's text (or "" if
+        no INTENT marker in the turn's text).  Verdict proceeds normally.
+
+    Pre-flush fixtures (tool_use_in_fixture=False):
+        The current tool_use is NOT yet in the transcript.  A sentinel
+        tool_input that cannot match any existing entry is supplied, causing
+        get_current_turn_message_for_validation to return None → fail-open
+        → "YES".  This matches hook.py's behaviour (bug #83 TOCTOU guard).
+
+    _max_retries=0 is passed in both cases: fixtures are static files,
+    re-reading them will never produce a different result.
+    """
     messages = get_last_n_messages_for_validation(fixture_path, n=2)
-    override = get_current_turn_message_for_validation(fixture_path)
+
+    if tool_use_in_fixture:
+        # Flushed fixture: extract the real tool_input from the fixture.
+        tool_input = _extract_tool_input_from_fixture(
+            fixture_path, tool_name, file_path
+        )
+        if tool_input is None:
+            pytest.fail(
+                f"Could not extract tool_input from flushed fixture {os.path.basename(fixture_path)!r} "
+                f"for tool={tool_name!r} file={file_path!r}. "
+                "A flushed fixture (tool_use_in_fixture=true) MUST contain the matching "
+                "tool_use entry — this indicates a corpus quality issue."
+            )
+    else:
+        # Pre-flush fixture: the current tool_use is not yet in the transcript.
+        # Supply a sentinel that cannot match any existing entry so that
+        # get_current_turn_message_for_validation returns None immediately
+        # (same TOCTOU race the live hook observes).
+        if tool_name == "Write":
+            tool_input = {"file_path": file_path, "content": "__PREFLUSH_SENTINEL__"}
+        elif tool_name == "Edit":
+            tool_input = {"file_path": file_path, "new_string": "__PREFLUSH_SENTINEL__"}
+        else:
+            tool_input = {"command": "__PREFLUSH_SENTINEL__"}
+
+    # Shipped path: _max_retries=0 avoids sleeping on static fixture files.
+    override = get_current_turn_message_for_validation(
+        fixture_path,
+        tool_input=tool_input,
+        tool_name=tool_name,
+        _max_retries=0,
+        _retry_sleep=0,
+    )
+
+    # Mimic hook.py ~2827: None → fail-open → {"continue": True} → "YES"
+    if override is None:
+        return "YES"
+
     current = override or extract_current_assistant_message(messages)
     return _regex_stage1_check(current, file_path, PINNED_EXCLUSIONS)
 
@@ -104,12 +227,19 @@ def test_replay_real_transcript_case(case):
     fixture_path = os.path.join(FIXTURE_DIR, case["fixture"])
     assert os.path.exists(fixture_path), f"missing fixture: {case['fixture']}"
 
-    verdict = _replay_stage1(fixture_path, case["file_path"])
+    verdict = _replay_stage1(
+        fixture_path,
+        case["file_path"],
+        case["tool_name"],
+        case["tool_use_in_fixture"],
+    )
 
     assert verdict == case["expected_stage1"], (
         f"\nfixture     : {case['fixture']}"
         f"\ncategory    : {case['category']}"
         f"\nfile_path   : {case['file_path']}"
+        f"\ntool_name   : {case['tool_name']}"
+        f"\ntool_use_in : {case['tool_use_in_fixture']}"
         f"\nexpected    : {case['expected_stage1']}  got: {verdict}"
         f"\nhistorical  : {case['historical_outcome']}"
         f"\nsource      : {case['source']} line {case['source_line']}"
@@ -186,3 +316,57 @@ def test_all_fixtures_are_valid_jsonl():
                     pytest.fail(
                         f"{case['fixture']} line {line_num} is not valid JSON: {exc}"
                     )
+
+
+# ---------------------------------------------------------------------------
+# Shipped-path canary: verify the tool-matched anchor actually FINDS entries
+# in flushed fixtures.  This test goes RED immediately if a Claude Code format
+# change breaks the byte-match so the matcher always returns None — providing
+# a loud early-warning before a silent fail-open regression accumulates.
+# ---------------------------------------------------------------------------
+
+
+def test_flushed_fixtures_matcher_returns_non_none():
+    """Tool-matched anchor must find a result (not None) for every flushed fixture.
+
+    If get_current_turn_message_for_validation returns None for a flushed
+    fixture (tool_use_in_fixture=True), the matcher is broken — possibly due
+    to a Claude Code JSONL format change that altered the tool_use schema.
+    A broken matcher would silently fail-open all validations; this test
+    trips RED immediately so the regression is caught before it accumulates.
+    """
+    flushed = [c for c in MANIFEST if c["tool_use_in_fixture"]]
+    failures = []
+    for case in flushed:
+        fixture_path = os.path.join(FIXTURE_DIR, case["fixture"])
+        tool_input = _extract_tool_input_from_fixture(
+            fixture_path, case["tool_name"], case["file_path"]
+        )
+        if tool_input is None:
+            failures.append(
+                f"{case['fixture']}: _extract_tool_input_from_fixture returned None "
+                f"(tool={case['tool_name']!r}, file={case['file_path']!r})"
+            )
+            continue
+        override = get_current_turn_message_for_validation(
+            fixture_path,
+            tool_input=tool_input,
+            tool_name=case["tool_name"],
+            _max_retries=0,
+            _retry_sleep=0,
+        )
+        if override is None:
+            failures.append(
+                f"{case['fixture']}: get_current_turn_message_for_validation returned "
+                f"None for flushed fixture (tool={case['tool_name']!r}, "
+                f"file={case['file_path']!r}) — matcher did not find the tool_use entry"
+            )
+
+    assert not failures, (
+        f"Tool-matched anchor failed on {len(failures)} flushed fixture(s):\n"
+        + "\n".join(f"  - {f}" for f in failures)
+        + "\n\nThis means the matcher is NOT finding tool_use entries in flushed fixtures."
+        "\nA Claude Code JSONL format change may have broken the byte-match used by "
+        "get_current_turn_message_for_validation / _find_turn_matching_tool_input."
+        "\nAll flushed validations would silently fail-open until this is fixed."
+    )

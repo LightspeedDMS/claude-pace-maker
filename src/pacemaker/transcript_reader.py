@@ -8,7 +8,8 @@ for use in intent validation context building.
 
 import json
 import re
-from typing import Any, Dict, List, Union
+import time
+from typing import Any, Dict, List, Optional, Union
 
 from .logger import log_warning
 
@@ -251,9 +252,9 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
         return []
 
 
-def get_current_turn_message_for_validation(transcript_path: str) -> str:
+def _legacy_get_current_turn_message(transcript_path: str) -> str:
     """Extract the current assistant turn anchored on the last Write/Edit
-    tool_use's requestId.
+    tool_use's requestId. (Legacy path — kept for backward compat.)
 
     Fix 3: the INTENT/skip declaration that belongs to the same logical turn
     as the tool_use being validated shares the tool_use entry's requestId.
@@ -352,6 +353,147 @@ def get_current_turn_message_for_validation(transcript_path: str) -> str:
             e,
         )
         return ""
+
+
+def _tool_input_matches(tool: dict, tool_name: str, tool_input: dict) -> bool:
+    """Return True if a tool_use block matches the given tool_name + key fields."""
+    if tool.get("name") != tool_name:
+        return False
+    inp = tool.get("input", {})
+    if tool_name == "Write":
+        return inp.get("file_path") == tool_input.get("file_path") and inp.get(
+            "content"
+        ) == tool_input.get("content")
+    if tool_name == "Edit":
+        return inp.get("file_path") == tool_input.get("file_path") and inp.get(
+            "new_string"
+        ) == tool_input.get("new_string")
+    if tool_name == "Bash":
+        return inp.get("command") == tool_input.get("command")
+    return inp == tool_input
+
+
+def _find_turn_matching_tool_input(
+    transcript_path: str,
+    tool_input: dict,
+    tool_name: str,
+) -> Optional[str]:
+    """Scan transcript for the assistant turn containing the matching tool_use.
+
+    Returns:
+        None  — file missing or no matching tool_use found in transcript
+        ""    — matching turn found but its TEXT lacks an INTENT: marker
+        str   — formatted turn message when found with INTENT: in TEXT
+    """
+    try:
+        entries: List[tuple] = []
+        with open(transcript_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                message = entry.get("message", {})
+                if message.get("role") != "assistant":
+                    continue
+                msg_parts = _extract_message_parts(message.get("content", []))
+                entries.append((entry.get("requestId"), msg_parts))
+
+        # Find the LAST entry whose tools include a matching tool_use.
+        anchor_index = None
+        for i in range(len(entries) - 1, -1, -1):
+            _, msg_parts = entries[i]
+            for tool in msg_parts["tools"]:
+                if _tool_input_matches(tool, tool_name, tool_input):
+                    anchor_index = i
+                    break
+            if anchor_index is not None:
+                break
+
+        if anchor_index is None:
+            return None
+
+        anchor_request_id, anchor_parts = entries[anchor_index]
+
+        # Merge all entries sharing the anchor's requestId (same logical turn).
+        if anchor_request_id is not None:
+            merged: Dict[str, Any] = {"text": "", "tools": []}
+            for request_id, parts in entries:
+                if request_id != anchor_request_id:
+                    continue
+                if parts["text"]:
+                    merged["text"] = (
+                        merged["text"] + "\n" + parts["text"]
+                        if merged["text"]
+                        else parts["text"]
+                    )
+                merged["tools"].extend(parts["tools"])
+        else:
+            merged = anchor_parts
+
+        # Intent-marker gate: only return non-empty when INTENT: is in TEXT.
+        if not re.search(r"(?i)\bintent\s*:", merged["text"]):
+            return ""
+
+        return _format_message_with_tools(merged)
+
+    except (FileNotFoundError, OSError):
+        return None
+    except Exception as e:
+        log_warning(
+            "transcript_reader",
+            "Failed to find turn matching tool input",
+            e,
+        )
+        return None
+
+
+def get_current_turn_message_for_validation(
+    transcript_path: str,
+    tool_input: Optional[dict] = None,
+    tool_name: Optional[str] = None,
+    *,
+    _max_retries: int = 10,
+    _retry_sleep: float = 0.1,
+) -> Optional[str]:
+    """Extract the current assistant turn message for intent validation.
+
+    When ``tool_input`` is provided (bug #83 fix): uses a content-matched
+    anchor to find the exact tool_use being validated.  Returns None when
+    the matching entry is not yet in the transcript (TOCTOU race), allowing
+    the caller to fail-open gracefully.
+
+    When ``tool_input`` is None (legacy path): returns str (never None) using
+    the old last-Write/Edit anchor for backward compatibility.
+
+    Args:
+        transcript_path: Path to JSONL transcript file.
+        tool_input: PreToolUse tool_input dict.  None => legacy path.
+        tool_name: Tool name (Write/Edit/Bash).  Required with tool_input.
+        _max_retries: Max re-reads after first miss (bounded per Messi Rule 14).
+        _retry_sleep: Seconds between attempts.
+
+    Returns:
+        None  -- tool_input given but matching turn absent (fail-open signal).
+        ""    -- matching turn found but no INTENT: in TEXT (n-back fallback).
+        str   -- matching turn with INTENT: in TEXT (use directly).
+        (When tool_input is None, always returns str per legacy contract.)
+    """
+    if tool_input is None:
+        # Legacy path: returns str (never None).
+        return _legacy_get_current_turn_message(transcript_path)
+
+    # New path (bug #83): tool-matched anchor with bounded retry.
+    for attempt in range(_max_retries + 1):
+        result = _find_turn_matching_tool_input(
+            transcript_path, tool_input, tool_name or ""
+        )
+        if result is not None:
+            return result
+        if attempt < _max_retries:
+            time.sleep(_retry_sleep)
+
+    return None
 
 
 def _has_write_or_edit(msg_parts: dict) -> bool:

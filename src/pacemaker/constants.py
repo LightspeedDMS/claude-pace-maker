@@ -78,6 +78,7 @@ BLOCKAGE_CATEGORIES = (
     "intent_validation_cleancode",  # Clean code rule violation
     "intent_validation_bug",  # Clear logic bug detected in proposed code
     "intent_validation_dangerbash",  # Danger bash command intent mismatch
+    "intent_validation_deferred",  # Transcript not yet flushed — telemetry canary (fail-open)
     "pacing_tempo",  # Tempo validation blocked
     "pacing_quota",  # Throttle delay applied
     "other",  # Catch-all for unexpected blockages
@@ -91,6 +92,7 @@ BLOCKAGE_CATEGORY_LABELS: Dict[str, str] = {
     "intent_validation_cleancode": "Clean Code",
     "intent_validation_bug": "Bug Detected",
     "intent_validation_dangerbash": "Danger Bash",
+    "intent_validation_deferred": "IV Deferred",
     "pacing_tempo": "Pacing Tempo",
     "pacing_quota": "Pacing Quota",
     "other": "Other",

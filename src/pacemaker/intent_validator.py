@@ -422,7 +422,7 @@ def validate_intent_declared(
         return {"intent_found": True}
 
 
-def extract_current_assistant_message(messages: List[str]) -> str:
+def extract_current_assistant_message(messages: List[str], file_path: str = "") -> str:
     """
     Extract the CURRENT assistant message.
 
@@ -433,23 +433,44 @@ def extract_current_assistant_message(messages: List[str]) -> str:
 
     Only checks messages[-2] — never further back, to avoid picking up
     stale intent declarations from previous turns.
+
+    When ``file_path`` is provided, the selected message is checked with a
+    defense-in-depth guard: if the message carries an INTENT: marker but does
+    NOT mention the target file (by basename or full path), "" is returned to
+    prevent a stale wrong-file turn from false-passing Stage 1.  Messages that
+    lack an INTENT: marker are returned as-is so their diagnostic log is
+    preserved (bug #83).
     """
     if not messages:
         return ""
 
     if len(messages) == 1:
-        return messages[-1]
+        result = messages[-1]
+    else:
+        current_tool = messages[-1]
 
-    current_tool = messages[-1]
+        if "intent:" in current_tool.lower():
+            result = current_tool
+        else:
+            prev = messages[-2]
+            if prev and "intent:" in prev.lower():
+                result = f"{prev}\n\n{current_tool}"
+            else:
+                result = current_tool
 
-    if "intent:" in current_tool.lower():
-        return current_tool
+    # Defense-in-depth (bug #83): discard ONLY when the selected message has an
+    # INTENT: marker AND does NOT mention the target file.  The _has_intent_marker
+    # guard is required — without it, no-intent messages that don't name the file
+    # would also be silently discarded, swallowing their Stage-1 diagnostic logs.
+    if (
+        file_path
+        and result
+        and _has_intent_marker(result)
+        and not _mentions_file(result, file_path)
+    ):
+        return ""
 
-    prev = messages[-2]
-    if prev and "intent:" in prev.lower():
-        return f"{prev}\n\n{current_tool}"
-
-    return current_tool
+    return result
 
 
 def _has_intent_marker(text: str):
@@ -783,7 +804,7 @@ def validate_intent_and_code(
         # Prefer the requestId-anchored current-turn message (Fix 3) when the
         # caller supplied it; fall back to the n-back heuristic otherwise.
         current_message = current_message_override or extract_current_assistant_message(
-            messages
+            messages, file_path=file_path
         )
         log_debug("intent_validator", "=== STAGE 1 VALIDATION START ===")
         log_debug("intent_validator", f"File path: {file_path}")

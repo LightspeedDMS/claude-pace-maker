@@ -4,8 +4,22 @@ Unit tests for run_pre_tool_hook() function in hook.py.
 """
 
 import json
+import os
+import tempfile
 from unittest.mock import patch
 from pacemaker.hook import run_pre_tool_hook
+
+
+def _write_transcript_file(entries):
+    """Write JSONL transcript entries to a temp file, return (path, file object).
+    Caller must close/unlink the file after use.
+    """
+    f = tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w")
+    for entry in entries:
+        f.write(json.dumps(entry) + "\n")
+    f.flush()
+    f.close()
+    return f.name
 
 
 class TestPreToolHook:
@@ -87,28 +101,66 @@ class TestPreToolHook:
         mock_load_ext,
         mock_load_config,
     ):
-        """Should block tool use when validation fails."""
-        hook_data = {
-            "session_id": "test",
-            "transcript_path": "/path/to/transcript.jsonl",
-            "tool_name": "Write",
-            "tool_input": {"file_path": "/path/to/test.py", "content": "code"},
-        }
-        mock_stdin.read.return_value = json.dumps(hook_data)
-        mock_load_config.return_value = {"intent_validation_enabled": True}
-        mock_load_ext.return_value = [".py"]
-        mock_is_source.return_value = True
-        mock_get_messages.return_value = ["Some message"]
-        mock_validate.return_value = {
-            "approved": False,
-            "feedback": "Intent declaration required",
-        }
+        """Should block tool use when validation fails.
 
-        result = run_pre_tool_hook()
+        Transcript must contain the matching Write tool_use so the tool-matched
+        anchor (bug #83 fix) finds the current turn and doesn't short-circuit.
+        The text entry has no INTENT, so current_message_override="" and
+        validate_intent_and_code is reached via the n-back path.
+        """
+        transcript_path = _write_transcript_file(
+            [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "I will write some code."}
+                        ],
+                    }
+                },
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Write",
+                                "input": {
+                                    "file_path": "/path/to/test.py",
+                                    "content": "code",
+                                },
+                            }
+                        ],
+                    }
+                },
+            ]
+        )
+        try:
+            hook_data = {
+                "session_id": "test",
+                "transcript_path": transcript_path,
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/path/to/test.py", "content": "code"},
+            }
+            mock_stdin.read.return_value = json.dumps(hook_data)
+            mock_load_config.return_value = {"intent_validation_enabled": True}
+            mock_load_ext.return_value = [".py"]
+            mock_is_source.return_value = True
+            mock_get_messages.return_value = ["Some message"]
+            mock_validate.return_value = {
+                "approved": False,
+                "feedback": "Intent declaration required",
+            }
 
-        assert result["decision"] == "block"
-        assert "reason" in result
-        assert "Intent declaration required" in result["reason"]
+            result = run_pre_tool_hook()
+
+            assert result["decision"] == "block"
+            assert "reason" in result
+            assert "Intent declaration required" in result["reason"]
+            # Verify the mock was actually called — not a vacuous continue-True return
+            mock_validate.assert_called_once()
+        finally:
+            os.unlink(transcript_path)
 
     @patch("pacemaker.hook.load_config")
     @patch("pacemaker.extension_registry.load_extensions")
@@ -125,23 +177,63 @@ class TestPreToolHook:
         mock_load_ext,
         mock_load_config,
     ):
-        """Should allow tool use when validation passes."""
-        hook_data = {
-            "session_id": "test",
-            "transcript_path": "/path/to/transcript.jsonl",
-            "tool_name": "Write",
-            "tool_input": {"file_path": "/path/to/test.py", "content": "code"},
-        }
-        mock_stdin.read.return_value = json.dumps(hook_data)
-        mock_load_config.return_value = {"intent_validation_enabled": True}
-        mock_load_ext.return_value = [".py"]
-        mock_is_source.return_value = True
-        mock_get_messages.return_value = ["I will modify test.py to add logging"]
-        mock_validate.return_value = {"approved": True}
+        """Should allow tool use when validation passes.
 
-        result = run_pre_tool_hook()
+        Transcript must contain the matching Write tool_use so the tool-matched
+        anchor finds the current turn. validate_intent_and_code must actually be
+        called (not a vacuous fail-open short-circuit).
+        """
+        transcript_path = _write_transcript_file(
+            [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "I will modify test.py to add logging",
+                            }
+                        ],
+                    }
+                },
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Write",
+                                "input": {
+                                    "file_path": "/path/to/test.py",
+                                    "content": "code",
+                                },
+                            }
+                        ],
+                    }
+                },
+            ]
+        )
+        try:
+            hook_data = {
+                "session_id": "test",
+                "transcript_path": transcript_path,
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/path/to/test.py", "content": "code"},
+            }
+            mock_stdin.read.return_value = json.dumps(hook_data)
+            mock_load_config.return_value = {"intent_validation_enabled": True}
+            mock_load_ext.return_value = [".py"]
+            mock_is_source.return_value = True
+            mock_get_messages.return_value = ["I will modify test.py to add logging"]
+            mock_validate.return_value = {"approved": True}
 
-        assert result == {"continue": True}
+            result = run_pre_tool_hook()
+
+            assert result == {"continue": True}
+            # Verify validation actually ran — not a vacuous fail-open pass
+            mock_validate.assert_called_once()
+        finally:
+            os.unlink(transcript_path)
 
     @patch("pacemaker.hook.load_config")
     @patch("pacemaker.extension_registry.load_extensions")
@@ -194,35 +286,73 @@ class TestPreToolHook:
         mock_load_ext,
         mock_load_config,
     ):
-        """Should pass messages, code, file_path, and tool_name to validate_intent_and_code."""
-        hook_data = {
-            "session_id": "test",
-            "transcript_path": "/tmp/transcript.jsonl",
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "/path/to/config.py", "new_string": "new code"},
-        }
-        mock_stdin.read.return_value = json.dumps(hook_data)
-        mock_load_config.return_value = {"intent_validation_enabled": True}
-        mock_load_ext.return_value = [".py"]
-        mock_is_source.return_value = True
-        messages = ["I will edit config.py"]
-        mock_get_messages.return_value = messages
-        mock_validate.return_value = {"approved": True}
+        """Should pass messages, code, file_path, and tool_name to validate_intent_and_code.
 
-        run_pre_tool_hook()
-
-        # Verify validate_intent_and_code received correct args
-        # Fix 3: hook.py also passes the requestId-anchored current-turn
-        # message. The transcript path does not exist in this test, so the
-        # override resolves to "" (safe fallback to the n-back heuristic).
-        mock_validate.assert_called_once_with(
-            messages=messages,
-            code="new code",
-            file_path="/path/to/config.py",
-            tool_name="Edit",
-            hook_model="auto",
-            current_message_override="",
+        The transcript contains the matching Edit tool_use (so the tool-matched
+        anchor finds the current turn) but the text entry has NO INTENT marker.
+        Therefore get_current_turn_message_for_validation returns "" (tool found,
+        no INTENT in its turn text), and current_message_override="" is passed
+        to validate_intent_and_code — the n-back heuristic takes over.
+        """
+        transcript_path = _write_transcript_file(
+            [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "I will edit config.py"}],
+                    }
+                },
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Edit",
+                                "input": {
+                                    "file_path": "/path/to/config.py",
+                                    "old_string": "old",
+                                    "new_string": "new code",
+                                },
+                            }
+                        ],
+                    }
+                },
+            ]
         )
+        try:
+            hook_data = {
+                "session_id": "test",
+                "transcript_path": transcript_path,
+                "tool_name": "Edit",
+                "tool_input": {
+                    "file_path": "/path/to/config.py",
+                    "new_string": "new code",
+                },
+            }
+            mock_stdin.read.return_value = json.dumps(hook_data)
+            mock_load_config.return_value = {"intent_validation_enabled": True}
+            mock_load_ext.return_value = [".py"]
+            mock_is_source.return_value = True
+            messages = ["I will edit config.py"]
+            mock_get_messages.return_value = messages
+            mock_validate.return_value = {"approved": True}
+
+            run_pre_tool_hook()
+
+            # verify validate_intent_and_code received correct args.
+            # The transcript text has no INTENT, so the tool-matched anchor
+            # returns "" (no-INTENT fallback) → current_message_override="".
+            mock_validate.assert_called_once_with(
+                messages=messages,
+                code="new code",
+                file_path="/path/to/config.py",
+                tool_name="Edit",
+                hook_model="auto",
+                current_message_override="",
+            )
+        finally:
+            os.unlink(transcript_path)
 
     @patch("pacemaker.hook.load_config")
     @patch("pacemaker.extension_registry.load_extensions")
@@ -238,29 +368,65 @@ class TestPreToolHook:
         mock_load_ext,
         mock_load_config,
     ):
-        """Should block Write with fail-closed message when SDK is unavailable."""
-        hook_data = {
-            "session_id": "test",
-            "transcript_path": "/tmp/transcript.jsonl",
-            "tool_name": "Write",
-            "tool_input": {
-                "file_path": "/path/to/test.py",
-                "content": "def foo(): pass",
-            },
-        }
-        mock_stdin.read.return_value = json.dumps(hook_data)
-        mock_load_config.return_value = {"intent_validation_enabled": True}
-        mock_load_ext.return_value = [".py"]
-        mock_is_source.return_value = True
-        # Message must include INTENT: marker so Stage 1 passes and execution
-        # reaches the SDK availability gate (which then blocks fail-closed).
-        mock_get_messages.return_value = [
-            "INTENT: Modify test.py to add foo() function that does nothing. "
-            "Test coverage: tests/test_foo.py::test_foo_returns_none"
-        ]
+        """Should block Write with fail-closed message when SDK is unavailable.
 
-        result = run_pre_tool_hook()
+        Transcript contains the matching Write tool_use (no INTENT in transcript
+        text) so the tool-matched anchor returns "" and validate_intent_and_code
+        is reached. The mocked n-back messages include INTENT so Stage 1 passes;
+        then the SDK availability gate fires and blocks fail-closed.
+        """
+        transcript_path = _write_transcript_file(
+            [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "Writing the foo function."}
+                        ],
+                    }
+                },
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Write",
+                                "input": {
+                                    "file_path": "/path/to/test.py",
+                                    "content": "def foo(): pass",
+                                },
+                            }
+                        ],
+                    }
+                },
+            ]
+        )
+        try:
+            hook_data = {
+                "session_id": "test",
+                "transcript_path": transcript_path,
+                "tool_name": "Write",
+                "tool_input": {
+                    "file_path": "/path/to/test.py",
+                    "content": "def foo(): pass",
+                },
+            }
+            mock_stdin.read.return_value = json.dumps(hook_data)
+            mock_load_config.return_value = {"intent_validation_enabled": True}
+            mock_load_ext.return_value = [".py"]
+            mock_is_source.return_value = True
+            # Message must include INTENT: marker so Stage 1 passes and execution
+            # reaches the SDK availability gate (which then blocks fail-closed).
+            mock_get_messages.return_value = [
+                "INTENT: Modify test.py to add foo() function that does nothing. "
+                "Test coverage: tests/test_foo.py::test_foo_returns_none"
+            ]
 
-        # Should block with fail-closed message when SDK unavailable
-        assert result["decision"] == "block"
-        assert "SDK is not available" in result["reason"]
+            result = run_pre_tool_hook()
+
+            # Should block with fail-closed message when SDK unavailable
+            assert result["decision"] == "block"
+            assert "SDK is not available" in result["reason"]
+        finally:
+            os.unlink(transcript_path)

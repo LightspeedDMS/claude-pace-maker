@@ -402,9 +402,13 @@ class TestSettingsGatedIndicators:
 
         transcript_path = str(tmp_path / "transcript.jsonl")
         with open(transcript_path, "w") as f:
+            # Text entry with INTENT marker, shares requestId with the tool_use
+            # entry below so the tool-matched anchor (bug #83 fix) merges them
+            # and returns the full INTENT text as current_message_override.
             f.write(
                 json.dumps(
                     {
+                        "requestId": "req_ACT",
                         "message": {
                             "role": "assistant",
                             "content": [
@@ -413,7 +417,31 @@ class TestSettingsGatedIndicators:
                                     "text": "INTENT: Modify src/foo.py to add bar(), for testing.\nTest coverage: tests/test_foo.py",
                                 }
                             ],
-                        }
+                        },
+                    }
+                )
+                + "\n"
+            )
+            # Matching tool_use entry — same requestId so the anchor merges
+            # text + tool_use into one turn. file_path and content MUST match
+            # the hook_data tool_input below exactly (exact string equality).
+            f.write(
+                json.dumps(
+                    {
+                        "requestId": "req_ACT",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": tool_name,
+                                    "input": {
+                                        "file_path": "/home/user/project/src/foo.py",
+                                        "content": "def bar(): pass",
+                                    },
+                                }
+                            ],
+                        },
                     }
                 )
                 + "\n"
