@@ -4,7 +4,7 @@ You are validating the proposed code against the declared intent and clean code 
 
 FILE BEING MODIFIED: {file_path}
 
-RECENT CONTEXT (last 4 messages):
+RECENT CONTEXT (last 2 messages):
 {messages}
 
 PROPOSED CODE:
