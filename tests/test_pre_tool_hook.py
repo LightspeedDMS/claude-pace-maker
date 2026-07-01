@@ -440,3 +440,257 @@ class TestPreToolHook:
             assert "SDK is not available" in result["reason"]
         finally:
             os.unlink(transcript_path)
+
+
+class TestPreToolHookFailsClosedOnUnexpectedException:
+    """The pre-tool gate must fail CLOSED (block) on a TRULY UNEXPECTED
+    exception during the Write/Edit intent-validation gate, not fail open
+    to continue=True. Before this fix, run_pre_tool_hook()'s outer
+    except clause unconditionally returned {"continue": True} — so a
+    latent bug anywhere downstream of the intent_validation_enabled check
+    (e.g. a sqlite error inside record_blockage AFTER the validator already
+    decided to block) silently let the edit through unvalidated.
+    """
+
+    @patch("pacemaker.hook.load_config")
+    @patch("pacemaker.extension_registry.load_extensions")
+    @patch("pacemaker.extension_registry.is_source_code_file")
+    @patch("pacemaker.hook.get_last_n_messages_for_validation")
+    @patch("pacemaker.intent_validator.validate_intent_and_code")
+    @patch("pacemaker.hook.record_blockage")
+    @patch("sys.stdin")
+    def test_fails_closed_when_record_blockage_raises(
+        self,
+        mock_stdin,
+        mock_record_blockage,
+        mock_validate,
+        mock_get_messages,
+        mock_is_source,
+        mock_load_ext,
+        mock_load_config,
+    ):
+        """An unexpected exception inside record_blockage (called AFTER
+        validate_intent_and_code already decided approved=False) must not
+        override that decision to an unvalidated allow. The hook must
+        return decision=block with a clear fail-closed message."""
+        transcript_path = _write_transcript_file(
+            [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "I will write some code."}
+                        ],
+                    }
+                },
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Write",
+                                "input": {
+                                    "file_path": "/path/to/test.py",
+                                    "content": "code",
+                                },
+                            }
+                        ],
+                    }
+                },
+            ]
+        )
+        try:
+            hook_data = {
+                "session_id": "test",
+                "transcript_path": transcript_path,
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/path/to/test.py", "content": "code"},
+            }
+            mock_stdin.read.return_value = json.dumps(hook_data)
+            mock_load_config.return_value = {"intent_validation_enabled": True}
+            mock_load_ext.return_value = [".py"]
+            mock_is_source.return_value = True
+            mock_get_messages.return_value = ["Some message"]
+            mock_validate.return_value = {
+                "approved": False,
+                "feedback": "Intent declaration required",
+            }
+            mock_record_blockage.side_effect = RuntimeError("database is locked")
+
+            result = run_pre_tool_hook()
+
+            assert (
+                result.get("decision") == "block"
+            ), f"Expected fail-closed block, got {result}"
+            reason = result.get("reason", "")
+            assert "unexpected internal error" in reason.lower()
+            assert "intent-validation off" in reason
+            # Must NOT be the silent fail-open path
+            assert result.get("continue") is not True
+        finally:
+            os.unlink(transcript_path)
+
+    @patch("pacemaker.hook.load_config")
+    @patch("pacemaker.extension_registry.load_extensions")
+    @patch("pacemaker.extension_registry.is_source_code_file")
+    @patch("pacemaker.hook.get_last_n_messages_for_validation")
+    @patch("pacemaker.intent_validator.validate_intent_and_code")
+    @patch("sys.stdin")
+    def test_normal_allow_still_returns_continue_after_failclosed_guard(
+        self,
+        mock_stdin,
+        mock_validate,
+        mock_get_messages,
+        mock_is_source,
+        mock_load_ext,
+        mock_load_config,
+    ):
+        """Companion test: the new fail-closed guard must not over-catch.
+        A NORMAL approved Write with no exceptions anywhere must still
+        return continue=True."""
+        transcript_path = _write_transcript_file(
+            [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "I will modify test.py to add logging",
+                            }
+                        ],
+                    }
+                },
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Write",
+                                "input": {
+                                    "file_path": "/path/to/test.py",
+                                    "content": "code",
+                                },
+                            }
+                        ],
+                    }
+                },
+            ]
+        )
+        try:
+            hook_data = {
+                "session_id": "test",
+                "transcript_path": transcript_path,
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/path/to/test.py", "content": "code"},
+            }
+            mock_stdin.read.return_value = json.dumps(hook_data)
+            mock_load_config.return_value = {"intent_validation_enabled": True}
+            mock_load_ext.return_value = [".py"]
+            mock_is_source.return_value = True
+            mock_get_messages.return_value = ["I will modify test.py to add logging"]
+            mock_validate.return_value = {"approved": True}
+
+            result = run_pre_tool_hook()
+
+            assert result == {"continue": True}
+        finally:
+            os.unlink(transcript_path)
+
+    @patch("pacemaker.hook.load_config")
+    @patch("sys.stdin")
+    def test_fails_open_when_exception_before_gate_committed(
+        self, mock_stdin, mock_load_config
+    ):
+        """An exception BEFORE the intent_validation_enabled check has even
+        been evaluated (gate not yet committed) must still fail OPEN — this
+        is unrelated to whether the Write/Edit gate is active, so the
+        existing graceful-degradation behavior is preserved."""
+        mock_stdin.read.return_value = "not-valid-json"
+        mock_load_config.return_value = {"intent_validation_enabled": True}
+
+        result = run_pre_tool_hook()
+
+        assert result.get("continue") is True
+        assert result.get("decision") != "block"
+
+    @patch("pacemaker.hook.load_config")
+    @patch("pacemaker.danger_bash_rules.load_rules")
+    @patch("pacemaker.danger_bash_rules.match_command")
+    @patch("pacemaker.hook.get_current_turn_message_for_validation")
+    @patch("sys.stdin")
+    def test_danger_bash_fails_closed_when_matched_command_validation_raises(
+        self,
+        mock_stdin,
+        mock_get_override,
+        mock_match_command,
+        mock_load_rules,
+        mock_load_config,
+    ):
+        """Once a Bash command is confirmed to match a danger rule, an
+        unexpected exception during its validation must fail CLOSED, not
+        silently allow the dangerous command through."""
+        hook_data = {
+            "session_id": "test",
+            "transcript_path": "/tmp/transcript.jsonl",
+            "tool_name": "Bash",
+            "tool_input": {"command": "rm -rf /", "description": "cleanup"},
+        }
+        mock_stdin.read.return_value = json.dumps(hook_data)
+        mock_load_config.return_value = {
+            "enabled": True,
+            "intent_validation_enabled": True,
+            "danger_bash_enabled": True,
+        }
+        mock_load_rules.return_value = [
+            {"id": "SD-01", "description": "recursive force delete"}
+        ]
+        mock_match_command.return_value = [
+            {"id": "SD-01", "description": "recursive force delete"}
+        ]
+        mock_get_override.side_effect = RuntimeError("transcript read failed")
+
+        result = run_pre_tool_hook()
+
+        assert (
+            result.get("decision") == "block"
+        ), f"Expected fail-closed block, got {result}"
+        reason = result.get("reason", "")
+        assert "unexpected internal error" in reason.lower()
+        assert result.get("continue") is not True
+
+    @patch("pacemaker.hook.load_config")
+    @patch("pacemaker.danger_bash_rules.load_rules")
+    @patch("pacemaker.danger_bash_rules.match_command")
+    @patch("sys.stdin")
+    def test_danger_bash_fails_open_when_no_rules_matched_and_error_occurs(
+        self,
+        mock_stdin,
+        mock_match_command,
+        mock_load_rules,
+        mock_load_config,
+    ):
+        """Companion test: when NO danger rule matches (gate never
+        committed), an unrelated error (e.g. rules loading itself) must
+        still fail OPEN — the guard must not block ordinary, non-dangerous
+        Bash commands due to an infra hiccup unrelated to this command."""
+        hook_data = {
+            "session_id": "test",
+            "transcript_path": "/tmp/transcript.jsonl",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls -la", "description": "list files"},
+        }
+        mock_stdin.read.return_value = json.dumps(hook_data)
+        mock_load_config.return_value = {
+            "enabled": True,
+            "intent_validation_enabled": True,
+            "danger_bash_enabled": True,
+        }
+        mock_load_rules.side_effect = RuntimeError("rules file corrupted")
+        mock_match_command.return_value = []
+
+        result = run_pre_tool_hook()
+
+        assert result == {"continue": True}

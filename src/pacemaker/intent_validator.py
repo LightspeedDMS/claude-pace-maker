@@ -580,6 +580,25 @@ def _regex_stage1_check(current_message: str, file_path: str, exclusions: list) 
     return "NO_TDD"
 
 
+def _log_stage1_rejection(verdict: str, file_path: str, current_message: str) -> None:
+    """Log the Stage-1-rejection WARNING using the EXACT message evaluated.
+
+    ``current_message`` MUST be the effective message used by
+    ``_regex_stage1_check`` to compute ``verdict`` (i.e.
+    ``current_message_override or extract_current_assistant_message(...)``).
+    Requiring it as an explicit parameter — rather than the caller inlining
+    a closure over a local variable — makes it structurally impossible for a
+    future refactor to log a different/stale value than the one that
+    actually produced the verdict (Fix 4 diagnostic, hardened).
+    """
+    log_warning(
+        "intent_validator",
+        f"Stage 1 rejection: verdict={verdict} "
+        f"file={file_path} "
+        f"current_message[:200]={current_message[:200]!r}",
+    )
+
+
 def _call_stage2_validation(prompt: str, hook_model: str = "auto") -> "tuple[str, str]":
     """
     Synchronous Stage 2 validation via provider abstraction.
@@ -833,13 +852,10 @@ def validate_intent_and_code(
         # Fix 4: always-on (WARNING-level) diagnostic on a Stage-1 REJECTION so
         # false-rejects are diagnosable from the standard log even when DEBUG
         # logging is off. Short prefix only (no full code dumps / secrets).
+        # Routed through _log_stage1_rejection with the EXACT `current_message`
+        # used to compute the verdict above — never a re-derived/stale value.
         if stage1_response_upper in ("NO", "NO_TDD"):
-            log_warning(
-                "intent_validator",
-                f"Stage 1 rejection: verdict={stage1_response_upper} "
-                f"file={file_path} "
-                f"current_message[:200]={current_message[:200]!r}",
-            )
+            _log_stage1_rejection(stage1_response_upper, file_path, current_message)
 
         if stage1_response_upper == "NO":
             # Intent declaration missing

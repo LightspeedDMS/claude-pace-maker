@@ -257,3 +257,118 @@ class TestShortCircuitBehavior:
 
             # Stage 2 was NOT called (short-circuit after Stage 1 NO)
             assert not mock_s2.called
+
+
+class TestStage1RejectionLogging:
+    """Regression tests for the Stage-1-rejection WARNING log.
+
+    The log must always interpolate the EXACT ``current_message`` value that
+    was evaluated to produce the verdict (``current_message_override or
+    extract_current_assistant_message(...)``) — never a separately re-derived
+    or stale value (e.g. a raw ``messages[-1]``).
+    """
+
+    def test_log_stage1_rejection_helper_logs_exact_message_passed_in(self):
+        """_log_stage1_rejection must log the EXACT current_message value
+        passed to it, with no re-derivation. This is the structural
+        guarantee that the verdict and the logged text can never diverge:
+        callers must pass the same variable used for the verdict."""
+        with patch("pacemaker.intent_validator.log_warning") as mock_log_warning:
+            intent_validator._log_stage1_rejection(
+                "NO_TDD", "src/auth.py", "INTENT: exact evaluated text"
+            )
+
+        mock_log_warning.assert_called_once()
+        component, message = mock_log_warning.call_args.args
+        assert component == "intent_validator"
+        assert "NO_TDD" in message
+        assert "src/auth.py" in message
+        assert "INTENT: exact evaluated text" in message
+
+    def test_log_stage1_rejection_not_called_when_stage1_passes(self):
+        """No WARNING log when Stage 1 passes (no spam on the happy path)."""
+        current_message = (
+            "INTENT: Modify utils.py to add helper function. "
+            "Test coverage: tests/test_utils.py::test_helper"
+        )
+        messages = [current_message]
+
+        with patch("pacemaker.intent_validator.log_warning") as mock_log_warning:
+            with patch("pacemaker.intent_validator._call_stage2_validation") as mock_s2:
+                mock_s2.return_value = ("APPROVED", "test-reviewer")
+                intent_validator.validate_intent_and_code(
+                    messages=messages,
+                    code="def helper(): pass",
+                    file_path="utils.py",
+                    tool_name="Write",
+                    hook_model="gpt-5",  # bypass SDK_AVAILABLE gate
+                )
+
+        mock_log_warning.assert_not_called()
+
+    def test_stage1_rejection_log_uses_override_text_not_stale_fallback_no_tdd(self):
+        """When current_message_override DIFFERS from the stale n-back
+        fallback (extract_current_assistant_message(messages)), a Stage 1
+        NO_TDD rejection must log the OVERRIDE text — the message that was
+        actually evaluated for the verdict — never the stale text.
+
+        verdict=NO_TDD is only reachable when the override's INTENT + file
+        mention + core path are seen, proving the verdict used the override.
+        The assertion on the logged text proves the LOG used it too.
+        """
+        stale_previous_turn_text = (
+            "STALE: previous turn report text with no intent marker"
+        )
+        override_text = "INTENT: Modify src/auth.py to add a validate_token() function"
+        # messages[-1] deliberately differs from the override: a bug that
+        # re-derives the logged text from `messages` instead of the
+        # effective current_message would produce a DIFFERENT logged value.
+        messages = [stale_previous_turn_text]
+
+        with patch("pacemaker.intent_validator.log_warning") as mock_log_warning:
+            result = intent_validator.validate_intent_and_code(
+                messages=messages,
+                code="def validate_token(): pass",
+                file_path="src/auth.py",
+                tool_name="Write",
+                current_message_override=override_text,
+            )
+
+        # Verdict is NO_TDD: override has INTENT + file mention + core path
+        # (src/) but no TDD declaration — only reachable via the override.
+        assert not result["approved"]
+        assert result.get("tdd_failure") is True
+
+        mock_log_warning.assert_called_once()
+        logged_message = mock_log_warning.call_args.args[1]
+        assert override_text in logged_message
+        assert stale_previous_turn_text not in logged_message
+
+    def test_stage1_rejection_log_uses_override_text_not_stale_fallback_no_intent(
+        self,
+    ):
+        """Mirrors the observed 'no-INTENT edit' symptom: a Stage 1 NO
+        verdict (missing intent) must log the message that was ACTUALLY
+        evaluated (the override), not stale previous-turn report text
+        sitting in the n-back messages list.
+        """
+        stale_previous_turn_text = "Report: fixed 3 bugs in the auth module today."
+        override_text = "Let me go ahead and write this now."  # no INTENT:
+        messages = [stale_previous_turn_text]
+
+        with patch("pacemaker.intent_validator.log_warning") as mock_log_warning:
+            result = intent_validator.validate_intent_and_code(
+                messages=messages,
+                code="def foo(): pass",
+                file_path="src/foo.py",
+                tool_name="Write",
+                current_message_override=override_text,
+            )
+
+        assert not result["approved"]
+        assert result.get("reviewer") == "RegEx"
+
+        mock_log_warning.assert_called_once()
+        logged_message = mock_log_warning.call_args.args[1]
+        assert override_text in logged_message
+        assert stale_previous_turn_text not in logged_message

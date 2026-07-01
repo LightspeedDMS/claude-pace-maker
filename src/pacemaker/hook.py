@@ -9,6 +9,7 @@ It runs pacing checks and applies adaptive throttling.
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 from datetime import datetime, timezone
 import json
@@ -35,7 +36,7 @@ from .transcript_reader import (
     get_last_n_messages_for_validation,
     get_current_turn_message_for_validation,
 )
-from .logger import log_warning, log_debug, log_info
+from .logger import log_warning, log_debug, log_info, log_error
 
 # Guards one-time schema migration for codex_usage table in SubagentStop handler.
 _codex_migration_done: bool = False
@@ -2341,6 +2342,26 @@ def _merge_csa_reminder(
     return result
 
 
+def _fail_closed_message(error: BaseException) -> str:
+    """Build the fail-closed block reason for an unexpected pre-tool gate
+    exception.
+
+    Shared by both the Write/Edit intent-validation gate and the
+    Danger-Bash gate (Messi Anti-Duplication) for the backstop that fires
+    when an unexpected exception occurs AFTER the relevant gate has been
+    confirmed active for this tool call (see ``_gate_committed`` in
+    ``run_pre_tool_hook``).
+    """
+    return (
+        "⛔ Intent validation hit an unexpected internal error\n\n"
+        f"The pre-tool validation hook encountered an unexpected internal "
+        f"error while validating this tool call: {error}\n\n"
+        "The tool call was BLOCKED as a safety precaution (fail-closed) "
+        "rather than allowed through unvalidated.\n\n"
+        "If this persists, ask the user to run: pace-maker intent-validation off"
+    )
+
+
 def run_pre_tool_hook() -> Dict[str, Any]:
     """
     Pre-tool hook: Unified validation (intent + code review).
@@ -2356,6 +2377,18 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         {"continue": True} to allow, or
         {"decision": "block", "reason": "..."} to block
     """
+    # Tracks whether the Write/Edit intent-validation gate OR the Danger-Bash
+    # gate has been confirmed ACTIVE for this specific tool call (i.e. we are
+    # past the config check that gates entry, or a dangerous command was
+    # actually matched). Declared before `try:` so it is guaranteed bound in
+    # the except handler regardless of where an exception originates. Once
+    # True, an unexpected exception must fail CLOSED (Messi Anti-Fallback):
+    # an unvalidated edit/command is worse than a blocked one when the user
+    # explicitly opted into the gate. Before this flag existed, ANY exception
+    # anywhere in this function — including one AFTER the gate already
+    # decided to block (e.g. a sqlite error inside record_blockage) —
+    # silently fell back to {"continue": True}, defeating the gate.
+    _gate_committed = False
     try:
         # CSA result must be initialized before ANY operation that could throw,
         # so the outer except handler at the bottom of this function can safely
@@ -2540,6 +2573,11 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             "hook",
                             f"Danger bash rules matched: {matched_ids} for command: {command[:100]}",
                         )
+
+                        # A dangerous command was confirmed matched — from
+                        # here on an unexpected exception must fail CLOSED
+                        # rather than silently letting the command through.
+                        _gate_committed = True
 
                         # Bug #83: tool-matched anchor for Bash gate.
                         # Fail closed if transcript not yet flushed.
@@ -2741,8 +2779,31 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 ),
                             }
             except Exception as e:
-                log_warning("hook", f"Danger bash validation error: {e}")
-                # Fail open on unexpected errors — don't block all Bash commands
+                log_error(
+                    "hook",
+                    "Danger bash validation: unexpected internal error"
+                    + (
+                        " — failing closed"
+                        if _gate_committed
+                        else " (fail-open, pre-match)"
+                    ),
+                    e,
+                )
+                log_debug(
+                    "hook",
+                    f"Danger bash validation traceback:\n{traceback.format_exc()}",
+                )
+                if _gate_committed:
+                    # A dangerous command was already confirmed matched —
+                    # fail CLOSED rather than letting it through unvalidated.
+                    return {
+                        "decision": "block",
+                        "reason": _fail_closed_message(e),
+                    }
+                # Fail open on unexpected errors before a dangerous command
+                # was even matched (e.g. a rules-loading hiccup) — don't
+                # block all Bash commands for an infra issue unrelated to
+                # this specific command's danger status.
 
             return {"continue": True}
 
@@ -2773,6 +2834,11 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # Check if feature enabled
         if not config.get("intent_validation_enabled", False):
             return _merge_csa_reminder({"continue": True}, _csa_result)
+
+        # Feature confirmed active for this tool call — an unexpected
+        # exception from here on must fail CLOSED (see _gate_committed
+        # docstring above).
+        _gate_committed = True
 
         # 4. Check if source code file
         from . import extension_registry
@@ -2996,7 +3062,36 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             )
 
     except Exception as e:
-        # Graceful degradation - log error and allow
+        if _gate_committed:
+            # The Write/Edit intent-validation gate was already confirmed
+            # active for this tool call — an unvalidated edit is worse than
+            # a blocked one, so fail CLOSED instead of silently allowing it
+            # through (Messi Anti-Fallback).
+            log_error(
+                "hook",
+                "Pre-tool hook: unexpected internal error during Write/Edit "
+                "intent validation — failing closed",
+                e,
+            )
+            log_debug("hook", f"Pre-tool hook traceback:\n{traceback.format_exc()}")
+            print(
+                f"[PACE-MAKER ERROR] Pre-tool hook (fail-closed): {e}",
+                file=sys.stderr,
+            )
+            # Merge CSA reminder for consistency with every other Write/Edit
+            # return path in this function (see the "not approved" branch
+            # above) — a fail-closed block is still a reachable return path
+            # that CSA wiring must cover.
+            return _merge_csa_reminder(
+                {
+                    "decision": "block",
+                    "reason": _fail_closed_message(e),
+                },
+                _csa_result,
+            )
+        # Graceful degradation - log error and allow (exception occurred
+        # before the gate was confirmed active for this tool call, or for a
+        # non-gated tool type)
         print(f"[PACE-MAKER ERROR] Pre-tool hook: {e}", file=sys.stderr)
         return _merge_csa_reminder({"continue": True}, _csa_result)
 
