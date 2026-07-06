@@ -13,7 +13,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 0
 fi
 
-ENABLED=$(jq -r 'if has("enabled") then .enabled else true end' "$CONFIG_FILE" 2>/dev/null || echo "true")
+ENABLED=$(jq -r '.enabled // true' "$CONFIG_FILE" 2>/dev/null || echo "true")
 if [ "$ENABLED" != "true" ]; then
     exit 0
 fi
