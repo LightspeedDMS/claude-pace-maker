@@ -29,7 +29,9 @@ _REAL_HOME = Path.home()
 @pytest.fixture
 def tmp_home(tmp_path_factory):
     """Temp directory under the real home so snap jq can read files in it."""
-    d = tempfile.mkdtemp(dir=_REAL_HOME / ".pytest-hook-tests")
+    base = _REAL_HOME / ".pytest-hook-tests"
+    base.mkdir(parents=True, exist_ok=True)
+    d = tempfile.mkdtemp(dir=base)
     yield Path(d)
     import shutil
     shutil.rmtree(d, ignore_errors=True)
@@ -71,13 +73,20 @@ def _write_config(home: Path, config: dict) -> Path:
 
 
 def _write_sentinel_python(bin_dir: Path) -> Path:
-    """Write a fake python3 that records being called, then exits 1."""
+    """Write fake python interpreters that record being called, then exit 1.
+
+    find_python() in the hooks iterates `python3.11 python3.10 python3` and
+    picks the first on PATH, so the sentinel must shadow ALL of them — otherwise
+    a real python3.11/3.10 on the host is selected ahead of a bare python3
+    sentinel, producing host-dependent false failures.
+    """
     sentinel = bin_dir.parent / ".python_was_called"
-    fake_py = bin_dir / "python3"
-    fake_py.write_text(
-        f"#!/bin/bash\ntouch {sentinel}\nexit 1\n"
-    )
-    fake_py.chmod(0o755)
+    for name in ("python3.11", "python3.10", "python3"):
+        fake_py = bin_dir / name
+        fake_py.write_text(
+            f"#!/bin/bash\ntouch {sentinel}\nexit 1\n"
+        )
+        fake_py.chmod(0o755)
     return sentinel
 
 
