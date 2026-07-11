@@ -122,7 +122,16 @@ class TestCodexProvider:
         assert result == "YES"
         mock_run.assert_called_once()
         call_args = mock_run.call_args
-        assert call_args[0][0] == ["codex", "exec", "-", "-m", "o3", "-s", "read-only"]
+        assert call_args[0][0] == [
+            "codex",
+            "exec",
+            "--skip-git-repo-check",
+            "-",
+            "-m",
+            "o3",
+            "-s",
+            "read-only",
+        ]
         assert "SYSTEM INSTRUCTIONS:" in call_args[1]["input"]
         assert "test prompt" in call_args[1]["input"]
 
