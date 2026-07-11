@@ -475,6 +475,20 @@ This applies to:
 
 ---
 
+## Stop-Hook Validator Prompt — Async-Wait Design (Bug #87)
+
+`src/pacemaker/prompts/stop/stop_hook_validator_prompt.md` is engineered for the WEAKEST verifier model in a competitive expression (haiku, codex-beast/gpt-oss-20b) — with `verifier1+verifier2->synth`, EITHER weak verifier failing blocks the stop, so prompt robustness matters more than eloquence.
+
+**Structural invariants** (locked by `tests/test_stop_hook_prompt_async_wait.py`, 16 tests):
+- **CORE PRINCIPLE section comes FIRST** (before the demoted "genuine still-running fallacy" section): waiting for ANY async mechanism (background task, subagent, scheduled wakeup) that re-awakens Claude → APPROVED. Weak models anchor on the first emphatic rule — it must be the permissive one.
+- **Semantic rule, not phrase matching**: the signal-phrase lists are explicitly "illustrative examples (non-exhaustive)". Never make literal phrase matching the mechanism again — weak verifiers miss natural rephrasings ("awaiting validation results from the dual-validator" ≠ list entry "awaiting results").
+- **Awaiting-user-input allowance** in WHEN TO ALLOW, with explicit tiebreak: genuinely user-owned choices (destructive/irreversible, ambiguous scope, approval gates) → ALLOW; deferring actionable work as a question ("shall I fix it?") → analysis-paralysis rule wins → BLOCK. Its justification is its own (user must reply before progress), NOT the async auto-rewake rationale.
+- Preserved: tempo liveliness check, analysis-paralysis detection, unrecoverable-loop detection, E2E-evidence requirements (which defer to the async exception), `{conversation_context}` placeholder, APPROVED/COMPLETE:/BLOCKED: response formats.
+
+**E2E verified live** (2026-07-11, full `codex-beast+haiku->codex-beast` pipeline, stop_hook context): async-wait ALLOWED, user-decision ALLOWED, genuine-unfinished BLOCKED, paralysis-as-question BLOCKED (haiku caught it after codex-beast false-approved — the dual-verifier design compensating for a flaky weak model).
+
+---
+
 ## Competitive Review Pipeline
 
 **Syntax**: `hook_model = "m1+m2[+m3]->synthesizer"` (2-3 verifiers + 1 synthesizer)
