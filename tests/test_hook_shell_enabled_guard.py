@@ -34,7 +34,9 @@ def tmp_home(tmp_path_factory):
     d = tempfile.mkdtemp(dir=base)
     yield Path(d)
     import shutil
+
     shutil.rmtree(d, ignore_errors=True)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_HOOK_SH = REPO_ROOT / "scripts" / "hook.sh"
@@ -83,9 +85,7 @@ def _write_sentinel_python(bin_dir: Path) -> Path:
     sentinel = bin_dir.parent / ".python_was_called"
     for name in ("python3.11", "python3.10", "python3"):
         fake_py = bin_dir / name
-        fake_py.write_text(
-            f"#!/bin/bash\ntouch {sentinel}\nexit 1\n"
-        )
+        fake_py.write_text(f"#!/bin/bash\ntouch {sentinel}\nexit 1\n")
         fake_py.chmod(0o755)
     return sentinel
 
@@ -145,7 +145,9 @@ class TestPluginHookShEnabledGuard:
         )
 
     @pytest.mark.parametrize("hook_type", HOOK_TYPES)
-    def test_does_not_invoke_python_when_disabled(self, home_disabled, tmp_home, hook_type):
+    def test_does_not_invoke_python_when_disabled(
+        self, home_disabled, tmp_home, hook_type
+    ):
         """Python must not be invoked when enabled: false."""
         fake_bin = tmp_home / "fake_bin"
         fake_bin.mkdir()
@@ -188,12 +190,14 @@ class TestSrcHooksEnabledGuard:
     def test_exits_zero_when_disabled(self, home_disabled, script):
         """Each src/hooks/*.sh must exit 0 immediately when enabled: false."""
         result = _run_src_hook(script, home_disabled)
-        assert result.returncode == 0, (
-            f"{script.name} must exit 0 when disabled. stderr={result.stderr[:300]}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"{script.name} must exit 0 when disabled. stderr={result.stderr[:300]}"
 
     @pytest.mark.parametrize("script", SRC_HOOK_SCRIPTS, ids=lambda s: s.name)
-    def test_does_not_invoke_python_when_disabled(self, home_disabled, tmp_home, script):
+    def test_does_not_invoke_python_when_disabled(
+        self, home_disabled, tmp_home, script
+    ):
         """Python must not be invoked by src/hooks/*.sh when enabled: false."""
         fake_bin = tmp_home / f"fake_bin_{script.stem}"
         fake_bin.mkdir(exist_ok=True)
@@ -208,13 +212,19 @@ class TestSrcHooksEnabledGuard:
         )
 
     @pytest.mark.parametrize("script", SRC_HOOK_SCRIPTS, ids=lambda s: s.name)
-    def test_missing_enabled_key_defaults_to_enabled(self, home_no_key, tmp_home, script):
+    def test_missing_enabled_key_defaults_to_enabled(
+        self, home_no_key, tmp_home, script
+    ):
         """Missing 'enabled' key should default to true in src/hooks/*.sh."""
         fake_bin = tmp_home / f"fake_bin2_{script.stem}"
         fake_bin.mkdir(exist_ok=True)
         sentinel = _write_sentinel_python(fake_bin)
 
-        _run_src_hook(script, home_no_key, extra_env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"})
+        _run_src_hook(
+            script,
+            home_no_key,
+            extra_env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        )
 
         assert sentinel.exists(), (
             f"{script.name}: when 'enabled' key is absent, hook must proceed and invoke Python. "

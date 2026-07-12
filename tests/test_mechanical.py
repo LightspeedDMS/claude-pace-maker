@@ -386,6 +386,115 @@ class TestRunMechanical:
         assert response.startswith("BLOCKED:")
         assert "risky deletion detected" in response
 
+    # ---- Issue #88: double "BLOCKED: BLOCKED:" prefix regression ----
+
+    def test_single_failing_verifier_no_double_blocked_prefix(self):
+        """Issue #88: verifier's raw response already starts with 'BLOCKED:' —
+        the final result must have exactly ONE 'BLOCKED:' prefix, not two.
+        """
+        from pacemaker.inference.competitive import run_mechanical
+        from pacemaker.inference.codex_provider import CodexProvider
+        from pacemaker.inference.gemini_provider import GeminiProvider
+        from pacemaker.inference.anthropic_provider import AnthropicProvider
+
+        v1 = MagicMock(spec=CodexProvider)
+        v1.query.return_value = "APPROVED"
+        v2 = MagicMock(spec=GeminiProvider)
+        v2.query.return_value = "BLOCKED: some reason"
+        synth = MagicMock(spec=AnthropicProvider)
+
+        def _get(model):
+            if model == "gpt-5.5":
+                return v1
+            if model == "gemini-flash":
+                return v2
+            return synth
+
+        with patch("pacemaker.inference.competitive.get_provider", side_effect=_get):
+            response, _label = run_mechanical(
+                verifiers=["gpt-5.5", "gemini-flash"],
+                synthesizer="sonnet",
+                prompt="p",
+                system_prompt="",
+                call_context="intent_validation",
+            )
+
+        assert response == "BLOCKED: some reason"
+        assert "BLOCKED: BLOCKED:" not in response
+        synth.query.assert_not_called()
+
+    def test_single_failing_verifier_case_insensitive_no_double_prefix(self):
+        """Issue #88: verifier's raw response starts with lowercase 'blocked:' —
+        stripping must be case-insensitive, and the result must have exactly
+        one (canonically-cased) 'BLOCKED:' prefix.
+        """
+        from pacemaker.inference.competitive import run_mechanical
+        from pacemaker.inference.codex_provider import CodexProvider
+        from pacemaker.inference.gemini_provider import GeminiProvider
+        from pacemaker.inference.anthropic_provider import AnthropicProvider
+
+        v1 = MagicMock(spec=CodexProvider)
+        v1.query.return_value = "APPROVED"
+        v2 = MagicMock(spec=GeminiProvider)
+        v2.query.return_value = "blocked: reason"
+        synth = MagicMock(spec=AnthropicProvider)
+
+        def _get(model):
+            if model == "gpt-5.5":
+                return v1
+            if model == "gemini-flash":
+                return v2
+            return synth
+
+        with patch("pacemaker.inference.competitive.get_provider", side_effect=_get):
+            response, _label = run_mechanical(
+                verifiers=["gpt-5.5", "gemini-flash"],
+                synthesizer="sonnet",
+                prompt="p",
+                system_prompt="",
+                call_context="intent_validation",
+            )
+
+        assert response == "BLOCKED: reason"
+        assert "blocked:" not in response.lower().replace("blocked: reason", "")
+        synth.query.assert_not_called()
+
+    def test_synthesizer_message_with_blocked_prefix_not_doubled(self):
+        """Issue #88 defensive case: 2+ failing verifiers, synthesizer's formatted
+        message itself happens to start with 'BLOCKED:' — must not double up.
+        """
+        from pacemaker.inference.competitive import run_mechanical
+        from pacemaker.inference.codex_provider import CodexProvider
+        from pacemaker.inference.gemini_provider import GeminiProvider
+        from pacemaker.inference.anthropic_provider import AnthropicProvider
+
+        v1 = MagicMock(spec=CodexProvider)
+        v1.query.return_value = "BLOCKED: concern A"
+        v2 = MagicMock(spec=GeminiProvider)
+        v2.query.return_value = "BLOCKED: concern B"
+        synth = MagicMock(spec=AnthropicProvider)
+        synth.query.return_value = "BLOCKED: concern A and B combined"
+
+        def _get(model):
+            if model == "gpt-5.5":
+                return v1
+            if model == "gemini-flash":
+                return v2
+            return synth
+
+        with patch("pacemaker.inference.competitive.get_provider", side_effect=_get):
+            response, _label = run_mechanical(
+                verifiers=["gpt-5.5", "gemini-flash"],
+                synthesizer="sonnet",
+                prompt="p",
+                system_prompt="",
+                call_context="intent_validation",
+            )
+
+        assert response == "BLOCKED: concern A and B combined"
+        assert "BLOCKED: BLOCKED:" not in response
+        synth.query.assert_called_once()
+
     # ---- Synthesizer failure fallback ----
 
     def test_synthesizer_error_falls_back_to_concat(self):

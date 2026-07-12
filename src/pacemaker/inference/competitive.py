@@ -1,5 +1,6 @@
 """Competitive multi-model review pipeline for hook inference."""
 
+import re
 from concurrent.futures import (
     ThreadPoolExecutor,
     wait as futures_wait,
@@ -226,6 +227,21 @@ def _format_failure_message(
         executor.shutdown(wait=False)
 
 
+_BLOCKED_PREFIX_RE = re.compile(r"^\s*blocked\s*:\s*", re.IGNORECASE)
+
+
+def _strip_leading_blocked_prefix(text: str) -> str:
+    """Strip a leading 'BLOCKED:' marker (case-insensitive) from text, if present.
+
+    Verifiers are prompted to respond in 'BLOCKED: <reason>' format, so their raw
+    feedback already carries this prefix. The synthesizer's formatted message may
+    also happen to start with it. run_mechanical() applies its own mechanical
+    'BLOCKED: ' prefix unconditionally, so any pre-existing prefix must be
+    stripped first to avoid a doubled 'BLOCKED: BLOCKED:' result (issue #88).
+    """
+    return _BLOCKED_PREFIX_RE.sub("", text, count=1)
+
+
 def run_mechanical(
     verifiers: list,
     synthesizer: str,
@@ -325,6 +341,13 @@ def run_mechanical(
             call_context,
             max_thinking_tokens,
         )
+
+    # Strip any leading 'BLOCKED:' the message already carries (case-insensitive,
+    # optional whitespace after the colon) before applying the mechanical prefix
+    # below. Verifiers are prompted to respond in 'BLOCKED: <reason>' format, and
+    # the synthesizer's formatted message may also happen to start with 'BLOCKED:'
+    # — without this strip, the mechanical prefix doubles up (issue #88).
+    message = _strip_leading_blocked_prefix(message)
 
     # BLOCKED: prefix applied mechanically — synthesizer output cannot override FAIL decision
     return "BLOCKED: " + message, expression
