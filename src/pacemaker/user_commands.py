@@ -85,11 +85,15 @@ COMMANDS:
   pace-maker hook-model sonnet                 Use Sonnet for hook inference
   pace-maker hook-model opus                   Use Opus for hook inference
   pace-maker hook-model fable                  Use Fable for hook inference
-  pace-maker hook-model gpt-5.5                Use GPT-5.5 (via Codex CLI) for hook inference (preferred / latest)
+  pace-maker hook-model gpt-5.6-sol            Use GPT-5.6 Sol (via Codex CLI) for hook inference (preferred / latest)
+  pace-maker hook-model gpt-5.6-terra          Use GPT-5.6 Terra (via Codex CLI) for hook inference
+  pace-maker hook-model gpt-5.6-luna           Use GPT-5.6 Luna (via Codex CLI) for hook inference
+  pace-maker hook-model gpt-5.5                Use GPT-5.5 (via Codex CLI) for hook inference
   pace-maker hook-model gpt-5.4                Use GPT-5.4 (via Codex CLI) for hook inference
-  pace-maker hook-model gpt-5                  Alias for gpt-5.5 (latest Codex model)
-  pace-maker hook-model gpt                    Alias for gpt-5.5 (short form)
-  pace-maker hook-model codex                  Alias for gpt-5.5 (descriptive alias)
+  pace-maker hook-model gpt-5.4-mini           Use GPT-5.4 Mini (via Codex CLI) for hook inference
+  pace-maker hook-model gpt-5                  Alias for gpt-5.6-sol (latest Codex model)
+  pace-maker hook-model gpt                    Alias for gpt-5.6-sol (short form)
+  pace-maker hook-model codex                  Alias for gpt-5.6-sol (descriptive alias)
   pace-maker hook-model gemini-flash           Use Gemini Flash for hook inference
   pace-maker hook-model gemini-pro             Use Gemini Pro for hook inference
   pace-maker hook-model agy                    Use agy (Antigravity CLI, default model) for hook inference
@@ -583,10 +587,14 @@ def parse_command(user_input: str) -> Dict[str, Any]:
         }
 
     # Pattern 20: pace-maker hook-model — single model or competitive expression
-    # Single model: auto|sonnet|opus|haiku|gpt-5.5|gpt-5.4 (aliases: gpt-5|gpt|codex)|gemini-flash|gemini-pro (incl. short aliases)
+    # Single model: auto|sonnet|opus|haiku|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.5|gpt-5.4|gpt-5.4-mini
+    # (aliases: gpt-5|gpt|codex)|gemini-flash|gemini-pro (incl. short aliases)
     pattern_hook_model_single = (
         r"^pace-maker\s+hook-model\s+"
-        r"(auto|sonnet|opus|haiku|fable|gpt-5\.5|gpt-5\.4|gpt-5|gpt|codex|gemini-flash|gemini-pro|gem-flash|gem-pro"
+        r"(auto|sonnet|opus|haiku|fable"
+        r"|gpt-5\.6-sol|gpt-5\.6-terra|gpt-5\.6-luna"
+        r"|gpt-5\.5|gpt-5\.4-mini|gpt-5\.4|gpt-5|gpt|codex"
+        r"|gemini-flash|gemini-pro|gem-flash|gem-pro"
         r"|agy|agy-flash|agy-flash-low|agy-flash-medium|agy-flash-high"
         r"|agy-pro|agy-pro-low|agy-pro-high|agy-gpt-oss|agy-sonnet|agy-opus"
         r"|codex-[a-z0-9][a-z0-9._-]*)$"
@@ -1823,7 +1831,7 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
             "success": False,
             "message": (
                 f"Invalid model: {subcommand}\n"
-                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|fable|gpt-5.4|gpt-5.5|gemini-flash|gemini-pro|agy|agy-flash|codex-<profile>|...]"
+                "Usage: pace-maker hook-model [auto|sonnet|opus|haiku|fable|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna|gpt-5.4|gpt-5.4-mini|gpt-5.5|gemini-flash|gemini-pro|agy|agy-flash|codex-<profile>|...]"
             ),
         }
 
@@ -1836,6 +1844,18 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
             message = (
                 "✓ Hook model set to AUTO\n"
                 "Hook inference will use per-call-site defaults (sonnet for stage1, opus for stage2)."
+            )
+        elif subcommand in (
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.4-mini",
+        ):
+            display = subcommand.upper()
+            message = (
+                f"✓ Hook model set to {display}\n"
+                f"Hook inference will use Codex CLI (OpenAI {subcommand}) with Anthropic fallback.\n"
+                "Requires: codex CLI installed and authenticated."
             )
         elif subcommand == "gpt-5.5":
             message = (

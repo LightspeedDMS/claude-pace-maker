@@ -43,7 +43,8 @@ def get_provider(hook_model: str):
 
     Args:
         hook_model: Config value - "auto", "sonnet", "opus", "haiku", "gpt-5.4",
-                    "gpt-5.5" (legacy aliases: "gpt-5", "gpt", "codex"),
+                    "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra",
+                    "gpt-5.6-luna" (legacy aliases: "gpt-5", "gpt", "codex"),
                     "gemini-flash", "gemini-pro"
 
     Returns:
@@ -53,7 +54,17 @@ def get_provider(hook_model: str):
         from .anthropic_provider import AnthropicProvider
 
         return AnthropicProvider()
-    elif hook_model in ("gpt-5", "gpt-5.4", "gpt-5.5", "gpt", "codex"):
+    elif hook_model in (
+        "gpt-5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt",
+        "codex",
+    ):
         from .codex_provider import CodexProvider
 
         return CodexProvider()

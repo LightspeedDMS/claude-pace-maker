@@ -18,7 +18,11 @@ KNOWN_MODELS = {
     "haiku",
     "fable",
     "gpt-5.4",
+    "gpt-5.4-mini",
     "gpt-5.5",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gemini-flash",
     "gemini-pro",
     # Antigravity CLI (agy) models — Story #72
@@ -38,9 +42,9 @@ KNOWN_MODELS = {
 SHORT_ALIASES = {
     "gem-flash": "gemini-flash",
     "gem-pro": "gemini-pro",
-    "gpt-5": "gpt-5.5",  # user-friendly alias; resolves to latest (gpt-5.5); Codex CLI accepts both gpt-5.4 and gpt-5.5
-    "gpt": "gpt-5.5",  # short alias for latest Codex model
-    "codex": "gpt-5.5",  # descriptive alias for latest Codex model
+    "gpt-5": "gpt-5.6-sol",  # user-friendly alias; resolves to latest (gpt-5.6-sol)
+    "gpt": "gpt-5.6-sol",  # short alias for latest Codex model
+    "codex": "gpt-5.6-sol",  # descriptive alias for latest Codex model
 }
 
 # Regex for dynamic codex-<profile> tokens (Story #74)
