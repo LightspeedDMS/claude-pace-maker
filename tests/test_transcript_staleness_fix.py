@@ -964,3 +964,300 @@ class TestRetryDefaultsWidenedTo5Seconds:
         assert (
             sleep_calls == []
         ), f"Expected zero sleep calls on first-attempt match; got {sleep_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Test group 10: Bug #90 — re-issue fail-loop (stale byte-identical match)
+# ---------------------------------------------------------------------------
+#
+# Root cause: when a command/edit is BLOCKED (e.g. no INTENT) and then
+# re-issued with IDENTICAL tool_input, the transcript already contains the
+# earlier blocked turn's tool_use (byte-identical content) plus its
+# tool_result feedback by the time the re-issue's PreToolUse hook fires. If
+# the re-issued (current) turn has not yet flushed, the LAST-match-wins scan
+# finds the STALE earlier turn (which genuinely lacks INTENT — that's why it
+# was blocked) and immediately returns "" instead of None, causing Stage 1 to
+# reject with "no INTENT: declaration" even though the re-issued message
+# DOES carry one. The fix: a matched turn is only trusted when it is the
+# frontier of the transcript (nothing — of any role — follows it). A
+# tool_result/user entry following the anchor proves the transcript has
+# moved past that turn, so the match is stale and the function must signal
+# "not found yet" (None) so the retry loop waits for the genuinely current
+# turn instead.
+
+
+BASH_REISSUE_INTENT = (
+    "INTENT: Kill stalled pytest workers holding the DB lock.\n"
+    "This targets only this session's own test processes."
+)
+
+
+def _tool_result_entry(text: str) -> dict:
+    """A user-role tool_result entry — the feedback the harness appends
+    after a tool call (blocked or executed) completes."""
+    return {
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "content": text}],
+        }
+    }
+
+
+def _bash_reissue_lagged(tmp_path) -> str:
+    """Turn A (blocked, NO INTENT) is flushed along with its tool_result
+    feedback; Turn B (the re-issue, WITH INTENT) has NOT yet flushed."""
+    return _write_transcript(
+        [
+            _asst("req_A", _tool_use_block("Bash", {"command": BASH_CMD})),
+            _tool_result_entry("BLOCKED: no INTENT: declaration found"),
+            # Turn B (re-issue, WITH INTENT) NOT YET FLUSHED.
+        ],
+        tmp_path,
+    )
+
+
+def _bash_reissue_flushed(tmp_path) -> str:
+    """Both Turn A (stale, blocked, no INTENT) and Turn B (current re-issue,
+    WITH INTENT) are present — Turn B is the transcript frontier."""
+    return _write_transcript(
+        [
+            _asst("req_A", _tool_use_block("Bash", {"command": BASH_CMD})),
+            _tool_result_entry("BLOCKED: no INTENT: declaration found"),
+            _asst("req_B", _text_block(BASH_REISSUE_INTENT)),
+            _asst("req_B", _tool_use_block("Bash", {"command": BASH_CMD})),
+        ],
+        tmp_path,
+    )
+
+
+WRITE_REISSUE_INTENT = (
+    "INTENT: Modify foo.py to add new feature (re-issued after block).\n"
+    "Test coverage: tests/test_foo.py::test_new"
+)
+
+
+def _write_reissue_lagged(tmp_path) -> str:
+    """Turn A (blocked Write, NO INTENT, byte-identical content to the
+    re-issue) is flushed with its tool_result; Turn B (re-issue, WITH
+    INTENT) has NOT yet flushed."""
+    return _write_transcript(
+        [
+            _asst(
+                "req_A",
+                _tool_use_block("Write", {"file_path": TARGET, "content": CUR_CONTENT}),
+            ),
+            _tool_result_entry("BLOCKED: no INTENT: declaration found"),
+            # Turn B (re-issue, WITH INTENT) NOT YET FLUSHED.
+        ],
+        tmp_path,
+    )
+
+
+def _write_reissue_flushed(tmp_path) -> str:
+    return _write_transcript(
+        [
+            _asst(
+                "req_A",
+                _tool_use_block("Write", {"file_path": TARGET, "content": CUR_CONTENT}),
+            ),
+            _tool_result_entry("BLOCKED: no INTENT: declaration found"),
+            _asst("req_B", _text_block(WRITE_REISSUE_INTENT)),
+            _asst(
+                "req_B",
+                _tool_use_block("Write", {"file_path": TARGET, "content": CUR_CONTENT}),
+            ),
+        ],
+        tmp_path,
+    )
+
+
+class TestReissueStaleMatchBug90:
+    """Bug #90: a re-issued command/edit must never be validated against a
+    STALE earlier attempt's byte-identical, INTENT-less turn."""
+
+    def test_bash_reissue_stale_turn_not_matched_while_current_unflushed(
+        self, tmp_path
+    ):
+        """RED reproduction: Turn A (stale, no INTENT) is the only match
+        present; Turn B (current re-issue, WITH INTENT) has not flushed.
+
+        Old buggy behavior: returns "" (matches stale Turn A, no INTENT in
+        its text) -> Stage 1 falsely rejects with "no INTENT: declaration"
+        even though the re-issued message DOES carry one.
+
+        Fixed behavior: Turn A is followed by a tool_result entry, so it is
+        NOT the transcript frontier -> the match is stale -> return None
+        (transcript-not-ready), which correctly defers to the retry loop /
+        fail-closed re-issue contract instead of a false Stage-1 reject.
+        """
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _bash_reissue_lagged(tmp_path)
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"command": BASH_CMD},
+            tool_name="Bash",
+            _max_retries=0,
+            _retry_sleep=0.0,
+        )
+        assert result is None, (
+            f"Expected None (stale match must not be trusted) but got: {result!r}\n"
+            "Old bug: matches the stale, INTENT-less prior blocked attempt "
+            "and returns '' (empty), causing a false 'no INTENT' Stage-1 "
+            "reject on the re-issued command."
+        )
+
+    def test_bash_reissue_finds_current_turn_once_flushed(self, tmp_path):
+        """Once Turn B (the re-issue, WITH INTENT) has flushed and become
+        the transcript frontier, it — not stale Turn A — must be returned."""
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _bash_reissue_flushed(tmp_path)
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"command": BASH_CMD},
+            tool_name="Bash",
+            _max_retries=0,
+            _retry_sleep=0.0,
+        )
+        assert result is not None
+        assert "INTENT:" in result, f"Expected INTENT: in result, got: {result!r}"
+        assert (
+            "stalled pytest workers" in result
+        ), f"Expected Turn B's INTENT text, not stale Turn A; got: {result!r}"
+
+    def test_write_reissue_stale_turn_not_matched_while_current_unflushed(
+        self, tmp_path
+    ):
+        """Write/Edit gate variant of the same re-issue race."""
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _write_reissue_lagged(tmp_path)
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"file_path": TARGET, "content": CUR_CONTENT},
+            tool_name="Write",
+            _max_retries=0,
+            _retry_sleep=0.0,
+        )
+        assert (
+            result is None
+        ), f"Write gate: stale re-issue match must not be trusted; got: {result!r}"
+
+    def test_write_reissue_finds_current_turn_once_flushed(self, tmp_path):
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _write_reissue_flushed(tmp_path)
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"file_path": TARGET, "content": CUR_CONTENT},
+            tool_name="Write",
+            _max_retries=0,
+            _retry_sleep=0.0,
+        )
+        assert result is not None
+        assert "INTENT:" in result
+        assert "re-issued after block" in result
+
+    def test_genuinely_never_flushed_reissue_still_fails_closed_after_retries(
+        self, tmp_path, monkeypatch
+    ):
+        """Reverse-timing case: the stale Turn A is present, but no NEW
+        matching turn EVER appears within the bounded retry window (the
+        re-issue genuinely never flushes in time). Must still return None —
+        never silently fall back to the stale entry as a consolation match
+        (that would just reproduce the bug under a different timing)."""
+        import time as time_module
+
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        monkeypatch.setattr(time_module, "sleep", lambda s: None)
+
+        transcript = _bash_reissue_lagged(tmp_path)
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"command": BASH_CMD},
+            tool_name="Bash",
+            _max_retries=5,
+            _retry_sleep=0.0,
+        )
+        assert result is None, (
+            f"Must fail-closed (None) when nothing new ever flushes, never "
+            f"fall back to the stale match; got: {result!r}"
+        )
+
+    def test_bash_reissue_recovers_within_retry_window_when_flushed_mid_wait(
+        self, tmp_path, monkeypatch
+    ):
+        """End-to-end proof of the documented 2-attempt recovery contract:
+        the bounded retry loop bridges the gap between the stale Turn A
+        being present and Turn B (current re-issue, WITH INTENT) flushing
+        partway through the wait window."""
+        import pacemaker.transcript_reader as tr_mod
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _bash_reissue_lagged(tmp_path)
+        calls = {"n": 0}
+
+        def fake_sleep(_seconds):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                with open(transcript, "a") as f:
+                    f.write(
+                        json.dumps(_asst("req_B", _text_block(BASH_REISSUE_INTENT)))
+                        + "\n"
+                    )
+                    f.write(
+                        json.dumps(
+                            _asst(
+                                "req_B", _tool_use_block("Bash", {"command": BASH_CMD})
+                            )
+                        )
+                        + "\n"
+                    )
+
+        monkeypatch.setattr(tr_mod.time, "sleep", fake_sleep)
+
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"command": BASH_CMD},
+            tool_name="Bash",
+            _max_retries=3,
+            _retry_sleep=0.0,
+        )
+        assert result is not None, "Must recover once Turn B flushes mid-wait"
+        assert "INTENT:" in result
+        assert "stalled pytest workers" in result
+        assert calls["n"] >= 1, "Retry loop must have actually waited at least once"
+
+    def test_single_occurrence_no_intent_still_blocks_immediately(self, tmp_path):
+        """Non-regression: a SINGLE (non-duplicate) turn with no INTENT and
+        nothing following it (genuine frontier) must still return ''
+        immediately — the frontier check must not turn every no-INTENT match
+        into a forced wait. This mirrors the real single-turn no-INTENT case
+        (e.g. tests/test_intent_validation_failclosed_race.py's subagent
+        no-INTENT case) which must remain an immediate Stage-1 block, not a
+        multi-second retry-then-block."""
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _write_transcript(
+            [
+                _asst(
+                    "req_ONLY",
+                    _tool_use_block("Bash", {"command": BASH_CMD}),
+                ),
+            ],
+            tmp_path,
+        )
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"command": BASH_CMD},
+            tool_name="Bash",
+            _max_retries=0,
+            _retry_sleep=0.0,
+        )
+        assert result == "", (
+            f"Single genuinely-frontier no-INTENT turn must return '' "
+            f"immediately (real Stage-1 block, not a stale-match false "
+            f"reject); got: {result!r}"
+        )
