@@ -21,8 +21,21 @@ fi
 # Determine which Python to use and how to invoke pacemaker
 INSTALL_MARKER="$PACEMAKER_DIR/install_source"
 
-# Find best Python version (3.11+ for SDK support, fallback to 3.10+)
+# Find best Python version (3.11+ for SDK support, fallback to 3.10+).
+# Prefer an interpreter where claude_agent_sdk actually imports (issue #89:
+# existence-only selection can silently pick a Python lacking the SDK,
+# degrading Anthropic-SDK-based verifiers with no visible warning). If no
+# candidate has the SDK (e.g. a plain non-SDK hook_model like codex), fall
+# back to the original existence-only preference order.
 find_python() {
+    for py in python3.11 python3.10 python3; do
+        if command -v "$py" >/dev/null 2>&1; then
+            if "$py" -c "import claude_agent_sdk" >/dev/null 2>&1; then
+                echo "$py"
+                return 0
+            fi
+        fi
+    done
     for py in python3.11 python3.10 python3; do
         if command -v "$py" >/dev/null 2>&1; then
             echo "$py"
