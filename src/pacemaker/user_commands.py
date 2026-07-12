@@ -1258,10 +1258,16 @@ def _format_blockage_stats(db_path: Optional[str]) -> str:
         total = 0
 
         # Display each category with human-readable label (except 'other')
-        for category in BLOCKAGE_CATEGORY_LABELS:
-            if category == "other":
-                continue
-            label = BLOCKAGE_CATEGORY_LABELS[category]
+        for category in [
+            "intent_validation",
+            "intent_validation_tdd",
+            "intent_validation_cleancode",
+            "intent_validation_bug",
+            "intent_validation_dangerbash",
+            "pacing_tempo",
+            "pacing_quota",
+        ]:
+            label = BLOCKAGE_CATEGORY_LABELS.get(category, category)
             count = stats.get(category, 0)
             total += count
             result += f"\n  {label}:{count:>10}"

@@ -147,11 +147,15 @@ except (sqlite3.Error, OSError) as e:
 
 ## Version Bumping
 
-**When bumping the version**, ALWAYS update BOTH files:
+**When bumping the version**, ALWAYS update ALL THREE files:
 - `src/pacemaker/__init__.py` — the Python package version
 - `.claude-plugin/plugin.json` — the Claude Code plugin manifest version
+- `pyproject.toml` — the packaging metadata version
 
-These MUST always match. Forgetting `plugin.json` has happened before.
+These MUST always match. Forgetting `plugin.json` has happened before. `pyproject.toml` is
+easy to miss too — `tests/test_plugin_hooks_config.py::TestPluginJson::test_plugin_json_version_matches_pyproject`
+asserts `plugin.json`'s version equals `pyproject.toml`'s version, so a two-file bump (missing
+`pyproject.toml`) fails that test even though `__init__.py` and `plugin.json` agree with each other.
 
 ---
 

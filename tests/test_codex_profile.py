@@ -151,19 +151,19 @@ class TestParseCodexTarget:
         assert model == "gpt-5.5"
 
     def test_codex_alias_resolves_to_gpt55(self):
-        """Plain 'codex' alias → (None, 'gpt-5.5') via SHORT_ALIASES."""
+        """Plain 'codex' alias → (None, 'gpt-5.6-sol') via SHORT_ALIASES."""
         from pacemaker.inference.codex_provider import _parse_codex_target
 
         profile, model = _parse_codex_target("codex")
         assert profile is None
-        assert model == "gpt-5.5"
+        assert model == "gpt-5.6-sol"
 
     def test_gpt5_alias_resolves_to_gpt55(self):
         from pacemaker.inference.codex_provider import _parse_codex_target
 
         profile, model = _parse_codex_target("gpt-5")
         assert profile is None
-        assert model == "gpt-5.5"
+        assert model == "gpt-5.6-sol"
 
     def test_gpt54_passed_through(self):
         from pacemaker.inference.codex_provider import _parse_codex_target
@@ -278,7 +278,7 @@ class TestCodexProviderProfileArgv:
         assert "--profile" not in cmd
 
     def test_codex_alias_uses_m_flag_resolves_to_gpt55(self):
-        """Plain 'codex' alias → -m gpt-5.5, no --profile."""
+        """Plain 'codex' alias → -m gpt-5.6-sol, no --profile."""
         from pacemaker.inference.codex_provider import CodexProvider
 
         provider = CodexProvider()
@@ -289,7 +289,7 @@ class TestCodexProviderProfileArgv:
             provider.query("test prompt", model_hint="codex")
             cmd = mock_run.call_args[0][0]
         assert "-m" in cmd
-        assert cmd[cmd.index("-m") + 1] == "gpt-5.5"
+        assert cmd[cmd.index("-m") + 1] == "gpt-5.6-sol"
         assert "--profile" not in cmd
 
     def test_profile_mode_has_skip_git_repo_check_flag(self):

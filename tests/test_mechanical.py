@@ -62,23 +62,23 @@ class TestParseCompetitive:
     """Tests for parse_competitive() expression parser."""
 
     def test_parse_competitive_valid_expression(self):
-        """Standard 2-reviewer expression parses correctly; gpt-5 alias resolves to gpt-5.5."""
+        """Standard 2-reviewer expression parses correctly; gpt-5 alias resolves to gpt-5.6-sol."""
         from pacemaker.inference.competitive import parse_competitive
 
         result = parse_competitive("gpt-5+gemini-flash->sonnet")
         assert result is not None
         reviewers, synthesizer = result
-        assert reviewers == ["gpt-5.5", "gemini-flash"]
+        assert reviewers == ["gpt-5.6-sol", "gemini-flash"]
         assert synthesizer == "sonnet"
 
     def test_parse_competitive_three_reviewers(self):
-        """Three-reviewer expression parses all models; gpt-5 alias resolves to gpt-5.5."""
+        """Three-reviewer expression parses all models; gpt-5 alias resolves to gpt-5.6-sol."""
         from pacemaker.inference.competitive import parse_competitive
 
         result = parse_competitive("gpt-5+gemini-flash+opus->sonnet")
         assert result is not None
         reviewers, synthesizer = result
-        assert reviewers == ["gpt-5.5", "gemini-flash", "opus"]
+        assert reviewers == ["gpt-5.6-sol", "gemini-flash", "opus"]
         assert synthesizer == "sonnet"
 
     def test_parse_competitive_alias_normalization(self):
@@ -970,13 +970,16 @@ class TestCLIHookModel:
     """Tests for CLI hook-model command with competitive expressions."""
 
     def test_cli_hook_model_competitive_expression(self, config_file):
-        """CLI accepts competitive expression and normalizes gpt-5 alias to gpt-5.5."""
+        """CLI accepts competitive expression and normalizes gpt-5 alias to gpt-5.6-sol."""
         from pacemaker.user_commands import _execute_hook_model
 
         result = _execute_hook_model(config_file, "gpt-5+gemini-flash->sonnet")
 
         assert result["success"] is True
-        assert _read_config(config_file)["hook_model"] == "gpt-5.5+gemini-flash->sonnet"
+        assert (
+            _read_config(config_file)["hook_model"]
+            == "gpt-5.6-sol+gemini-flash->sonnet"
+        )
 
     def test_cli_hook_model_competitive_aliases(self, config_file):
         """CLI canonicalizes aliases before storing."""
@@ -1066,7 +1069,7 @@ class TestGovernanceTagCompetitive:
         expression = "+".join(reviewers) + "->" + synthesizer
         feedback = "some feedback"
         tagged = f"[{expression}] {feedback}"
-        assert tagged == "[gpt-5.5+gemini-flash->sonnet] some feedback"
+        assert tagged == "[gpt-5.6-sol+gemini-flash->sonnet] some feedback"
         assert "REVIEWER:" not in tagged
 
     def test_governance_tag_single_reviewer_format(self):
@@ -1100,19 +1103,19 @@ class TestGpt54Support:
         assert synthesizer == "haiku"
 
     def test_parse_competitive_gpt5_alias_normalizes_to_gpt55(self):
-        """gpt-5 in parse_competitive is treated as alias for gpt-5.5."""
+        """gpt-5 in parse_competitive is treated as alias for gpt-5.6-sol."""
         from pacemaker.inference.competitive import parse_competitive
 
         result = parse_competitive("gpt-5+gemini-flash->haiku")
         assert result is not None
         reviewers, synthesizer = result
-        assert "gpt-5.5" in reviewers
+        assert "gpt-5.6-sol" in reviewers
         assert "gpt-5" not in reviewers
 
     @pytest.mark.parametrize(
         "model_hint,expected_model",
         [
-            ("gpt-5", "gpt-5.5"),  # alias resolves to gpt-5.5
+            ("gpt-5", "gpt-5.6-sol"),  # alias resolves to gpt-5.6-sol
             ("gpt-5.4", "gpt-5.4"),  # canonical gpt-5.4 passes through unchanged
             ("gpt-5.5", "gpt-5.5"),  # canonical gpt-5.5 passes through unchanged
         ],
@@ -1149,13 +1152,13 @@ class TestGpt54Support:
         assert _read_config(config_file)["hook_model"] == "gpt-5.4"
 
     def test_cli_gpt5_backward_compat_stores_gpt55(self, config_file):
-        """_execute_hook_model accepts legacy gpt-5 and stores gpt-5.5 as canonical."""
+        """_execute_hook_model accepts legacy gpt-5 and stores gpt-5.6-sol as canonical."""
         from pacemaker.user_commands import _execute_hook_model
 
         result = _execute_hook_model(config_file, "gpt-5")
 
         assert result["success"] is True
-        assert _read_config(config_file)["hook_model"] == "gpt-5.5"
+        assert _read_config(config_file)["hook_model"] == "gpt-5.6-sol"
 
     def test_get_provider_gpt54_returns_codex_provider(self):
         """get_provider('gpt-5.4') returns a CodexProvider instance."""
@@ -1219,13 +1222,13 @@ class TestGpt55Support:
     @pytest.mark.parametrize(
         "alias,expected",
         [
-            ("gpt-5", "gpt-5.5"),
-            ("gpt", "gpt-5.5"),
-            ("codex", "gpt-5.5"),
+            ("gpt-5", "gpt-5.6-sol"),
+            ("gpt", "gpt-5.6-sol"),
+            ("codex", "gpt-5.6-sol"),
         ],
     )
     def test_short_aliases_resolve_to_gpt55(self, alias, expected):
-        """SHORT_ALIASES maps gpt-5, gpt, and codex to gpt-5.5."""
+        """SHORT_ALIASES maps gpt-5, gpt, and codex to gpt-5.6-sol."""
         from pacemaker.inference.model_aliases import SHORT_ALIASES
 
         assert SHORT_ALIASES[alias] == expected
@@ -1249,16 +1252,16 @@ class TestGpt55Support:
 
     @pytest.mark.parametrize("alias", ["gpt", "codex"])
     def test_cli_gpt_and_codex_aliases_store_gpt55(self, alias, config_file):
-        """_execute_hook_model accepts gpt and codex aliases and stores gpt-5.5 as canonical."""
+        """_execute_hook_model accepts gpt and codex aliases and stores gpt-5.6-sol as canonical."""
         from pacemaker.user_commands import _execute_hook_model
 
         result = _execute_hook_model(config_file, alias)
 
         assert result["success"] is True
-        assert _read_config(config_file)["hook_model"] == "gpt-5.5"
+        assert _read_config(config_file)["hook_model"] == "gpt-5.6-sol"
 
     def test_parse_competitive_gpt55_canonical_and_codex_alias(self):
-        """parse_competitive accepts gpt-5.5 as canonical and normalizes codex alias to gpt-5.5."""
+        """parse_competitive accepts gpt-5.5 as canonical and normalizes codex alias to gpt-5.6-sol."""
         from pacemaker.inference.competitive import parse_competitive
 
         result = parse_competitive("gpt-5.5+gemini-flash->haiku")
@@ -1269,5 +1272,5 @@ class TestGpt55Support:
         result2 = parse_competitive("opus+codex->haiku")
         assert result2 is not None
         reviewers2, _ = result2
-        assert "gpt-5.5" in reviewers2
+        assert "gpt-5.6-sol" in reviewers2
         assert "codex" not in reviewers2
