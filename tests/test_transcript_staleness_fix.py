@@ -37,8 +37,8 @@ def _text_block(t: str) -> dict:
     return {"type": "text", "text": t}
 
 
-def _tool_use_block(name: str, inp: dict) -> dict:
-    return {"type": "tool_use", "name": name, "input": inp}
+def _tool_use_block(name: str, inp: dict, tool_id: str = "toolu_default") -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": name, "input": inp}
 
 
 def _write_transcript(lines: List[dict], tmp_path) -> str:
@@ -992,13 +992,15 @@ BASH_REISSUE_INTENT = (
 )
 
 
-def _tool_result_entry(text: str) -> dict:
+def _tool_result_entry(text: str, tool_use_id: str = "toolu_default") -> dict:
     """A user-role tool_result entry — the feedback the harness appends
     after a tool call (blocked or executed) completes."""
     return {
         "message": {
             "role": "user",
-            "content": [{"type": "tool_result", "content": text}],
+            "content": [
+                {"type": "tool_result", "tool_use_id": tool_use_id, "content": text}
+            ],
         }
     }
 
@@ -1008,8 +1010,10 @@ def _bash_reissue_lagged(tmp_path) -> str:
     feedback; Turn B (the re-issue, WITH INTENT) has NOT yet flushed."""
     return _write_transcript(
         [
-            _asst("req_A", _tool_use_block("Bash", {"command": BASH_CMD})),
-            _tool_result_entry("BLOCKED: no INTENT: declaration found"),
+            _asst("req_A", _tool_use_block("Bash", {"command": BASH_CMD}, "toolu_A")),
+            _tool_result_entry(
+                "BLOCKED: no INTENT: declaration found", tool_use_id="toolu_A"
+            ),
             # Turn B (re-issue, WITH INTENT) NOT YET FLUSHED.
         ],
         tmp_path,
@@ -1018,13 +1022,16 @@ def _bash_reissue_lagged(tmp_path) -> str:
 
 def _bash_reissue_flushed(tmp_path) -> str:
     """Both Turn A (stale, blocked, no INTENT) and Turn B (current re-issue,
-    WITH INTENT) are present — Turn B is the transcript frontier."""
+    WITH INTENT) are present — Turn B's own tool_use has NOT been executed
+    yet (no tool_result carries its id), so it is not stale."""
     return _write_transcript(
         [
-            _asst("req_A", _tool_use_block("Bash", {"command": BASH_CMD})),
-            _tool_result_entry("BLOCKED: no INTENT: declaration found"),
+            _asst("req_A", _tool_use_block("Bash", {"command": BASH_CMD}, "toolu_A")),
+            _tool_result_entry(
+                "BLOCKED: no INTENT: declaration found", tool_use_id="toolu_A"
+            ),
             _asst("req_B", _text_block(BASH_REISSUE_INTENT)),
-            _asst("req_B", _tool_use_block("Bash", {"command": BASH_CMD})),
+            _asst("req_B", _tool_use_block("Bash", {"command": BASH_CMD}, "toolu_B")),
         ],
         tmp_path,
     )
@@ -1044,9 +1051,13 @@ def _write_reissue_lagged(tmp_path) -> str:
         [
             _asst(
                 "req_A",
-                _tool_use_block("Write", {"file_path": TARGET, "content": CUR_CONTENT}),
+                _tool_use_block(
+                    "Write", {"file_path": TARGET, "content": CUR_CONTENT}, "toolu_A"
+                ),
             ),
-            _tool_result_entry("BLOCKED: no INTENT: declaration found"),
+            _tool_result_entry(
+                "BLOCKED: no INTENT: declaration found", tool_use_id="toolu_A"
+            ),
             # Turn B (re-issue, WITH INTENT) NOT YET FLUSHED.
         ],
         tmp_path,
@@ -1058,13 +1069,19 @@ def _write_reissue_flushed(tmp_path) -> str:
         [
             _asst(
                 "req_A",
-                _tool_use_block("Write", {"file_path": TARGET, "content": CUR_CONTENT}),
+                _tool_use_block(
+                    "Write", {"file_path": TARGET, "content": CUR_CONTENT}, "toolu_A"
+                ),
             ),
-            _tool_result_entry("BLOCKED: no INTENT: declaration found"),
+            _tool_result_entry(
+                "BLOCKED: no INTENT: declaration found", tool_use_id="toolu_A"
+            ),
             _asst("req_B", _text_block(WRITE_REISSUE_INTENT)),
             _asst(
                 "req_B",
-                _tool_use_block("Write", {"file_path": TARGET, "content": CUR_CONTENT}),
+                _tool_use_block(
+                    "Write", {"file_path": TARGET, "content": CUR_CONTENT}, "toolu_B"
+                ),
             ),
         ],
         tmp_path,
@@ -1260,4 +1277,139 @@ class TestReissueStaleMatchBug90:
             f"Single genuinely-frontier no-INTENT turn must return '' "
             f"immediately (real Stage-1 block, not a stale-match false "
             f"reject); got: {result!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test group 11: Bug #90 v2 — multi-tool-call turn regression
+# ---------------------------------------------------------------------------
+#
+# The v1 fix for bug #90 (staleness = "is this the literal last line of the
+# transcript") was itself broken for a real, common case: a single message
+# making MULTIPLE tool calls (e.g. two Edits) sharing one requestId. The
+# FIRST tool's tool_result legitimately appears in the transcript before the
+# SECOND tool's own PreToolUse hook fires (the harness processes tool calls
+# within a batch sequentially), which the v1 frontier check misread as
+# staleness for the second tool's still-unexecuted, INTENT-carrying match —
+# producing a permanent, unrecoverable "transcript not ready" for that
+# second tool (it can never become the literal frontier again, since the
+# first tool's result is already and forever ahead of it). The v2 fix scopes
+# staleness to the SPECIFIC matched tool_use's own id: only a tool_result
+# carrying THAT exact id proves staleness; a sibling tool's result does not.
+
+
+class TestMultiToolCallTurnBug90V2:
+    """Bug #90 v2: a second (or later) tool call in a multi-tool-call turn
+    must validate correctly even after an earlier sibling tool in the same
+    turn has already completed and appended its own tool_result."""
+
+    def test_second_tool_in_shared_turn_validates_after_first_completes(self, tmp_path):
+        """RED reproduction: one assistant turn makes two Edit calls (Edit A,
+        Edit B) sharing one requestId. Edit A has already executed (its
+        tool_result is present). Edit B's PreToolUse hook now fires to
+        validate the SAME turn's INTENT-carrying message for Edit B's own
+        content.
+
+        v1 bug: any trailing entry (Edit A's tool_result) marks the whole
+        turn stale -> returns None forever for Edit B, an unrecoverable
+        block despite a valid INTENT in the very same, current turn.
+
+        v2 fix: staleness is scoped to Edit B's own tool_use id (no
+        tool_result exists for it yet) -> returns the turn's message with
+        INTENT intact.
+        """
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _write_transcript(
+            [
+                _asst(
+                    "req_multi",
+                    _text_block(
+                        "INTENT: Modify a.py and b.py to add logging calls.\n"
+                        "Test coverage: tests/test_logging.py::test_both_files"
+                    ),
+                ),
+                _asst(
+                    "req_multi",
+                    _tool_use_block(
+                        "Edit",
+                        {
+                            "file_path": "a.py",
+                            "old_string": "old_a",
+                            "new_string": "new_a",
+                        },
+                        "toolu_editA",
+                    ),
+                ),
+                _asst(
+                    "req_multi",
+                    _tool_use_block(
+                        "Edit",
+                        {
+                            "file_path": "b.py",
+                            "old_string": "old_b",
+                            "new_string": "new_b",
+                        },
+                        "toolu_editB",
+                    ),
+                ),
+                # Edit A already executed; its tool_result trails the turn.
+                _tool_result_entry("ok", tool_use_id="toolu_editA"),
+            ],
+            tmp_path,
+        )
+
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={
+                "file_path": "b.py",
+                "old_string": "old_b",
+                "new_string": "new_b",
+            },
+            tool_name="Edit",
+            _max_retries=0,
+            _retry_sleep=0.0,
+        )
+        assert result is not None and result != "", (
+            f"Edit B must validate against its own (current, INTENT-carrying) "
+            f"turn even though sibling Edit A's tool_result already trails "
+            f"it in the transcript; got: {result!r}"
+        )
+        assert "INTENT:" in result
+        assert "logging calls" in result
+
+    def test_stale_reissue_still_correctly_rejected_alongside_multi_tool_fix(
+        self, tmp_path
+    ):
+        """Non-regression: the v2 fix must not accidentally weaken the
+        original bug #90 stale-reissue detection. A tool_use whose OWN id
+        already has a tool_result must still be treated as stale, even when
+        other unrelated tool_use/tool_result pairs exist earlier in the same
+        transcript."""
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _write_transcript(
+            [
+                _asst(
+                    "req_A",
+                    _tool_use_block("Bash", {"command": BASH_CMD}, "toolu_stale"),
+                ),
+                _tool_result_entry(
+                    "BLOCKED: no INTENT: declaration found", tool_use_id="toolu_stale"
+                ),
+                # Turn B (re-issue, WITH INTENT) NOT YET FLUSHED.
+            ],
+            tmp_path,
+        )
+
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"command": BASH_CMD},
+            tool_name="Bash",
+            _max_retries=0,
+            _retry_sleep=0.0,
+        )
+        assert result is None, (
+            f"A tool_use whose own id already has a tool_result must still "
+            f"be rejected as stale; got: {result!r}"
         )

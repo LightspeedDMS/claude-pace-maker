@@ -134,6 +134,7 @@ def _extract_message_parts(content: Union[list, str]) -> dict:
                 elif block.get("type") == "tool_use":
                     tools.append(
                         {
+                            "id": block.get("id"),
                             "name": block.get("name", "unknown"),
                             "input": block.get("input", {}),
                         }
@@ -385,27 +386,28 @@ def _find_turn_matching_tool_input(
     transcript already contains that earlier (possibly INTENT-less) turn's
     tool_use plus its tool_result feedback. If the re-issued (current) turn
     has not yet flushed, a naive "last matching entry" scan finds the STALE
-    earlier turn instead of correctly waiting. To guard against this, a
-    match is only trusted when the anchored turn is the FRONTIER of the
-    transcript — i.e. nothing (of any role) appears after it. A trailing
-    entry (e.g. the tool_result/user feedback that follows a completed or
-    blocked tool call) proves the transcript has moved past that turn, so
-    the match is stale and this returns None (not-found-yet) instead of ""
-    (found-but-no-INTENT), letting the bounded retry loop in
-    ``get_current_turn_message_for_validation`` wait for the genuinely
-    current turn.
+    earlier turn instead of correctly waiting.
+
+    The staleness signal is scoped to the SPECIFIC matched tool_use's own
+    ``id``: a match is stale only when a ``tool_result`` entry exists
+    elsewhere in the transcript whose ``tool_use_id`` equals the anchor
+    tool_use's ``id`` (bug #90 v2 — a prior "is this the literal last line
+    of the transcript" frontier check was too strict and broke multi-tool
+    turns: when one message makes several tool calls sharing a requestId,
+    the FIRST tool's completed tool_result legitimately appears before the
+    SECOND tool's own PreToolUse validation fires, and that must NOT be
+    treated as staleness for the second tool's still-unexecuted match).
+    A tool_result for a *different* tool_use id (a sibling call in the same
+    turn) never marks this match stale.
 
     Returns:
         None  — file missing, no matching tool_use found, or the only match
-                found is STALE (something follows its turn in the transcript)
-        ""    — matching turn found, IS the transcript frontier, but its
-                TEXT lacks an INTENT: marker
-        str   — matching turn found, IS the transcript frontier, with
-                INTENT: in TEXT
+                found is STALE (a tool_result already exists for its own id)
+        ""    — matching turn found, is NOT stale, but its TEXT lacks an
+                INTENT: marker
+        str   — matching turn found, is NOT stale, with INTENT: in TEXT
     """
     try:
-        # Track ALL raw entries (any role) so staleness can be detected via
-        # "does anything follow this turn", not just assistant turns.
         raw_entries: List[dict] = []
         with open(transcript_path, "r") as f:
             for line in f:
@@ -425,6 +427,7 @@ def _find_turn_matching_tool_input(
                         "role": role,
                         "request_id": entry.get("requestId"),
                         "parts": msg_parts,
+                        "content": message.get("content", []),
                     }
                 )
 
@@ -432,6 +435,7 @@ def _find_turn_matching_tool_input(
 
         # Find the LAST assistant entry whose tools include a matching tool_use.
         anchor_index = None
+        anchor_tool_id = None
         for i in range(total - 1, -1, -1):
             e = raw_entries[i]
             if e["role"] != "assistant":
@@ -439,6 +443,7 @@ def _find_turn_matching_tool_input(
             for tool in e["parts"]["tools"]:
                 if _tool_input_matches(tool, tool_name, tool_input):
                     anchor_index = i
+                    anchor_tool_id = tool.get("id")
                     break
             if anchor_index is not None:
                 break
@@ -448,22 +453,26 @@ def _find_turn_matching_tool_input(
 
         anchor_request_id = raw_entries[anchor_index]["request_id"]
 
-        # Frontier/staleness gate (bug #90): find the LAST raw line belonging
-        # to the anchor's logical turn (all entries sharing its requestId;
-        # just the anchor itself when requestId is absent). If that is not
-        # literally the last line of the transcript, something (of any role)
-        # follows the turn — it is stale. Signal "not found yet".
-        if anchor_request_id is not None:
-            last_line_of_turn = max(
-                i
-                for i, e in enumerate(raw_entries)
-                if e["role"] == "assistant" and e["request_id"] == anchor_request_id
-            )
-        else:
-            last_line_of_turn = anchor_index
-
-        if last_line_of_turn != total - 1:
-            return None
+        # Staleness gate (bug #90 v2): stale iff a tool_result exists ANYWHERE
+        # in the transcript carrying this SPECIFIC tool_use's own id — proof
+        # that exact tool_use was already executed/processed once before.
+        # Entries without a resolvable id fall back to "not stale" (preserves
+        # the pre-#90 LAST-match-wins behavior for that edge case rather than
+        # risking an unrecoverable block).
+        if anchor_tool_id is not None:
+            for e in raw_entries:
+                if e["role"] != "user":
+                    continue
+                content = e["content"]
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_result"
+                        and block.get("tool_use_id") == anchor_tool_id
+                    ):
+                        return None
 
         # Merge all entries sharing the anchor's requestId (same logical turn).
         if anchor_request_id is not None:
