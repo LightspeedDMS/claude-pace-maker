@@ -32,7 +32,7 @@ FIDELITY CONTRACT
 
     messages = get_last_n_messages_for_validation(transcript_path, n=2)
     override = get_current_turn_message_for_validation(transcript_path,
-                   tool_input=tool_input, tool_name=tool_name, _max_retries=0)
+                   tool_input=tool_input, tool_name=tool_name, _max_wait_seconds=0.0)
     if override is None:
         return {"decision": "block", ...}   # fail-CLOSED (TOCTOU race / pre-flush), v2.33.2
     current  = override or extract_current_assistant_message(messages)
@@ -179,8 +179,8 @@ def _replay_stage1(
         guard now fails closed + re-issue, mirroring the danger-bash gate,
         instead of the old fail-open pass-through).
 
-    _max_retries=0 is passed in both cases: fixtures are static files,
-    re-reading them will never produce a different result.
+    _max_wait_seconds=0.0 is passed in both cases: fixtures are static
+    files, re-reading them will never produce a different result.
     """
     messages = get_last_n_messages_for_validation(fixture_path, n=2)
 
@@ -208,13 +208,12 @@ def _replay_stage1(
         else:
             tool_input = {"command": "__PREFLUSH_SENTINEL__"}
 
-    # Shipped path: _max_retries=0 avoids sleeping on static fixture files.
+    # Shipped path: _max_wait_seconds=0.0 avoids sleeping on static fixture files.
     override = get_current_turn_message_for_validation(
         fixture_path,
         tool_input=tool_input,
         tool_name=tool_name,
-        _max_retries=0,
-        _retry_sleep=0,
+        _max_wait_seconds=0.0,
     )
 
     # Mimic hook.py ~2807 (v2.33.2): None → fail-CLOSED → {"decision": "block"} → "NO"
@@ -358,8 +357,7 @@ def test_flushed_fixtures_matcher_returns_non_none():
             fixture_path,
             tool_input=tool_input,
             tool_name=case["tool_name"],
-            _max_retries=0,
-            _retry_sleep=0,
+            _max_wait_seconds=0.0,
         )
         if override is None:
             failures.append(

@@ -13,6 +13,7 @@ Coverage:
 7. Backward compat — callers without tool_input retain old behavior
 """
 
+import itertools
 import json
 from typing import List, Optional
 
@@ -127,8 +128,7 @@ class TestToolMatchedAnchorWrite:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is None, (
             f"Expected None (transcript-not-ready) but got: {result!r}\n"
@@ -144,8 +144,7 @@ class TestToolMatchedAnchorWrite:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is not None, "Should find the flushed current turn"
         assert "INTENT:" in result, f"Expected INTENT: in result, got: {result!r}"
@@ -167,8 +166,7 @@ class TestToolMatchedAnchorWrite:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is None, (
             f"Same-file Write with different content must return None, not match "
@@ -206,8 +204,7 @@ class TestToolMatchedAnchorWrite:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is not None
         assert (
@@ -257,8 +254,7 @@ class TestToolMatchedAnchorEdit:
                 "new_string": "cur-new",
             },
             tool_name="Edit",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is None
 
@@ -312,8 +308,7 @@ class TestToolMatchedAnchorEdit:
                 "new_string": "cur-new",
             },
             tool_name="Edit",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is not None
         assert "INTENT:" in result
@@ -325,10 +320,11 @@ class TestToolMatchedAnchorEdit:
 
 
 class TestBoundedRetry:
-    """The retry loop MUST have provable termination: exactly _max_retries+1 reads."""
+    """The retry loop MUST have provable termination: bounded by real
+    (monotonic) elapsed time reaching _max_wait_seconds, never unbounded."""
 
     def test_returns_none_after_retries_when_never_flushed(self, tmp_path):
-        """After all retries with _retry_sleep=0, returns None (never hangs)."""
+        """After the ceiling is reached, returns None (never hangs)."""
         import time
 
         from pacemaker.transcript_reader import get_current_turn_message_for_validation
@@ -339,15 +335,14 @@ class TestBoundedRetry:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            _max_retries=5,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.05,
         )
         elapsed = time.monotonic() - t0
 
-        assert result is None, "Must return None after exhausting retries"
-        # With _retry_sleep=0 the total time should be negligible
+        assert result is None, "Must return None after exhausting the wait ceiling"
+        # A small ceiling (0.05s) proves the loop is bounded, not unbounded.
         assert (
-            elapsed < 5.0
+            elapsed < 1.0
         ), f"Retry loop took {elapsed:.2f}s — possible unbounded loop"
 
     def test_finds_match_on_first_attempt_when_flushed(self, tmp_path):
@@ -359,15 +354,14 @@ class TestBoundedRetry:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            _max_retries=10,
-            _retry_sleep=0.0,
+            _max_wait_seconds=10.0,
         )
         # Should return on first attempt, not retry
         assert result is not None
         assert "INTENT:" in result
 
     def test_zero_retries_single_attempt(self, tmp_path):
-        """_max_retries=0 means exactly one attempt, then None."""
+        """_max_wait_seconds=0.0 means exactly one attempt before rejecting."""
         from pacemaker.transcript_reader import get_current_turn_message_for_validation
 
         transcript = _lagged_write(tmp_path)
@@ -375,8 +369,7 @@ class TestBoundedRetry:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is None
 
@@ -429,8 +422,7 @@ class TestDangerBashAnchor:
             transcript,
             tool_input={"command": BASH_CMD},
             tool_name="Bash",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is None
 
@@ -443,8 +435,7 @@ class TestDangerBashAnchor:
             transcript,
             tool_input={"command": BASH_CMD},
             tool_name="Bash",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is not None
         assert "INTENT:" in result
@@ -471,8 +462,7 @@ class TestDangerBashAnchor:
             transcript,
             tool_input={"command": "rm -rf /tmp/foo"},
             tool_name="Bash",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert (
             result is None
@@ -656,12 +646,14 @@ class TestHookLevelFailClosed:
         Uses a non-existent transcript path to trigger the fail-fast sentinel
         (file missing → immediate None on every retry attempt — no entry will
         ever appear). The real retry loop runs (not mocked) so this is a true
-        integration check of the missing-file path; only the literal
-        time.sleep wait is neutralized (stdlib timing call, not business
-        logic) so the test stays instant despite the ~5s retry budget
-        (coordinator refinement, v2.33.2 — see
-        TestRetryDefaultsWidenedTo5Seconds below for dedicated timing
-        coverage of the retry loop itself).
+        integration check of the missing-file path. The loop is bounded by
+        REAL (monotonic) elapsed time (issue #91), so mocking only
+        time.sleep no longer makes it instant — time.monotonic is also
+        faked (jumping 100s per call) so the 15s ceiling trips after exactly
+        one read, keeping the test fast while still exercising the real
+        missing-file code path (see
+        TestRetryDefaultsWidenedTo15SecondsWithBackoff below for dedicated
+        timing coverage of the retry loop itself).
         """
         from pacemaker.hook import run_pre_tool_hook
         import sqlite3
@@ -686,6 +678,10 @@ class TestHookLevelFailClosed:
             patch("pacemaker.hook.DEFAULT_DB_PATH", db_path),
             patch("sys.stdin") as mock_stdin,
             patch("pacemaker.transcript_reader.time.sleep"),
+            patch(
+                "pacemaker.transcript_reader.time.monotonic",
+                side_effect=itertools.count(0, 100),
+            ),
         ):
             mock_stdin.read.return_value = hook_data
             result = run_pre_tool_hook()
@@ -749,6 +745,10 @@ class TestHookLevelFailClosed:
             patch("pacemaker.hook.DEFAULT_DB_PATH", db_path),
             patch("sys.stdin") as mock_stdin,
             patch("pacemaker.transcript_reader.time.sleep"),
+            patch(
+                "pacemaker.transcript_reader.time.monotonic",
+                side_effect=itertools.count(0, 100),
+            ),
         ):
             mock_stdin.read.return_value = hook_data
             result = run_pre_tool_hook()
@@ -802,11 +802,12 @@ class TestDangerBashFailClosed:
         Uses a non-existent transcript so the fail-fast path returns None
         immediately. The danger-bash gate must not pass the command through.
 
-        v2.33.2: the bash call site no longer pins its own ``_max_retries``
-        override — it now shares the same ~5s default budget as the
-        Write/Edit gate (single source of truth). The real retry loop still
-        runs (missing file → None on every attempt); only the literal
-        time.sleep wait is neutralized so this test stays instant.
+        The bash call site does not pin its own retry-param overrides — it
+        shares the same 15s exponential-backoff ceiling as the Write/Edit
+        gate (single source of truth, issue #91). The real retry loop still
+        runs (missing file → None on every attempt); the loop is bounded by
+        REAL (monotonic) elapsed time, so time.monotonic is faked (jumping
+        100s per call) alongside time.sleep so this test stays instant.
         """
         from pacemaker.hook import run_pre_tool_hook
         from unittest.mock import patch
@@ -832,6 +833,10 @@ class TestDangerBashFailClosed:
             patch("pacemaker.hook.DEFAULT_DB_PATH", db_path),
             patch("sys.stdin") as mock_stdin,
             patch("pacemaker.transcript_reader.time.sleep"),
+            patch(
+                "pacemaker.transcript_reader.time.monotonic",
+                side_effect=itertools.count(0, 100),
+            ),
         ):
             mock_stdin.read.return_value = hook_data
             result = run_pre_tool_hook()
@@ -868,6 +873,10 @@ class TestDangerBashFailClosed:
             patch("pacemaker.hook.DEFAULT_DB_PATH", db_path),
             patch("sys.stdin") as mock_stdin,
             patch("pacemaker.transcript_reader.time.sleep"),
+            patch(
+                "pacemaker.transcript_reader.time.monotonic",
+                side_effect=itertools.count(0, 100),
+            ),
         ):
             mock_stdin.read.return_value = hook_data
             result = run_pre_tool_hook()
@@ -878,71 +887,61 @@ class TestDangerBashFailClosed:
 
 
 # ---------------------------------------------------------------------------
-# Test group 9: ~5s retry-window defaults (coordinator refinement, v2.33.2)
+# Test group 9: 15s hard-ceiling exponential-backoff retry defaults (#91)
 # ---------------------------------------------------------------------------
 
 
-class TestRetryDefaultsWidenedTo5Seconds:
-    """The default retry window was widened from ~1s (10 x 0.1s) to ~5s
-    (20 x 0.25s, 21 reads total) so more in-window transcript flushes are
-    caught before the gate falls back to fail-closed + re-issue. Fewer,
-    longer-spaced reads avoid hammering large (~27MB on busy sessions)
-    transcripts that get re-read on every attempt.
+class TestRetryDefaultsWidenedTo15SecondsWithBackoff:
+    """Issue #91: the fixed 21-attempt/0.25s-interval retry schedule (~5.25s
+    nominal ceiling) was replaced with exponential backoff hard-ceiled at a
+    real (monotonic) 15s elapsed-time budget. Busy/large-transcript sessions
+    regularly exceeded the old ~5.25s ceiling (observed delays of 6.6-7.3s
+    in issue #91's evidence), causing spurious fail-closed blocks. The new
+    schedule sleeps 0.25s, 0.5s, 1.0s, 2.0s, 2.0s, ... (capped at
+    _max_sleep=2.0s), each individual sleep further clamped to never
+    overshoot the 15s ceiling.
 
     Both the Write/Edit gate and the danger-bash gate call
     ``get_current_turn_message_for_validation`` without overriding these
-    parameters (the bash gate's old explicit ``_max_retries=10`` override was
-    removed in v2.33.2), so changing the function default covers both gates
+    parameters, so changing the function defaults covers both gates
     uniformly — single source of truth, no drift between the two call sites.
     """
 
-    def test_default_max_retries_is_20(self):
+    def test_default_max_wait_seconds_is_15(self):
         import inspect
 
         from pacemaker.transcript_reader import get_current_turn_message_for_validation
 
         sig = inspect.signature(get_current_turn_message_for_validation)
-        assert sig.parameters["_max_retries"].default == 20
+        assert sig.parameters["_max_wait_seconds"].default == 15.0
 
-    def test_default_retry_sleep_is_quarter_second(self):
+    def test_default_initial_sleep_is_quarter_second(self):
         import inspect
 
         from pacemaker.transcript_reader import get_current_turn_message_for_validation
 
         sig = inspect.signature(get_current_turn_message_for_validation)
-        assert sig.parameters["_retry_sleep"].default == 0.25
+        assert sig.parameters["_initial_sleep"].default == 0.25
 
-    def test_default_total_wait_is_5_seconds(self):
-        """20 retries * 0.25s sleep = 5.0s total max wait (Messi Rule 14:
-        provable termination bound, well under the 60s hook timeout)."""
+    def test_default_backoff_multiplier_is_2(self):
         import inspect
 
         from pacemaker.transcript_reader import get_current_turn_message_for_validation
 
         sig = inspect.signature(get_current_turn_message_for_validation)
-        max_retries = sig.parameters["_max_retries"].default
-        retry_sleep = sig.parameters["_retry_sleep"].default
-        total_wait = max_retries * retry_sleep
-        assert total_wait == 5.0, (
-            f"Expected exactly 5.0s total max wait, got {total_wait}s "
-            f"({max_retries} retries x {retry_sleep}s sleep)"
-        )
+        assert sig.parameters["_backoff_multiplier"].default == 2.0
 
-    def test_default_total_reads_is_21(self):
-        """range(_max_retries + 1) => 21 attempts with the new defaults —
-        fewer reads than a naive 50x0.1s scheme would require, per the
-        coordinator's explicit guidance to avoid hammering large transcripts."""
+    def test_default_max_sleep_is_2_seconds(self):
         import inspect
 
         from pacemaker.transcript_reader import get_current_turn_message_for_validation
 
         sig = inspect.signature(get_current_turn_message_for_validation)
-        max_retries = sig.parameters["_max_retries"].default
-        assert max_retries + 1 == 21
+        assert sig.parameters["_max_sleep"].default == 2.0
 
     def test_early_return_on_match_does_not_sleep(self, tmp_path, monkeypatch):
         """When the matching turn IS already flushed, the NEW default params
-        must not sleep at all — the 5s figure is a MAX wait on the
+        must not sleep at all — the 15s ceiling is a MAX wait on the
         not-yet-flushed path, never a fixed per-edit delay."""
         import time as time_module
 
@@ -956,14 +955,79 @@ class TestRetryDefaultsWidenedTo5Seconds:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            # No _max_retries/_retry_sleep override — exercises the REAL
-            # ~5s-ceiling defaults to prove early-return holds there too.
+            # No override — exercises the REAL 15s-ceiling defaults to prove
+            # early-return holds there too.
         )
         assert result is not None
         assert "INTENT:" in result
         assert (
             sleep_calls == []
         ), f"Expected zero sleep calls on first-attempt match; got {sleep_calls}"
+
+    def test_backoff_schedule_and_hard_ceiling_bound_iteration_count(
+        self, tmp_path, monkeypatch
+    ):
+        """Proves both halves of the #91 fix together using a fake monotonic
+        clock (avoids wall-clock flakiness): sleep durations are
+        non-decreasing until capped at _max_sleep, and the loop terminates
+        (returns None) once the 15s ceiling is reached rather than looping
+        forever."""
+        import time as time_module
+
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _lagged_write(tmp_path)  # current turn never flushes
+
+        fake_now = [0.0]
+
+        def fake_monotonic():
+            return fake_now[0]
+
+        sleep_calls = []
+
+        def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            fake_now[0] += seconds
+
+        monkeypatch.setattr(time_module, "monotonic", fake_monotonic)
+        monkeypatch.setattr(time_module, "sleep", fake_sleep)
+
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"file_path": TARGET, "content": CUR_CONTENT},
+            tool_name="Write",
+            _max_wait_seconds=15.0,
+            _initial_sleep=0.25,
+            _backoff_multiplier=2.0,
+            _max_sleep=2.0,
+        )
+
+        assert result is None, "Must reject once the 15s ceiling is reached"
+        assert len(sleep_calls) < 20, (
+            f"Expected a small, bounded number of sleeps, got "
+            f"{len(sleep_calls)}: {sleep_calls}"
+        )
+        # All sleeps except possibly the last must be non-decreasing until
+        # capped at _max_sleep; the LAST sleep may be clamped smaller than
+        # its uncapped backoff value because it is trimmed to fit exactly
+        # within the remaining budget before the ceiling (never overshoot).
+        body, last = sleep_calls[:-1], sleep_calls[-1]
+        for prev, cur in zip(body, body[1:]):
+            assert cur >= prev or cur == 2.0, (
+                f"Sleep durations must be non-decreasing until capped at "
+                f"_max_sleep=2.0; got {sleep_calls}"
+            )
+        assert 0 < last <= 2.0, (
+            f"Final (remaining-clamped) sleep must be positive and never "
+            f"exceed _max_sleep=2.0; got {sleep_calls}"
+        )
+        assert (
+            max(sleep_calls) <= 2.0
+        ), f"No sleep may exceed _max_sleep; got {sleep_calls}"
+        assert sum(sleep_calls) <= 15.0 + 1e-9, (
+            f"Total sleep time must not exceed the 15s ceiling; got "
+            f"{sum(sleep_calls)}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1114,8 +1178,7 @@ class TestReissueStaleMatchBug90:
             transcript,
             tool_input={"command": BASH_CMD},
             tool_name="Bash",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is None, (
             f"Expected None (stale match must not be trusted) but got: {result!r}\n"
@@ -1134,8 +1197,7 @@ class TestReissueStaleMatchBug90:
             transcript,
             tool_input={"command": BASH_CMD},
             tool_name="Bash",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is not None
         assert "INTENT:" in result, f"Expected INTENT: in result, got: {result!r}"
@@ -1154,8 +1216,7 @@ class TestReissueStaleMatchBug90:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert (
             result is None
@@ -1169,8 +1230,7 @@ class TestReissueStaleMatchBug90:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is not None
         assert "INTENT:" in result
@@ -1195,8 +1255,7 @@ class TestReissueStaleMatchBug90:
             transcript,
             tool_input={"command": BASH_CMD},
             tool_name="Bash",
-            _max_retries=5,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.05,
         )
         assert result is None, (
             f"Must fail-closed (None) when nothing new ever flushes, never "
@@ -1239,8 +1298,7 @@ class TestReissueStaleMatchBug90:
             transcript,
             tool_input={"command": BASH_CMD},
             tool_name="Bash",
-            _max_retries=3,
-            _retry_sleep=0.0,
+            _max_wait_seconds=5.0,
         )
         assert result is not None, "Must recover once Turn B flushes mid-wait"
         assert "INTENT:" in result
@@ -1270,8 +1328,7 @@ class TestReissueStaleMatchBug90:
             transcript,
             tool_input={"command": BASH_CMD},
             tool_name="Bash",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result == "", (
             f"Single genuinely-frontier no-INTENT turn must return '' "
@@ -1367,8 +1424,7 @@ class TestMultiToolCallTurnBug90V2:
                 "new_string": "new_b",
             },
             tool_name="Edit",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is not None and result != "", (
             f"Edit B must validate against its own (current, INTENT-carrying) "
@@ -1406,8 +1462,7 @@ class TestMultiToolCallTurnBug90V2:
             transcript,
             tool_input={"command": BASH_CMD},
             tool_name="Bash",
-            _max_retries=0,
-            _retry_sleep=0.0,
+            _max_wait_seconds=0.0,
         )
         assert result is None, (
             f"A tool_use whose own id already has a tool_result must still "

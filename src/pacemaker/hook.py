@@ -2581,11 +2581,12 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
                         # Bug #83: tool-matched anchor for Bash gate.
                         # Fail closed if transcript not yet flushed.
-                        # No _max_retries override here (v2.33.2): shares the
-                        # ~5s default retry budget with the Write/Edit gate
-                        # below (transcript_reader.get_current_turn_message_
-                        # for_validation's defaults are the single source of
-                        # truth for both pre-tool gates).
+                        # No retry-param override here (issue #91): shares
+                        # the 15s exponential-backoff hard ceiling with the
+                        # Write/Edit gate below (transcript_reader.
+                        # get_current_turn_message_for_validation's defaults
+                        # are the single source of truth for both pre-tool
+                        # gates).
                         _bash_anchor = get_current_turn_message_for_validation(
                             transcript_path,
                             tool_input={"command": command},

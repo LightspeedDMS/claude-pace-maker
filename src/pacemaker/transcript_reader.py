@@ -513,8 +513,10 @@ def get_current_turn_message_for_validation(
     tool_input: Optional[dict] = None,
     tool_name: Optional[str] = None,
     *,
-    _max_retries: int = 20,
-    _retry_sleep: float = 0.25,
+    _max_wait_seconds: float = 15.0,
+    _initial_sleep: float = 0.25,
+    _backoff_multiplier: float = 2.0,
+    _max_sleep: float = 2.0,
 ) -> Optional[str]:
     """Extract the current assistant turn message for intent validation.
 
@@ -533,19 +535,27 @@ def get_current_turn_message_for_validation(
         transcript_path: Path to JSONL transcript file.
         tool_input: PreToolUse tool_input dict.  None => legacy path.
         tool_name: Tool name (Write/Edit/Bash).  Required with tool_input.
-        _max_retries: Max re-reads after first miss (bounded per Messi Rule
-            14). Default 20 => 21 total reads, ~5.0s max wait at the default
-            _retry_sleep (coordinator refinement, v2.33.2 — widened from the
-            original ~1.0s/10 reads to catch more in-window transcript
-            flushes before falling back to fail-closed + re-issue). Both the
-            Write/Edit gate and the danger-bash gate call this function
-            without overriding these parameters, so this default is the
-            single source of truth for the wait ceiling on both pre-tool
-            gates.
-        _retry_sleep: Seconds between attempts. Default 0.25s — fewer,
-            longer-spaced reads than a naive finer-grained scheme, since the
-            transcript can be tens of MB on busy sessions and is re-read in
-            full on every attempt; ≪ the 60s outer hook timeout.
+        _max_wait_seconds: Hard ceiling on REAL (monotonic) elapsed time
+            across the whole retry loop (issue #91). Default 15.0s. Replaced
+            the old fixed 21-attempt/0.25s-interval schedule (~5.25s nominal
+            ceiling) after evidence showed busy/large-transcript sessions
+            regularly exceeded it — the transcript read/parse cost itself
+            counts against this ceiling (tracked via ``time.monotonic()``),
+            not just the sleeps, since re-reading a tens-of-MB transcript on
+            every attempt is not free. Both the Write/Edit gate and the
+            danger-bash gate call this function without overriding these
+            parameters, so this default is the single source of truth for
+            the wait ceiling on both pre-tool gates.
+        _initial_sleep: Seconds slept after the first miss. Default 0.25s.
+        _backoff_multiplier: Multiplier applied to the sleep duration after
+            each miss. Default 2.0 (exponential backoff: 0.25, 0.5, 1.0,
+            2.0, 2.0, ... once capped).
+        _max_sleep: Upper bound on any single sleep duration. Default 2.0s
+            — avoids long, coarse-grained waits that would blow past the
+            ceiling in one jump while still keeping the total attempt count
+            low on large/busy transcripts (re-read in full on every
+            attempt). Each individual sleep is additionally clamped to
+            never overshoot ``_max_wait_seconds``.
 
     Returns:
         None  -- tool_input given but matching turn absent (not-yet-flushed
@@ -558,17 +568,26 @@ def get_current_turn_message_for_validation(
         # Legacy path: returns str (never None).
         return _legacy_get_current_turn_message(transcript_path)
 
-    # New path (bug #83): tool-matched anchor with bounded retry.
-    for attempt in range(_max_retries + 1):
+    # New path (bug #83 + #91): tool-matched anchor with exponential-backoff
+    # retry, hard-ceiled at _max_wait_seconds of REAL elapsed time. Provably
+    # bounded (Messi Rule 14): each iteration either returns, or sleeps a
+    # strictly positive duration (remaining > 0 was just checked), so
+    # elapsed strictly increases every iteration until it reaches the
+    # ceiling — finite iterations, hard real-time cap.
+    start = time.monotonic()
+    sleep_for = _initial_sleep
+    while True:
         result = _find_turn_matching_tool_input(
             transcript_path, tool_input, tool_name or ""
         )
         if result is not None:
             return result
-        if attempt < _max_retries:
-            time.sleep(_retry_sleep)
-
-    return None
+        elapsed = time.monotonic() - start
+        remaining = _max_wait_seconds - elapsed
+        if remaining <= 0:
+            return None
+        time.sleep(min(sleep_for, remaining))
+        sleep_for = min(sleep_for * _backoff_multiplier, _max_sleep)
 
 
 def _has_write_or_edit(msg_parts: dict) -> bool:
