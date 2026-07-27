@@ -649,10 +649,10 @@ class TestHookLevelFailClosed:
         integration check of the missing-file path. The loop is bounded by
         REAL (monotonic) elapsed time (issue #91), so mocking only
         time.sleep no longer makes it instant — time.monotonic is also
-        faked (jumping 100s per call) so the 15s ceiling trips after exactly
+        faked (jumping 100s per call) so the 30s ceiling trips after exactly
         one read, keeping the test fast while still exercising the real
         missing-file code path (see
-        TestRetryDefaultsWidenedTo15SecondsWithBackoff below for dedicated
+        TestRetryDefaultsWidenedTo30SecondsWithBackoff below for dedicated
         timing coverage of the retry loop itself).
         """
         from pacemaker.hook import run_pre_tool_hook
@@ -803,7 +803,7 @@ class TestDangerBashFailClosed:
         immediately. The danger-bash gate must not pass the command through.
 
         The bash call site does not pin its own retry-param overrides — it
-        shares the same 15s exponential-backoff ceiling as the Write/Edit
+        shares the same 30s exponential-backoff ceiling as the Write/Edit
         gate (single source of truth, issue #91). The real retry loop still
         runs (missing file → None on every attempt); the loop is bounded by
         REAL (monotonic) elapsed time, so time.monotonic is faked (jumping
@@ -887,19 +887,28 @@ class TestDangerBashFailClosed:
 
 
 # ---------------------------------------------------------------------------
-# Test group 9: 15s hard-ceiling exponential-backoff retry defaults (#91)
+# Test group 9: 30s hard-ceiling exponential-backoff retry defaults (#91 v2)
 # ---------------------------------------------------------------------------
 
 
-class TestRetryDefaultsWidenedTo15SecondsWithBackoff:
-    """Issue #91: the fixed 21-attempt/0.25s-interval retry schedule (~5.25s
-    nominal ceiling) was replaced with exponential backoff hard-ceiled at a
-    real (monotonic) 15s elapsed-time budget. Busy/large-transcript sessions
-    regularly exceeded the old ~5.25s ceiling (observed delays of 6.6-7.3s
-    in issue #91's evidence), causing spurious fail-closed blocks. The new
-    schedule sleeps 0.25s, 0.5s, 1.0s, 2.0s, 2.0s, ... (capped at
-    _max_sleep=2.0s), each individual sleep further clamped to never
-    overshoot the 15s ceiling.
+class TestRetryDefaultsWidenedTo30SecondsWithBackoff:
+    """Issue #91 (second pass): the original fix replaced the fixed
+    21-attempt/0.25s-interval retry schedule (~5.25s nominal ceiling) with
+    exponential backoff hard-ceiled at a real (monotonic) 15s elapsed-time
+    budget. Live evidence (172 intent_validation_dangerbash race blocks over
+    14 days, recurring in clusters on a real 324MB/26,626-line transcript)
+    proved the 15s ceiling still insufficient — direct measurement showed
+    ``_find_turn_matching_tool_input``'s full-file re-parse cost 3.067s per
+    attempt on that transcript, consuming nearly the entire 15s budget on
+    scan cost rather than real waiting. Combined with the fixed-cost tail
+    read (see TestFixedCostTailRead below — a v2 simplification that
+    replaced an interim growing-window design once that design was itself
+    measured to make the not-found case slower still), which makes each
+    attempt cheap regardless of file size, the ceiling is now widened to a
+    real (monotonic) 30s elapsed-time budget so it is spent mostly on
+    genuine waiting. The schedule still sleeps 0.25s, 0.5s, 1.0s, 2.0s,
+    2.0s, ... (capped at _max_sleep=2.0s), each individual sleep further
+    clamped to never overshoot the 30s ceiling.
 
     Both the Write/Edit gate and the danger-bash gate call
     ``get_current_turn_message_for_validation`` without overriding these
@@ -907,13 +916,13 @@ class TestRetryDefaultsWidenedTo15SecondsWithBackoff:
     uniformly — single source of truth, no drift between the two call sites.
     """
 
-    def test_default_max_wait_seconds_is_15(self):
+    def test_default_max_wait_seconds_is_30(self):
         import inspect
 
         from pacemaker.transcript_reader import get_current_turn_message_for_validation
 
         sig = inspect.signature(get_current_turn_message_for_validation)
-        assert sig.parameters["_max_wait_seconds"].default == 15.0
+        assert sig.parameters["_max_wait_seconds"].default == 30.0
 
     def test_default_initial_sleep_is_quarter_second(self):
         import inspect
@@ -941,7 +950,7 @@ class TestRetryDefaultsWidenedTo15SecondsWithBackoff:
 
     def test_early_return_on_match_does_not_sleep(self, tmp_path, monkeypatch):
         """When the matching turn IS already flushed, the NEW default params
-        must not sleep at all — the 15s ceiling is a MAX wait on the
+        must not sleep at all — the 30s ceiling is a MAX wait on the
         not-yet-flushed path, never a fixed per-edit delay."""
         import time as time_module
 
@@ -955,7 +964,7 @@ class TestRetryDefaultsWidenedTo15SecondsWithBackoff:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            # No override — exercises the REAL 15s-ceiling defaults to prove
+            # No override — exercises the REAL 30s-ceiling defaults to prove
             # early-return holds there too.
         )
         assert result is not None
@@ -970,7 +979,7 @@ class TestRetryDefaultsWidenedTo15SecondsWithBackoff:
         """Proves both halves of the #91 fix together using a fake monotonic
         clock (avoids wall-clock flakiness): sleep durations are
         non-decreasing until capped at _max_sleep, and the loop terminates
-        (returns None) once the 15s ceiling is reached rather than looping
+        (returns None) once the 30s ceiling is reached rather than looping
         forever."""
         import time as time_module
 
@@ -996,14 +1005,14 @@ class TestRetryDefaultsWidenedTo15SecondsWithBackoff:
             transcript,
             tool_input={"file_path": TARGET, "content": CUR_CONTENT},
             tool_name="Write",
-            _max_wait_seconds=15.0,
+            _max_wait_seconds=30.0,
             _initial_sleep=0.25,
             _backoff_multiplier=2.0,
             _max_sleep=2.0,
         )
 
-        assert result is None, "Must reject once the 15s ceiling is reached"
-        assert len(sleep_calls) < 20, (
+        assert result is None, "Must reject once the 30s ceiling is reached"
+        assert len(sleep_calls) < 25, (
             f"Expected a small, bounded number of sleeps, got "
             f"{len(sleep_calls)}: {sleep_calls}"
         )
@@ -1024,8 +1033,8 @@ class TestRetryDefaultsWidenedTo15SecondsWithBackoff:
         assert (
             max(sleep_calls) <= 2.0
         ), f"No sleep may exceed _max_sleep; got {sleep_calls}"
-        assert sum(sleep_calls) <= 15.0 + 1e-9, (
-            f"Total sleep time must not exceed the 15s ceiling; got "
+        assert sum(sleep_calls) <= 30.0 + 1e-9, (
+            f"Total sleep time must not exceed the 30s ceiling; got "
             f"{sum(sleep_calls)}"
         )
 
@@ -1468,3 +1477,566 @@ class TestMultiToolCallTurnBug90V2:
             f"A tool_use whose own id already has a tool_result must still "
             f"be rejected as stale; got: {result!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test group 12: Issue #91 (second pass, v2 simplification) — fixed-cost
+# tail read replaces window-growth tail read
+# ---------------------------------------------------------------------------
+#
+# Root cause (confirmed by direct measurement on a real 324MB/26,626-line
+# incident transcript): the ORIGINAL implementation did a full sequential
+# re-open + re-parse of the ENTIRE transcript on every single retry attempt,
+# measured at 3.067s/attempt on that file. A first fix attempt replaced the
+# full scan with a tail-read whose window DOUBLED (up to the full file size)
+# whenever the anchor wasn't found in it. That "fix" was ITSELF measured to
+# make the NOT-FOUND case WORSE than the original full scan (~8s/attempt on
+# the same transcript) -- precisely because "not found" (the current turn
+# hasn't flushed yet) is the case that exhausts the growing window on every
+# single retry attempt. It also could never actually help: the current
+# turn's tool_use is always at (or extremely near) the tail of the
+# transcript -- if it isn't there yet, it hasn't been written, full stop, no
+# amount of scanning further back changes that.
+#
+# The v2 design (this test group) is deliberately simpler: read a SINGLE
+# fixed-size window from EOF (TAIL_READ_BYTES, never grown) and restrict the
+# anchor search to the last LAST_N_TURNS_FOR_TOOL_MATCH logical assistant
+# turns found in it. Cost is O(window size), flat regardless of total file
+# size, for BOTH the found and not-found cases -- the not-found case (the
+# one that was actually broken) is now just as cheap as the found case.
+
+
+def _build_large_transcript_anchor_near_eof(
+    tmp_path, num_padding: int = 15000, padding_size: int = 2000
+) -> str:
+    """~30MB synthetic transcript with the target Write tool_use near EOF.
+
+    This mirrors the scale of the real incident transcript closely enough
+    that a full-file scan takes a clearly measurable amount of time (the
+    original full-scan implementation was benchmarked at ~0.18s on this
+    exact fixture size during this investigation -- consistent with the
+    live issue #91 evidence of ~9ms/MB), while staying fast enough to build
+    and run in a unit test.
+    """
+    p = tmp_path / "large_transcript_near_eof.jsonl"
+    padding_text = "x" * padding_size
+    with open(str(p), "w") as f:
+        for i in range(num_padding):
+            f.write(json.dumps(_asst(f"req_pad_{i}", _text_block(padding_text))) + "\n")
+        f.write(
+            json.dumps(
+                _asst(
+                    "req_TARGET",
+                    _text_block(
+                        "INTENT: Modify large_file.py to add a feature.\n"
+                        "Test coverage: tests/test_large.py::test_feature"
+                    ),
+                )
+            )
+            + "\n"
+        )
+        f.write(
+            json.dumps(
+                _asst(
+                    "req_TARGET",
+                    _tool_use_block(
+                        "Write",
+                        {
+                            "file_path": "/project/large_file.py",
+                            "content": "print('large')",
+                        },
+                    ),
+                )
+            )
+            + "\n"
+        )
+    return str(p)
+
+
+def _build_large_transcript_no_match(
+    tmp_path, num_padding: int = 15000, padding_size: int = 2000
+) -> str:
+    """Same ~30MB scale as _build_large_transcript_anchor_near_eof, but the
+    target tool_use is NEVER present anywhere in the file -- the "current
+    turn hasn't flushed yet" scenario that the original window-growth design
+    made catastrophically slow (it doubled the window all the way to the
+    full file size on every retry attempt, since a match could never be
+    found)."""
+    p = tmp_path / "large_transcript_no_match.jsonl"
+    padding_text = "x" * padding_size
+    with open(str(p), "w") as f:
+        for i in range(num_padding):
+            f.write(json.dumps(_asst(f"req_pad_{i}", _text_block(padding_text))) + "\n")
+    return str(p)
+
+
+class TestFixedCostTailRead:
+    """Issue #91 (second pass, v2 simplification): _find_turn_matching_tool_input
+    reads a SINGLE fixed-size tail window (never grown) and restricts the
+    anchor search to the last LAST_N_TURNS_FOR_TOOL_MATCH logical assistant
+    turns. This proves the fast path stays fast regardless of file size for
+    BOTH the found-near-EOF case and the not-found case (the one the
+    window-growth design actually broke), and documents the deliberate
+    tradeoff that a match placed beyond the fixed window is no longer
+    recoverable by growing (it simply isn't found -- by design, since that
+    scenario doesn't occur in practice: the anchor is always near EOF)."""
+
+    def test_near_eof_anchor_completes_fast_regardless_of_file_size(self, tmp_path):
+        """Real-incident scale: a ~30MB transcript with the target tool_use
+        near EOF. The original full-scan implementation measured ~0.18s on
+        this exact fixture size (benchmarked directly during this
+        investigation) -- consistent with the 3.067s/324MB ratio reported
+        in the live issue #91 evidence. The fixed-cost tail-read
+        implementation must complete in a small fraction of that time."""
+        import time as time_module
+
+        from pacemaker.transcript_reader import _find_turn_matching_tool_input
+
+        transcript = _build_large_transcript_anchor_near_eof(tmp_path)
+        target_input = {
+            "file_path": "/project/large_file.py",
+            "content": "print('large')",
+        }
+
+        t0 = time_module.perf_counter()
+        result = _find_turn_matching_tool_input(transcript, target_input, "Write")
+        elapsed = time_module.perf_counter() - t0
+
+        assert (
+            result is not None and result != ""
+        ), f"Expected the near-EOF anchor's INTENT text; got: {result!r}"
+        assert "add a feature" in result
+        assert elapsed < 0.1, (
+            f"Fixed-cost tail-read must complete well under 100ms regardless "
+            f"of file size when the anchor is near EOF; took {elapsed:.4f}s "
+            f"(original full-scan implementation measured ~0.18s on this "
+            f"exact fixture size)"
+        )
+
+    def test_not_found_case_completes_fast_regardless_of_file_size(self, tmp_path):
+        """THE case that was actually broken by the window-growth design: no
+        matching tool_use exists anywhere in a ~30MB transcript (current
+        turn genuinely hasn't flushed). Direct measurement of the OLD
+        (pre-this-fix, growing-window) implementation on this exact fixture
+        scale showed ~0.56s -- because "not found" is exactly the scenario
+        that exhausts the doubling window all the way to the full file size
+        on every single call, and the live issue #91 incident showed this
+        scaling to ~8s/attempt on a real 324MB transcript. The fixed-cost
+        design must stay well under 100ms here too, since it never grows the
+        window regardless of whether a match is found."""
+        import time as time_module
+
+        from pacemaker.transcript_reader import _find_turn_matching_tool_input
+
+        transcript = _build_large_transcript_no_match(tmp_path)
+        target_input = {
+            "file_path": "/project/never_written.py",
+            "content": "this content never appears in the transcript",
+        }
+
+        t0 = time_module.perf_counter()
+        result = _find_turn_matching_tool_input(transcript, target_input, "Write")
+        elapsed = time_module.perf_counter() - t0
+
+        assert result is None, f"Expected no match; got: {result!r}"
+        assert elapsed < 0.1, (
+            f"Fixed-cost tail-read must complete well under 100ms on the "
+            f"NOT-FOUND path regardless of file size; took {elapsed:.4f}s "
+            f"(the growing-window design this replaces measured ~0.56s on "
+            f"this exact fixture scale, and ~8s/attempt on a real 324MB "
+            f"transcript -- this was the actual perf bug this rewrite fixes)"
+        )
+
+    def test_anchor_beyond_tail_window_deliberately_not_found(self, tmp_path):
+        """Documents the deliberate tradeoff: unlike the old growing-window
+        design (which would keep doubling until it found a match anywhere in
+        the file), the fixed-cost design does NOT grow. A match placed near
+        the START of a transcript, with enough padding after it to push it
+        beyond the fixed tail window, is simply not found (None) -- by
+        design, since this scenario is not believed to occur in practice
+        (the anchor -- the turn currently being validated -- is always near
+        EOF; if it were genuinely further back, the transcript has moved on
+        and the retry loop should keep waiting for the REAL current turn,
+        not resurrect an old one)."""
+        from pacemaker.transcript_reader import _find_turn_matching_tool_input
+
+        p = tmp_path / "beyond_window_transcript.jsonl"
+        padding_text = "y" * 2000
+        target_input = {"command": "echo rare-anchor-case"}
+        with open(str(p), "w") as f:
+            # Target anchor near the START of the file.
+            f.write(
+                json.dumps(
+                    _asst(
+                        "req_RARE",
+                        _text_block(
+                            "INTENT: Run a diagnostic echo command.\n"
+                            "This is a read-only diagnostic, no side effects."
+                        ),
+                    )
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(_asst("req_RARE", _tool_use_block("Bash", target_input)))
+                + "\n"
+            )
+            # ~2MB of padding AFTER the anchor pushes it well beyond the
+            # fixed TAIL_READ_BYTES window -- this is now expected to be
+            # NOT FOUND, a deliberate behavior change from the old
+            # growing-window design.
+            for i in range(1100):
+                f.write(
+                    json.dumps(_asst(f"req_pad_{i}", _text_block(padding_text))) + "\n"
+                )
+
+        result = _find_turn_matching_tool_input(p.as_posix(), target_input, "Bash")
+
+        assert result is None, (
+            f"Fixed-cost design deliberately does NOT grow the window to "
+            f"find an anchor beyond it (unlike the old growing-window "
+            f"design); got: {result!r}"
+        )
+
+    def test_small_transcript_unaffected_by_tail_read_change(self, tmp_path):
+        """Non-regression sanity: for a small transcript (well under
+        TAIL_READ_BYTES), behavior is unchanged from the original full scan."""
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _flushed_write(tmp_path)
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"file_path": TARGET, "content": CUR_CONTENT},
+            tool_name="Write",
+            _max_wait_seconds=0.0,
+        )
+        assert result is not None
+        assert "INTENT:" in result
+        assert "new feature" in result
+
+    def test_staleness_gate_safe_when_anchor_in_tail_window(self, tmp_path):
+        """Invariant check (confirms existing correct behavior, not a bug):
+        transcripts are append-only, so a tool_result for the anchor's own
+        tool_use id is always at a HIGHER byte offset than the tool_use
+        itself -- if the anchor is inside the fixed tail window (which
+        always extends to true EOF), its tool_result is too. Seeds a stale
+        tool_result for the anchor's id and confirms the match is still
+        correctly detected as stale (returns None) even though both entries
+        are comfortably inside the fixed-size window."""
+        from pacemaker.transcript_reader import _find_turn_matching_tool_input
+
+        p = tmp_path / "stale_in_window_transcript.jsonl"
+        target_input = {"command": "echo stale-check"}
+
+        with open(str(p), "w") as f:
+            f.write(
+                json.dumps(
+                    _asst(
+                        "req_STALE",
+                        _text_block("INTENT: Run a diagnostic echo command."),
+                    )
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    _asst(
+                        "req_STALE",
+                        _tool_use_block("Bash", target_input, tool_id="toolu_stale"),
+                    )
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    {
+                        "message": {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "toolu_stale",
+                                    "content": "stale-check\n",
+                                }
+                            ],
+                        }
+                    }
+                )
+                + "\n"
+            )
+
+        result = _find_turn_matching_tool_input(p.as_posix(), target_input, "Bash")
+
+        assert result is None, (
+            "A tool_result already present for the anchor's own tool_use id "
+            "means it was already executed once -- must return None (stale) "
+            f"even though the whole turn is inside the tail window; got: "
+            f"{result!r}"
+        )
+
+
+class TestLastNLogicalTurnsScoping:
+    """Proves the "last N logical turns, not raw lines" semantics explicitly
+    (user-mandated design point): grouping is by requestId (contiguous
+    same-requestId entries = one logical turn), and the search is scoped to
+    the last LAST_N_TURNS_FOR_TOOL_MATCH=2 such turns -- not simply the last
+    2 raw JSONL lines."""
+
+    def test_match_in_turn_three_back_is_not_found(self, tmp_path):
+        """A match that exists ONLY in the 3rd-most-recent logical turn
+        (with 2 more recent, non-matching turns after it) must NOT be found
+        -- proving the search is genuinely scoped to the last 2 logical
+        turns, not "keep looking until something matches"."""
+        transcript = _write_transcript(
+            [
+                _asst(
+                    "req_OLD",
+                    _text_block("INTENT: The old, three-turns-back write."),
+                ),
+                _asst(
+                    "req_OLD",
+                    _tool_use_block(
+                        "Write", {"file_path": TARGET, "content": "old-content"}
+                    ),
+                ),
+                _asst(
+                    "req_MID",
+                    _text_block("INTENT: An unrelated middle turn."),
+                ),
+                _asst(
+                    "req_MID",
+                    _tool_use_block("Bash", {"command": "echo unrelated-middle-turn"}),
+                ),
+                _asst(
+                    "req_LAST",
+                    _text_block("INTENT: An unrelated most-recent turn."),
+                ),
+                _asst(
+                    "req_LAST",
+                    _tool_use_block("Bash", {"command": "echo unrelated-last-turn"}),
+                ),
+            ],
+            tmp_path,
+        )
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"file_path": TARGET, "content": "old-content"},
+            tool_name="Write",
+            _max_wait_seconds=0.0,
+        )
+        assert result is None, (
+            f"A match only in the 3rd-most-recent logical turn must not be "
+            f"found (search is scoped to the last 2 logical turns); got: "
+            f"{result!r}"
+        )
+
+    def test_match_in_second_most_recent_turn_is_found(self, tmp_path):
+        """Symmetric positive case: a match in the SECOND-most-recent
+        logical turn (with one more recent, non-matching turn after it)
+        MUST still be found -- N=2, not N=1."""
+        transcript = _write_transcript(
+            [
+                _asst(
+                    "req_TARGET",
+                    _text_block("INTENT: Modify foo.py via the second-to-last turn."),
+                ),
+                _asst(
+                    "req_TARGET",
+                    _tool_use_block(
+                        "Write", {"file_path": TARGET, "content": "target-content"}
+                    ),
+                ),
+                _asst(
+                    "req_LAST",
+                    _text_block("INTENT: An unrelated most-recent turn."),
+                ),
+                _asst(
+                    "req_LAST",
+                    _tool_use_block("Bash", {"command": "echo unrelated-last-turn"}),
+                ),
+            ],
+            tmp_path,
+        )
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"file_path": TARGET, "content": "target-content"},
+            tool_name="Write",
+            _max_wait_seconds=0.0,
+        )
+        assert result is not None and result != "", (
+            f"A match in the second-most-recent logical turn must be found "
+            f"(N=2, not N=1); got: {result!r}"
+        )
+        assert "second-to-last turn" in result
+
+    def test_grouping_is_by_requestid_not_raw_line_count(self, tmp_path):
+        """A single logical turn spanning MANY raw JSONL lines (thinking +
+        multiple tool_use blocks all sharing one requestId) must still count
+        as exactly ONE of the "last 2" turns -- proving grouping is by
+        requestId, not by counting raw lines."""
+        transcript = _write_transcript(
+            [
+                _asst("req_SOLO", _text_block("INTENT: A single sprawling turn.")),
+                _asst(
+                    "req_SOLO",
+                    _tool_use_block(
+                        "Bash", {"command": "echo first-tool-in-turn"}, "toolu_first"
+                    ),
+                ),
+                _asst(
+                    "req_SOLO",
+                    _tool_use_block(
+                        "Bash", {"command": "echo second-tool-in-turn"}, "toolu_second"
+                    ),
+                ),
+                _asst(
+                    "req_SOLO",
+                    _tool_use_block(
+                        "Write",
+                        {"file_path": TARGET, "content": "solo-turn-content"},
+                        "toolu_third",
+                    ),
+                ),
+            ],
+            tmp_path,
+        )
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"file_path": TARGET, "content": "solo-turn-content"},
+            tool_name="Write",
+            _max_wait_seconds=0.0,
+        )
+        assert result is not None and result != ""
+        assert "sprawling turn" in result
+
+
+class TestRetryLoopCeilingDoesNotOvershootOnLargeTranscript:
+    """Requirement (c): proves the full retry loop respects its 30s ceiling
+    in the guaranteed-not-found case even on a large transcript, and does
+    NOT overshoot to 33+ seconds the way the FIRST rewrite attempt
+    (growing-window tail read) did. That overshoot happened because a
+    single slow attempt (window doubled all the way to full file size, ~8s
+    on a real 324MB transcript) could push wall-clock time past the ceiling
+    by however long that one attempt took -- the elapsed check only runs
+    BETWEEN attempts, not during one. With the fixed-cost design, every
+    attempt is cheap regardless of file size, so this overshoot risk is
+    eliminated: uses a fake monotonic clock (like the existing ceiling test)
+    so the ceiling-tripping logic is exercised deterministically, while
+    independently measuring REAL wall-clock time around the whole call to
+    prove the large file's actual read cost stays negligible."""
+
+    def test_large_transcript_not_found_respects_ceiling_without_overshoot(
+        self, tmp_path, monkeypatch
+    ):
+        import time as time_module
+
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _build_large_transcript_no_match(tmp_path)
+        target_input = {
+            "file_path": "/project/never_written.py",
+            "content": "this content never appears anywhere",
+        }
+
+        fake_now = [0.0]
+
+        def fake_monotonic():
+            return fake_now[0]
+
+        def fake_sleep(seconds):
+            fake_now[0] += seconds
+
+        monkeypatch.setattr(time_module, "monotonic", fake_monotonic)
+        monkeypatch.setattr(time_module, "sleep", fake_sleep)
+
+        # perf_counter is never monkeypatched (only monotonic/sleep are
+        # above), so this measures true wall-clock time.
+        real_start = time_module.perf_counter()
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input=target_input,
+            tool_name="Write",
+            _max_wait_seconds=30.0,
+            _initial_sleep=0.25,
+            _backoff_multiplier=2.0,
+            _max_sleep=2.0,
+        )
+        real_elapsed = time_module.perf_counter() - real_start
+
+        assert result is None, "Must reject once the 30s (fake) ceiling is reached"
+        # The fake clock says ~30s elapsed logically, but REAL wall-clock
+        # time consumed must stay tiny -- proving no single attempt's read
+        # cost can push the loop past its ceiling, unlike the growing-window
+        # design this replaces (which measured actual multi-second overshoot
+        # on a real 324MB transcript).
+        assert real_elapsed < 1.0, (
+            f"Real wall-clock time for the whole retry loop on a large "
+            f"not-found transcript must stay well under 1s (proving each "
+            f"attempt is cheap and bounded regardless of file size); took "
+            f"{real_elapsed:.3f}s real time (fake ceiling was 30s)"
+        )
+
+
+class TestDiagnosticsObservability:
+    """Issue #91: when the retry loop gives up (returns None), attempt-count
+    and real elapsed-seconds must be surfaced via the optional _diagnostics
+    dict so a future incident shows real numbers in usage.db instead of
+    requiring someone to manually benchmark the transcript file after the
+    fact (as was done during this investigation)."""
+
+    def test_diagnostics_populated_when_giving_up(self, tmp_path):
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _lagged_write(tmp_path)  # current turn never flushes
+        diagnostics: dict = {}
+
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"file_path": TARGET, "content": CUR_CONTENT},
+            tool_name="Write",
+            _max_wait_seconds=0.0,
+            _diagnostics=diagnostics,
+        )
+
+        assert result is None
+        assert diagnostics.get("attempts") == 1
+        assert isinstance(diagnostics.get("elapsed_seconds"), float)
+        assert diagnostics["elapsed_seconds"] >= 0.0
+
+    def test_diagnostics_populated_on_success(self, tmp_path):
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _flushed_write(tmp_path)
+        diagnostics: dict = {}
+
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"file_path": TARGET, "content": CUR_CONTENT},
+            tool_name="Write",
+            _max_wait_seconds=0.0,
+            _diagnostics=diagnostics,
+        )
+
+        assert result is not None
+        assert diagnostics.get("attempts") == 1
+        assert isinstance(diagnostics.get("elapsed_seconds"), float)
+
+    def test_diagnostics_none_by_default_no_error(self, tmp_path):
+        """When _diagnostics is not passed (the default None), the function
+        must behave exactly as before -- no error, no side effect."""
+        from pacemaker.transcript_reader import get_current_turn_message_for_validation
+
+        transcript = _flushed_write(tmp_path)
+        result = get_current_turn_message_for_validation(
+            transcript,
+            tool_input={"file_path": TARGET, "content": CUR_CONTENT},
+            tool_name="Write",
+            _max_wait_seconds=0.0,
+        )
+        assert result is not None

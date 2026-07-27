@@ -15,6 +15,29 @@ from .logger import log_warning
 
 MAX_MESSAGE_LENGTH = 10000
 
+# Issue #91 (second pass, v2 simplification): fixed-cost tail read for
+# _find_turn_matching_tool_input. The current turn's tool_use is always at
+# (or extremely near) the tail of the transcript -- it's the turn currently
+# being validated, so there is nothing further back worth searching for. A
+# first attempt at this fix (tail-read with a doubling-window fallback, up to
+# the full file size, when the anchor wasn't found) was measured to make the
+# NOT-FOUND case WORSE than the plain full-scan it replaced: ~8s per attempt
+# on a real 324MB transcript, because "not found" is exactly the case that
+# exhausts the growing window all the way to full-file-size on every single
+# retry attempt. This constant now bounds a SINGLE, FIXED-size read from EOF
+# -- no growth, ever, regardless of whether the anchor is found. See
+# CLAUDE.md's bug #83 section for the full history.
+TAIL_READ_BYTES = 512 * 1024
+
+# Number of most-recent LOGICAL assistant turns (grouped by requestId, same
+# technique as get_last_n_messages_for_validation) searched for a matching
+# tool_use. 2 (not 1) so a turn whose own leading INTENT text and tool_use(s)
+# are legitimately split across a boundary that would otherwise push part of
+# the anchor's own group out of consideration is still found -- mirrors
+# get_last_n_messages_for_validation's n-back rationale, just applied to
+# tool-content matching instead of text-only extraction.
+LAST_N_TURNS_FOR_TOOL_MATCH = 2
+
 
 def get_all_user_messages(transcript_path: str) -> List[str]:
     """
@@ -374,12 +397,101 @@ def _tool_input_matches(tool: dict, tool_name: str, tool_input: dict) -> bool:
     return inp == tool_input
 
 
+def _read_tail_raw_entries(transcript_path: str, window_bytes: int) -> List[dict]:
+    """Read a FIXED-size window of bytes from the END of the transcript,
+    ONCE (never grown), and parse it into the normalized entry dicts
+    consumed by ``_find_turn_matching_tool_input``.
+
+    Cost is O(window_bytes), NOT O(file size) -- this is the whole point of
+    the v2 simplification (issue #91, second pass): the previous
+    growing-window design re-read progressively larger chunks (up to the
+    entire file) whenever the anchor wasn't found, which made the not-found
+    case the SLOWEST case instead of the cheapest.
+
+    Malformed/partial lines are skipped rather than raised: the window's
+    leading edge almost always lands mid-line (dropped via the
+    ``offset > 0`` skip below), and a transcript actively being appended to
+    may have a genuinely partial trailing line too -- skipping it just means
+    that entry isn't visible yet, which is exactly the "not flushed yet"
+    signal the retry loop in ``get_current_turn_message_for_validation``
+    already knows how to handle (it will simply retry).
+
+    Raises ``FileNotFoundError``/``OSError`` exactly like a normal ``open()``
+    would -- the caller (``_find_turn_matching_tool_input``) wraps this in a
+    try/except that treats those as "not ready" (returns None).
+    """
+    with open(transcript_path, "rb") as f:
+        f.seek(0, 2)
+        file_size = f.tell()
+        if file_size == 0:
+            return []
+        offset = max(0, file_size - window_bytes)
+        f.seek(offset)
+        raw = f.read()
+
+    text = raw.decode("utf-8", errors="ignore")
+    lines = text.split("\n")
+    if offset > 0 and lines:
+        lines = lines[1:]  # drop the (likely partial) leading fragment
+
+    entries: List[dict] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = entry.get("message", {})
+        role = message.get("role")
+        msg_parts = (
+            _extract_message_parts(message.get("content", []))
+            if role == "assistant"
+            else None
+        )
+        entries.append(
+            {
+                "role": role,
+                "request_id": entry.get("requestId"),
+                "parts": msg_parts,
+                "content": message.get("content", []),
+            }
+        )
+    return entries
+
+
+def _last_n_assistant_turn_keys(raw_entries: List[dict], n: int) -> set:
+    """Return the set of up-to-``n`` most-recent LOGICAL assistant turn keys
+    found in ``raw_entries``, grouping contiguous same-requestId entries
+    into a single turn (same technique ``get_last_n_messages_for_validation``
+    uses for text-only extraction, applied here to scope the tool-content
+    match). Entries without a requestId are each their own standalone turn
+    (keyed by index, so two standalone entries never collide)."""
+    order = []
+    seen = set()
+    for i, e in enumerate(raw_entries):
+        if e["role"] != "assistant":
+            continue
+        rid = e["request_id"]
+        key = rid if rid is not None else ("__standalone__", i)
+        if key not in seen:
+            seen.add(key)
+            order.append(key)
+    return set(order[-n:] if len(order) > n else order)
+
+
 def _find_turn_matching_tool_input(
     transcript_path: str,
     tool_input: dict,
     tool_name: str,
+    *,
+    _tail_read_bytes: int = TAIL_READ_BYTES,
+    _last_n_turns: int = LAST_N_TURNS_FOR_TOOL_MATCH,
 ) -> Optional[str]:
-    """Scan transcript for the assistant turn containing the matching tool_use.
+    """Search the last ``_last_n_turns`` logical assistant turns (within a
+    single FIXED-size tail read, never grown) for the assistant turn
+    containing the matching tool_use.
 
     Bug #90 hardening: a content-only match is not enough. When a command is
     RE-ISSUED after a prior blocked attempt with IDENTICAL tool_input, the
@@ -400,45 +512,51 @@ def _find_turn_matching_tool_input(
     A tool_result for a *different* tool_use id (a sibling call in the same
     turn) never marks this match stale.
 
+    Issue #91 (second pass, v2 simplification) — fixed-cost read, no window
+    growth: a full sequential parse of the entire transcript on every retry
+    attempt was measured at 3.067s on a real 324MB/26,626-line incident
+    transcript. A first fix attempt (tail-read with a doubling-window
+    fallback up to the full file size when the anchor wasn't found) was
+    itself measured to make the NOT-FOUND case WORSE than the original full
+    scan: ~8s per attempt on that same transcript, because "not found" is
+    exactly the case that exhausts the growing window all the way to
+    full-file-size on every single retry. That approach is also provably
+    useless in this scenario: the current turn's tool_use is always at (or
+    extremely near) the tail of the transcript -- if it isn't there yet, it
+    hasn't been written, full stop, and growing the window can never change
+    that. This function now reads a SINGLE fixed-size tail window
+    (``TAIL_READ_BYTES``, never doubled) and restricts the anchor search to
+    the last ``_last_n_turns`` logical assistant turns found in that window
+    (``_last_n_assistant_turn_keys``). Cost is O(window size), flat
+    regardless of total file size, for BOTH the found and not-found cases.
+
     Returns:
-        None  — file missing, no matching tool_use found, or the only match
-                found is STALE (a tool_result already exists for its own id)
+        None  — file missing, no matching tool_use found within the last
+                ``_last_n_turns`` logical turns of the tail window, or the
+                only match found is STALE (a tool_result already exists for
+                its own id)
         ""    — matching turn found, is NOT stale, but its TEXT lacks an
                 INTENT: marker
         str   — matching turn found, is NOT stale, with INTENT: in TEXT
     """
     try:
-        raw_entries: List[dict] = []
-        with open(transcript_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                entry = json.loads(line)
-                message = entry.get("message", {})
-                role = message.get("role")
-                msg_parts = (
-                    _extract_message_parts(message.get("content", []))
-                    if role == "assistant"
-                    else None
-                )
-                raw_entries.append(
-                    {
-                        "role": role,
-                        "request_id": entry.get("requestId"),
-                        "parts": msg_parts,
-                        "content": message.get("content", []),
-                    }
-                )
+        raw_entries = _read_tail_raw_entries(transcript_path, _tail_read_bytes)
+        if not raw_entries:
+            return None
 
-        total = len(raw_entries)
+        turn_keys = _last_n_assistant_turn_keys(raw_entries, _last_n_turns)
 
-        # Find the LAST assistant entry whose tools include a matching tool_use.
+        # Find the LAST assistant entry, within the last _last_n_turns
+        # logical turns, whose tools include a matching tool_use.
         anchor_index = None
         anchor_tool_id = None
-        for i in range(total - 1, -1, -1):
+        for i in range(len(raw_entries) - 1, -1, -1):
             e = raw_entries[i]
             if e["role"] != "assistant":
+                continue
+            rid = e["request_id"]
+            key = rid if rid is not None else ("__standalone__", i)
+            if key not in turn_keys:
                 continue
             for tool in e["parts"]["tools"]:
                 if _tool_input_matches(tool, tool_name, tool_input):
@@ -454,8 +572,12 @@ def _find_turn_matching_tool_input(
         anchor_request_id = raw_entries[anchor_index]["request_id"]
 
         # Staleness gate (bug #90 v2): stale iff a tool_result exists ANYWHERE
-        # in the transcript carrying this SPECIFIC tool_use's own id — proof
+        # in the tail window carrying this SPECIFIC tool_use's own id — proof
         # that exact tool_use was already executed/processed once before.
+        # Append-only invariant: a tool_result for the anchor's own id is
+        # always written at a HIGHER byte offset than the tool_use itself,
+        # and the tail window always extends to the true EOF -- so if the
+        # anchor is inside this window, its tool_result (if any) is too.
         # Entries without a resolvable id fall back to "not stale" (preserves
         # the pre-#90 LAST-match-wins behavior for that edge case rather than
         # risking an unrecoverable block).
@@ -513,10 +635,11 @@ def get_current_turn_message_for_validation(
     tool_input: Optional[dict] = None,
     tool_name: Optional[str] = None,
     *,
-    _max_wait_seconds: float = 15.0,
+    _max_wait_seconds: float = 30.0,
     _initial_sleep: float = 0.25,
     _backoff_multiplier: float = 2.0,
     _max_sleep: float = 2.0,
+    _diagnostics: Optional[dict] = None,
 ) -> Optional[str]:
     """Extract the current assistant turn message for intent validation.
 
@@ -536,16 +659,33 @@ def get_current_turn_message_for_validation(
         tool_input: PreToolUse tool_input dict.  None => legacy path.
         tool_name: Tool name (Write/Edit/Bash).  Required with tool_input.
         _max_wait_seconds: Hard ceiling on REAL (monotonic) elapsed time
-            across the whole retry loop (issue #91). Default 15.0s. Replaced
-            the old fixed 21-attempt/0.25s-interval schedule (~5.25s nominal
-            ceiling) after evidence showed busy/large-transcript sessions
-            regularly exceeded it — the transcript read/parse cost itself
-            counts against this ceiling (tracked via ``time.monotonic()``),
-            not just the sleeps, since re-reading a tens-of-MB transcript on
-            every attempt is not free. Both the Write/Edit gate and the
-            danger-bash gate call this function without overriding these
-            parameters, so this default is the single source of truth for
-            the wait ceiling on both pre-tool gates.
+            across the whole retry loop (issue #91). Default 30.0s (widened
+            from an initial 15.0s attempt — see issue #91's second pass).
+            Live evidence (172 intent_validation_dangerbash race blocks over
+            14 days) showed the 15s ceiling was still insufficient on
+            busy/large-transcript sessions, and direct measurement traced
+            the cause to ``_find_turn_matching_tool_input`` itself: a full
+            file re-parse on every attempt cost 3.067s on a real 324MB
+            transcript, consuming nearly the whole 15s budget on scan cost
+            rather than real waiting. A first fix attempt replaced the full
+            scan with a tail-read whose window DOUBLED (up to the full file
+            size) whenever the anchor wasn't found -- but that made the
+            not-found case WORSE (~8s/attempt on the same transcript), since
+            not-found is exactly the case that exhausts the growing window
+            every time. That approach was replaced (v2 simplification) with
+            a SINGLE fixed-size tail read (see ``TAIL_READ_BYTES``) that
+            never grows, restricting the anchor search to the last
+            ``LAST_N_TURNS_FOR_TOOL_MATCH`` logical turns -- correct because
+            the current turn's tool_use is always at (or extremely near) the
+            tail of the transcript; if it isn't there, it hasn't been
+            written yet, and no amount of scanning further back would help.
+            This makes each attempt cheap (flat cost, not proportional to
+            file size) for BOTH the found and not-found cases, so widening
+            the ceiling to 30s buys mostly genuine waiting time instead of
+            scan cost. Both the Write/Edit gate and the danger-bash gate
+            call this function without overriding these parameters, so this
+            default is the single source of truth for the wait ceiling on
+            both pre-tool gates.
         _initial_sleep: Seconds slept after the first miss. Default 0.25s.
         _backoff_multiplier: Multiplier applied to the sleep duration after
             each miss. Default 2.0 (exponential backoff: 0.25, 0.5, 1.0,
@@ -553,9 +693,24 @@ def get_current_turn_message_for_validation(
         _max_sleep: Upper bound on any single sleep duration. Default 2.0s
             — avoids long, coarse-grained waits that would blow past the
             ceiling in one jump while still keeping the total attempt count
-            low on large/busy transcripts (re-read in full on every
-            attempt). Each individual sleep is additionally clamped to
-            never overshoot ``_max_wait_seconds``.
+            reasonable. Each individual sleep is additionally clamped to
+            never overshoot ``_max_wait_seconds``. With the wider 30s
+            ceiling, more sleeps now land at the 2.0s cap than under the
+            old 15s ceiling — expected and fine, since each attempt is now
+            cheap (fixed-size tail read) rather than a multi-second full or
+            growing scan.
+        _diagnostics: Optional dict the caller can pass to receive
+            observability data after the call returns (issue #91): on every
+            return path (both success and give-up), this function sets
+            ``_diagnostics["attempts"]`` (int, number of
+            ``_find_turn_matching_tool_input`` calls made) and
+            ``_diagnostics["elapsed_seconds"]`` (float, REAL monotonic
+            elapsed time). Callers (the Write/Edit and danger-bash gates in
+            hook.py) thread this into ``record_blockage``'s ``details`` dict
+            on the give-up path so a future incident shows real numbers in
+            usage.db instead of requiring manual benchmarking after the
+            fact. Left as None (the default) has zero effect — purely
+            additive, backward compatible.
 
     Returns:
         None  -- tool_input given but matching turn absent (not-yet-flushed
@@ -576,15 +731,30 @@ def get_current_turn_message_for_validation(
     # ceiling — finite iterations, hard real-time cap.
     start = time.monotonic()
     sleep_for = _initial_sleep
+    attempts = 0
     while True:
+        attempts += 1
         result = _find_turn_matching_tool_input(
             transcript_path, tool_input, tool_name or ""
         )
         if result is not None:
+            if _diagnostics is not None:
+                _diagnostics["attempts"] = attempts
+                _diagnostics["elapsed_seconds"] = round(time.monotonic() - start, 3)
             return result
         elapsed = time.monotonic() - start
         remaining = _max_wait_seconds - elapsed
         if remaining <= 0:
+            if _diagnostics is not None:
+                _diagnostics["attempts"] = attempts
+                _diagnostics["elapsed_seconds"] = round(elapsed, 3)
+            log_warning(
+                "transcript_reader",
+                "get_current_turn_message_for_validation: gave up after "
+                f"{attempts} attempt(s) / {elapsed:.2f}s (ceiling "
+                f"{_max_wait_seconds}s) for tool={tool_name} -- transcript "
+                "turn never flushed within the retry window",
+            )
             return None
         time.sleep(min(sleep_for, remaining))
         sleep_for = min(sleep_for * _backoff_multiplier, _max_sleep)

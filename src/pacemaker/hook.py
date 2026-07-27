@@ -2582,15 +2582,19 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                         # Bug #83: tool-matched anchor for Bash gate.
                         # Fail closed if transcript not yet flushed.
                         # No retry-param override here (issue #91): shares
-                        # the 15s exponential-backoff hard ceiling with the
+                        # the 30s exponential-backoff hard ceiling with the
                         # Write/Edit gate below (transcript_reader.
                         # get_current_turn_message_for_validation's defaults
                         # are the single source of truth for both pre-tool
-                        # gates).
+                        # gates). _diagnostics surfaces attempt-count and
+                        # real elapsed-seconds into telemetry on give-up
+                        # (issue #91 second pass observability requirement).
+                        _bash_diagnostics: dict = {}
                         _bash_anchor = get_current_turn_message_for_validation(
                             transcript_path,
                             tool_input={"command": command},
                             tool_name="Bash",
+                            _diagnostics=_bash_diagnostics,
                         )
                         if _bash_anchor is None:
                             _sid = session_id or "unknown"
@@ -2603,7 +2607,14 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 ),
                                 hook_type="pre_tool_use",
                                 session_id=_sid,
-                                details={"tool": "Bash", "command": command[:500]},
+                                details={
+                                    "tool": "Bash",
+                                    "command": command[:500],
+                                    "attempts": _bash_diagnostics.get("attempts"),
+                                    "elapsed_seconds": _bash_diagnostics.get(
+                                        "elapsed_seconds"
+                                    ),
+                                },
                             )
                             return {
                                 "decision": "block",
@@ -2869,10 +2880,15 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # captures a same-turn INTENT/skip declaration that a fixed n-back
         # window can miss (fragmented turn / interrupt), while never pulling in
         # a stale prior-turn INTENT. Empty string falls back to the n-back path.
+        # _diagnostics surfaces attempt-count and real elapsed-seconds into
+        # telemetry on give-up (issue #91 second pass observability
+        # requirement) -- mirrors the danger-bash gate above.
+        _write_edit_diagnostics: dict = {}
         current_message_override = get_current_turn_message_for_validation(
             transcript_path,
             tool_input=tool_input,
             tool_name=tool_name,
+            _diagnostics=_write_edit_diagnostics,
         )
 
         if current_message_override is None:
@@ -2909,6 +2925,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                     "tool": tool_name,
                     "file_path": file_path,
                     "subagent": _is_subagent,
+                    "attempts": _write_edit_diagnostics.get("attempts"),
+                    "elapsed_seconds": _write_edit_diagnostics.get("elapsed_seconds"),
                 },
             )
             try:
