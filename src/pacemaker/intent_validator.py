@@ -17,6 +17,7 @@ from typing import Any, Dict, List
 from .transcript_reader import (
     build_stop_hook_context,
     format_stop_hook_context,
+    INTENT_MARKER_PATTERN,
 )
 from .constants import DEFAULT_CONFIG
 from .logger import log_warning, log_debug
@@ -475,7 +476,7 @@ def extract_current_assistant_message(messages: List[str], file_path: str = "") 
 
 def _has_intent_marker(text: str):
     """Return re.Match if INTENT: marker found (case-insensitive), else None."""
-    return re.search(r"(?i)\bintent\s*:", text)
+    return INTENT_MARKER_PATTERN.search(text)
 
 
 def _mentions_file(text: str, file_path: str) -> bool:

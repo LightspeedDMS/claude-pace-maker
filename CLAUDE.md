@@ -488,6 +488,35 @@ A first fix attempt replaced the full scan with a tail-read (last 512KB via `_re
 - `tests/test_intent_validation_deferred_canary.py` — updated in v2.33.2: asserts `decision: "block"` (was `continue: True`); WARNING log + blockage-event + category-constant assertions unchanged.
 - `tests/test_real_transcript_replay.py` + `tests/fixtures/real_transcript_replay/manifest.json` — the `_replay_stage1` fidelity-mirror helper's `None`-branch and the 4 pre-flush fixtures' `expected_stage1` flipped from `"YES"` to `"NO"` in v2.33.2 (per the module's own "update this helper IN THE SAME COMMIT" contract). Unaffected by either #91 tail-read design (all fixtures pass `_max_wait_seconds=0.0` and are well under the fixed 512KB tail window).
 
+### Issue #93 — the danger-bash gate deadlocked on an anchor it then threw away (v2.34.4)
+
+**Symptom**: EVERY Bash command reaching the danger gate was refused with "transcript not ready", after burning the full 30s ceiling, with no recovery on re-issue. 116 such blocks in `usage.db`. Write/Edit was unaffected and worked in the same session minutes apart.
+
+**Root cause (two defects compounding)**:
+1. The gate called `get_current_turn_message_for_validation()` into `_bash_anchor` and **discarded the value** — its only use was `if _bash_anchor is None:` → block. The INTENT it actually validated came from a SEPARATE unanchored `get_last_n_messages_for_validation(n=4)` call. So the 30s wait and the fail-closed refusal gated a value that was then thrown away.
+2. For Bash, the current turn is not readable from the transcript during the hook's window at all. The wait could never succeed, so the ceiling was pure latency before an inevitable block.
+
+**The fix — outcome disambiguation**: `_find_turn_matching_tool_input()` previously returned `None` for BOTH "no match found" and "match found but STALE". These are now distinguished via an optional `_outcome` dict (`"found"` / `"stale"` / `"not_found"`, plus `_outcome["stale_text"]`). The `None`/`""`/`str` **return contract is deliberately unchanged** so the Write/Edit gate is provably unaffected.
+
+**Danger-bash gate behaviour**:
+- `found` → use the anchor's own text as the Phase 1/Phase 2 message.
+- `stale` → **ACCEPT it.** `_tool_input_matches` requires the Bash `command` to be byte-identical, so a stale match is a re-issue of exactly this command. **Precise claim**: the accepted INTENT always comes from a turn that itself issued this exact command — it does NOT prove the turn's merged TEXT is about that specific tool_use, because `_merge_anchor_turn` merges text across the whole requestId group (a multi-tool turn's INTENT may describe a sibling call). Final intent-to-command alignment is Phase 2's job. Do not restate this as a stronger guarantee.
+- `not_found` → block fast via `_DANGER_BASH_MAX_WAIT_SECONDS = 3.0` (Write/Edit keeps the 30s default), recording `outcome` in `blockage_events.details`.
+
+**CRITICAL — `stale_text` MUST stay gated on the turn's TEXT.** A first-pass implementation set `stale_text = _format_message_with_tools(merged)` with no INTENT-marker gate, while the found path gates on `merged["text"]`. Since `_format_message_with_tools` renders `content`/`old_string`/`new_string` and `_has_intent_marker` is a bare regex, an `INTENT:` **inside a written file's content** satisfied Phase 1. Caught in review, proven end-to-end, fixed. If you ever touch the stale path, keep it symmetric with the found path.
+
+**Termination is NOT a hard round bound.** A round-trip resolves only while the blocked attempt stays inside the last `LAST_N_TURNS_FOR_TOOL_MATCH` (2) logical turns. Measured: 0-1 intervening assistant turns → `stale` → recovers; **2+ → `not_found` → the cycle repeats**. The per-attempt wait is bounded (~3s); the number of rounds is not. Mitigated by the block message telling the agent to re-issue as its VERY NEXT tool call. **Do NOT raise `LAST_N_TURNS_FOR_TOOL_MATCH`** to "fix" this — it is bug #90's staleness scope and widening it re-opens stale-anchor acceptance globally.
+
+**Deliberate gate asymmetry (Bash vs Write/Edit)**: Bash is now **anchor-only** — the unanchored `n=4` backward search was removed (locked by `TestFoundUsesAnchorNotUnanchoredNBack`). Write/Edit still uses n-back, which exists to rescue an INTENT declared in the immediately preceding assistant message when a turn fragments across requestIds. **Bash no longer has that rescue**: an INTENT in a prior requestId now yields a Phase-1 block. This is an intentional security tightening (the old n=4 could accept an INTENT from any of the last four turns for a command it never named), not an oversight.
+
+**Shared regex**: `INTENT_MARKER_PATTERN` in `transcript_reader.py` is now the single definition, imported by `intent_validator._has_intent_marker`. It had been copy-pasted at 4 sites — and the security defect above existed precisely because one copy-site lacked the check the others had. Keep it single-sourced.
+
+**Live verification (2026-08-09, intent validation ENABLED)**: attempt 1 → block at `5 attempts / 3.005s` with `outcome: not_found` (was `19 / 30.004s`, outcome blank); byte-identical re-issue as the very next tool call → **executed**; deliberately mismatched INTENT → still **blocked** by Phase 2. The successful re-issue correctly recorded no blockage row.
+
+**Known cosmetic defect (not fixed)**: the retry loop logs `WARNING ... gave up after N attempt(s)` even on the SUCCESSFUL stale path, because `_find_turn_matching_tool_input` returns `None` for stale and the loop exhausts its ceiling before the caller reads `_outcome`. A "gave up" warning in the log does NOT imply the gate blocked — check `blockage_events` for a matching row before concluding it did.
+
+**Key files**: `src/pacemaker/transcript_reader.py` (`_outcome` threading, `_merge_anchor_turn`, `INTENT_MARKER_PATTERN`), `src/pacemaker/hook.py` (danger-bash gate ~2600-2700, `_DANGER_BASH_MAX_WAIT_SECONDS`), `src/pacemaker/intent_validator.py` (imports the shared pattern), `tests/test_issue_93_danger_bash_anchor.py` (22 tests).
+
 ---
 
 ## Stop-Hook Validator Prompt — Async-Wait Design (Bug #87)
@@ -816,11 +845,11 @@ BLOCKED always wins: if any line starts with `BLOCKED:`, `verdict_passes` return
 
 Fail-closed: empty / whitespace-only input → all predicates False.
 
-### Gate convergence (all three gates use this primitive)
+### Gate convergence (two of three gates use this primitive)
 
 1. **Stop-hook** (`intent_validator.py:parse_sdk_response`): `_find_verdict` uses `is_positive`/`has_block_marker` internally; `parse_sdk_response` is unchanged externally (positive→`{"continue":True}`, BLOCKED→`{"decision":"block"}`, unparseable→fail-open).
 2. **Stage 2 Write/Edit gate** (`intent_validator.py` line ~908): replaced `_find_verdict(stage2_feedback) == "APPROVED"` with `verdict_passes(stage2_feedback)`. **Deliberate leniency**: `APPROVED.` and `APPROVED — ok` now PASS (old strict equality would block them).
-3. **Danger-bash Phase 2** (`hook.py` line ~2657): replaced `response.strip().upper() == "APPROVED"` with `_verdict_passes(response)`. **Deliberate leniency**: trailing commentary after APPROVED now PASSES.
+3. **Danger-bash Phase 2 — NOT CONVERGED (doc corrected 2026-08-09).** This section previously claimed the gate had been switched to `_verdict_passes(response)`. It has not been: the check is still strict equality, `if response.strip().upper() == "APPROVED":` at `hook.py` line ~2779, and the string `verdict_passes` does not appear anywhere in `hook.py`. **Consequence**: unlike gates 1 and 2, this gate is INTOLERANT of trailing commentary — a reviewer replying `APPROVED.` or `APPROVED — looks fine` BLOCKS the command. Any reviewer model whose style adds punctuation or a closing remark will produce spurious danger-bash blocks here. Converging this gate onto `verdict_passes()` is outstanding work, not completed work.
 
 ### Tests
 

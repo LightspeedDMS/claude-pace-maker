@@ -41,6 +41,28 @@ from .logger import log_warning, log_debug, log_info, log_error
 # Guards one-time schema migration for codex_usage table in SubagentStop handler.
 _codex_migration_done: bool = False
 
+# Issue #93: the danger-bash gate's tool-matched-anchor wait ceiling,
+# DELIBERATELY much smaller than the Write/Edit gate's unmodified 30s
+# default (transcript_reader.get_current_turn_message_for_validation's
+# _max_wait_seconds). Live evidence (116 race-path danger-bash blocks
+# recorded in usage.db) showed every observed failure burned the FULL 30s
+# ceiling and never recovered within it -- the true current turn was never
+# flushed anywhere inside the hook's entire execution window, so the long
+# wait bought nothing but latency before the inevitable block. Combined
+# with the gate now ACCEPTING a stale byte-identical re-issue's own INTENT
+# (see the "found"/"stale"/"not_found" branch below) instead of discarding
+# the anchor, the effective recovery path is no longer "wait longer" but
+# "block fast, let the agent re-issue, accept the re-issue's own turn (or
+# its now-stale predecessor) on the next attempt" -- so a short ceiling is
+# strictly better than a long one here. 3.0s keeps a handful of real
+# exponential-backoff retries (0.25, 0.5, 1.0, 1.25(clamped) ~= 5 attempts
+# with the default 0.25s/2x/2.0s-cap schedule) in case the turn flushes
+# within a couple seconds, while capping the worst-case latency per attempt
+# far below the old 30s. The Write/Edit gate is intentionally left
+# untouched (out of scope for issue #93) -- it still uses the function's
+# 30s default.
+_DANGER_BASH_MAX_WAIT_SECONDS = 3.0
+
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
     """Load configuration from file."""
@@ -2579,24 +2601,60 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                         # rather than silently letting the command through.
                         _gate_committed = True
 
-                        # Bug #83: tool-matched anchor for Bash gate.
-                        # Fail closed if transcript not yet flushed.
-                        # No retry-param override here (issue #91): shares
-                        # the 30s exponential-backoff hard ceiling with the
-                        # Write/Edit gate below (transcript_reader.
-                        # get_current_turn_message_for_validation's defaults
-                        # are the single source of truth for both pre-tool
-                        # gates). _diagnostics surfaces attempt-count and
-                        # real elapsed-seconds into telemetry on give-up
-                        # (issue #91 second pass observability requirement).
+                        # Issue #93 (bug #83 follow-up): tool-matched anchor,
+                        # CONSUMED (not discarded) as the Phase 1/2 message --
+                        # see _DANGER_BASH_MAX_WAIT_SECONDS's docstring above
+                        # for the reduced-ceiling rationale.
+                        #
+                        # Outcome: found -> anchor's own text (may be "" if
+                        # no INTENT: in TEXT; Phase 1 below blocks that).
+                        # stale -> the byte-identical-matched tool_use IS
+                        # this command, but a multi-tool-call turn's merged
+                        # text may describe a SIBLING call, not necessarily
+                        # this one -- accepted anyway; Phase 2 (LLM, prompt
+                        # below) is the actual semantic check, not byte
+                        # identity. not_found -> block, instructing a
+                        # byte-identical re-issue.
+                        #
+                        # Termination: the per-attempt wait is bounded
+                        # (_DANGER_BASH_MAX_WAIT_SECONDS, ~3s), but the
+                        # NUMBER OF ROUNDS is NOT bounded -- there is no
+                        # Messi Rule 14 guarantee here. A not_found -> block
+                        # -> re-issue round-trip only recovers via the
+                        # "stale" path while the ORIGINAL blocked attempt's
+                        # tool_use remains within the last
+                        # LAST_N_TURNS_FOR_TOOL_MATCH (2, see
+                        # transcript_reader.py) logical assistant turns by
+                        # the time the re-issue's own search runs. Measured
+                        # directly by varying the number of assistant turns
+                        # between the blocked attempt and the re-issue: 0 or
+                        # 1 intervening turns -> "stale" (recovers); 2 or
+                        # more intervening turns -> "not_found" again (the
+                        # blocked attempt has scrolled outside the
+                        # LAST_N_TURNS_FOR_TOOL_MATCH window) -- in that case
+                        # the not_found/re-issue cycle repeats with no upper
+                        # bound on the number of rounds.
                         _bash_diagnostics: dict = {}
                         _bash_anchor = get_current_turn_message_for_validation(
                             transcript_path,
                             tool_input={"command": command},
                             tool_name="Bash",
+                            _max_wait_seconds=_DANGER_BASH_MAX_WAIT_SECONDS,
                             _diagnostics=_bash_diagnostics,
                         )
-                        if _bash_anchor is None:
+                        _bash_outcome = _bash_diagnostics.get("outcome")
+
+                        if _bash_anchor is not None:
+                            current_message = _bash_anchor
+                        elif _bash_outcome == "stale":
+                            current_message = _bash_diagnostics.get("stale_text", "")
+                            log_debug(
+                                "hook",
+                                "Danger bash: accepted STALE anchor turn "
+                                "(byte-identical re-issue) for command: "
+                                f"{command[:100]}",
+                            )
+                        else:
                             _sid = session_id or "unknown"
                             record_blockage(
                                 db_path=DEFAULT_DB_PATH,
@@ -2614,6 +2672,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                     "elapsed_seconds": _bash_diagnostics.get(
                                         "elapsed_seconds"
                                     ),
+                                    "outcome": _bash_outcome,
                                 },
                             )
                             return {
@@ -2621,23 +2680,18 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 "reason": (
                                     "⛔ Dangerous Bash command detected — transcript not ready\n\n"
                                     "The current turn has not been written to the transcript yet. "
-                                    "Cannot verify INTENT: declaration. Failing closed for safety."
+                                    "Cannot verify INTENT: declaration. Failing closed for safety.\n\n"
+                                    "RE-ISSUE THE IDENTICAL Bash TOOL CALL with the SAME INTENT: "
+                                    "declaration in the same message. IMPORTANT: the command must be "
+                                    "byte-identical to this attempt — the validator binds to the exact "
+                                    "command string, and a rephrased or reformulated command will not "
+                                    "match. Re-issue it as your VERY NEXT tool call — if any other "
+                                    "tool call intervenes first, this same block will recur."
                                 ),
                             }
 
                         # Phase 1: Check for INTENT: marker (fast reject, no LLM)
-                        # Use n=4 and extract_current_assistant_message to search
-                        # backward for INTENT: across multiple messages, same as
-                        # Write/Edit validation.
-                        messages = get_last_n_messages_for_validation(
-                            transcript_path, n=4
-                        )
-                        from .intent_validator import (
-                            _has_intent_marker,
-                            extract_current_assistant_message,
-                        )
-
-                        current_message = extract_current_assistant_message(messages)
+                        from .intent_validator import _has_intent_marker
 
                         if not _has_intent_marker(current_message):
                             # Phase 1 BLOCKED — no intent declared
@@ -2893,8 +2947,12 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
         if current_message_override is None:
             # Bug #83 follow-up (v2.33.2): mirror the danger-bash gate's
-            # fail-CLOSED handling (see the `if _bash_anchor is None:` block
-            # above) instead of failing open. Failing open here meant intent
+            # fail-CLOSED handling (see the `_bash_outcome` not_found
+            # `else:` branch above, issue #93) instead of failing open.
+            # NOTE: unlike the danger-bash gate, this Write/Edit gate does
+            # NOT consume a stale match -- that is intentionally out of
+            # scope for issue #93 (this gate's own 30s default and None
+            # handling are left unchanged). Failing open here meant intent
             # validation enforced NOTHING for any Write/Edit that raced the
             # transcript flush — confirmed live via this exact telemetry
             # category plus a raced edit that passed unvalidated. Fail-closed

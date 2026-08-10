@@ -38,6 +38,16 @@ TAIL_READ_BYTES = 512 * 1024
 # tool-content matching instead of text-only extraction.
 LAST_N_TURNS_FOR_TOOL_MATCH = 2
 
+# Shared INTENT: marker detector (Messi Rule 4 — three-strike dedup): this
+# exact pattern was independently duplicated at 4 call sites (3 here, 1 in
+# intent_validator.py's _has_intent_marker) before being extracted here.
+# This module is a leaf (intent_validator imports FROM it, never the
+# reverse), so it is the correct single source of truth. This predicate is
+# the security gate whose asymmetry across copy-sites caused issue #93's
+# blocking code-review finding — a future hardening of the pattern must only
+# need to change it here.
+INTENT_MARKER_PATTERN = re.compile(r"(?i)\bintent\s*:")
+
 
 def get_all_user_messages(transcript_path: str) -> List[str]:
     """
@@ -365,7 +375,7 @@ def _legacy_get_current_turn_message(transcript_path: str) -> str:
 
         # Intent-marker gate: only authoritative when the anchored turn's TEXT
         # carries an INTENT marker. Otherwise defer to the n-back rescue.
-        if not re.search(r"(?i)\bintent\s*:", merged["text"]):
+        if not INTENT_MARKER_PATTERN.search(merged["text"]):
             return ""
 
         return _format_message_with_tools(merged)
@@ -481,6 +491,32 @@ def _last_n_assistant_turn_keys(raw_entries: List[dict], n: int) -> set:
     return set(order[-n:] if len(order) > n else order)
 
 
+def _merge_anchor_turn(
+    raw_entries: List[dict], anchor_index: int, anchor_request_id: Optional[str]
+) -> Dict[str, Any]:
+    """Merge all entries sharing ``anchor_request_id`` into one logical
+    turn's text+tools (or return the single anchor entry's parts when the
+    anchor has no requestId). Shared by both the "found" and "stale"
+    result-building paths of ``_find_turn_matching_tool_input`` (issue #93:
+    the stale path now needs the same merge the found path already did, to
+    surface the stale turn's own text via ``_outcome["stale_text"]``)."""
+    if anchor_request_id is not None:
+        merged: Dict[str, Any] = {"text": "", "tools": []}
+        for e in raw_entries:
+            if e["role"] != "assistant" or e["request_id"] != anchor_request_id:
+                continue
+            parts = e["parts"]
+            if parts["text"]:
+                merged["text"] = (
+                    merged["text"] + "\n" + parts["text"]
+                    if merged["text"]
+                    else parts["text"]
+                )
+            merged["tools"].extend(parts["tools"])
+        return merged
+    return raw_entries[anchor_index]["parts"]
+
+
 def _find_turn_matching_tool_input(
     transcript_path: str,
     tool_input: dict,
@@ -488,6 +524,7 @@ def _find_turn_matching_tool_input(
     *,
     _tail_read_bytes: int = TAIL_READ_BYTES,
     _last_n_turns: int = LAST_N_TURNS_FOR_TOOL_MATCH,
+    _outcome: Optional[dict] = None,
 ) -> Optional[str]:
     """Search the last ``_last_n_turns`` logical assistant turns (within a
     single FIXED-size tail read, never grown) for the assistant turn
@@ -538,10 +575,32 @@ def _find_turn_matching_tool_input(
         ""    — matching turn found, is NOT stale, but its TEXT lacks an
                 INTENT: marker
         str   — matching turn found, is NOT stale, with INTENT: in TEXT
+
+    Issue #93 — outcome disambiguation: the two ``None`` cases above ("no
+    matching tool_use found" vs "matching tool_use found but STALE") used to
+    be indistinguishable to callers, which mattered because a stale match's
+    tool_use IS the exact call being validated (``_tool_input_matches``
+    requires byte-identical content) while a genuine not-found is not. This
+    proves the MATCHED tool_use is this exact call — it does NOT by itself
+    prove the turn's merged TEXT is semantically about that specific call as
+    opposed to a sibling tool call sharing the same requestId (a single turn
+    may issue several tool calls under one requestId); final intent-to-command
+    semantic alignment is Phase 2's (the LLM's) job, not this function's. When
+    the optional ``_outcome`` dict is provided, this function sets
+    ``_outcome["outcome"]`` to one of ``"not_found"``, ``"stale"``, or
+    ``"found"`` on every return path, and additionally sets
+    ``_outcome["stale_text"]`` (the stale turn's own formatted text, gated on
+    the same TEXT-only INTENT-marker check as the "found" path above — set to
+    ``""`` when the turn's TEXT has no marker, even if a sibling tool_use's
+    rendered content happens to contain an INTENT:-looking string) on the
+    "stale" path only. Left as None (the default) has zero effect — purely
+    additive, backward compatible with every existing caller.
     """
     try:
         raw_entries = _read_tail_raw_entries(transcript_path, _tail_read_bytes)
         if not raw_entries:
+            if _outcome is not None:
+                _outcome["outcome"] = "not_found"
             return None
 
         turn_keys = _last_n_assistant_turn_keys(raw_entries, _last_n_turns)
@@ -567,6 +626,8 @@ def _find_turn_matching_tool_input(
                 break
 
         if anchor_index is None:
+            if _outcome is not None:
+                _outcome["outcome"] = "not_found"
             return None
 
         anchor_request_id = raw_entries[anchor_index]["request_id"]
@@ -594,32 +655,59 @@ def _find_turn_matching_tool_input(
                         and block.get("type") == "tool_result"
                         and block.get("tool_use_id") == anchor_tool_id
                     ):
+                        # Stale match (issue #93): distinguish from
+                        # not_found via _outcome, and surface the stale
+                        # turn's own text so a caller whose matching is
+                        # ALREADY byte-identical-content-scoped (e.g. the
+                        # danger-bash gate's Bash `command` comparison) can
+                        # safely consume it as a re-issue of exactly this
+                        # tool call, rather than only learning "None" and
+                        # being unable to tell this case apart from a
+                        # genuine not-found.
+                        if _outcome is not None:
+                            merged = _merge_anchor_turn(
+                                raw_entries, anchor_index, anchor_request_id
+                            )
+                            _outcome["outcome"] = "stale"
+                            # Intent-marker gate (issue #93 code review, FIX
+                            # 1 — security regression): symmetric with the
+                            # "found" path's gate a few lines below. Gate on
+                            # merged["text"] (the turn's ACTUAL assistant
+                            # prose) only — NEVER on the raw
+                            # _format_message_with_tools(merged) string,
+                            # which also renders every tool_use's
+                            # file_path/content/old_string/new_string fields.
+                            # Without this gate, an INTENT:-looking string
+                            # inside a SIBLING tool_use's rendered content
+                            # (e.g. a Write call sharing this turn's
+                            # requestId) would leak into stale_text even
+                            # though the assistant never actually declared
+                            # intent, letting Phase 1's bare regex
+                            # (_has_intent_marker) wrongly pass.
+                            if INTENT_MARKER_PATTERN.search(merged["text"]):
+                                _outcome["stale_text"] = _format_message_with_tools(
+                                    merged
+                                )
+                            else:
+                                _outcome["stale_text"] = ""
                         return None
 
         # Merge all entries sharing the anchor's requestId (same logical turn).
-        if anchor_request_id is not None:
-            merged: Dict[str, Any] = {"text": "", "tools": []}
-            for e in raw_entries:
-                if e["role"] != "assistant" or e["request_id"] != anchor_request_id:
-                    continue
-                parts = e["parts"]
-                if parts["text"]:
-                    merged["text"] = (
-                        merged["text"] + "\n" + parts["text"]
-                        if merged["text"]
-                        else parts["text"]
-                    )
-                merged["tools"].extend(parts["tools"])
-        else:
-            merged = raw_entries[anchor_index]["parts"]
+        merged = _merge_anchor_turn(raw_entries, anchor_index, anchor_request_id)
 
         # Intent-marker gate: only return non-empty when INTENT: is in TEXT.
-        if not re.search(r"(?i)\bintent\s*:", merged["text"]):
+        if not INTENT_MARKER_PATTERN.search(merged["text"]):
+            if _outcome is not None:
+                _outcome["outcome"] = "found"
             return ""
 
+        if _outcome is not None:
+            _outcome["outcome"] = "found"
         return _format_message_with_tools(merged)
 
     except (FileNotFoundError, OSError):
+        if _outcome is not None:
+            _outcome["outcome"] = "not_found"
         return None
     except Exception as e:
         log_warning(
@@ -627,6 +715,8 @@ def _find_turn_matching_tool_input(
             "Failed to find turn matching tool input",
             e,
         )
+        if _outcome is not None:
+            _outcome["outcome"] = "not_found"
         return None
 
 
@@ -646,10 +736,15 @@ def get_current_turn_message_for_validation(
     When ``tool_input`` is provided (bug #83 fix): uses a content-matched
     anchor to find the exact tool_use being validated.  Returns None when
     the matching entry is not yet in the transcript (TOCTOU race) — the
-    caller decides how to react (as of v2.33.2, both the Write/Edit gate and
-    the danger-bash gate fail CLOSED on this signal: block + instruct the
-    agent to re-issue the identical tool call, rather than silently passing
-    the unvalidated edit through).
+    caller decides how to react. The Write/Edit gate fails CLOSED
+    unconditionally on this signal (v2.33.2): block + instruct the agent to
+    re-issue the identical tool call, rather than silently passing the
+    unvalidated edit through. The danger-bash gate (issue #93) fails CLOSED
+    only when ``_diagnostics["outcome"]`` is ``"not_found"``; on ``"stale"``
+    it instead consumes ``_diagnostics["stale_text"]`` and proceeds to
+    Phase 1/2 validation for the byte-identical re-issue — see the
+    ``_diagnostics`` Args entry below for the full outcome/stale_text
+    contract.
 
     When ``tool_input`` is None (legacy path): returns str (never None) using
     the old last-Write/Edit anchor for backward compatibility.
@@ -712,6 +807,25 @@ def get_current_turn_message_for_validation(
             fact. Left as None (the default) has zero effect — purely
             additive, backward compatible.
 
+            Issue #93 addition: this dict also carries
+            ``_diagnostics["outcome"]`` (one of ``"not_found"``,
+            ``"stale"``, or ``"found"`` — see
+            ``_find_turn_matching_tool_input``'s docstring) reflecting the
+            LAST attempt's classification, and, only when that outcome is
+            ``"stale"``, ``_diagnostics["stale_text"]`` (the stale turn's own
+            formatted text). This lets a caller distinguish "genuinely never
+            flushed" from "found a byte-identical prior attempt, but it's
+            stale" — the two cases used to be identical ``None`` returns
+            with no way to react differently. This function's own
+            return-value CONTRACT is unchanged (None / "" / str) — the
+            ``_diagnostics`` out-param is purely additive at THIS layer.
+            However, ``_diagnostics["stale_text"]`` is NOT merely
+            observability once populated: the danger-bash gate in hook.py
+            (~line 2635) reads it directly as ``current_message`` and feeds
+            it into both the Phase 1 ``_has_intent_marker`` check and the
+            Phase 2 LLM prompt (~hook.py:2747) — i.e. it is consumed as the
+            actual validation input for that gate, not just logged.
+
     Returns:
         None  -- tool_input given but matching turn absent (not-yet-flushed
                  signal; caller decides the reaction).
@@ -734,20 +848,35 @@ def get_current_turn_message_for_validation(
     attempts = 0
     while True:
         attempts += 1
+        _attempt_outcome: dict = {}
         result = _find_turn_matching_tool_input(
-            transcript_path, tool_input, tool_name or ""
+            transcript_path, tool_input, tool_name or "", _outcome=_attempt_outcome
         )
         if result is not None:
             if _diagnostics is not None:
                 _diagnostics["attempts"] = attempts
                 _diagnostics["elapsed_seconds"] = round(time.monotonic() - start, 3)
+                _diagnostics["outcome"] = _attempt_outcome.get("outcome", "found")
             return result
+        # Deliberately does NOT early-return here on a "stale" outcome
+        # (_find_turn_matching_tool_input still returned None for stale,
+        # same as not_found -- only _attempt_outcome distinguishes them).
+        # Retrying through the ceiling lets a LATER attempt's "found" result
+        # (the fresh, correctly-attributed turn actually flushing) win over
+        # an earlier "stale" hit on a prior attempt -- strictly safer than
+        # freezing on the first stale classification and potentially using
+        # a stale turn's text when the real, current turn was about to
+        # flush anyway. Only give-up (ceiling reached) falls back to the
+        # last attempt's stale/not_found classification below.
         elapsed = time.monotonic() - start
         remaining = _max_wait_seconds - elapsed
         if remaining <= 0:
             if _diagnostics is not None:
                 _diagnostics["attempts"] = attempts
                 _diagnostics["elapsed_seconds"] = round(elapsed, 3)
+                _diagnostics["outcome"] = _attempt_outcome.get("outcome", "not_found")
+                if _attempt_outcome.get("outcome") == "stale":
+                    _diagnostics["stale_text"] = _attempt_outcome.get("stale_text", "")
             log_warning(
                 "transcript_reader",
                 "get_current_turn_message_for_validation: gave up after "
