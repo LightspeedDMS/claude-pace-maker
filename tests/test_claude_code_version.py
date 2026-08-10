@@ -12,8 +12,10 @@ Tests:
 - version_status_db — writer with all four reason types, idempotent overwrite
 """
 
+import io
 import json
 import sqlite3
+import sys
 
 import pytest
 
@@ -382,3 +384,238 @@ class TestVersionStatusDb:
 
         with pytest.raises(RuntimeError, match="PACEMAKER_VERSION_STATUS_PATH"):
             resolve_db_path()
+
+
+class TestDefaultConfigMinClaudeVersion:
+    """Issue #96: min_claude_version must be a real DEFAULT_CONFIG key, not only
+    the private _FALLBACK_MIN_VERSION constant inside version_check.py — a fresh
+    install (no config.json on disk) must ship with this key set explicitly."""
+
+    def test_default_config_has_min_claude_version(self):
+        from pacemaker.constants import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["min_claude_version"] == "2.1.39"
+
+    def test_fresh_load_config_includes_min_claude_version(self, tmp_path):
+        """load_config() with no config.json on disk returns DEFAULT_CONFIG.copy(),
+        which must include min_claude_version — proving the wiring end-to-end
+        rather than just asserting the constant in isolation."""
+        from pacemaker.hook import load_config
+
+        missing_config_path = str(tmp_path / "does_not_exist.json")
+        config = load_config(missing_config_path)
+        assert config.get("min_claude_version") == "2.1.39"
+
+
+# ── SessionStart hook wiring (real hook, not the bare function) ────────────────
+#
+# These tests live here (not in test_version_check_integration.py) because
+# this project's mock-abuse clean-code rule forbids ANY mocking in files
+# whose name matches "*_integration*" ("real systems only"), while unit
+# tests may mock external dependencies. subprocess.run — the external
+# `claude` CLI binary, not any pace-maker component — is the only thing
+# stubbed below; run_session_start_hook(), perform_session_start_version_check(),
+# ClaudeCodeVersion, state.json read/write, and version_status_db all run for
+# real, unmocked.
+
+
+def _stub_probe(version_str):
+    """Return a subprocess.run stub yielding the given 'claude --version' output."""
+
+    def _stub(*args, **kwargs):
+        return _FakeSubprocessResult(stdout=version_str, returncode=0)
+
+    return _stub
+
+
+@pytest.fixture
+def hook_wiring_env(tmp_path, monkeypatch):
+    """Isolated pace-maker environment for exercising the real hook layer."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    pm_dir = fake_home / ".claude-pace-maker"
+    pm_dir.mkdir()
+
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    config_path = str(pm_dir / "config.json")
+    state_path = str(pm_dir / "state.json")
+    version_db_path = str(pm_dir / "version_status.db")
+
+    config = {
+        "enabled": True,
+        "min_claude_version": "2.1.39",
+        "intent_validation_enabled": False,
+    }
+    with open(config_path, "w") as f:
+        json.dump(config, f)
+
+    monkeypatch.setenv("PACEMAKER_VERSION_STATUS_PATH", version_db_path)
+
+    return {"config_path": config_path, "state_path": state_path}
+
+
+class TestSessionStartHookWiring:
+    """Proves perform_session_start_version_check() is actually called from
+    run_session_start_hook() — issue #96's core complaint was that the
+    function was "called only from tests", never from the hook layer."""
+
+    def _run_session_start(
+        self, env, monkeypatch, probe_stub, source="startup", session_id="test-session"
+    ):
+        import subprocess
+        import pacemaker.hook as hook_module
+
+        monkeypatch.setattr(subprocess, "run", probe_stub)
+        monkeypatch.setattr(hook_module, "DEFAULT_CONFIG_PATH", env["config_path"])
+        monkeypatch.setattr(hook_module, "DEFAULT_STATE_PATH", env["state_path"])
+
+        stderr_capture = io.StringIO()
+        monkeypatch.setattr(sys, "stderr", stderr_capture)
+
+        hook_input = json.dumps({"session_id": session_id, "source": source})
+        monkeypatch.setattr(sys, "stdin", io.StringIO(hook_input))
+
+        hook_module.run_session_start_hook()
+
+        with open(env["state_path"]) as f:
+            state = json.load(f)
+        return state, stderr_capture.getvalue()
+
+    def test_below_minimum_hard_blocks_via_real_session_start_hook(
+        self, hook_wiring_env, monkeypatch
+    ):
+        """The real run_session_start_hook() — not the bare function — sets
+        the block flag, writes the upgrade message to stderr, and persists
+        status to version_status_db."""
+        state, stderr = self._run_session_start(
+            hook_wiring_env,
+            monkeypatch,
+            _stub_probe("2.1.10 (Claude Code)\n"),
+        )
+
+        assert state.get("version_block_active") is True
+        assert "upgrade" in stderr.lower()
+        assert "2.1.39" in stderr
+
+        from pacemaker.version_status_db import read_status
+
+        status = read_status()
+        assert status is not None
+        assert status["blocked"] == 1
+        assert status["reason"] == "below_minimum"
+
+    def test_at_or_above_minimum_does_not_block_via_real_session_start_hook(
+        self, hook_wiring_env, monkeypatch
+    ):
+        """Version at/above minimum: run_session_start_hook() leaves the flag
+        False and writes nothing to stderr."""
+        state, stderr = self._run_session_start(
+            hook_wiring_env,
+            monkeypatch,
+            _stub_probe("2.1.126 (Claude Code)\n"),
+        )
+
+        assert state.get("version_block_active") is False
+        assert stderr == ""
+
+        from pacemaker.version_status_db import read_status
+
+        status = read_status()
+        assert status is not None
+        assert status["blocked"] == 0
+        assert status["reason"] == "ok"
+
+    def test_recovery_flag_clears_once_installed_version_meets_minimum(
+        self, hook_wiring_env, monkeypatch
+    ):
+        """Two successive real run_session_start_hook() invocations on the
+        same env: first call probes a below-minimum version and confirms the
+        block flag is set; second call probes an at/above-minimum version
+        and confirms the SAME session's flag has cleared — proving automatic
+        recovery on the next SessionStart after an upgrade."""
+        first_call_blocked_state, _ = self._run_session_start(
+            hook_wiring_env,
+            monkeypatch,
+            _stub_probe("2.1.10 (Claude Code)\n"),
+        )
+        assert first_call_blocked_state.get("version_block_active") is True
+
+        second_call_recovered_state, second_call_stderr = self._run_session_start(
+            hook_wiring_env,
+            monkeypatch,
+            _stub_probe("2.1.126 (Claude Code)\n"),
+        )
+        assert second_call_recovered_state.get("version_block_active") is False
+        assert second_call_stderr == ""
+
+
+# ── Config override / fallback for min_claude_version ──────────────────────────
+
+
+class TestConfigOverrideAndFallback:
+    """min_claude_version set in config overrides the default; an absent key
+    in the config dict falls back to _FALLBACK_MIN_VERSION (2.1.39)."""
+
+    def test_config_min_claude_version_override_changes_block_decision(
+        self, hook_wiring_env, monkeypatch
+    ):
+        """Overriding min_claude_version to a HIGHER value than default makes
+        a version that would pass at the default minimum now get blocked —
+        proving the override is actually read, not just present in config."""
+        import subprocess
+        from pacemaker.hook import load_state, save_state
+        from pacemaker.version_check import perform_session_start_version_check
+
+        monkeypatch.setattr(subprocess, "run", _stub_probe("2.5.0 (Claude Code)\n"))
+
+        state = load_state(hook_wiring_env["state_path"])
+        overridden_config = {
+            "enabled": True,
+            "min_claude_version": "3.0.0",
+            "intent_validation_enabled": False,
+        }
+        stderr_capture = io.StringIO()
+
+        perform_session_start_version_check(
+            state, overridden_config, stderr=stderr_capture
+        )
+        save_state(state, hook_wiring_env["state_path"])
+
+        assert state.get("version_block_active") is True
+        assert "3.0.0" in stderr_capture.getvalue()
+
+    def test_absent_min_claude_version_key_falls_back_to_fallback_constant(
+        self, hook_wiring_env, monkeypatch
+    ):
+        """A config dict with NO min_claude_version key at all (e.g. an old
+        config.json written before this feature existed) must fall back to
+        _FALLBACK_MIN_VERSION (2.1.39) — proven by checking the boundary on
+        both sides of that exact version."""
+        import subprocess
+        from pacemaker.hook import load_state, save_state
+        from pacemaker.version_check import (
+            _FALLBACK_MIN_VERSION,
+            perform_session_start_version_check,
+        )
+
+        assert _FALLBACK_MIN_VERSION == "2.1.39"
+        config_without_key = {"enabled": True, "intent_validation_enabled": False}
+
+        # Below the fallback minimum -> blocked
+        monkeypatch.setattr(subprocess, "run", _stub_probe("2.1.10 (Claude Code)\n"))
+        state_below = load_state(hook_wiring_env["state_path"])
+        perform_session_start_version_check(
+            state_below, config_without_key, stderr=io.StringIO()
+        )
+        save_state(state_below, hook_wiring_env["state_path"])
+        assert state_below.get("version_block_active") is True
+
+        # At/above the fallback minimum -> not blocked
+        monkeypatch.setattr(subprocess, "run", _stub_probe("2.1.39 (Claude Code)\n"))
+        state_ok = load_state(hook_wiring_env["state_path"])
+        perform_session_start_version_check(
+            state_ok, config_without_key, stderr=io.StringIO()
+        )
+        save_state(state_ok, hook_wiring_env["state_path"])
+        assert state_ok.get("version_block_active") is False

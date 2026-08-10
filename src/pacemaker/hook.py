@@ -372,6 +372,20 @@ def run_session_start_hook():
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
 
+    # Minimum Claude Code version check (Story #66 / issue #96). Must run
+    # after the first save_state (session_id/counter resets already on
+    # disk) and before Cross-Session Awareness, per the documented ordering.
+    # perform_session_start_version_check() already fails open internally on
+    # any probe/parse failure; this try/except is defense-in-depth only,
+    # mirroring the CSA block immediately below.
+    try:
+        from .version_check import perform_session_start_version_check
+
+        perform_session_start_version_check(state, config, stderr=sys.stderr)
+        save_state(state, DEFAULT_STATE_PATH)
+    except Exception as e:
+        log_warning("hook", f"Version check failed: {e}")
+
     # Cross-Session Awareness: register session and emit sibling banner if any.
     # csa.on_session_start() mutates state to cache workspace_root, so we save
     # state again after the call. init_schema is idempotent and ensures the
@@ -1043,9 +1057,13 @@ def run_hook():
         log_warning("hook", f"CSA post_tool_use heartbeat failed: {e}")
 
     # Cross-Session Awareness: record tool action for activity trail display.
+    # Gate enforcement lives entirely inside on_post_tool_use_record_action()
+    # (checks cross_session_awareness_enabled before touching the registry at
+    # all) — this call site must never talk to session_registry.registry directly.
     try:
-        from .session_registry.registry import record_action as _csa_record
-        from .session_registry.registry import update_agent_heartbeat as _csa_hb
+        from .session_registry._csa import (
+            on_post_tool_use_record_action as csa_on_post_tool_use_record_action,
+        )
         from .session_registry.db import resolve_db_path as _csa_db
 
         _csa_aid = (
@@ -1053,16 +1071,13 @@ def run_hook():
             or session_id
             or state.get("session_id", "")
         )
-        if _csa_aid and tool_name:
-            _csa_dbp = _csa_db()
-            _csa_record(
-                agent_id=_csa_aid,
-                tool_name=tool_name,
-                tool_input=tool_input or {},
-                ts=time.time(),
-                db_path=_csa_dbp,
-            )
-            _csa_hb(_csa_aid, _csa_dbp)
+        csa_on_post_tool_use_record_action(
+            agent_id=_csa_aid,
+            tool_name=tool_name,
+            tool_input=tool_input or {},
+            db_path=_csa_db(),
+            config=config,
+        )
     except Exception as e:
         log_warning("hook", f"CSA record_action failed: {e}")
 
@@ -2086,6 +2101,14 @@ def run_stop_hook():
 
         state = load_state(DEFAULT_STATE_PATH)
 
+        # Minimum Claude Code version check (Story #66 / issue #96): when
+        # SessionStart flagged an unsupported Claude Code version, skip ALL
+        # downstream work (stdin is not even read) and degrade silently
+        # rather than validating against a version we don't support.
+        if state.get("version_block_active"):
+            log_info("hook", "Version block active - allowing exit")
+            return {"continue": True}
+
         # Log auto tempo status
         tempo_mode = config.get("tempo_mode", "auto")
         tempo_session_override = state.get("tempo_session_override")
@@ -2416,6 +2439,13 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # so the outer except handler at the bottom of this function can safely
         # reference it via _merge_csa_reminder() for fail-open semantics.
         _csa_result: Dict[str, Any] = {}
+
+        # Minimum Claude Code version check (Story #66 / issue #96): when
+        # SessionStart flagged an unsupported Claude Code version, skip ALL
+        # downstream work (stdin is not even read) and degrade silently
+        # rather than validating against a version we don't support.
+        if load_state(DEFAULT_STATE_PATH).get("version_block_active"):
+            return {"continue": True}
 
         # 1. Read hook data from stdin
         raw_input = sys.stdin.read()

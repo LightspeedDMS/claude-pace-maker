@@ -6,6 +6,11 @@ Tests:
 - test_session_end_marks_agent_ended: on_session_end sets ended_at for root agent
 - test_subagent_stop_marks_agent_ended: on_subagent_stop sets ended_at for subagent
 - test_subagent_start_without_subagent_type: subagent_type=None yields NULL in agents table
+
+Issue #97 — on_post_tool_use_record_action gating:
+- test_post_tool_use_record_action_writes_when_enabled: writes agent_actions row + heartbeat when gate is ON
+- test_post_tool_use_record_action_gate_off_no_write: gate OFF produces zero agent_actions rows
+- test_post_tool_use_record_action_missing_agent_id_or_tool_name_no_write: empty agent_id/tool_name is a no-op
 """
 
 import sys
@@ -231,3 +236,86 @@ def test_subagent_start_without_subagent_type(env):
     assert (
         row["subagent_type"] is None
     ), "subagent_type should be NULL when not provided"
+
+
+def _query_agent_actions_count(db_module, db_path, agent_id):
+    """Return the number of agent_actions rows for agent_id."""
+    conn = db_module.get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM agent_actions WHERE agent_id = ?", (agent_id,)
+        )
+        return cursor.fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_post_tool_use_record_action_writes_when_enabled(env):
+    """on_post_tool_use_record_action: writes an agent_actions row when
+    cross_session_awareness_enabled is True (default)."""
+    csa, registry, db, db_path, ws = env
+    registry.register_agent(SESSION_A, SESSION_A, "root", ws, db_path)
+    config = _make_config()
+
+    csa.on_post_tool_use_record_action(
+        agent_id=SESSION_A,
+        tool_name="Write",
+        tool_input={"file_path": "/tmp/x.py"},
+        db_path=db_path,
+        config=config,
+    )
+
+    assert (
+        _query_agent_actions_count(db, db_path, SESSION_A) == 1
+    ), "Expected exactly one agent_actions row when the CSA gate is ON"
+    row_after = _query_agents(db, db_path, SESSION_A)
+    assert row_after is not None
+    assert row_after["ended_at"] is None
+
+
+def test_post_tool_use_record_action_gate_off_no_write(env):
+    """on_post_tool_use_record_action: writes ZERO agent_actions rows when
+    cross_session_awareness_enabled is False (issue #97 regression)."""
+    csa, registry, db, db_path, ws = env
+    registry.register_agent(SESSION_A, SESSION_A, "root", ws, db_path)
+    config = _make_config(csa_enabled=False)
+
+    csa.on_post_tool_use_record_action(
+        agent_id=SESSION_A,
+        tool_name="Write",
+        tool_input={"file_path": "/tmp/x.py"},
+        db_path=db_path,
+        config=config,
+    )
+
+    assert _query_agent_actions_count(db, db_path, SESSION_A) == 0, (
+        "on_post_tool_use_record_action must write ZERO rows when the CSA "
+        "gate is off (issue #97)"
+    )
+
+
+def test_post_tool_use_record_action_missing_agent_id_or_tool_name_no_write(env):
+    """on_post_tool_use_record_action: empty agent_id or tool_name is a no-op,
+    matching the previous inline `if _csa_aid and tool_name:` guard in hook.py."""
+    csa, registry, db, db_path, ws = env
+    registry.register_agent(SESSION_A, SESSION_A, "root", ws, db_path)
+    config = _make_config()
+
+    csa.on_post_tool_use_record_action(
+        agent_id="",
+        tool_name="Write",
+        tool_input={},
+        db_path=db_path,
+        config=config,
+    )
+    csa.on_post_tool_use_record_action(
+        agent_id=SESSION_A,
+        tool_name="",
+        tool_input={},
+        db_path=db_path,
+        config=config,
+    )
+
+    assert (
+        _query_agent_actions_count(db, db_path, SESSION_A) == 0
+    ), "Empty agent_id or tool_name must not write an agent_actions row"

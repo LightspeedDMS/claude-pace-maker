@@ -11,6 +11,7 @@ Internal helpers:
 """
 
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from ..logger import log_debug, log_warning
@@ -424,5 +425,47 @@ def on_subagent_stop(
     except Exception as e:
         log_warning(
             "session_registry", f"CSA: on_subagent_stop mark_agent_ended failed: {e}"
+        )
+    return None
+
+
+def on_post_tool_use_record_action(
+    agent_id: str,
+    tool_name: str,
+    tool_input: Dict[str, Any],
+    db_path: str,
+    config: Dict[str, Any],
+) -> None:
+    """Handle PostToolUse hook: record a tool-use action for the activity trail.
+
+    Records the action (agent_actions INSERT) and heartbeats the agent
+    (agents.last_seen UPDATE) via the registry module.
+
+    Missing agent_id or tool_name: no-op (mirrors the previous inline
+        `if _csa_aid and tool_name:` guard).
+    Feature disabled: no-op immediately — no registry calls at all (issue #97:
+        this is the single gate enforcement point for this call site).
+    Registry failures are non-fatal (fail-open): logged and swallowed.
+    """
+    if not _is_enabled(config):
+        return None
+    if not agent_id or not tool_name:
+        return None
+
+    try:
+        from . import registry
+
+        registry.record_action(
+            agent_id=agent_id,
+            tool_name=tool_name,
+            tool_input=tool_input or {},
+            ts=time.time(),
+            db_path=db_path,
+        )
+        registry.update_agent_heartbeat(agent_id, db_path)
+    except Exception as e:
+        log_warning(
+            "session_registry",
+            f"CSA: on_post_tool_use_record_action failed: {e}",
         )
     return None

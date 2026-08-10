@@ -19,6 +19,7 @@ Tests:
 
 import io
 import json
+import sys
 
 import pytest
 
@@ -204,8 +205,38 @@ class TestSessionStartVersionCheck:
 # ── Blocked hooks early-return ────────────────────────────────────────────────
 
 
+class _TrackedStdin:
+    """io.StringIO wrapper that records whether .read() was ever invoked.
+
+    Every downstream code path in both run_pre_tool_hook() and run_stop_hook()
+    (hook_data parsing, CSA, danger-bash matching, intent validation, blockage
+    recording — literally everything) is derived from the parsed stdin payload.
+    If the version-block guard sits at the true entry point of the function
+    (before stdin is ever read), NONE of that downstream work can have run.
+    Proving read_called is False is therefore strictly stronger than checking
+    individual downstream side effects one at a time, and it is exactly what
+    makes these two tests fail (not vacuously pass) when the guard is absent —
+    without the guard, the hook unconditionally reads stdin as its first
+    action, so read_called would be True and the assertion would fail.
+    """
+
+    def __init__(self, text):
+        self._inner = io.StringIO(text)
+        self.read_called = False
+
+    def read(self, *args, **kwargs):
+        self.read_called = True
+        return self._inner.read(*args, **kwargs)
+
+
 class TestBlockedHooksEarlyReturn:
-    """When version_block_active=True, downstream hooks must not block tool use."""
+    """When version_block_active=True, downstream hooks must not block tool use
+    AND must not perform any downstream work at all (issue #96: the original
+    two tests here only asserted `result.get("decision") != "block"`, which is
+    trivially true for a hook that runs to completion normally with no guard —
+    it passed with ZERO wiring in hook.py, proving nothing.  Rewritten to
+    assert both the exact early-return payload and that stdin was never read,
+    so removing the guard makes these tests fail for real."""
 
     def _write_blocked_state(self, state_path):
         """Write a version-blocked state to the given path."""
@@ -221,10 +252,12 @@ class TestBlockedHooksEarlyReturn:
         save_state(state, state_path)
         return state
 
-    def test_pre_tool_hook_no_block_decision_when_version_blocked(
+    def test_pre_tool_hook_returns_continue_and_skips_all_downstream_work_when_version_blocked(
         self, pacemaker_env, monkeypatch
     ):
-        """PreToolUse with blocked state: result must not contain decision=block."""
+        """PreToolUse with blocked state: exact {"continue": True} early-return,
+        and stdin (hence hook_data, CSA, danger-bash, intent validation) is
+        never touched."""
         import pacemaker.hook as hook_module
 
         monkeypatch.setattr(
@@ -244,17 +277,23 @@ class TestBlockedHooksEarlyReturn:
                 "transcript_path": pacemaker_env["db_path"],
             }
         )
-        monkeypatch.setattr("sys.stdin", io.StringIO(hook_input))
+        tracked_stdin = _TrackedStdin(hook_input)
+        monkeypatch.setattr(sys, "stdin", tracked_stdin)
 
         result = hook_module.run_pre_tool_hook()
 
-        # Claude Code tools must still work when version is blocked
-        assert result.get("decision") != "block"
+        assert result == {"continue": True}
+        assert tracked_stdin.read_called is False, (
+            "run_pre_tool_hook read stdin despite version_block_active=True — "
+            "the early-return guard did not fire before downstream work began"
+        )
 
-    def test_stop_hook_allows_exit_when_version_blocked(
+    def test_stop_hook_returns_continue_and_skips_all_downstream_work_when_version_blocked(
         self, pacemaker_env, monkeypatch
     ):
-        """Stop hook with blocked state: must allow exit (not block the agent)."""
+        """Stop hook with blocked state: exact {"continue": True} early-return,
+        and stdin (hence CSA, Langfuse finalize, intent-completion validation)
+        is never touched."""
         import pacemaker.hook as hook_module
 
         monkeypatch.setattr(
@@ -269,7 +308,13 @@ class TestBlockedHooksEarlyReturn:
         hook_input = json.dumps(
             {"session_id": "test-session", "transcript_path": pacemaker_env["db_path"]}
         )
-        monkeypatch.setattr("sys.stdin", io.StringIO(hook_input))
+        tracked_stdin = _TrackedStdin(hook_input)
+        monkeypatch.setattr(sys, "stdin", tracked_stdin)
 
         result = hook_module.run_stop_hook()
-        assert result.get("decision") != "block"
+
+        assert result == {"continue": True}
+        assert tracked_stdin.read_called is False, (
+            "run_stop_hook read stdin despite version_block_active=True — "
+            "the early-return guard did not fire before downstream work began"
+        )
