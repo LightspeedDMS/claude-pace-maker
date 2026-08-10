@@ -26,7 +26,19 @@
 - Legacy scripted E2E files DO still exist and still run: `tests/e2e/test_secrets_e2e.py`, `tests/test_clean_code_rules_e2e.py`, `tests/test_install_e2e.py`, `tests/test_langfuse_provisioner_e2e.py`, `tests/test_subagent_output_correlation_e2e.py` (`./scripts/run_tests.sh --quick` skips them). Leave them alone unless a task specifically covers them.
 - When end-to-end verification is needed, run pace-maker and inspect its behavior directly, then report the real observed output.
 
-**⚠️ UNRESOLVED CONTRADICTION — do not assume this policy is enforced in the shipped prompt.** The prohibition above on demanding scripted-E2E evidence is NOT reflected in `src/pacemaker/prompts/stop/stop_hook_validator_prompt.md`, which still contains `FORMAT A — E2E TEST COMPLETION REPORT` (~line 225), `OPTION 1 — E2E TEST COMPLETION REPORT` (~line 277), and explicit rejection of `"pytest tests/"` (~line 252) and `"Tests are passing"` (~line 263) as insufficient evidence. Worse, `tests/test_stop_hook_prompt_async_wait.py::test_e2e_evidence_requirement_preserved` **actively asserts that text is present** — so the prompt and the test lock each other in. Consequence: **any edit that removes scripted-E2E language from that prompt MUST update that test in the same commit**, or the suite goes red. This contradiction is documented, not resolved — do not claim otherwise.
+**How the stop-hook gate enforces this (it is NOT in conflict — issue #98).** `src/pacemaker/prompts/stop/stop_hook_validator_prompt.md` accepts **three** evidence shapes, not one:
+
+- **FORMAT A** — `E2E TEST COMPLETION REPORT` (CHANGED CODE COVERAGE / REGRESSION COVERAGE / OVERALL VERDICT), the heavyweight standards format.
+- **FORMAT B** — evidence table aligned to numbered acceptance criteria.
+- **FORMAT C** — **ad-hoc evidence table**, explicitly "when there are no explicit acceptance criteria (bug fixes, refactors, exploratory tasks, infrastructure changes)": `| # | Test | Command | Captured Output | Result |`.
+
+**FORMAT C is exactly the agentic evidence this project produces** — the prompt's own ✅ example is *"Ran: pace-maker status --verbose, observed terminal output"*. What the prompt rejects is not agentic verification but *claims without output*: "Tests are passing", "worked as expected", results from mocked/stubbed systems. That is the same standard this section argues for.
+
+An earlier revision of this file claimed the prompt contradicted the philosophy and told readers to strip the scripted-E2E language. **That was wrong** — it read FORMAT A as the only accepted shape and missed FORMAT B/C. Do not "fix" the prompt on that basis.
+
+Two real notes if you do edit that prompt:
+- `tests/test_stop_hook_prompt_async_wait.py::test_e2e_evidence_requirement_preserved` asserts the literal string `E2E TEST COMPLETION REPORT` is present — removing FORMAT A requires updating that test in the same commit.
+- FORMAT A is currently listed FIRST. The bug-#87 design note below says this prompt is engineered for the weakest verifier and that "weak models anchor on the first emphatic rule — it must be the permissive one". Listing the heaviest format first works against that principle; C → B → A would be more consistent. Untested hypothesis, not a known defect.
 
 **Related — unit tests must never make real external calls**: all `codex`/`gemini`/`claude` CLI/SDK calls in tests MUST be mocked. An autouse guard in `tests/conftest.py` blocks real ones — a real call that leaked into a `ThreadPoolExecutor` reviewer thread caused ~30s interpreter-exit hangs (invisible to pytest's own timer, which made the suite appear fast while wall-clock was ~6x longer). Mock at the namespace the code imports from (e.g. `pacemaker.inference.resolve_and_call_with_reviewer`, `pacemaker.inference.competitive.get_provider`), NOT the `...registry` submodule.
 
