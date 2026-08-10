@@ -853,11 +853,18 @@ def _execute_off(config_path: str) -> Dict[str, Any]:
         return {"success": False, "message": error_template.replace("{error}", str(e))}
 
 
+# Log-file-span sizing for _count_recent_errors(): the number of daily log
+# files to scan must grow with the requested window, plus a fixed margin
+# to safely cover any partial day at the edges of the window.
+_HOURS_PER_DAY = 24
+_LOG_SCAN_DAYS_MARGIN = 2
+
+
 def _count_recent_errors(hours: int = 24, log_dir: Optional[str] = None) -> int:
     """
     Count ERROR-level log entries from the last N hours.
 
-    Scans rotated log files (today's and yesterday's) for errors.
+    Scans rotated log files spanning the requested window.
 
     Args:
         hours: Number of hours to look back (default: 24)
@@ -866,15 +873,25 @@ def _count_recent_errors(hours: int = 24, log_dir: Optional[str] = None) -> int:
     Returns:
         Count of ERROR entries within the time window
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
     from .logger import get_recent_log_paths
 
     try:
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+        # Log filenames (logger.get_log_path_for_date) and log line
+        # timestamps (logger.log()) are BOTH written using naive LOCAL
+        # time. The cutoff and every parsed timestamp below must stay in
+        # that same naive local time base end-to-end -- comparing a
+        # local-time timestamp against a UTC-aware cutoff previously
+        # skewed counts by the machine's UTC offset (issue #95).
+        cutoff_time = datetime.now() - timedelta(hours=hours)
         error_count = 0
 
-        # Get log files for the last 2 days (covers 24-hour window)
-        log_files = get_recent_log_paths(days=2, log_dir=log_dir)
+        # Span the log-file scan with the requested window. Using a fixed
+        # days=2 undercounts for hours>24 (files outside the 2-day scan
+        # are silently dropped even though they're inside the window).
+        log_files = get_recent_log_paths(
+            days=hours // _HOURS_PER_DAY + _LOG_SCAN_DAYS_MARGIN, log_dir=log_dir
+        )
 
         if not log_files:
             return 0
@@ -889,7 +906,7 @@ def _count_recent_errors(hours: int = 24, log_dir: Optional[str] = None) -> int:
                                 timestamp_str = match.group(1)
                                 timestamp = datetime.strptime(
                                     timestamp_str, "%Y-%m-%d %H:%M:%S"
-                                ).replace(tzinfo=timezone.utc)
+                                )
                                 if timestamp >= cutoff_time:
                                     error_count += 1
                             except ValueError:

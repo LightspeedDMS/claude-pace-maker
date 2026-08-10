@@ -2752,6 +2752,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             pass
 
                         from .inference import resolve_and_call_with_reviewer
+                        from .inference.verdict import verdict_passes
 
                         matched_descriptions = ", ".join(
                             f"{m['id']}: {m['description']}" for m in matched
@@ -2772,8 +2773,13 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             f"4. Are there undeclared side effects?\n\n"
                             f"If the intent declaration appears to be for a DIFFERENT "
                             f"tool call earlier in the message, treat as mismatch.\n\n"
-                            f"Respond with ONLY 'APPROVED' if intent matches command. "
-                            f"Otherwise respond with detailed feedback explaining the mismatch."
+                            f"RESPONSE FORMAT - Choose EXACTLY one:\n"
+                            f"- If intent matches command: respond with ONLY the word "
+                            f"'APPROVED' and nothing else.\n"
+                            f"- If intent does NOT match command: your response MUST "
+                            f"begin with 'BLOCKED:' followed by detailed feedback "
+                            f"explaining the mismatch. Never omit the 'BLOCKED:' prefix "
+                            f"on a rejection."
                         )
 
                         # Inject CSA danger_bash_warning into Stage 2 context if siblings active
@@ -2786,13 +2792,15 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             prompt=bash_prompt,
                             system_prompt=(
                                 "You are validating Bash command intent alignment. "
-                                "Respond APPROVED if intent matches, or detailed feedback if not."
+                                "Respond APPROVED if intent matches, or begin your "
+                                "response with 'BLOCKED:' followed by detailed "
+                                "feedback if not."
                             ),
                             call_context="intent_validation",
                             max_thinking_tokens=2000,
                         )
 
-                        if response.strip().upper() == "APPROVED":
+                        if verdict_passes(response):
                             # Phase 2 passed
                             try:
                                 record_activity_event(

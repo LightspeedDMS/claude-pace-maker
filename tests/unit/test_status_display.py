@@ -16,14 +16,24 @@ from pacemaker.user_commands import (
 
 
 class TestErrorCounting:
-    """Test error counting from log files."""
+    """Test error counting from log files.
+
+    Issue #95: log filenames (logger.get_log_path_for_date) and log line
+    timestamps (logger.log()) are BOTH written using naive LOCAL time. These
+    tests therefore construct filenames and timestamps the same way
+    production does -- via plain `datetime.now()` -- instead of
+    `datetime.now(timezone.utc)`. Building expected filenames/timestamps
+    from a different time base than production causes these tests to fail
+    only during the part of the day (or in timezones) where the local date
+    and UTC date diverge, which is exactly how issue #95 hid as flakiness.
+    """
 
     def test_count_errors_no_errors(self, tmp_path):
         """Test counting when there are no errors in last 24 hours."""
-        # Create log file with no ERROR entries using daily rotation naming
-        # Use UTC timestamps since _count_recent_errors() treats parsed timestamps as UTC
-        log_file = tmp_path / f"pace-maker-{datetime.now().strftime('%Y-%m-%d')}.log"
-        now = datetime.now(timezone.utc)
+        # Create log file with no ERROR entries using daily rotation naming.
+        # Local time throughout, matching production's logger.py.
+        now = datetime.now()
+        log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
         log_file.write_text(
             f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] [INFO] [module] Some info message\n"
             f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] [WARNING] [module] Some warning\n"
@@ -34,7 +44,7 @@ class TestErrorCounting:
 
     def test_count_errors_within_24_hours(self, tmp_path):
         """Test counting errors within the last 24 hours."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now()
         log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Create log with 3 errors in last 24h
@@ -52,7 +62,7 @@ class TestErrorCounting:
 
     def test_count_errors_ignores_old_errors(self, tmp_path):
         """Test that errors older than 24h are ignored."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now()
         log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Create log with 2 recent errors and 3 old errors
@@ -87,7 +97,7 @@ class TestErrorCounting:
 
     def test_count_errors_empty_log_file(self, tmp_path):
         """Test counting when log file is empty."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now()
         log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
         log_file.write_text("")
 
@@ -96,7 +106,7 @@ class TestErrorCounting:
 
     def test_count_errors_malformed_timestamps(self, tmp_path):
         """Test handling of malformed timestamp entries."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now()
         log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Mix of valid and invalid entries
@@ -112,7 +122,7 @@ class TestErrorCounting:
 
     def test_count_errors_custom_hours(self, tmp_path):
         """Test counting with custom hour threshold."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now()
         log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
 
         # Create errors at different time intervals
@@ -132,6 +142,156 @@ class TestErrorCounting:
         # Test with 12-hour window (should count 4 errors)
         count = _count_recent_errors(hours=12, log_dir=str(tmp_path))
         assert count == 4
+
+    def test_count_errors_short_window_counts_entry_written_just_now(self, tmp_path):
+        """Regression test for issue #95: a log entry written mere seconds
+        ago must be counted under a short (1-hour) window.
+
+        Before the fix, cutoff_time was computed as UTC-aware
+        (`datetime.now(timezone.utc)`) while the parsed line timestamp was
+        asserted to be UTC even though it was written in local time. On a
+        machine with a negative UTC offset (e.g. UTC-5, the reporter's
+        environment) the reinterpreted timestamp appears to be 5 hours in
+        the past relative to the UTC-aware cutoff, so a genuinely-current
+        error falls outside a short window and is undercounted -- silently,
+        because the default 24h window usually still absorbs the skew. This
+        is exactly the scenario the issue's "hours=1 query ... can report 0
+        while errors are actively being logged" describes.
+        """
+        now = datetime.now()
+        log_file = tmp_path / f"pace-maker-{now.strftime('%Y-%m-%d')}.log"
+        log_file.write_text(
+            f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] [ERROR] [module] "
+            f"Error written just now\n"
+        )
+
+        count = _count_recent_errors(hours=1, log_dir=str(tmp_path))
+        assert count == 1
+
+    def test_count_errors_correct_when_local_date_differs_from_utc_date(
+        self, monkeypatch, tmp_path
+    ):
+        """Regression test for issue #95, pinned with a frozen, non-UTC
+        clock so it cannot hide behind time-of-day flakiness.
+
+        Freezes "now" to a fixed LOCAL wall-clock reading whose calendar
+        date (2026-08-09) differs from what the SAME instant would be in
+        UTC under a hardcoded, machine-independent -5:00 offset
+        (2026-08-10) -- i.e. the exact local/UTC date mismatch from the bug
+        report, but deterministic regardless of the host's real timezone or
+        the real time of day the suite happens to run.
+
+        Both invariants are exercised together:
+          - Invariant 1 (file selection, never actually defective in
+            production): the test's own filename must match production's
+            local-date basis (pace-maker-2026-08-09.log) -- logger.py's
+            get_recent_log_paths() always selected files by local date;
+            issue #95 was a test-side mismatch (expected filename built
+            from a UTC date), not a production file-selection bug.
+          - Defect 2 (timestamp parsing): the line timestamp, written in
+            local time, must be compared against a cutoff in that SAME
+            local time base -- not asserted to be UTC and compared to a
+            genuinely UTC cutoff, which would place it ~5 hours further
+            into the past than it really is and drop it out of a 1-hour
+            window.
+
+        `timezone` (imported at module level) is used here only to build
+        the fixture's UTC reading -- production no longer touches
+        `timezone.utc` anywhere in `_count_recent_errors`.
+        """
+        import pacemaker.logger as logger_module
+
+        fixed_utc = datetime(2026, 8, 10, 4, 30, 0, tzinfo=timezone.utc)
+        fixed_local_offset = timedelta(hours=-5)
+        fixed_local = (fixed_utc + fixed_local_offset).replace(tzinfo=None)
+        assert fixed_local.strftime("%Y-%m-%d") == "2026-08-09"
+        assert fixed_utc.strftime("%Y-%m-%d") == "2026-08-10"
+
+        class _FixedClockDatetime(datetime):
+            """datetime.now() returns a fixed reading; the local reading's
+            calendar date deliberately differs from the UTC reading's, via
+            a hardcoded offset independent of the host machine's real tz.
+            """
+
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return fixed_local
+                return fixed_utc.astimezone(tz)
+
+        # Patch every place a `datetime` class name is bound and reachable
+        # from the code under test:
+        #   - the global `datetime` module attribute, picked up by
+        #     _count_recent_errors' per-call `from datetime import datetime`
+        #   - pacemaker.logger's module-level `datetime` name, bound once
+        #     at import time and used by get_recent_log_paths /
+        #     get_log_path_for_date for file naming and selection
+        monkeypatch.setattr("datetime.datetime", _FixedClockDatetime)
+        monkeypatch.setattr(logger_module, "datetime", _FixedClockDatetime)
+
+        # Prove the patch actually reaches every call site this test
+        # depends on, rather than trusting it implicitly: a FRESH
+        # `from datetime import datetime` -- the exact statement
+        # _count_recent_errors executes on every invocation -- must
+        # observe the frozen clock, and so must pacemaker.logger's
+        # module-level `datetime` binding used by get_recent_log_paths().
+        # (This test never calls the file-level `datetime.now()` imported
+        # at the top of this test module after patching -- fixed_local /
+        # fixed_utc above were computed via explicit constructors before
+        # any patch was applied, not via `.now()`.)
+        from datetime import datetime as _reimported_datetime
+
+        assert _reimported_datetime.now() == fixed_local
+        assert logger_module.datetime.now() == fixed_local
+
+        # Production names/writes the log file using the local reading.
+        log_file = tmp_path / f"pace-maker-{fixed_local.strftime('%Y-%m-%d')}.log"
+        recent = fixed_local - timedelta(minutes=30)
+        log_file.write_text(
+            f"[{recent.strftime('%Y-%m-%d %H:%M:%S')}] [ERROR] [module] "
+            f"Error 30 minutes before frozen local now\n"
+        )
+
+        count = _count_recent_errors(hours=1, log_dir=str(tmp_path))
+        assert count == 1
+
+    def test_count_errors_wide_window_spans_multiple_log_files(self, tmp_path):
+        """Regression test: get_recent_log_paths() was previously called
+        with a hardcoded days=2, which only covers hours<=24. For a wider
+        window (hours=48, hours=72) errors that fall inside the requested
+        window but land in a daily log file older than 2 days back were
+        silently dropped, undercounting -- e.g. with an entry 47h old,
+        hours=48 used to return 0 (true answer 1) and hours=72 used to
+        return 2 (true answer 3).
+
+        This writes one ERROR entry each at 1h, 47h, and 70h old, each
+        landing in the daily log file matching ITS OWN local calendar
+        date (mirroring production's per-day rotation), and asserts both
+        the hours=48 and hours=72 windows count the correct subset.
+        """
+        now = datetime.now()
+        ages_hours = [1, 47, 70]
+
+        # Group entries by the calendar date they fall on so multiple
+        # entries landing on the same day append to the same file.
+        entries_by_date: dict = {}
+        for age in ages_hours:
+            ts = now - timedelta(hours=age)
+            date_str = ts.strftime("%Y-%m-%d")
+            line = f"[{ts.strftime('%Y-%m-%d %H:%M:%S')}] [ERROR] [module] Error {age}h old\n"
+            entries_by_date.setdefault(date_str, []).append(line)
+
+        for date_str, lines in entries_by_date.items():
+            log_file = tmp_path / f"pace-maker-{date_str}.log"
+            log_file.write_text("".join(lines))
+
+        # hours=48 window: 1h and 47h old entries are inside, 70h is not.
+        count_48 = _count_recent_errors(hours=48, log_dir=str(tmp_path))
+        assert count_48 == 2, f"expected 2 errors within 48h window, got {count_48}"
+
+        # hours=72 window: all three entries are inside.
+        count_72 = _count_recent_errors(hours=72, log_dir=str(tmp_path))
+        assert count_72 == 3, f"expected 3 errors within 72h window, got {count_72}"
 
 
 class TestStatusDisplayErrorCount:

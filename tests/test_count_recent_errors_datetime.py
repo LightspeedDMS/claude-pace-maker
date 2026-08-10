@@ -2,15 +2,22 @@
 """
 Tests for _count_recent_errors() datetime timezone handling.
 
-Bug: Line 478-481 in user_commands.py creates a naive datetime via strptime()
-but then compares it to an aware datetime (cutoff_time uses timezone.utc),
-which raises TypeError: can't compare offset-naive and offset-aware datetimes.
+Contract (issue #95): log filenames (pacemaker.logger.get_log_path_for_date)
+and log line timestamps (pacemaker.logger.log()) are BOTH written using
+naive LOCAL time -- never UTC. _count_recent_errors() parses each line's
+timestamp as naive local time via datetime.strptime() (no
+.replace(tzinfo=...)) and compares it against a cutoff computed the same
+way: datetime.now() - timedelta(hours=hours), also naive local.
 
-Fix: Add .replace(tzinfo=timezone.utc) after datetime.strptime().
+These fixtures build filenames and log-line timestamps from datetime.now()
+(naive local) to match that same time base end-to-end. Building fixtures
+from datetime.now(timezone.utc) instead -- the anti-pattern issue #95
+removed from production -- would silently skew counts by the machine's
+UTC offset, absorbed by a wide window but exposed by a narrow one.
 """
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -40,8 +47,8 @@ class TestCountRecentErrorsDatetimeBug:
         offset-aware datetimes.
         After fix: returns integer count without error.
         """
-        now_utc = datetime.now(timezone.utc)
-        recent = now_utc - timedelta(hours=1)
+        now = datetime.now()
+        recent = now - timedelta(hours=1)
 
         # Use today's date in filename to match get_recent_log_paths() pattern
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -56,8 +63,8 @@ class TestCountRecentErrorsDatetimeBug:
         """
         Errors with timestamps within the look-back window must be counted.
         """
-        now_utc = datetime.now(timezone.utc)
-        one_hour_ago = now_utc - timedelta(hours=1)
+        now = datetime.now()
+        one_hour_ago = now - timedelta(hours=1)
 
         today_str = datetime.now().strftime("%Y-%m-%d")
         log_file = tmp_path / f"pace-maker-{today_str}.log"
@@ -75,8 +82,8 @@ class TestCountRecentErrorsDatetimeBug:
         """
         Errors with timestamps older than the look-back window must NOT be counted.
         """
-        now_utc = datetime.now(timezone.utc)
-        two_days_ago = now_utc - timedelta(hours=49)
+        now = datetime.now()
+        two_days_ago = now - timedelta(hours=49)
 
         today_str = datetime.now().strftime("%Y-%m-%d")
         log_file = tmp_path / f"pace-maker-{today_str}.log"
@@ -91,8 +98,8 @@ class TestCountRecentErrorsDatetimeBug:
         """
         Lines with INFO or WARNING level must NOT be counted.
         """
-        now_utc = datetime.now(timezone.utc)
-        recent = now_utc - timedelta(hours=1)
+        now = datetime.now()
+        recent = now - timedelta(hours=1)
 
         today_str = datetime.now().strftime("%Y-%m-%d")
         log_file = tmp_path / f"pace-maker-{today_str}.log"
@@ -127,9 +134,9 @@ class TestCountRecentErrorsDatetimeBug:
         """
         Only errors within the look-back window are counted; older ones are ignored.
         """
-        now_utc = datetime.now(timezone.utc)
-        recent = now_utc - timedelta(hours=2)
-        old = now_utc - timedelta(hours=48)
+        now = datetime.now()
+        recent = now - timedelta(hours=2)
+        old = now - timedelta(hours=48)
 
         today_str = datetime.now().strftime("%Y-%m-%d")
         log_file = tmp_path / f"pace-maker-{today_str}.log"
