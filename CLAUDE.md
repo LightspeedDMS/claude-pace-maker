@@ -17,14 +17,16 @@
 
 ## End-to-End Testing Philosophy
 
-**This project does NOT use scripted/automated end-to-end tests** — they consume too much time and are explicitly unwanted here.
+**This project does not write NEW scripted/automated end-to-end tests** — they consume too much time and are explicitly unwanted here. (This was previously stated as an absolute "does NOT use" — that was false: five legacy scripted E2E files still exist and still run. See the bullets below.)
 
 **What "end-to-end" means in this project**: Claude itself executes and inspects what pace-maker is doing when finishing agentic work — run the hooks/CLI, observe pace-maker's actual behavior, and report the real observed evidence. E2E verification here is **agentic/manual (performed by Claude)**, never a test script.
 
 **Therefore:**
-- Do NOT write scripted/automated E2E test files for this project.
-- Do NOT enforce scripted-E2E evidence in validation prompts (e.g. demanding "E2E TEST COMPLETION REPORT" formats, "pytest does NOT satisfy E2E", "execute the real application", etc.). Two stop-hook prompt tests that asserted this requirement were removed for this reason.
+- Prefer agentic/manual E2E. Do NOT add NEW scripted/automated E2E test files for this project.
+- Legacy scripted E2E files DO still exist and still run: `tests/e2e/test_secrets_e2e.py`, `tests/test_clean_code_rules_e2e.py`, `tests/test_install_e2e.py`, `tests/test_langfuse_provisioner_e2e.py`, `tests/test_subagent_output_correlation_e2e.py` (`./scripts/run_tests.sh --quick` skips them). Leave them alone unless a task specifically covers them.
 - When end-to-end verification is needed, run pace-maker and inspect its behavior directly, then report the real observed output.
+
+**⚠️ UNRESOLVED CONTRADICTION — do not assume this policy is enforced in the shipped prompt.** The prohibition above on demanding scripted-E2E evidence is NOT reflected in `src/pacemaker/prompts/stop/stop_hook_validator_prompt.md`, which still contains `FORMAT A — E2E TEST COMPLETION REPORT` (~line 225), `OPTION 1 — E2E TEST COMPLETION REPORT` (~line 277), and explicit rejection of `"pytest tests/"` (~line 252) and `"Tests are passing"` (~line 263) as insufficient evidence. Worse, `tests/test_stop_hook_prompt_async_wait.py::test_e2e_evidence_requirement_preserved` **actively asserts that text is present** — so the prompt and the test lock each other in. Consequence: **any edit that removes scripted-E2E language from that prompt MUST update that test in the same commit**, or the suite goes red. This contradiction is documented, not resolved — do not claim otherwise.
 
 **Related — unit tests must never make real external calls**: all `codex`/`gemini`/`claude` CLI/SDK calls in tests MUST be mocked. An autouse guard in `tests/conftest.py` blocks real ones — a real call that leaked into a `ThreadPoolExecutor` reviewer thread caused ~30s interpreter-exit hangs (invisible to pytest's own timer, which made the suite appear fast while wall-clock was ~6x longer). Mock at the namespace the code imports from (e.g. `pacemaker.inference.resolve_and_call_with_reviewer`, `pacemaker.inference.competitive.get_provider`), NOT the `...registry` submodule.
 
@@ -46,9 +48,9 @@ The `claude-usage-reporting` monitor (a.k.a. "claude-console") reads pace-maker'
 
 ### Architecture
 
-- **Producer**: `claude-pace-maker` writes SQLite DBs under `~/.claude-pace-maker/` from hook processes, using `execute_with_retry()` (exponential backoff 100ms → 200ms → 400ms, `MAX_RETRIES=3`). See `src/pacemaker/database.py:442-482`.
+- **Producer**: `claude-pace-maker` writes SQLite DBs under `~/.claude-pace-maker/` from hook processes, using `execute_with_retry()` (`MAX_RETRIES=3`). See `src/pacemaker/database.py:442-482`. **Correction — the retry budget is smaller than it looks**: with `MAX_RETRIES=3` the loop sleeps only at attempt 0 (100ms) and attempt 1 (200ms); attempt 2 re-raises without sleeping. **The 400ms step is unreachable** — total added latency is ~300ms, not ~700ms. The code's own comment at `database.py:474` repeats the "100/200/400" error; treat the code as authoritative over both comments, and do not size timeouts assuming a 400ms tier exists.
 - **Consumer**: `claude-usage-reporting/claude_usage/code_mode/pacemaker_integration.py` opens **blocking read connections with a 5-second timeout** — NO retry loop on the reader side. The timeout IS the circuit breaker.
-- **Two databases, identical access pattern**: `usage.db` (heavily read) and `session_registry.db` (reserved for cross-session features).
+- **Two databases, identical access pattern**: `usage.db` (heavily read) and `session_registry.db` — **also actively read, NOT reserved**: `get_active_agent_tree()` / `get_active_agent_tree_cached()` at `pacemaker_integration.py:1184-1236` query the `agents` and `agent_actions` tables (own TTL: `AGENT_TREE_CACHE_TTL_SECONDS = 2`, staleness cutoff `AGENT_STALE_SECONDS = 1200`). This matters for the "When Adding New Tables / Columns" rules below — the consumer tolerates missing columns but not missing tables, so those two tables are a live cross-process contract.
 - **Hardcoded base path**: monitor uses `Path.home() / ".claude-pace-maker"` (no env var override in consumer, unlike producer's `PACEMAKER_SESSION_REGISTRY_PATH`).
 
 ### Canonical Read Idioms
@@ -97,6 +99,8 @@ except (sqlite3.Error, OSError) as e:
     return None
 ```
 
+**Pattern B is prescriptive, not descriptive — copy the snippet, NOT the live function.** `get_blockage_stats()` (`pacemaker_integration.py:567-630`) deviates from it in three ways: it gates on `is_installed()` first, it hardcodes a literal `timeout=5.0` instead of using the `DB_TIMEOUT` constant, and it closes the connection **only on the success path** — there is no `try/finally`, so an exception raised mid-query leaks the connection. New readers must follow the snippet above.
+
 ### Mandatory Rules for All Cross-Process Readers
 
 1. **`.exists()` check before `sqlite3.connect()`** — DB file may not exist yet on fresh install.
@@ -114,7 +118,7 @@ except (sqlite3.Error, OSError) as e:
 
 - **JSON reads**: `config.json` read via `_read_config()` at `pacemaker_integration.py:507-516` (same defensive pattern).
 - **Dynamic imports**: Monitor adds pace-maker's `src/` to `sys.path` via `_get_pacemaker_src_path()` (reads `~/.claude-pace-maker/install_source`, lines 157-197) then calls `UsageModel.get_current_usage()` **in-process**. Import-based calls are NOT cross-process — the function runs in the monitor's Python interpreter against the shared SQLite file.
-- **No Unix sockets, no subprocess CLI calls, no HTTP.** SQLite + JSON files + dynamic imports are the only IPC surfaces.
+- **No Unix sockets, no subprocess CLI calls, no HTTP — *on the pace-maker channel specifically*.** SQLite + JSON files + dynamic imports are the only IPC surfaces the monitor uses **to reach pace-maker**. The monitor is not HTTP-free or subprocess-free in general: it makes HTTP calls (`claude_usage/api.py:62,98`) and shells out (`claude_usage/auth.py:24`) for other concerns. Scope any "we never do X" reasoning to this channel.
 
 ### Read Cadence
 
@@ -157,6 +161,8 @@ easy to miss too — `tests/test_plugin_hooks_config.py::TestPluginJson::test_pl
 asserts `plugin.json`'s version equals `pyproject.toml`'s version, so a two-file bump (missing
 `pyproject.toml`) fails that test even though `__init__.py` and `plugin.json` agree with each other.
 
+**Enforcement gap — only 2 of the 3 files are machine-checked.** That test compares `plugin.json` ↔ `pyproject.toml` and nothing else. **No test asserts `src/pacemaker/__init__.py` matches either of them**, so forgetting the `__version__` bump ships a stale package version with a fully green suite. The `__init__.py` bump is enforced by this document and your own diligence only — verify it by hand on every bump.
+
 ---
 
 ## Claude Code Compatibility Policy
@@ -167,7 +173,9 @@ asserts `plugin.json`'s version equals `pyproject.toml`'s version, so a two-file
 
 **Minimum supported Claude Code version**: `2.1.39`
 
-This is the floor pace-maker explicitly tests against and guarantees. The hook code can technically read pre-2.1.39 layouts via fallback paths (see `src/pacemaker/hook.py:38, 81`), but anything below `2.1.39` is best-effort, not supported. Below the minimum, the SessionStart hook hard-blocks with an upgrade message — pace-maker refuses to run rather than silently produce wrong telemetry.
+This is the floor pace-maker explicitly tests against and guarantees. The hook code can technically read pre-2.1.39 layouts via fallback paths (see `src/pacemaker/hook.py:2487-2490, 2520-2524`), but anything below `2.1.39` is best-effort, not supported.
+
+**⚠️ The minimum is documentation, NOT an enforced runtime gate (issue #96).** The value `2.1.39` lives as `_FALLBACK_MIN_VERSION` in `src/pacemaker/version_check.py:20`. **The check is NOT WIRED**: `perform_session_start_version_check()` has **no caller anywhere in `src/`**, and **nothing reads `state["version_block_active"]`**. No SessionStart block is emitted, no downstream hook skips, no upgrade message is ever shown — a user on Claude Code 2.0 gets zero warning. This is orphan code (Messi Rule 12). See the "Minimum Claude Code Version Check (Story #66)" section below and issue #96.
 
 **Adding new compatibility shims** when Claude Code ships a breaking change in a future version:
 1. Add an entry to the "Tracked breaking changes" list below — version, what changed, what we adapted, where the shim lives
@@ -179,7 +187,7 @@ This is the floor pace-maker explicitly tests against and guarantees. The hook c
 
 | Claude Code version | What changed | Pace-maker adaptation | Tests |
 |---------------------|--------------|----------------------|-------|
-| `2.1.39` | Subagent transcripts moved from `<project>/agent-*.jsonl` to `<project>/<session-id>/subagents/agent-*.jsonl` | Hook glob searches both locations (`src/pacemaker/hook.py:38, 81`) | `tests/unit/test_subagent_transcript_path.py` |
+| `2.1.39` | Subagent transcripts moved from `<project>/agent-*.jsonl` to `<project>/<session-id>/subagents/agent-*.jsonl` | Hook glob searches both locations (`src/pacemaker/hook.py:2487-2490, 2520-2524`) | `tests/unit/test_subagent_transcript_path.py` |
 
 ---
 
@@ -187,8 +195,10 @@ This is the floor pace-maker explicitly tests against and guarantees. The hook c
 
 **Two-phase validation** for dangerous Bash commands in the PreToolUse hook:
 
-- **Phase 1 (Regex Gate)**: When a Bash tool call matches any of the 55 default danger rules and the message contains no `INTENT:` declaration, the command is blocked immediately with no LLM call. This is a fast-reject path.
-- **Phase 2 (LLM Validation)**: When `INTENT:` is present, the LLM validates that the declared intent aligns with the actual Bash command being executed (same Stage 2 flow as Write/Edit).
+- **Gate preconditions (undocumented until now)**: the whole danger-bash path runs ONLY when config has `enabled` AND `intent_validation_enabled` AND `danger_bash_enabled` (`hook.py:2579-2583`). Any one of the three being false skips danger-bash entirely — `danger_bash_enabled` alone is not sufficient.
+- **Before Phase 1 — anchor resolution**: the gate first resolves a tool-matched transcript anchor with a **3.0s** ceiling (`_DANGER_BASH_MAX_WAIT_SECONDS`, issue #93 — NOT the Write/Edit gate's 30s). This can produce a *different* block with a "transcript not ready" message on `not_found`, or silently ACCEPT a `stale` byte-identical re-issue. See the issue #93 section below before touching it.
+- **Phase 1 (Regex Gate)**: When a Bash tool call matches the **merged** ruleset (55 bundled defaults **minus `deleted_rules`, plus user additions** — not a fixed 55) and the anchored message contains no `INTENT:` declaration, the command is blocked immediately with no LLM call. This is a fast-reject path.
+- **Phase 2 (LLM Validation)**: When `INTENT:` is present, an LLM validates that the declared intent aligns with the actual Bash command. **This is a SEPARATE code path from Write/Edit Stage 2, not "the same flow"**: the prompt is built inline at `hook.py:2760-2783` (there is no `prompts/pre_tool_use/` template for it) and the verdict comes from `verdict.verdict_passes()` at `hook.py:2803`. The two gates share only the reviewer resolver and the verdict primitive. **Keep them in sync deliberately — issue #94 was caused by exactly this pair silently diverging.**
 
 **Rule categories**: 25 Work Destruction (WD) rules (git checkout --, git reset --hard, git stash drop, branch deletion, etc.) and 30 System Destruction (SD) rules (rm -rf, kill -9, chmod 777, mkfs, dd, etc.).
 
@@ -199,7 +209,7 @@ This is the floor pace-maker explicitly tests against and guarantees. The hook c
 **Key files**:
 - `src/pacemaker/danger_bash_rules_default.yaml` — 55 bundled default rules
 - `src/pacemaker/danger_bash_rules.py` — loader, merger, matcher module
-- `src/pacemaker/hook.py` line ~2149 — PreToolUse Bash tool handling
+- `src/pacemaker/hook.py` lines 2575-2882 (`# 2a. Danger Bash validation`) — PreToolUse Bash tool handling. (Was documented as `~2149`, which is CSA session-end code in the **Stop** hook — wrong file region entirely.)
 
 ---
 
@@ -221,7 +231,7 @@ This is the floor pace-maker explicitly tests against and guarantees. The hook c
 - `src/pacemaker/session_registry/workspace.py` — `resolve_workspace_root(cwd)` git + fallback resolver
 - `src/pacemaker/session_registry/nudges.py` — `build_start_banner`, `build_periodic_reminder`, `build_danger_bash_warning`
 - `src/pacemaker/session_registry/_csa.py` — Hook integration: `on_session_start`, `on_subagent_start`, `on_heartbeat`, `on_pre_tool_use`, `on_session_end`
-- `src/pacemaker/hook.py` lines ~351, ~562, ~616, ~1946, ~2305 — Hook wiring to `_csa`
+- `src/pacemaker/hook.py` — Hook wiring to `_csa`: `~382` (SessionStart), `~661` (SubagentStart), `~723` (SubagentStop), `~1032`/`~1046` (PostToolUse heartbeat + `record_action` — **see the Config Gate warning below; `~1046` bypasses `_csa` entirely**), `~1397` (UserPromptSubmit heartbeat), `~2133` (Stop), `~2555` (PreToolUse). (The previously documented `~1946`/`~2305` point at no CSA code at all.)
 
 ### CLI
 ```bash
@@ -238,7 +248,7 @@ pace-maker sessions list   # Show active registry sessions (filters out >20min s
 ```json
 { "cross_session_awareness_enabled": true }
 ```
-When `false`, ALL cross-session logic is skipped — no registry writes, no banners.
+**⚠️ The gate is INCOMPLETE — `false` does NOT stop all registry writes (issue #97).** What the gate actually covers: every `_csa.*` entry point returns early, so there are no banners, no periodic reminders, no danger-bash sibling warning, and no session-table writes via `_csa`. What it does **NOT** cover: the PostToolUse `record_action` / `update_agent_heartbeat` block at **`hook.py:1046-1066` calls `session_registry.registry` DIRECTLY, bypassing `_csa`, and is not gated at all**. So with `cross_session_awareness_enabled: false` the DB still receives `agent_actions` INSERTs and `agents.last_seen` UPDATEs on every tool call. Do not describe this config key as a full kill switch.
 
 ### State Schema (namespaced under `cross_session_awareness`, keyed by session_id)
 ```json
@@ -261,7 +271,7 @@ When `false`, ALL cross-session logic is skipped — no registry writes, no bann
 **CRITICAL — why this must be keyed by session_id**: `~/.claude-pace-maker/state.json` is a SINGLE global file shared across all concurrent Claude Code sessions on the machine (pace-maker's existing architecture uses one file for all sessions, with `session_id` as a top-level field updated by whichever session wrote last). The original story-#64 design used a flat `cross_session_awareness` block without session_id scoping, which caused catastrophic cross-workspace pollution: session A's `workspace_root` cache would be overwritten by session B's SessionStart, and session A's subsequent sibling queries would then use session B's workspace_root, leaking cross-repository sibling info. The fix (v2.19.1) keys every CSA entry by `session_id` so each session strictly reads and writes only its own sub-dict. `on_session_end` garbage-collects the session's sub-dict to prevent unbounded growth. See `src/pacemaker/session_registry/_csa.py::_get_cs(state, session_id)` and `tests/test_session_registry_csa_session_scoping.py`.
 
 ### Test Isolation
-- `tests/conftest.py` sets `PACEMAKER_SESSION_REGISTRY_PATH` to a tmp path via `pytest.ini`-level fixture
+- `tests/conftest.py` sets `PACEMAKER_SESSION_REGISTRY_PATH` to a tmp path in the autouse `_guard_production_db` fixture (`pytest.ini` plays no part in this)
 - Tests that need registry isolation use `monkeypatch.setenv("PACEMAKER_SESSION_REGISTRY_PATH", str(tmp_path / "sessions.db"))`
 - E2E tests use synthetic sibling seeding (direct SQLite INSERT + verify nudge responses)
 
@@ -269,22 +279,29 @@ When `false`, ALL cross-session logic is skipped — no registry writes, no bann
 
 ## Minimum Claude Code Version Check (Story #66)
 
-When a user's installed Claude Code is below pace-maker's configured minimum version, SessionStart hard-blocks with an actionable stderr message. All subsequent hooks skip their logic silently (fail-open). Version status is persisted to a dedicated SQLite DB.
+> # ⚠️ STATUS: NOT WIRED — THIS FEATURE DOES NOTHING AT RUNTIME (issue #96)
+>
+> The three modules below exist and are unit-tested, but **nothing in `hook.py` imports or calls any of them**. Concretely:
+> - **No caller** for `perform_session_start_version_check()` anywhere in `src/` — the SessionStart wiring described in Story #66 was never added.
+> - **No SessionStart block ever occurs.** A user on a Claude Code below the minimum sees nothing.
+> - **`version_block_active` is never written** to `state.json`, and no code reads it.
+> - **PreToolUse and Stop have NO early-return guard.** There is no such code to find.
+>
+> This is orphan code (Messi Rule 12). Everything below describes the modules **as written**, not as reachable. Do not cite this feature as an active safeguard, and do not "fix a bug" in it without first wiring it — see issue #96.
 
-### Architecture
+### Architecture (module behavior as written — unreachable today)
 
 - **Version probe**: `subprocess.run(["claude", "--version"], timeout=5)` — any failure (FileNotFoundError, TimeoutExpired, non-zero exit, parse error) returns `None` and the check fails-open (no block).
-- **Minimum configured in**: `DEFAULT_CONFIG["min_claude_version"] = "2.1.39"` in `src/pacemaker/constants.py`. Overridable via `pace-maker min-claude-version set X.Y.Z`.
-- **Block flag**: `state["version_block_active"] = True` written to `state.json` when installed version is below minimum.
-- **Downstream hooks**: PreToolUse and Stop check `version_block_active` at entry and return `{"continue": True}` immediately when set.
+- **Minimum value**: `_FALLBACK_MIN_VERSION = "2.1.39"` in `src/pacemaker/version_check.py:20`. **There is NO `DEFAULT_CONFIG["min_claude_version"]`** — `constants.py` has no such key, and **setting `min_claude_version` in `config.json` has no effect whatsoever**.
+- **Block flag**: `state["version_block_active"] = True` would be written to `state.json` when the installed version is below minimum — **never executed, since the function has no caller**.
+- **Downstream hooks**: the design called for PreToolUse and Stop to check `version_block_active` at entry and return `{"continue": True}` — **this guard does not exist in the code**.
 
 ### Key Files
 
 - `src/pacemaker/claude_code_version.py` — `ClaudeCodeVersion` dataclass: `parse()`, `compare()`, `is_below()`, `probe_installed_version()`
 - `src/pacemaker/version_status_db.py` — SQLite DB following session_registry pattern: `resolve_db_path()`, `record_status()`, `read_status()`
-- `src/pacemaker/version_check.py` — `perform_session_start_version_check(state, config, stderr)` with full fail-open wrapper
-- `src/pacemaker/hook.py` — SessionStart wiring (after first save_state, before CSA block); PreToolUse and Stop early-return guards
-- `src/pacemaker/user_commands.py` — Pattern 27 (`min-claude-version` CLI), `_execute_min_claude_version()`, status line "Claude Code: ..."
+- `src/pacemaker/version_check.py` — `perform_session_start_version_check(state, config, stderr)` with full fail-open wrapper; `_FALLBACK_MIN_VERSION` at line 20. **No caller in `src/`.**
+- `src/pacemaker/hook.py` — **nothing.** The SessionStart wiring and the PreToolUse/Stop guards were never written.
 
 ### Version Status DB
 
@@ -295,20 +312,7 @@ Follows the session_registry pattern exactly:
 - **Fail-open reads**: `read_status()` catches all exceptions at DEBUG level, returns `None`
 - **Named constant**: `_READ_TIMEOUT_SECONDS = 5.0`
 
-### CLI Commands
-
-```bash
-pace-maker min-claude-version           # Show configured minimum
-pace-maker min-claude-version show      # Same
-pace-maker min-claude-version set X.Y.Z # Set new minimum
-```
-
-### Status Display
-
-`pace-maker status` shows a "Claude Code:" line immediately after the version line:
-- Green: `Claude Code: v2.1.126 ✓ (min v2.1.39)` — installed version meets minimum
-- Red: `Claude Code: v2.1.10 ✗ (need ≥v2.1.39)` — blocked
-- Yellow: `Claude Code: unknown (min v2.1.39, version probe failed)` — fail-open
+**No CLI, no status line.** `pace-maker min-claude-version` **does not exist** (command patterns in `user_commands.py` stop at 26; there is no `_execute_min_claude_version()`), and `pace-maker status` has **no "Claude Code:" line**. Both were previously documented here and were removed as fiction — do not re-add them without the implementation.
 
 ### Test Isolation
 
@@ -316,8 +320,8 @@ pace-maker min-claude-version set X.Y.Z # Set new minimum
 
 ### Test Files
 
-- `tests/test_claude_code_version.py` — 47 unit tests (parse, compare, is_below, probe, config defaults, DB, CLI)
-- `tests/test_version_check_integration.py` — 10 component tests (session start check, downstream hook early returns, recovery)
+- `tests/test_claude_code_version.py` — **38** unit tests (parse, compare, is_below, probe, DB). **No CLI coverage and no config-defaults coverage** — neither exists to cover.
+- `tests/test_version_check_integration.py` — **9** component tests. **⚠️ Its 2 `TestBlockedHooksEarlyReturn` tests pass VACUOUSLY**: they assert only `decision != "block"`, which is trivially true precisely *because* no early-return guard exists. Green here is not evidence the feature works — it is evidence of the absence being untested.
 
 ---
 
@@ -328,7 +332,7 @@ When intent validation runs Stage 2 (LLM code review), the reviewer identity is 
 1. `resolve_and_call_with_reviewer()` in `inference/registry.py` returns `(response, reviewer_name)` tuple
 2. `intent_validator.py` threads reviewer through validation result dict (`"reviewer": reviewer`)
 3. `hook.py` records reviewer in blockage_events details JSON
-4. Governance event `feedback_text` is prefixed with `[REVIEWER:xxx]` tag (e.g., `[REVIEWER:codex-gpt5]`, `[REVIEWER:anthropic-sdk]`, `[REVIEWER:gemini]`)
+4. Governance event `feedback_text` is prefixed with the **bare label in brackets** — `[codex-gpt5]`, `[anthropic-sdk]`, `[gem-flash]`. See `hook.py:3106-3107` and `hook.py:2817-2818`. **There is NO `REVIEWER:` prefix**; this file previously documented `[REVIEWER:xxx]`, which never shipped and contradicted the Competitive Review Pipeline section's own `[expression]` tag format. Any consumer parsing for `REVIEWER:` will match nothing.
 
 The reviewer tag enables the claude-usage monitor to display colored reviewer identity in the governance event feed.
 
@@ -338,7 +342,7 @@ The reviewer tag enables the claude-usage monitor to display colored reviewer id
 
 The `codex_usage.py` module handles both subscription and PAYG (Pay-As-You-Go) Codex billing:
 
-- **PAYG detection**: When Codex CLI returns `limit_id: "premium"` in rate limit headers, the plan is identified as PAYG
+- **PAYG detection lives in the CONSUMER, not here**: `codex_usage.py:160` only stores `limit_id` **verbatim** — it makes no PAYG judgement. The `limit_id == "premium"` → PAYG interpretation is implemented in `claude-usage-reporting/claude_usage/code_mode/display.py:1079`. Change detection logic there, not in this repo.
 - **Null handling**: `_parse_last_token_count()` gracefully handles null `primary`/`secondary` fields that Codex returns for PAYG billing (no usage percentages available)
 - **`limit_id` column**: Added to `codex_usage` SQLite table via idempotent `ALTER TABLE` migration in `migrate_codex_usage_schema()`
 - **SubagentStop wiring**: Migration is called in `hook.py` SubagentStop handler before writing codex usage data
@@ -459,9 +463,11 @@ This applies to:
 
 1. **Tool-matched anchor** — `get_current_turn_message_for_validation(transcript_path, tool_input, tool_name)` now locates the transcript tool_use whose `input` EXACTLY matches the current hook's `tool_input` (Write: `file_path`+`content`, Edit: `file_path`+`new_string`, Bash: `command`). Never matches a prior tool_use with different content.
 
-2. **Bounded retry (issue #91)** — if no match found (turn not yet flushed), re-reads the transcript with exponential backoff (`_initial_sleep=0.25s`, `_backoff_multiplier=2.0`, capped at `_max_sleep=2.0s` per sleep: 0.25, 0.5, 1.0, 2.0, 2.0, ...), hard-ceiled at `_max_wait_seconds` of REAL (`time.monotonic()`) elapsed time (Messi Rule 14: provable termination — each iteration either returns or sleeps a strictly positive, ceiling-clamped duration, so elapsed strictly increases every iteration). Replaced the original fixed 21-attempt/0.25s-interval schedule (~5.25s nominal ceiling, itself widened from ≤1s/10 reads in v2.33.2) after live transcript evidence (issue #91) showed busy/large-transcript sessions regularly exceeding that ceiling by 1.4-2s — the per-attempt cost of re-reading a tens-of-MB transcript in full counts against the ceiling too, not just the sleeps, which is why elapsed is tracked via `time.monotonic()` rather than assumed from the sleep schedule. Both the Write/Edit gate and the danger-bash gate call this function without overriding these parameters, so the function defaults are the single source of truth for the wait ceiling on both pre-tool gates. The loop returns the INSTANT a match is found — the ceiling is a MAX wait on the not-yet-flushed path, never a fixed per-edit delay. **Superseded — the ceiling default is now 30.0s (raised from an initial 15.0 attempt), see the "issue #91, second pass" section immediately below for why 15s proved insufficient and what changed.**
+2. **Bounded retry (issue #91)** — if no match found (turn not yet flushed), re-reads the transcript with exponential backoff (`_initial_sleep=0.25s`, `_backoff_multiplier=2.0`, capped at `_max_sleep=2.0s` per sleep: 0.25, 0.5, 1.0, 2.0, 2.0, ...), hard-ceiled at `_max_wait_seconds` of REAL (`time.monotonic()`) elapsed time (Messi Rule 14: provable termination — each iteration either returns or sleeps a strictly positive, ceiling-clamped duration, so elapsed strictly increases every iteration). Replaced the original fixed 21-attempt/0.25s-interval schedule (~5.25s nominal ceiling, itself widened from ≤1s/10 reads in v2.33.2) after live transcript evidence (issue #91) showed busy/large-transcript sessions regularly exceeding that ceiling by 1.4-2s — the per-attempt cost of re-reading a tens-of-MB transcript in full counts against the ceiling too, not just the sleeps, which is why elapsed is tracked via `time.monotonic()` rather than assumed from the sleep schedule. **Correction (superseded by issue #93)** — the gates no longer share one ceiling: **only the Write/Edit gate uses the 30.0s default.** The danger-bash gate deliberately overrides `_max_wait_seconds` to `_DANGER_BASH_MAX_WAIT_SECONDS = 3.0` (`hook.py:64`), because for Bash the current turn is not readable during the hook's window at all, so a long wait is pure latency before an inevitable block. The function defaults are NOT the single source of truth for both gates — see the issue #93 section below. The loop returns the INSTANT a match is found — the ceiling is a MAX wait on the not-yet-flushed path, never a fixed per-edit delay. **Superseded — the ceiling default is now 30.0s (raised from an initial 15.0 attempt), see the "issue #91, second pass" section immediately below for why 15s proved insufficient and what changed.**
 
 3. **Fail-CLOSED on not-ready (v2.33.2)** — if still no match after retries, returns `None` (not `""`). Both the Write/Edit gate AND the danger-bash gate interpret `None` as "transcript-not-ready" and BLOCK (`{"decision": "block", "reason": "..."}`) with a message instructing the agent to re-issue the IDENTICAL tool call — never evaluates the previous turn. **This was changed from fail-OPEN (`{"continue": True}`) to fail-CLOSED** after live observation showed the Write/Edit gate's fail-open branch let raced edits through completely unvalidated (intent validation enforced nothing for any edit that hit this race). The danger-bash gate already proved fail-closed + re-issue works in practice: the agent re-issues the identical command, the re-issue's turn is then flushed, the tool-matched anchor binds to it, and validation proceeds normally on the second attempt (Messi Rule 14: bounded to 2 turns). The `intent_validation_deferred` blockage category and telemetry (activity event + governance event) are still recorded on this path so the race remains observable in `usage.db` / the claude-usage monitor.
+
+   **🚨 SUPERSEDED BY ISSUE #93 — the two gates are NO LONGER symmetric on `None`, and this paragraph is the single most dangerous stale claim in this file.** Current behaviour: the **Write/Edit gate still blocks on every `None`**, but the **danger-bash gate blocks only when the outcome is `not_found`** — a `stale` outcome is **ACCEPTED**, because `_tool_input_matches` requires the Bash `command` to be byte-identical, so a stale match is provably a re-issue of exactly this command. **Do NOT "restore symmetry" by deleting the `elif _bash_outcome == "stale":` branch at `hook.py:2649`.** That branch is the entire fix for #93; removing it re-creates the deadlock where EVERY Bash command was refused with "transcript not ready" after burning the full ceiling, with no recovery on re-issue.
 
 4. **Defense-in-depth** — `extract_current_assistant_message(messages, file_path=file_path)` cross-checks the selected message via `_mentions_file`. If it carries an INTENT: marker but mentions a different file → discards and returns `""`, preventing false-passes from wrong-file stale turns. Messages without an INTENT: marker are returned as-is (no silent discard — their Stage-1 rejection log is preserved).
 
@@ -479,7 +485,7 @@ A first fix attempt replaced the full scan with a tail-read (last 512KB via `_re
 **Key files**:
 - `src/pacemaker/transcript_reader.py` — `_tool_input_matches()`, `_read_tail_raw_entries()`, `_last_n_assistant_turn_keys()`, `_find_turn_matching_tool_input()` (fixed-cost tail read + last-N-logical-turns scoping, `TAIL_READ_BYTES`/`LAST_N_TURNS_FOR_TOOL_MATCH` constants), updated `get_current_turn_message_for_validation()` (default `_max_wait_seconds`=30.0/`_initial_sleep`/`_backoff_multiplier`/`_max_sleep`/`_diagnostics`, issue #91)
 - `src/pacemaker/intent_validator.py` — `extract_current_assistant_message(file_path="")` hardening; `validate_intent_and_code` threads `file_path` through
-- `src/pacemaker/hook.py` — Write/Edit gate (~line 2883, `if current_message_override is None:`): threads `tool_input`/`tool_name`/`_diagnostics`, fails CLOSED on `None` (v2.33.2); Danger-bash gate (~line 2590): same pattern, no retry-param override (shares the Write/Edit gate's default 30s exponential-backoff ceiling, issue #91)
+- `src/pacemaker/hook.py` — Write/Edit gate (~lines 2949-2956, `if current_message_override is None:`): threads `tool_input`/`tool_name`/`_diagnostics`, fails CLOSED on `None` (v2.33.2), uses the 30.0s default ceiling; Danger-bash gate (~line 2590): **DOES override the retry params** — `_max_wait_seconds=_DANGER_BASH_MAX_WAIT_SECONDS` (3.0s, `hook.py:64`) — and additionally consumes `_diagnostics["outcome"]` / `_diagnostics["stale_text"]` to distinguish `stale` (accept) from `not_found` (block). It does **not** share the Write/Edit ceiling (issue #93).
 - `src/pacemaker/constants.py` — `BLOCKAGE_CATEGORIES["intent_validation_deferred"]` comment reflects fail-closed (v2.33.2)
 
 **Tests**:
@@ -488,9 +494,11 @@ A first fix attempt replaced the full scan with a tail-read (last 512KB via `_re
 - `tests/test_intent_validation_deferred_canary.py` — updated in v2.33.2: asserts `decision: "block"` (was `continue: True`); WARNING log + blockage-event + category-constant assertions unchanged.
 - `tests/test_real_transcript_replay.py` + `tests/fixtures/real_transcript_replay/manifest.json` — the `_replay_stage1` fidelity-mirror helper's `None`-branch and the 4 pre-flush fixtures' `expected_stage1` flipped from `"YES"` to `"NO"` in v2.33.2 (per the module's own "update this helper IN THE SAME COMMIT" contract). Unaffected by either #91 tail-read design (all fixtures pass `_max_wait_seconds=0.0` and are well under the fixed 512KB tail window).
 
-### Issue #93 — the danger-bash gate deadlocked on an anchor it then threw away (v2.34.4)
+### Issue #93 — the danger-bash gate deadlocked on an anchor it then threw away (landed v2.34.4)
 
-**Symptom**: EVERY Bash command reaching the danger gate was refused with "transcript not ready", after burning the full 30s ceiling, with no recovery on re-issue. 116 such blocks in `usage.db`. Write/Edit was unaffected and worked in the same session minutes apart.
+> **Superseded in part by issue #94 (v2.34.5).** The Phase 2 verdict check described below was, at the time of #93, still strict `response.strip().upper() == "APPROVED"`. It now uses `verdict_passes()`, and the Phase 2 prompt requires rejections to begin with `BLOCKED:`. See "Canonical Verdict-Normalization Primitive → Gate convergence" for the current behaviour. Nothing else in this section changed.
+
+**Symptom**: EVERY Bash command reaching the danger gate was refused with "transcript not ready", after burning the full 30s ceiling, with no recovery on re-issue. **~116** such blocks in `usage.db` (a re-query today counts 115 — the figure is an approximate snapshot, not an exact reproducible count). Write/Edit was unaffected and worked in the same session minutes apart.
 
 **Root cause (two defects compounding)**:
 1. The gate called `get_current_turn_message_for_validation()` into `_bash_anchor` and **discarded the value** — its only use was `if _bash_anchor is None:` → block. The INTENT it actually validated came from a SEPARATE unanchored `get_last_n_messages_for_validation(n=4)` call. So the 30s wait and the fail-closed refusal gated a value that was then thrown away.
@@ -537,7 +545,10 @@ A first fix attempt replaced the full scan with a tail-read (last 512KB via `_re
 
 **Syntax**: `hook_model = "m1+m2[+m3]->synthesizer"` (2-3 verifiers + 1 synthesizer)
 
-**Supported models**: auto, sonnet, opus, haiku, gpt-5, gemini-flash, gemini-pro
+**Supported models**: **any token accepted by `inference/model_aliases.is_known_model()`** — not the short list this file used to print (which omitted every agy and codex-profile token and contradicted the Story #74/#75 sections below). That means:
+- the full `KNOWN_MODELS` set: `auto`, `sonnet`, `opus`, `haiku`, `fable`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gemini-flash`, `gemini-pro`, plus the 11 `agy-*` tokens;
+- the short aliases: `gpt-5`, `gpt`, `codex`, `gem-flash`, `gem-pro`;
+- any dynamic `codex-<profile>` token (shape-validated only — see the Codex Profile Provider section).
 
 **Short aliases**: gem-flash→gemini-flash, gem-pro→gemini-pro (accepted at CLI, stored canonically)
 
@@ -562,7 +573,7 @@ A first fix attempt replaced the full scan with a tail-read (last 512KB via `_re
    - 2+ failing → synthesizer called to FORMAT the message (message-only; cannot decide).
    - Synthesizer error/timeout/empty → concatenate raw failing feedbacks.
    - Edge case (pre-tool, missing verifier, all present passed) → `"a required verifier did not respond (fail-closed)"`.
-7. Return `("BLOCKED: " + message, expression)` — `BLOCKED:` prefix applied mechanically; synthesizer output is only the message body.
+7. Pass the message through `_strip_leading_blocked_prefix(message)` **first** (issue #88 — verifiers routinely emit their own leading `BLOCKED:`; without the strip the result reads `BLOCKED: BLOCKED: ...`), **then** return `("BLOCKED: " + stripped, expression)`. The `BLOCKED:` prefix is applied mechanically; synthesizer output is only the message body.
 
 **Synthesizer-cannot-flip guarantee**: `BLOCKED:` prefix is hardcoded in `run_mechanical()`. Even if the synthesizer returns `"APPROVED"`, the result is `"BLOCKED: APPROVED"` which `has_block_marker()` reads as blocked. The synthesizer can NEVER override a FAIL decision.
 
@@ -584,7 +595,11 @@ A first fix attempt replaced the full scan with a tail-read (last 512KB via `_re
 
 **Reviewer verdict logging**: Each reviewer's raw response is logged at DEBUG level (first 300 chars via `MAX_REVIEW_LOG_CHARS`) via `log_debug("competitive", f"Reviewer {model} verdict: ...")`.
 
-**Timeouts**: `REVIEWER_WAIT_TIMEOUT_SEC = 60` (per-reviewer via `futures_wait`), `SYNTHESIS_TIMEOUT_SEC = 30` (synthesis via `future.result(timeout=...)`), outer hook timeout = 120s (in `~/.claude/settings.json`).
+**Timeouts**: `REVIEWER_WAIT_TIMEOUT_SEC = 60` (per-reviewer via `futures_wait`), `SYNTHESIS_TIMEOUT_SEC = 30` (synthesis via `future.result(timeout=...)`).
+
+**The outer hook timeout is PER-EVENT, not a single 120s** (`~/.claude/settings.json`): Stop = 120s, **PreToolUse = 60s**, PostToolUse = 360s, SessionStart / SubagentStart / SubagentStop = 10s.
+
+**⚠️ The pipeline can outlive the PreToolUse budget.** Worst case is `REVIEWER_WAIT_TIMEOUT_SEC` (60) + `SYNTHESIS_TIMEOUT_SEC` (30) = **90s, which exceeds the 60s PreToolUse allowance**. One slow verifier plus a synthesis round is enough for the harness to kill the pre-tool gate mid-flight — **and a killed PreToolUse hook is a silently unvalidated tool call**, not a block. Budget accordingly when choosing competitive expressions for the pre-tool gate; the Stop gate's 120s has headroom, the pre-tool gate does not.
 
 **Status display**: `pace-maker status` shows full expression (e.g. `opus+gpt-5->haiku`) in ANSI blue — no separate "reviewers:" breakdown line.
 
@@ -594,7 +609,7 @@ A first fix attempt replaced the full scan with a tail-read (last 512KB via `_re
 
 **AgyProvider label fix** (Story #77): `_call_single_reviewer()` now returns the verbatim model alias as label for AgyProvider (e.g. `"agy-flash-high"`). Previously fell through to `"anthropic-sdk"` — fixed by adding `elif isinstance(provider, AgyProvider): label = model`.
 
-**Tests**: `tests/test_mechanical.py` (65 tests) — migrated from `tests/unit/test_competitive.py` + full Story #77 truth tables, synthesizer-cannot-flip safety test, stop-gate matrix, N=2/N=3 coverage.
+**Tests**: `tests/test_mechanical.py` (68 tests) — migrated from `tests/unit/test_competitive.py` + full Story #77 truth tables, synthesizer-cannot-flip safety test, stop-gate matrix, N=2/N=3 coverage.
 
 ---
 
@@ -650,9 +665,9 @@ Mirrors `PACEMAKER_SESSION_REGISTRY_PATH` pattern. `core.py` raises `RuntimeErro
 - `src/pacemaker/memory_localization/core.py` — path helpers, classification, atomic replace, Flow A/B/C entry points
 - `src/pacemaker/memory_localization/__init__.py` — public API exports
 - `src/pacemaker/memory_localization_cli.py` — `localize_memory_cmd`, `memory_localization_cmd` CLI handlers
-- `src/pacemaker/hook.py` (~lines 373-410) — SessionStart wiring
+- `src/pacemaker/hook.py` (~lines 406-441) — SessionStart wiring (fires for `source` in startup/resume only)
 - `src/pacemaker/user_commands.py` — command patterns (25, 26) and dispatch
-- `install.sh` line 596 — copies `memory_localization/` subdir to `~/.claude/hooks/pacemaker/`
+- `install.sh` line 630 — copies `memory_localization/` subdir to `~/.claude/hooks/pacemaker/`
 - `tests/test_memory_localization_*.py` — 33 tests (classification, linking, seed/restore)
 
 ---
@@ -710,12 +725,12 @@ All 5 ProviderError cases trigger Anthropic SDK fallback (reviewer: `"anthropic-
 - `src/pacemaker/inference/agy_provider.py` — `AgyProvider` class, `_MODEL_MAP`
 - `src/pacemaker/inference/model_aliases.py` — 11 agy tokens in `KNOWN_MODELS`
 - `src/pacemaker/inference/registry.py` — `get_provider()` agy routing, `is_agy_provider` reviewer label
-- `src/pacemaker/user_commands.py` — regex pattern, valid_models list, confirmation messages
+- `src/pacemaker/user_commands.py` — regex pattern, `is_known_model()` validation, confirmation messages (NOT a static `valid_models` list — the only such list belongs to the unrelated `_execute_prefer_model`)
 - `claude-usage-reporting/claude_usage/code_mode/display.py` — `REVIEWER_TAGS` agy entries (`"[Agy]"`, `"bright_green"`)
 - `tests/test_agy_provider.py` — 29 unit tests (MODEL_MAP, command construction, failure modes)
 - `tests/test_agy_registry.py` — 22 tests (KNOWN_MODELS, get_provider routing, reviewer labels, fallback)
-- `tests/test_agy_user_commands.py` — 24 tests (regex, execution, status display)
-- `claude-usage-reporting/tests/test_agy_display_tags.py` — 21 tests (REVIEWER_TAGS, colors, regex)
+- `tests/test_agy_user_commands.py` — 36 tests (regex, execution, status display)
+- `claude-usage-reporting/tests/test_agy_display_tags.py` — 25 tests (REVIEWER_TAGS, colors, regex)
 
 ---
 
@@ -729,14 +744,16 @@ A `codex-<profile>` token binds pace-maker to a named profile in `~/.codex/` (e.
 
 **Profile mode** (`codex-beast`, `codex-local-llama`, etc.):
 ```
-codex exec - --profile <profile-name> -s read-only
+codex exec --skip-git-repo-check - --profile <profile-name> -s read-only
 ```
 No `-m` flag. The `--profile` name is the substring after `"codex-"`.
 
 **Non-profile mode** (plain `codex`, `gpt-5.5`, `gpt-5`, etc.) — unchanged:
 ```
-codex exec - -m <resolved-model> -s read-only
+codex exec --skip-git-repo-check - -m <resolved-model> -s read-only
 ```
+
+**`--skip-git-repo-check` is NOT optional** — both branches in `CodexProvider.query()` pass it immediately after `exec` (`codex_provider.py:66-86`). Omitting it reintroduces the codex 0.139 trusted-directory guard: exit 1 → `ProviderError` → silent fallback to `anthropic-sdk`, i.e. the configured reviewer is downgraded without any visible failure. See the "Codex Profile Provider" section earlier in this file for the full rationale.
 
 The function `_parse_codex_target(model_hint) -> (profile|None, model|None)` in `codex_provider.py` handles the dispatch:
 - `model_hint.startswith("codex-")` → `(profile, None)` — profile mode
@@ -803,8 +820,8 @@ The governance feed renderer calls `get_reviewer_tag_info()` instead of `REVIEWE
 - `src/pacemaker/inference/competitive.py` — `is_known_model` token validation, verbatim label for `codex-<profile>`
 - `src/pacemaker/user_commands.py` — `codex-[a-z0-9][a-z0-9._-]*` in single-model regex, `is_known_model` validation, profile confirmation message
 - `claude-usage-reporting/claude_usage/code_mode/display.py` — `get_reviewer_tag_info()`, `_CODEX_PROFILE_TAG`
-- `tests/test_codex_profile.py` — 45 tests (is_known_model, _parse_codex_target, argv, routing, label) — Story #74
-- `tests/test_codex_profile_story75.py` — 31 tests (competitive parser, reviewer labels, synthesizer routing, CLI regex, execute, status) — Story #75
+- `tests/test_codex_profile.py` — 47 tests (is_known_model, _parse_codex_target, argv, routing, label) — Story #74
+- `tests/test_codex_profile_story75.py` — 25 tests (competitive parser, reviewer labels, synthesizer routing, CLI regex, execute, status) — Story #75
 - `claude-usage-reporting/tests/test_codex_profile_display_tags.py` — 20 tests (exact entry unaffected, prefix resolution, ordering) — Story #75
 
 ---
@@ -845,11 +862,13 @@ BLOCKED always wins: if any line starts with `BLOCKED:`, `verdict_passes` return
 
 Fail-closed: empty / whitespace-only input → all predicates False.
 
-### Gate convergence (two of three gates use this primitive)
+### Gate convergence (all three gates use this primitive)
 
-1. **Stop-hook** (`intent_validator.py:parse_sdk_response`): `_find_verdict` uses `is_positive`/`has_block_marker` internally; `parse_sdk_response` is unchanged externally (positive→`{"continue":True}`, BLOCKED→`{"decision":"block"}`, unparseable→fail-open).
-2. **Stage 2 Write/Edit gate** (`intent_validator.py` line ~908): replaced `_find_verdict(stage2_feedback) == "APPROVED"` with `verdict_passes(stage2_feedback)`. **Deliberate leniency**: `APPROVED.` and `APPROVED — ok` now PASS (old strict equality would block them).
-3. **Danger-bash Phase 2 — NOT CONVERGED (doc corrected 2026-08-09).** This section previously claimed the gate had been switched to `_verdict_passes(response)`. It has not been: the check is still strict equality, `if response.strip().upper() == "APPROVED":` at `hook.py` line ~2779, and the string `verdict_passes` does not appear anywhere in `hook.py`. **Consequence**: unlike gates 1 and 2, this gate is INTOLERANT of trailing commentary — a reviewer replying `APPROVED.` or `APPROVED — looks fine` BLOCKS the command. Any reviewer model whose style adds punctuation or a closing remark will produce spurious danger-bash blocks here. Converging this gate onto `verdict_passes()` is outstanding work, not completed work.
+1. **Stop-hook** (`intent_validator.py:parse_sdk_response`): `_find_verdict` uses `is_positive` for the positive branch. **BLOCKED detection is an inline scan, NOT `has_block_marker`** — the gate needs the raw `BLOCKED:` line itself to use as the reason string, and `has_block_marker` returns only a bool. Do not "simplify" that loop into `has_block_marker()`; it would silently strip the block reason from every stop-hook rejection. `parse_sdk_response` is unchanged externally (positive→`{"continue":True}`, BLOCKED→`{"decision":"block"}`, unparseable→fail-open).
+2. **Stage 2 Write/Edit gate** (`intent_validator.py` line ~951): replaced `_find_verdict(stage2_feedback) == "APPROVED"` with `verdict_passes(stage2_feedback)`. **Deliberate leniency**: `APPROVED.` and `APPROVED — ok` now PASS (old strict equality would block them).
+3. **Danger-bash Phase 2** (`hook.py` line ~2803, import at ~2755): uses `verdict_passes(response)`. Converged late, in commit `0beaed2` / issue #94 — Story #76 B1 missed this gate while claiming all three were done, and this very section asserted the convergence for roughly two months before it was true. The gate meanwhile compared the reviewer's whole reply to the literal string `APPROVED`, so `APPROVED.` or `APPROVED — the rule match is a false positive` BLOCKED the command: seven such false blocks are recorded in `usage.db`. Safety of the switch was established by replaying all 1148 recorded danger-bash rejections through the new predicate — exactly 7 flip to passing, all of them the known false blocks.
+
+**Note on the prompt, not just the predicate**: `verdict_passes` is line-based starts-with, so a rejection phrased `Approved: NO\n<explanation>` would pass. The primitive's `BLOCKED:`-wins guard closes that, but only if reviewers actually emit the prefix — so the danger-bash prompt (`hook.py` ~2776) prescribes an explicit response format requiring rejections to begin with `BLOCKED:`. If you rewrite that prompt, keep the requirement.
 
 ### Tests
 
