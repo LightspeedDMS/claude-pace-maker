@@ -37,6 +37,7 @@ from .transcript_reader import (
     get_current_turn_message_for_validation,
 )
 from .logger import log_warning, log_debug, log_info, log_error
+from .prompt_provenance import format_tag, format_reviewer_relay
 
 # Guards one-time schema migration for codex_usage table in SubagentStop handler.
 _codex_migration_done: bool = False
@@ -188,9 +189,13 @@ def display_intent_validation_guidance() -> str:
     from .prompt_loader import PromptLoader
 
     loader = PromptLoader()
-    return loader.load_prompt(
+    guidance = loader.load_prompt(
         "intent_validation_guidance.md", subfolder="session_start"
     )
+    # format_tag is imported at module top: `from .prompt_provenance import
+    # format_tag, format_reviewer_relay` (already used elsewhere in this
+    # file, e.g. _fail_closed_message() above).
+    return format_tag(guidance, "intent_validation_guidance")
 
 
 def get_model_preference_nudge(
@@ -284,7 +289,7 @@ def get_secrets_nudge(subfolder: str) -> Optional[str]:
     try:
         loader = PromptLoader()
         message = loader.load_prompt("secrets_nudge.md", subfolder=subfolder)
-        return message.strip()
+        return format_tag(message.strip(), "secrets_nudge")
     except FileNotFoundError:
         # Graceful degradation - no nudge if file missing
         return None
@@ -497,6 +502,20 @@ def run_session_start_hook():
             file=sys.stderr,
         )
 
+    # Story #101: SessionStart provenance manifest — declares the closed
+    # channel enumeration + never-list so Claude can check any tagged
+    # pace-maker text (this session or any other) against a declared
+    # contract. Always emitted (independent of intent_validation_enabled),
+    # since the manifest covers every pace-maker channel, not just intent
+    # validation.
+    try:
+        from .prompt_provenance import session_start_manifest
+
+        safe_print(session_start_manifest(), file=sys.stdout)
+    except Exception as e:
+        # Log error but don't break session start
+        log_warning("hook", "Failed to display session_start_manifest", e)
+
     # Display model preference nudge if configured
     try:
         model_nudge = get_model_preference_nudge(config, include_usage=True)
@@ -653,6 +672,16 @@ def run_subagent_start_hook():
 
     # Collect context parts from intent validation and CSA, then emit exactly once.
     _additional_context_parts: list = []
+
+    # Story #101: SubagentStart abbreviated provenance manifest. Subagents
+    # have ZERO session history (no SessionStart banner ever reaches them),
+    # so this is always appended, independent of intent_validation_enabled.
+    try:
+        from .prompt_provenance import subagent_start_manifest
+
+        _additional_context_parts.append(subagent_start_manifest())
+    except Exception as e:
+        log_warning("hook", f"Failed to build subagent_start_manifest: {e}")
 
     # Display intent validation mandate if enabled
     try:
@@ -982,7 +1011,7 @@ def inject_subagent_reminder(config: dict) -> Optional[str]:
     if model_nudge:
         message = f"{message}\n\n{model_nudge}"
 
-    return message
+    return format_tag(message, "subagent_delegation_reminder")
 
 
 def run_hook():
@@ -1472,12 +1501,13 @@ def run_user_prompt_submit():
             sys.exit(0)
 
         # Output with intel nudge reminder
-        intel_nudge = (
+        intel_nudge = format_tag(
             "§ intel: Start your FIRST response to this user prompt with § intel line. "
             "Emit ONCE only — do NOT repeat in subsequent tool-use messages within this turn. "
             "EXACT format: § △0.0-1.0 ◎surg|const|outc|expl ■bug|feat|refac|research|test|docs|debug|conf|other ◇0.0-1.0 ↻1-9 "
             "(△◇ = decimals NOT words, ◎■ = codes NOT synonyms). "
-            "NEVER emit § for background task completions, subagent results, or system notifications — ONLY for human-typed prompts."
+            "NEVER emit § for background task completions, subagent results, or system notifications — ONLY for human-typed prompts.",
+            "intel_nudge",
         )
         output = {
             "hookSpecificOutput": {
@@ -2261,7 +2291,10 @@ def run_stop_hook():
                     "hook",
                     f"Blocking silent stop (nudge {nudge_count + 1}/{max_nudges})",
                 )
-                return {"decision": "block", "reason": nudge_message}
+                return {
+                    "decision": "block",
+                    "reason": format_tag(nudge_message, "stop_continuation_nudge"),
+                }
             else:
                 # Max nudges reached — reset counter and allow exit
                 state["silent_tool_nudge_count"] = 0
@@ -2295,6 +2328,14 @@ def run_stop_hook():
         )
 
         log_debug("hook", f"Intent validation result: {result}")
+
+        # Story #101: tag the tempo-block reason BEFORE it is used for
+        # record_blockage or the final return, so both carry the tag.
+        # APPROVED/COMPLETE path is untouched.
+        if result.get("decision") == "block":
+            result["reason"] = format_tag(
+                result.get("reason", "Work appears incomplete"), "stop_tempo_block"
+            )
 
         # Exit valve: prevent infinite block loop when agent only produces text without tool use.
         # After 5 consecutive blocks without intervening tool use, allow exit to avoid deadlock.
@@ -2397,13 +2438,14 @@ def _fail_closed_message(error: BaseException) -> str:
     confirmed active for this tool call (see ``_gate_committed`` in
     ``run_pre_tool_hook``).
     """
-    return (
+    return format_tag(
         "⛔ Intent validation hit an unexpected internal error\n\n"
         f"The pre-tool validation hook encountered an unexpected internal "
         f"error while validating this tool call: {error}\n\n"
         "The tool call was BLOCKED as a safety precaution (fail-closed) "
         "rather than allowed through unvalidated.\n\n"
-        "If this persists, ask the user to run: pace-maker intent-validation off"
+        "If this persists, ask the user to run: pace-maker intent-validation off",
+        "fail_closed_error",
     )
 
 
@@ -2707,7 +2749,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             )
                             return {
                                 "decision": "block",
-                                "reason": (
+                                "reason": format_tag(
                                     "⛔ Dangerous Bash command detected — transcript not ready\n\n"
                                     "The current turn has not been written to the transcript yet. "
                                     "Cannot verify INTENT: declaration. Failing closed for safety.\n\n"
@@ -2716,7 +2758,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                     "byte-identical to this attempt — the validator binds to the exact "
                                     "command string, and a rephrased or reformulated command will not "
                                     "match. Re-issue it as your VERY NEXT tool call — if any other "
-                                    "tool call intervenes first, this same block will recur."
+                                    "tool call intervenes first, this same block will recur.",
+                                    "danger_bash_deferred",
                                 ),
                             }
 
@@ -2765,12 +2808,13 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 pass
                             return {
                                 "decision": "block",
-                                "reason": (
+                                "reason": format_tag(
                                     f"⛔ Dangerous Bash command detected — no INTENT: declaration\n\n"
                                     f"Matched danger rules: {matched_ids}\n"
                                     f"Command: {command[:300]}\n\n"
                                     f"You must declare INTENT: specifying exactly what this command "
-                                    f"will do before executing dangerous Bash operations."
+                                    f"will do before executing dangerous Bash operations.",
+                                    "danger_bash_block",
                                 ),
                             }
 
@@ -2875,11 +2919,18 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 pass
                             return {
                                 "decision": "block",
-                                "reason": (
+                                # B3 (issue #101 review): pace-maker's own
+                                # framing head is wrapped in the plain tag
+                                # (same channel as Phase 1's block, for
+                                # consistency) with the reviewer-relay tag
+                                # nested inside, wrapping only the
+                                # reviewer's own text.
+                                "reason": format_tag(
                                     f"⛔ Dangerous Bash command — intent mismatch\n\n"
                                     f"Matched danger rules: {matched_ids}\n"
                                     f"Reviewer: {reviewer}\n\n"
-                                    f"{response[:500]}"
+                                    f"{format_reviewer_relay(response[:500], reviewer)}",
+                                    "danger_bash_block",
                                 ),
                             }
             except Exception as e:
@@ -3043,7 +3094,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 pass
             return {
                 "decision": "block",
-                "reason": (
+                "reason": format_tag(
                     "⛔ Intent validation deferred — transcript timing race "
                     "(not a rejection)\n\n"
                     f"The current {tool_name} tool call has not yet been "
@@ -3056,7 +3107,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                     "normally.\n\n"
                     "IMPORTANT: the file_path and content must be IDENTICAL "
                     "to this attempt — the validator binds to the exact "
-                    "tool call content, and a different edit will not match."
+                    "tool call content, and a different edit will not match.",
+                    "intent_validation_deferred",
                 ),
             }
 
@@ -3131,7 +3183,15 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 }
                 _event_type = _category_to_event_type.get(category, "IV")
                 _project_name = os.path.basename(os.getcwd())
-                _feedback = result.get("feedback", "Validation failed")
+                # B2 (issue #101 review): governance-event feedback_text
+                # must stay UNTAGGED/raw — the pace-maker provenance tag
+                # (and reviewer-relay wrapper) belongs only on the
+                # Claude-facing "feedback"/reason, never here. Falls back
+                # to "feedback" for any older/partial result dict that
+                # lacks "raw_feedback".
+                _feedback = result.get(
+                    "raw_feedback", result.get("feedback", "Validation failed")
+                )
                 _reviewer = result.get("reviewer", "")
                 if _reviewer:
                     _feedback = f"[{_reviewer}] {_feedback}"

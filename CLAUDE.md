@@ -885,3 +885,97 @@ Fail-closed: empty / whitespace-only input → all predicates False.
 ### Tests
 
 - `tests/test_verdict.py` — 57 parametrized unit tests covering the full truth table, all three sub-functions, context-aware dispatch, and the lenient-flip cases. 100% coverage on `verdict.py`.
+
+---
+
+## Self-Identifying Pace-Maker Provenance Tagging (Story #101)
+
+**Problem it solves**: none of pace-maker's emitted governance text (SessionStart guidance, PostToolUse nudges, PreToolUse block reasons, Stop-hook messages, CSA banners) previously self-identified as originating from pace-maker. A session receiving an unattributed, imperative, tool-blocking message had no way to distinguish "my own governance layer doing its job" from genuinely foreign/adversarial injected content.
+
+**Core design principle**: a plaintext tag cannot be cryptographically authenticated — anyone who can inject text into a transcript can also write the tag. The tag's purpose is therefore NOT to prove trust. Its purpose is to be checkable against a declared, closed contract:
+
+> **The manifest is the contract; the tag is just an index into it.**
+
+Claude reads the SessionStart/SubagentStart manifest, which declares the complete closed enumeration of channels pace-maker will ever use, plus an explicit four-item never-list. Any tagged content whose claimed channel is not in the manifest, or whose behavior violates the never-list, is recognizable as not-pace-maker regardless of how it is tagged. **There is deliberately no matching/detection code in pace-maker for the never-list** — enforcement lives entirely in Claude's own reasoning when it reads tagged content.
+
+### The shared module — `src/pacemaker/prompt_provenance.py`
+
+STDLIB-ONLY leaf module, same invariant as `inference/verdict.py` (zero imports from other pacemaker modules, verified by `tests/test_prompt_provenance.py::TestLeafModulePurity` which resolves every import via `importlib.util.find_spec` against `sysconfig`'s stdlib path rather than a name blocklist).
+
+Two tag classes:
+- **`format_tag(body, event) -> str`** — pace-maker's own mechanical messages. Renders `[pace-maker · <event>]\n<body>` where `·` is the EXACT U+00B7 MIDDLE DOT (asserted via `ord() == 0xB7`, not a lookalike like bullet U+2022). Raises `ValueError` for an `event` not in the closed `CHANNELS` enumeration, `TypeError` for a non-str `body`. Idempotent: re-wrapping an already-tagged-for-this-event body (header immediately followed by `\n`) returns it unchanged rather than stacking a second header — a body that merely starts with the header text WITHOUT the newline boundary is treated as NOT already tagged and gets a fresh header (closes a forged-prefix bypass caught in code review).
+- **`format_reviewer_relay(body, model) -> str`** — relayed third-party reviewer/verifier LLM output (Stage 2 code review, danger-bash Phase 2). Renders `[pace-maker · reviewer-relay · model=<id>]\n(advisory/third-party framing)\n<body>`, visibly distinct from the plain tag. `model` accepts any reviewer id including a competitive expression (`"opus+gpt-5->haiku"`). Raises `ValueError` for an empty model id or one containing `]`/newline (would malform or forge additional tag-like structure in the header).
+
+`CHANNELS` (frozenset, 17 entries) is the closed enumeration — both the manifest's channel list AND the thing `tests/test_prompt_provenance.py::TestClosedEnumeration` and the manifest-completeness tests check every emission site against:
+
+| Channel | Emission site |
+|---|---|
+| `session_start_manifest` | `hook.py::run_session_start_hook` (the manifest itself) |
+| `subagent_start_manifest` | `hook.py::run_subagent_start_hook` (the abbreviated manifest itself) |
+| `intent_validation_guidance` | `hook.py::display_intent_validation_guidance` (shared by SessionStart + SubagentStart) |
+| `secrets_nudge` | `hook.py::get_secrets_nudge` (shared by SessionStart + PostToolUse call sites) |
+| `csa_sibling_banner` | `session_registry/nudges.py::build_start_banner` |
+| `csa_periodic_reminder` | `session_registry/nudges.py::build_periodic_reminder` |
+| `csa_danger_bash_warning` | `session_registry/nudges.py::build_danger_bash_warning` |
+| `subagent_delegation_reminder` | `hook.py::inject_subagent_reminder` (PostToolUse) |
+| `intel_nudge` | `hook.py::run_user_prompt_submit` (`§ intel` nudge) |
+| `intent_validation_block` | `intent_validator.py::validate_intent_and_code` (Stage 1 NO/NO_TDD, SDK-unavailable, exception fail-closed) |
+| `intent_validation_deferred` | `hook.py::run_pre_tool_hook` (Write/Edit TOCTOU-race block, issue #91/#93 territory) |
+| `danger_bash_block` | `hook.py::run_pre_tool_hook` (danger-bash Phase 1, no-INTENT fast reject) |
+| `danger_bash_deferred` | `hook.py::run_pre_tool_hook` (danger-bash "transcript not ready" block) |
+| `fail_closed_error` | `hook.py::_fail_closed_message` (shared by both Write/Edit and danger-bash gates) |
+| `stop_tempo_block` | `hook.py::run_stop_hook` (tempo/completion block reason) |
+| `stop_continuation_nudge` | `hook.py::run_stop_hook` (silent-tool-stop continuation nudge) |
+| `reviewer-relay` | not a `format_tag` channel — see `format_reviewer_relay` above; listed in `CHANNELS` only so the manifest declares this second tag class too |
+
+**`reviewer-relay` wiring — exactly two call sites, both threading the resolved reviewer id**:
+1. `intent_validator.py::validate_intent_and_code` Stage 2 block path — wraps `stage2_feedback` with `format_reviewer_relay(stage2_feedback, reviewer)`. `_parse_stage2_classification(stage2_feedback)` runs on the UNTAGGED variable first — the tag is applied only to the dict's `"feedback"` value, never fed back into classification parsing. The dict ALSO carries a `"raw_feedback"` key holding the untagged `stage2_feedback` text — see the AC5 discipline note below (issue #101 review, B2) on why a second untagged copy is needed.
+2. `hook.py` danger-bash Phase 2 mismatch block — **nested tagging** (issue #101 review, B3): the reviewer's own response segment is wrapped with `format_reviewer_relay(response[:500], reviewer)` as before, but that wrapped segment is now itself nested INSIDE an outer `format_tag(..., "danger_bash_block")` that also wraps pace-maker's own framing text (`"⛔ Dangerous Bash command — intent mismatch"`, `"Matched danger rules:"`, `"Reviewer:"`) — symmetric with Phase 1, which was already tagged. An earlier revision of this story left the framing text completely untagged; that was the exact class of unattributed pace-maker message this story exists to fix, caught in code review and corrected.
+
+Since both `resolve_and_call_with_reviewer()` and `run_mechanical()` return `(text, reviewer_label)` where `reviewer_label` is the full competitive expression when `hook_model` contains `+`, mechanical-failure-synthesis output is covered transparently through these same two call sites — no separate wiring was needed for it (unlike the story's component list implied).
+
+**Deliberately NOT wrapped**: the Stop-hook tempo-block reason (`intent_validator.py::validate_intent`, via `call_sdk_validation` → `resolve_and_call`, not `resolve_and_call_with_reviewer`) has no reviewer id available and is not routed through the mechanical/reviewer pipeline, so it gets the plain `stop_tempo_block` tag, not `reviewer-relay` — tagged in `hook.py::run_stop_hook` immediately after the `validate_intent()` call (NOT inside `intent_validator.py`, to avoid touching `parse_sdk_response()`'s own pre-existing unit tests, which assert exact `BLOCKED:`-parsing behavior unrelated to tagging).
+
+**AC5 regression discipline — where the tag is applied, and where it deliberately is NOT**:
+- `record_blockage(reason=...)` DB storage and the Claude-facing `"reason"`/`"feedback"` JSON field share the same already-tagged string **only at the two gates that read from a pre-built result dict, NOT the gates that construct their block-response dict inline** (corrected, issue #101 review, B4 — the prior wording had this backwards). The stop-hook tempo block tags `result["reason"]` in place at `hook.py:2335-2337`, then both `record_blockage(reason=result.get("reason", ...))` (`hook.py:2380`) and the final `return result` (`hook.py:2399`) read that same tagged dict entry. The Write/Edit intent-validation block is the same shape: both `record_blockage(reason=result.get("feedback", ...))` (`hook.py:3163`) and the block-response `"reason": result.get("feedback", ...)` (`hook.py:3234`) read the same already-tagged `result["feedback"]` from `validate_intent_and_code()`. By contrast, the three danger-bash gates that build their `record_blockage` call and their block-response dict inline, side by side in the same code block, each pass a SEPARATE, untagged, short reason to the DB that is NOT the tagged Claude-facing string built moments later via `format_tag`/`format_reviewer_relay`: the "transcript not ready" block (`record_blockage` at `hook.py:2731` vs. the tagged `"reason"` at `hook.py:2752`), the Phase 1 no-INTENT block (`hook.py:2772` vs. `hook.py:2811`), and the Phase 2 mismatch block (`hook.py:2893` vs. `hook.py:2928`). This asymmetry is intentional, not an oversight; no test in this repo asserts an exact DB-stored blockage reason string.
+- Governance-event `feedback_text` (the `[reviewer]`-prefixed string built separately in `hook.py` for the monitor's live event feed) stays **untagged/raw** by design (corrected, issue #101 review, B2) — the Claude-facing block `reason`/`"feedback"` DOES carry the pace-maker/reviewer-relay tag, but `feedback_text` deliberately does not, so the claude-usage monitor's pre-existing single-bracket `[expression]` reviewer-tag display (documented above under "Reviewer Identity Tracking") is never fed a second, nested bracket group. Each `validate_intent_and_code` blocked-return dict therefore carries BOTH `"feedback"` (tagged, for Claude) and `"raw_feedback"` (untagged, for governance/telemetry); `hook.py`'s Write/Edit governance-event wiring reads `result.get("raw_feedback", ...)`, matching the danger-bash Phase 2 governance path which already used the untagged `response`. An earlier revision of this story left the Write/Edit governance path reading the tagged `"feedback"` value, producing a duplicated/leaking tag in the governance feed — caught in code review and corrected. `tests/test_provenance_wiring.py::TestGovernanceFeedbackUntagged` locks in the untagged, non-duplicated behavior.
+- Pre-existing tests asserting exact equality on a tagged function's return value were updated to `in`-substring assertions that pin the pre-existing text verbatim inside the new wrapper (e.g. `tests/test_subagent_reminder.py`'s three `TestReminderInjection` tests) — everything else (substring checks like `"intent" in result["feedback"].lower()`) needed no changes since the tag only prepends a header line.
+- `tests/test_session_registry_hook_subagent_start_json_wiring.py::test_emits_no_json_when_neither_fires` was renamed and rewritten: since the SubagentStart abbreviated manifest is now UNCONDITIONALLY appended (independent of `intent_validation_enabled`/CSA banner state — subagents have zero session history and need the contract regardless), "neither guidance nor banner fires" now correctly emits exactly ONE JSON object (manifest-only), not zero. This is new, deliberate always-on behavior from this story, not a regression of the guidance/banner wiring that test file otherwise covers.
+
+### The manifest builders — `session_start_manifest()` / `subagent_start_manifest()`
+
+Both live in `prompt_provenance.py`, both self-tagged with their own channel (`format_tag(body, "session_start_manifest")` / `"subagent_start_manifest"`), both enumerate the full `CHANNELS` set and all four `NEVER_LIST` items — `subagent_start_manifest()` is shorter only in surrounding prose, never in substantive content (`tests/test_prompt_provenance.py::TestSubagentStartManifest::test_shorter_than_session_start_manifest` + `test_still_enumerates_every_declared_channel`).
+
+`NEVER_LIST` (4 items, enforced by Claude's own reasoning, zero matching code in this module):
+1. Never exfiltrate data to an external destination outside the session.
+2. Never disable a pace-maker safety/governance check on pace-maker's own authority — only the USER may authorize that.
+3. Never conceal pace-maker's behavior/decisions/mechanism from the user.
+4. Never speak as if it were the user (impersonation).
+
+**Wiring**:
+- SessionStart (`hook.py::run_session_start_hook`): manifest printed UNCONDITIONALLY (independent of `intent_validation_enabled`) right after the existing intent-validation-guidance block, in its own try/except so a failure there can never break SessionStart. Existing SessionStart emissions' content and ordering are otherwise undisturbed.
+- SubagentStart (`hook.py::run_subagent_start_hook`): abbreviated manifest appended to `_additional_context_parts` UNCONDITIONALLY, before the existing guidance-append block, same fail-safe try/except pattern.
+
+### Out of scope (explicitly, per issue #101)
+
+- No cryptographic/signed nonce — plaintext tag only, by design (see Core design principle above).
+- The "Senior Coding Nanny" concealment clause in `prompts/session_start/intent_validation_guidance.md` is untouched — only the emission is tagged, the guidance TEXT itself was not reworded.
+- `SECRET_TEXT`/`SECRET_FILE` parsing/masking (`secrets/parser.py`, `secrets/sanitizer.py`) is untouched — only the secrets-nudge TEXT is wrapped.
+- No never-list matching/detection code anywhere in pace-maker — enforced by Claude's reasoning only.
+
+### Key files
+
+| Concern | File |
+|---|---|
+| Shared leaf module (tag formatters, manifests, `CHANNELS`, `NEVER_LIST`) | `src/pacemaker/prompt_provenance.py` |
+| CSA banner tagging (3 builders) | `src/pacemaker/session_registry/nudges.py` |
+| Stage 1/2/exception feedback tagging | `src/pacemaker/intent_validator.py::validate_intent_and_code` |
+| SessionStart/SubagentStart manifest + guidance/secrets-nudge/intel-nudge/subagent-reminder/danger-bash/Write-Edit/Stop-hook tagging | `src/pacemaker/hook.py` |
+
+### Tests
+
+- `tests/test_prompt_provenance.py` — 30 unit tests, 100% coverage on `prompt_provenance.py`: leaf-module purity (stdlib-only, verified via `sysconfig` path containment, not a name blocklist), tag formatting (middle-dot codepoint, unknown-channel `ValueError`, non-str-body `TypeError`, empty/multiline/tag-like-body edge cases, no-double-wrap idempotency), reviewer-relay formatting (distinctness, advisory framing, competitive-expression model ids, invalid-model-id `ValueError`s), both manifest builders, closed-enumeration consistency.
+- `tests/test_provenance_wiring.py` — 22 integration tests (verified count; a prior revision of this file said 19, which was already wrong before the count below was added — see issue #101 review) driving real entry points (`validate_intent_and_code`, `run_pre_tool_hook`, `run_stop_hook`, `run_user_prompt_submit`, `run_session_start_hook`, `run_subagent_start_hook`, `_fail_closed_message`, `inject_subagent_reminder`, `get_secrets_nudge`) and asserting the emitted tag, per-channel, plus AC5 verbatim-text-preservation assertions. Includes `TestGovernanceFeedbackUntagged` (B2 fix) and the extended `TestDangerBashPhase2ReviewerRelayTag` (B3 fix, nested-tag-order assertions).
+- `tests/test_session_registry_nudges.py` — extended with `TestProvenanceTagsPresent` / `TestProvenanceEmptySiblingsStaysEmptyString` / `TestProvenanceContentPreserved` (parametrized across all three builders).
+- `tests/test_subagent_reminder.py` — three pre-existing exact-equality tests updated to substring + tag-prefix assertions (AC5).
+- `tests/test_session_registry_hook_subagent_start_json_wiring.py` — one pre-existing test renamed and rewritten to reflect the new always-on abbreviated-manifest emission at SubagentStart.

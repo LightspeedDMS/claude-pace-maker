@@ -22,6 +22,7 @@ from .transcript_reader import (
 from .constants import DEFAULT_CONFIG
 from .logger import log_warning, log_debug
 from .inference.verdict import is_positive, verdict_passes
+from .prompt_provenance import format_tag, format_reviewer_relay
 
 
 def _strip_llm_noise(text: str) -> str:
@@ -860,10 +861,7 @@ def validate_intent_and_code(
 
         if stage1_response_upper == "NO":
             # Intent declaration missing
-            return {
-                "approved": False,
-                "reviewer": "RegEx",
-                "feedback": """⛔ Intent declaration required
+            _raw = """⛔ Intent declaration required
 
 You must declare your intent BEFORE using Write/Edit tools.
 
@@ -878,16 +876,21 @@ Example (all in same message as Write/Edit):
   "INTENT: Modify src/auth.py to add a validate_input() function
    that checks user input for XSS attacks, to improve security."
 
-Then use your Write/Edit tool in the same message.""",
+Then use your Write/Edit tool in the same message."""
+            return {
+                "approved": False,
+                "reviewer": "RegEx",
+                # "feedback" (tagged) is the Claude-facing block reason;
+                # "raw_feedback" (untagged) is for governance/telemetry
+                # consumers such as the claude-usage governance feed
+                # (Story #101 B2 — never tag the governance feed).
+                "feedback": format_tag(_raw, "intent_validation_block"),
+                "raw_feedback": _raw,
             }
 
         elif stage1_response_upper == "NO_TDD":
             # TDD declaration missing for core path
-            return {
-                "approved": False,
-                "tdd_failure": True,
-                "reviewer": "RegEx",
-                "feedback": f"""⛔ TDD Required for Core Code
+            _raw = f"""⛔ TDD Required for Core Code
 
 You're modifying core code: {file_path}
 
@@ -907,7 +910,13 @@ Example citing user permission (in same message as Write/Edit):
   "INTENT: Modify src/auth.py to add password validation.
    User permission to skip TDD: User said 'skip tests for this' in message 3."
 
-CRITICAL: Quote must reference actual user words from recent context.""",
+CRITICAL: Quote must reference actual user words from recent context."""
+            return {
+                "approved": False,
+                "tdd_failure": True,
+                "reviewer": "RegEx",
+                "feedback": format_tag(_raw, "intent_validation_block"),
+                "raw_feedback": _raw,
             }
 
         # Stage 1 passed - proceed to Stage 2
@@ -915,9 +924,7 @@ CRITICAL: Quote must reference actual user words from recent context.""",
 
         # SDK availability check — fail closed for Stage 2 LLM call
         if not SDK_AVAILABLE and hook_model in ("auto", "sonnet", "opus", "haiku"):
-            return {
-                "approved": False,
-                "feedback": """⛔ Intent Validation Unavailable
+            _raw = """⛔ Intent Validation Unavailable
 
 Claude Agent SDK is not available for Stage 2 code review.
 
@@ -926,7 +933,11 @@ Please install the SDK or disable intent validation in config:
 
   pace-maker tdd off
 
-System failing closed to prevent bypassing intent declaration requirements.""",
+System failing closed to prevent bypassing intent declaration requirements."""
+            return {
+                "approved": False,
+                "feedback": format_tag(_raw, "intent_validation_block"),
+                "raw_feedback": _raw,
             }
 
         # STAGE 2: Comprehensive code review
@@ -957,11 +968,20 @@ System failing closed to prevent bypassing intent declaration requirements.""",
             log_debug("intent_validator", "=== STAGE 2 BLOCKED (has feedback) ===")
 
             # Parse structured CLASSIFICATION line from stage 2 response.
+            # MUST run on the untagged stage2_feedback — the wrapped/tagged
+            # variant below is a rendering concern only, never fed back into
+            # classification parsing.
             _classification = _parse_stage2_classification(stage2_feedback)
 
             return {
                 "approved": False,
-                "feedback": stage2_feedback,
+                # Stage 2 feedback is a third-party reviewer's own text
+                # relayed verbatim -> reviewer-relay tag (Story #101),
+                # never the plain pace-maker tag. "raw_feedback" is the
+                # untagged reviewer text for governance/telemetry
+                # consumers (Story #101 B2).
+                "feedback": format_reviewer_relay(stage2_feedback, reviewer),
+                "raw_feedback": stage2_feedback,
                 "clean_code_failure": _classification == "clean_code",
                 "bug_failure": _classification == "bug",
                 "reviewer": reviewer,
@@ -971,12 +991,14 @@ System failing closed to prevent bypassing intent declaration requirements.""",
         log_warning("intent_validator", "Two-stage validation failed", e)
         log_debug("intent_validator", f"=== VALIDATION EXCEPTION: {str(e)} ===")
         # Fail closed on unexpected errors
-        return {
-            "approved": False,
-            "feedback": f"""⛔ Intent Validation System Error
+        _raw = f"""⛔ Intent Validation System Error
 
 An unexpected error occurred during intent validation: {str(e)}
 
 Failing closed to prevent bypassing validation requirements.
-Please retry your operation or report this issue.""",
+Please retry your operation or report this issue."""
+        return {
+            "approved": False,
+            "feedback": format_tag(_raw, "intent_validation_block"),
+            "raw_feedback": _raw,
         }

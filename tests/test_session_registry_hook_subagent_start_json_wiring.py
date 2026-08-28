@@ -145,9 +145,28 @@ def test_emits_one_json_when_only_csa_banner(tmp_path):
     ), f"Expected 1 JSON when only CSA banner fires, got {len(outputs)}: {outputs}"
 
 
-def test_emits_no_json_when_neither_fires(tmp_path):
-    """No JSON emitted when intent validation is off and CSA banner is empty."""
+def test_emits_manifest_only_json_when_neither_guidance_nor_banner_fires(tmp_path):
+    """Story #101: the SubagentStart abbreviated provenance manifest is now
+    ALWAYS appended to _additional_context_parts, independent of
+    intent_validation_enabled and of whether a CSA banner fires — subagents
+    have zero session history and need the contract regardless. So even
+    with intent guidance off and no CSA banner, exactly ONE JSON object is
+    still emitted, containing only the manifest (no guidance/banner text).
+
+    This intentionally supersedes the pre-Story-#101 "0 JSON objects when
+    nothing fires" behavior — the manifest is new, always-on content, not
+    a regression of the guidance/banner wiring under test in this file.
+    """
     outputs = _run_subagent_start(tmp_path, intent_enabled=False, csa_banner="")
-    assert (
-        len(outputs) == 0
-    ), f"Expected no JSON output when nothing fires, got: {outputs}"
+    assert len(outputs) == 1, (
+        f"Expected exactly 1 JSON object (manifest-only) when guidance and "
+        f"banner both don't fire, got {len(outputs)}: {outputs}"
+    )
+    ctx = (
+        json.loads(outputs[0])
+        .get("hookSpecificOutput", {})
+        .get("additionalContext", "")
+    )
+    assert "[pace-maker · subagent_start_manifest]" in ctx
+    assert _INTENT_GUIDANCE not in ctx
+    assert _CSA_BANNER not in ctx

@@ -461,8 +461,12 @@ class TestReminderInjection:
         ):
             result = hook.inject_subagent_reminder(config)
 
-        # Verify config message used (file not found)
-        assert result == "TEST REMINDER MESSAGE"
+        # Verify config message used (file not found). Story #101: the
+        # return value is now wrapped in the pace-maker provenance tag, so
+        # assert the pre-existing text is present verbatim inside the
+        # wrapper (AC5) rather than exact equality.
+        assert "TEST REMINDER MESSAGE" in result
+        assert result.startswith("[pace-maker · subagent_delegation_reminder]")
 
     def test_inject_subagent_reminder_default_message(self):
         """inject_subagent_reminder uses default message if not configured."""
@@ -496,8 +500,11 @@ class TestReminderInjection:
         ):
             result = hook.inject_subagent_reminder(config)
 
-        # Verify external prompt file was used (not config)
-        assert result == "🎯 EXTERNAL PROMPT MESSAGE"
+        # Verify external prompt file was used (not config). Story #101:
+        # tag is purely additive (AC5) — check the pre-existing text is
+        # present verbatim, not exact equality.
+        assert "🎯 EXTERNAL PROMPT MESSAGE" in result
+        assert result.startswith("[pace-maker · subagent_delegation_reminder]")
 
     def test_inject_subagent_reminder_fallback_to_config(self, tmp_path):
         """inject_subagent_reminder falls back to config if prompt file not found."""
@@ -517,8 +524,11 @@ class TestReminderInjection:
         ):
             result = hook.inject_subagent_reminder(config)
 
-        # Verify config fallback was used
-        assert result == "CONFIG FALLBACK MESSAGE"
+        # Verify config fallback was used. Story #101: tag is purely
+        # additive (AC5) — check the pre-existing text is present
+        # verbatim, not exact equality.
+        assert "CONFIG FALLBACK MESSAGE" in result
+        assert result.startswith("[pace-maker · subagent_delegation_reminder]")
 
 
 class TestIntegration:

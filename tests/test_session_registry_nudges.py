@@ -27,6 +27,8 @@ Tests:
 import sys
 import time
 
+import pytest
+
 # ── Module paths for cache-busting ───────────────────────────────────────────
 MOD_NUDGES = "pacemaker.session_registry.nudges"
 MOD_PACKAGE = "pacemaker.session_registry"
@@ -236,3 +238,59 @@ class TestBuildDangerBashWarning:
         # Must not raise UnicodeEncodeError
         encoded = result.encode("utf-8")
         assert len(encoded) > 0
+
+
+# ── Story #101: provenance tagging, parametrized across all three builders ──
+
+_PROVENANCE_BUILDER_CASES = [
+    ("build_start_banner", (), "csa_sibling_banner"),
+    ("build_periodic_reminder", (), "csa_periodic_reminder"),
+    ("build_danger_bash_warning", (BASH_CMD_DESTRUCTIVE,), "csa_danger_bash_warning"),
+]
+
+
+class TestProvenanceTagsPresent:
+    """Story #101: all three CSA nudge builders carry the pace-maker
+    provenance tag on their non-empty output."""
+
+    @pytest.mark.parametrize(
+        "builder_name, extra_args, expected_channel", _PROVENANCE_BUILDER_CASES
+    )
+    def test_builder_carries_expected_tag(
+        self, builder_name, extra_args, expected_channel
+    ):
+        nudges = _fresh_nudges()
+        builder = getattr(nudges, builder_name)
+        result = builder([_make_sibling()], *extra_args)
+        assert result.startswith(f"[pace-maker · {expected_channel}]")
+
+
+class TestProvenanceEmptySiblingsStaysEmptyString:
+    """AC5: the tag is purely additive — the "no siblings" case must keep
+    returning "" exactly as before (never changes a truthy/falsy
+    call-site check on the empty string)."""
+
+    @pytest.mark.parametrize(
+        "builder_name, extra_args, _expected_channel", _PROVENANCE_BUILDER_CASES
+    )
+    def test_builder_empty_siblings_stays_empty_string(
+        self, builder_name, extra_args, _expected_channel
+    ):
+        nudges = _fresh_nudges()
+        builder = getattr(nudges, builder_name)
+        assert builder([], *extra_args) == ""
+
+
+class TestProvenanceContentPreserved:
+    """AC5: the tag is purely additive — the pre-existing content is still
+    present verbatim inside the tagged wrapper."""
+
+    def test_tagged_start_banner_still_contains_original_content(self):
+        nudges = _fresh_nudges()
+        result = nudges.build_start_banner(
+            [_make_sibling(session_id=SESSION_A, workspace_root=WORKSPACE_X, pid=PID_A)]
+        )
+        assert SESSION_A in result
+        assert WORKSPACE_X in result
+        assert str(PID_A) in result
+        assert "SIBLING SESSIONS DETECTED" in result
