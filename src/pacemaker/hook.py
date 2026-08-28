@@ -2960,7 +2960,11 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 # block all Bash commands for an infra issue unrelated to
                 # this specific command's danger status.
 
-            return {"continue": True}
+            # Issue #102: route through _merge_csa_reminder like every other
+            # return path in this function, so the CSA periodic sibling
+            # reminder reaches Claude for Bash tool calls too (previously
+            # this bare {"continue": True} bypassed it entirely).
+            return _merge_csa_reminder({"continue": True}, _csa_result)
 
         # 2b. Only validate Write/Edit tools beyond this point
         if tool_name not in ["Write", "Edit"]:
