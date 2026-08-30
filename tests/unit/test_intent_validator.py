@@ -542,8 +542,17 @@ def test_regex_ac5_code_nested():
 # ---------------------------------------------------------------------------
 
 
-def test_regex_ac6_scripts_not_core():
-    """scripts/ path is not a core path → YES."""
+def test_regex_ac6_scripts_not_core(tmp_path, monkeypatch):
+    """scripts/ path is not a core path → YES.
+
+    chdir to an isolated tmp_path: story #92's Layer 2 structural
+    marker-file fallback does a real filesystem walk from the (relative)
+    file path's directory. Without isolation, resolving "scripts/run.py"
+    against this repo's own CWD would spuriously find this repo's real
+    pyproject.toml. Production is unaffected — real hook invocations
+    always receive absolute file paths.
+    """
+    monkeypatch.chdir(tmp_path)
     result = _check("INTENT: Modify run.py to add flag.", "scripts/run.py")
     assert result == "YES"
 
@@ -566,8 +575,13 @@ def test_regex_ac6_docs_not_core():
     assert result == "YES"
 
 
-def test_regex_ac6_my_src_not_core():
-    """my-src/ does not match src/ core path pattern → YES."""
+def test_regex_ac6_my_src_not_core(tmp_path, monkeypatch):
+    """my-src/ does not match src/ core path pattern → YES.
+
+    chdir to an isolated tmp_path for the same reason as
+    test_regex_ac6_scripts_not_core above.
+    """
+    monkeypatch.chdir(tmp_path)
     result = _check("INTENT: Modify my-src/foo.py to add bar().", "my-src/foo.py")
     assert result == "YES"
 

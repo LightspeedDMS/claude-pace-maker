@@ -22,7 +22,11 @@ Corpus (tests/fixtures/real_transcript_replay/):
     not yet appended to the transcript), intent-with-no-TDD-declaration
     (must block), "intent:" marker appearing only inside the edited file's
     code content (must block), true no-intent (must block), .md under src/
-    (core by policy, must block without declaration), and non-core paths.
+    (issue #92, v2.34.9: Layer 0's non-source-extension gate now excludes
+    .md from core-path treatment BEFORE Layer 1's src/ word-list match is
+    ever consulted — no TDD declaration required, superseding the
+    pre-story "core by policy" behavior this category used to pin), and
+    non-core paths.
 
 FIDELITY CONTRACT
 =================

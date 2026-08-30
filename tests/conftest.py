@@ -97,6 +97,36 @@ def _guard_production_db(tmp_path, monkeypatch):
     fake_central.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("PACEMAKER_CENTRAL_BASE", str(fake_central))
 
+    # Guard core_paths.yaml / excluded_paths.yaml / source_code_extensions.json
+    # (issue #92) — prevents the new core_paths migration (which WRITES to
+    # disk) and any excluded-paths/extension-registry read from touching the
+    # real ~/.claude-pace-maker/ config files when a test calls
+    # validate_intent_and_code() end-to-end. These constants are read via
+    # local (call-time) imports in intent_validator.py, so patching the
+    # constants module attribute here (rather than the DEFAULT_* names
+    # already bound in modules that imported them at load time) is
+    # sufficient and effective. fake_pace_maker_dir is defined above.
+    try:
+        import pacemaker.constants as constants_module
+
+        monkeypatch.setattr(
+            constants_module,
+            "DEFAULT_CORE_PATHS_PATH",
+            str(fake_pace_maker_dir / "core_paths.yaml"),
+        )
+        monkeypatch.setattr(
+            constants_module,
+            "DEFAULT_EXCLUDED_PATHS_PATH",
+            str(fake_pace_maker_dir / "excluded_paths.yaml"),
+        )
+        monkeypatch.setattr(
+            constants_module,
+            "DEFAULT_EXTENSION_REGISTRY_PATH",
+            str(fake_pace_maker_dir / "source_code_extensions.json"),
+        )
+    except ImportError:
+        pass
+
 
 _BLOCKED_CLI_NAMES = {"codex", "gemini", "claude"}
 _REAL_SUBPROCESS_RUN = subprocess.run

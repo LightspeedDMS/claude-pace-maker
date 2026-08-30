@@ -429,6 +429,55 @@ def on_subagent_stop(
     return None
 
 
+def on_subagent_start_register(
+    session_id: str,
+    agent_id: str,
+    workspace_root: str,
+    db_path: str,
+    config: Dict[str, Any],
+    subagent_type: Optional[str] = None,
+) -> None:
+    """Handle SubagentStart hook: early agent registration (issue #99).
+
+    Performs ONLY the register_agent() write — this is a lightweight
+    counterpart to on_subagent_start() (which also manages the
+    seen_agent_ids/tool_use_counter state and sibling banner) intended to
+    run BEFORE Langfuse (which can time out) in hook.py's SubagentStart
+    handler.
+
+    Missing session_id, agent_id, workspace_root, or db_path: no-op (mirrors
+    the previous inline `if _session_id and _agent_id and _ws:` guard).
+    Feature disabled: no-op immediately — no registry calls at all (issue
+    #99: this is the single gate enforcement point for this call site,
+    checking BOTH the master `enabled` switch and
+    `cross_session_awareness_enabled`, unlike the inline check it replaces
+    which checked only the latter).
+    Registry failures are non-fatal (fail-open): logged and swallowed.
+    """
+    if not _is_enabled(config):
+        return None
+    if not session_id or not agent_id or not workspace_root or not db_path:
+        return None
+
+    try:
+        from . import registry
+
+        registry.register_agent(
+            agent_id=agent_id,
+            session_id=session_id,
+            role="subagent",
+            workspace_root=workspace_root,
+            db_path=db_path,
+            subagent_type=subagent_type,
+        )
+    except Exception as e:
+        log_warning(
+            "session_registry",
+            f"CSA: on_subagent_start_register failed: {e}",
+        )
+    return None
+
+
 def on_post_tool_use_record_action(
     agent_id: str,
     tool_name: str,

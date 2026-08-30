@@ -549,6 +549,77 @@ class TestSessionStartHookWiring:
         assert second_call_recovered_state.get("version_block_active") is False
         assert second_call_stderr == ""
 
+    # ── issue #100: SessionStart user-visible signal ────────────────────────
+    # All three tests below call this class's own pre-existing _run_session_start()
+    # helper (defined above) — no new mocking is introduced here.
+
+    def test_below_minimum_prints_tagged_notice_to_stdout(
+        self, hook_wiring_env, monkeypatch, capsys
+    ):
+        """A version-blocked session must produce a user/Claude-visible
+        signal via SessionStart's additionalContext channel (plain stdout
+        text — Claude Code treats it as additionalContext for SessionStart,
+        and SessionStart cannot be blocked via exit code)."""
+        from pacemaker.prompt_provenance import TAG_SEPARATOR
+
+        state, _stderr = self._run_session_start(
+            hook_wiring_env,
+            monkeypatch,
+            _stub_probe("2.1.10 (Claude Code)\n"),
+        )
+        captured = capsys.readouterr()
+
+        assert state.get("version_block_active") is True
+        expected_tag = f"[pace-maker {TAG_SEPARATOR} version_block_notice]"
+        assert expected_tag in captured.out
+        assert "2.1.10" in captured.out
+        assert "2.1.39" in captured.out
+
+    def test_at_or_above_minimum_has_no_version_block_notice(
+        self, hook_wiring_env, monkeypatch, capsys
+    ):
+        """Normal session: no spurious notice. Checks the actual TAGGED
+        emission, not the bare channel name — "version_block_notice"
+        legitimately appears in every SessionStart manifest's bullet list
+        (it is a declared channel in prompt_provenance.CHANNELS)
+        regardless of block state."""
+        from pacemaker.prompt_provenance import TAG_SEPARATOR
+
+        state, _stderr = self._run_session_start(
+            hook_wiring_env,
+            monkeypatch,
+            _stub_probe("2.1.126 (Claude Code)\n"),
+        )
+        captured = capsys.readouterr()
+
+        assert state.get("version_block_active") is False
+        expected_tag = f"[pace-maker {TAG_SEPARATOR} version_block_notice]"
+        assert expected_tag not in captured.out
+
+    def test_probe_failure_prints_no_notice_and_session_proceeds_cleanly(
+        self, hook_wiring_env, monkeypatch, capsys
+    ):
+        """Fail-open: a probe failure (e.g. the 'claude' binary missing) must
+        not block AND must not print a spurious version-block notice — the
+        new notice-emission code path must not weaken the pre-existing
+        fail-open guarantee (see TestSessionStartVersionCheck in
+        tests/test_version_check_integration.py)."""
+        from pacemaker.prompt_provenance import TAG_SEPARATOR
+
+        def _raise_file_not_found(*args, **kwargs):
+            raise FileNotFoundError("claude not found")
+
+        state, _stderr = self._run_session_start(
+            hook_wiring_env,
+            monkeypatch,
+            _raise_file_not_found,
+        )
+        captured = capsys.readouterr()
+
+        assert state.get("version_block_active") is False
+        expected_tag = f"[pace-maker {TAG_SEPARATOR} version_block_notice]"
+        assert expected_tag not in captured.out
+
 
 # ── Config override / fallback for min_claude_version ──────────────────────────
 

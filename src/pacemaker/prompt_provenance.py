@@ -71,6 +71,7 @@ CHANNELS = frozenset(
         "stop_continuation_nudge",
         "session_start_manifest",
         "subagent_start_manifest",
+        "version_block_notice",
         REVIEWER_RELAY_CHANNEL,
     }
 )

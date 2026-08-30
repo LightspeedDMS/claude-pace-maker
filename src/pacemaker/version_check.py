@@ -8,6 +8,18 @@ Public API:
     state["version_block_active"], writes a hard-block message to stderr
     when below minimum, and records the status to version_status_db.
     Fails open on any exception — the check must never break a session start.
+
+    Issue #100: also sets state["version_block_message"] — a plain-text
+    notice body suitable for the SessionStart additionalContext channel
+    (hook.py prints it, wrapped in the pace-maker provenance tag, when
+    version_block_active is True). This is distinct from _BLOCK_MESSAGE
+    below: _BLOCK_MESSAGE is written to stderr (a hook exiting 0 has its
+    stderr surfaced only in transcript/debug mode, so it alone is not a
+    reliable user-visible signal); version_block_message is the additional,
+    reliably-surfaced channel. It is explicitly reset to None on every
+    non-blocked / fail-open path so a stale notice from an earlier blocked
+    check never lingers after recovery (e.g. the user upgrades and the next
+    SessionStart's check passes).
 """
 
 import sys
@@ -31,6 +43,18 @@ _BLOCK_MESSAGE = (
     "║  Run: claude upgrade                                         ║\n"
     "╚══════════════════════════════════════════════════════════════╝\n"
     "\n"
+)
+
+# additionalContext notice body (issue #100) — read by Claude via
+# SessionStart's additionalContext channel, not printed to a terminal, so
+# it is prose rather than a box-drawn banner.
+_CONTEXT_NOTICE = (
+    "Claude Code version {current} is below pace-maker's supported minimum "
+    "({minimum}). As a result, pace-maker's governance for this session — "
+    "intent validation, TDD gating, danger-bash validation, and pacing — "
+    "is NOT being enforced. Tell the user their Claude Code install is "
+    "outdated and that running `claude upgrade` (or upgrading manually) "
+    "will restore governance starting with the next session."
 )
 
 
@@ -85,6 +109,7 @@ def perform_session_start_version_check(
         # Fail open: only assign when state is still a valid dict.
         if isinstance(state, dict):
             state["version_block_active"] = False
+            state["version_block_message"] = None
 
 
 def _do_version_check(
@@ -102,6 +127,7 @@ def _do_version_check(
             f"Could not parse configured min_claude_version: {min_version_str!r}; skipping check",
         )
         state["version_block_active"] = False
+        state["version_block_message"] = None
         _record(
             current_str=None,
             min_str=str(min_version_str),
@@ -118,6 +144,7 @@ def _do_version_check(
             "Could not probe installed Claude Code version; proceeding without block",
         )
         state["version_block_active"] = False
+        state["version_block_message"] = None
         _record(
             current_str=None,
             min_str=str(min_version_str),
@@ -132,6 +159,11 @@ def _do_version_check(
         message = _BLOCK_MESSAGE.format(current=current_label, minimum=min_label)
         stderr.write(message)
         state["version_block_active"] = True
+        # Issue #100: additionalContext notice body, distinct from the
+        # stderr-only message above (see module docstring).
+        state["version_block_message"] = _CONTEXT_NOTICE.format(
+            current=current_label, minimum=min_label
+        )
         _record(
             current_str=current_label,
             min_str=str(min_version_str),
@@ -142,6 +174,7 @@ def _do_version_check(
 
     current_label = f"{installed.major}.{installed.minor}.{installed.patch}"
     state["version_block_active"] = False
+    state["version_block_message"] = None
     _record(
         current_str=current_label,
         min_str=str(min_version_str),

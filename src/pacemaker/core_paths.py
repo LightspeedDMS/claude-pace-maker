@@ -16,6 +16,18 @@ from typing import List
 from .logger import log_warning
 
 
+# The 4 words added by issue #92's evidence-based survey (app/ — 7 repos,
+# routes/ — 5 repos incl. the org's own FastAPI-serverless template,
+# services/ — 2 root-level repos, internal/ — Go-compiler-enforced). See
+# .analysis/core_paths_survey_by_class.md for the full evidence trail.
+NEW_STORY_92_WORDS = ["app/", "routes/", "services/", "internal/"]
+
+# One-time migration guard field persisted in core_paths.yaml — prevents a
+# later manual removal of one of NEW_STORY_92_WORDS from being silently
+# re-added on a future load (issue #92).
+MIGRATION_MARKER_KEY = "_migrated_story_92"
+
+
 def get_default_paths() -> List[str]:
     """
     Get default core code paths (hardcoded).
@@ -33,7 +45,7 @@ def get_default_paths() -> List[str]:
         "source/",
         "libraries/",
         "kernel/",
-    ]
+    ] + list(NEW_STORY_92_WORDS)
 
 
 def load_paths(config_path: str, strict: bool = False) -> List[str]:
@@ -95,6 +107,77 @@ def load_paths(config_path: str, strict: bool = False) -> List[str]:
         return get_default_paths()
 
 
+def migrate_if_needed(config_path: str) -> None:
+    """
+    One-time migration: append issue #92's 4 new default words to an
+    existing core_paths.yaml that predates them, without touching any
+    existing entry.
+
+    No-ops when:
+    - config_path does not exist (nothing to migrate — a fresh load
+      already gets the new 11-entry default list via get_default_paths())
+    - the file was already migrated (guarded by MIGRATION_MARKER_KEY, so a
+      later manual removal of a new word is never silently re-added)
+    - the YAML is malformed/unreadable (fail safe — never risk corrupting
+      or losing a user's customized file)
+
+    Args:
+        config_path: Path to YAML config file with "paths" key
+    """
+    if not os.path.exists(config_path):
+        return
+
+    try:
+        with open(config_path, "r") as f:
+            config_data = yaml.safe_load(f)
+    except (yaml.YAMLError, OSError) as e:
+        log_warning("core_paths", "Migration skipped: failed to read config file", e)
+        return
+
+    if not isinstance(config_data, dict):
+        return
+
+    if config_data.get(MIGRATION_MARKER_KEY) is True:
+        return
+
+    existing_paths = config_data.get("paths", [])
+    if isinstance(existing_paths, list) and len(existing_paths) > 0:
+        missing = [w for w in NEW_STORY_92_WORDS if w not in existing_paths]
+        if missing:
+            config_data["paths"] = existing_paths + missing
+    # else: no real customization present (missing/empty 'paths' key) —
+    # leave it untouched so load_paths()'s existing fallback to the (now
+    # 11-entry) defaults continues to apply naturally.
+
+    config_data[MIGRATION_MARKER_KEY] = True
+
+    try:
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        with open(config_path, "w") as f:
+            yaml.safe_dump(config_data, f, default_flow_style=False, sort_keys=False)
+    except OSError as e:
+        log_warning("core_paths", "Migration skipped: failed to write config file", e)
+
+
+def load_paths_with_migration(config_path: str) -> List[str]:
+    """
+    Load core paths, running the one-time story #92 migration first.
+
+    This is the function the live hook path (intent_validator._is_core_path
+    via _regex_stage1_check) uses. Plain load_paths() is left untouched for
+    other callers (e.g. the CLI) that must not perform migration as a side
+    effect of a read.
+
+    Args:
+        config_path: Path to YAML config file with "paths" key
+
+    Returns:
+        List of path strings, including any newly-migrated words
+    """
+    migrate_if_needed(config_path)
+    return load_paths(config_path)
+
+
 def _normalize_path(path: str) -> str:
     """
     Normalize path by ensuring trailing slash.
@@ -127,6 +210,16 @@ def add_path(config_path: str, path: str) -> None:
     # Normalize path
     normalized = _normalize_path(path)
 
+    # Reject degenerate segments (bare "/", "", "///", ...) that rstrip("/")
+    # to an empty string — _is_core_path's Layer 1 regex builder turns an
+    # empty segment into an empty regex alternative, which poisons the
+    # pattern into matching every absolute path (issue #92 review finding
+    # F-5). Must be rejected here, before any write to disk.
+    if not normalized.rstrip("/"):
+        raise ValueError(
+            f"Invalid path '{path}': cannot add an empty or slash-only path segment"
+        )
+
     # Load existing paths or get defaults
     paths = load_paths(config_path)
 
@@ -145,14 +238,38 @@ def _write_paths(config_path: str, paths: List[str]) -> None:
     """
     Write paths list to YAML config file.
 
+    Read-modify-write: preserves any other top-level key already present
+    in the on-disk YAML (e.g. MIGRATION_MARKER_KEY) instead of overwriting
+    the whole file with just {"paths": paths}. Without this, every CLI
+    add/remove silently dropped the migration marker, letting a later
+    migrate_if_needed() call silently re-add a manually-removed word
+    (issue #92 review finding F-1).
+
     Args:
         config_path: Path to YAML config file
         paths: List of path strings
     """
     os.makedirs(os.path.dirname(config_path), exist_ok=True)
 
+    existing_data: dict = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r") as f:
+                loaded = yaml.safe_load(f)
+            if isinstance(loaded, dict):
+                existing_data = loaded
+        except (yaml.YAMLError, OSError) as e:
+            log_warning(
+                "core_paths",
+                "Failed to read existing config before write; other top-level "
+                "keys (if any) will not be preserved",
+                e,
+            )
+
+    existing_data["paths"] = paths
+
     with open(config_path, "w") as f:
-        yaml.safe_dump({"paths": paths}, f, default_flow_style=False, sort_keys=False)
+        yaml.safe_dump(existing_data, f, default_flow_style=False, sort_keys=False)
 
 
 def remove_path(config_path: str, path: str) -> None:

@@ -187,7 +187,7 @@ asserts `plugin.json`'s version equals `pyproject.toml`'s version, so a two-file
 
 This is the floor pace-maker explicitly tests against and guarantees. The hook code can technically read pre-2.1.39 layouts via fallback paths (see `src/pacemaker/hook.py:2487-2490, 2520-2524`), but anything below `2.1.39` is best-effort, not supported.
 
-**⚠️ The minimum is documentation, NOT an enforced runtime gate (issue #96).** The value `2.1.39` lives as `_FALLBACK_MIN_VERSION` in `src/pacemaker/version_check.py:20`. **The check is NOT WIRED**: `perform_session_start_version_check()` has **no caller anywhere in `src/`**, and **nothing reads `state["version_block_active"]`**. No SessionStart block is emitted, no downstream hook skips, no upgrade message is ever shown — a user on Claude Code 2.0 gets zero warning. This is orphan code (Messi Rule 12). See the "Minimum Claude Code Version Check (Story #66)" section below and issue #96.
+**The minimum IS an enforced runtime gate (wired in #96, v2.34.6; notice added in #100).** `perform_session_start_version_check()` is called from `run_session_start_hook()` (`src/pacemaker/hook.py:389`), and `state["version_block_active"]` is checked at hook entry by both `run_stop_hook()` (`hook.py:2171`) and `run_pre_tool_hook()` (`hook.py:2527`) — both return `{"continue": True}` immediately when set, before reading stdin. See the "Minimum Claude Code Version Check (Story #66)" section below for the full current picture, including the issue #100 user-visible notice.
 
 **Adding new compatibility shims** when Claude Code ships a breaking change in a future version:
 1. Add an entry to the "Tracked breaking changes" list below — version, what changed, what we adapted, where the shim lives
@@ -222,6 +222,40 @@ This is the floor pace-maker explicitly tests against and guarantees. The hook c
 - `src/pacemaker/danger_bash_rules_default.yaml` — 55 bundled default rules
 - `src/pacemaker/danger_bash_rules.py` — loader, merger, matcher module
 - `src/pacemaker/hook.py` lines 2575-2882 (`# 2a. Danger Bash validation`) — PreToolUse Bash tool handling. (Was documented as `~2149`, which is CSA session-end code in the **Stop** hook — wrong file region entirely.)
+
+---
+
+## Core-Path Detection (Issue #92)
+
+`_is_core_path()` in `src/pacemaker/intent_validator.py` decides whether a Write/Edit target requires a TDD test-coverage declaration. It replaced a hardcoded 7-word regex (`src|lib|code|core|source|libraries|kernel`) with a 3-layer algorithm, driven by an exhaustive Neo-Production MCP survey of 301 non-Terraform repos across 9 org categories — full evidence trail in `.analysis/core_paths_survey_by_class.md` (master tally) and `.analysis/core_paths_survey_<category>.md` (one per category, repo-by-repo detail).
+
+**Algorithm** (see `_is_core_path(file_path, core_path_segments, exclusions, extensions)`):
+
+- **Layer 0 — universal negative signals, run FIRST, before any positive match**: `is_excluded_path()` (excluded dir) → not core; `is_source_code_file()` (non-source extension, e.g. `.md`/`.yaml`/`.tf`) → not core; `core_path_markers.matches_test_filename_pattern()` (e.g. `*_test.go`, which has no directory-level signal at all) → not core. This ordering is load-bearing: an earlier draft put the word-list match first, so `internal/foo_test.go` matched `internal/` before the suffix check ever ran — caught by a Codex pressure-test, regression-locked by `TestLayer0TestFilenamePrecedenceOverLayer1` in `tests/unit/test_is_core_path_story92.py`.
+- **Layer 1 — bare-segment word-list match**, now config-driven via `core_paths.load_paths_with_migration()` (previously hardcoded and never actually read from `core_paths.yaml` — see "Wiring fix" below). Default 11-entry list: the original 7 words plus `app/`, `routes/`, `services/`, `internal/` (evidence: `app` — 7 repos, `routes` — 5 repos incl. the org's FastAPI-serverless template, `services` — 2 root-level repos, `internal` — 2 Go repos, Go-compiler-enforced). **Explicitly and deliberately rejected**: `apps`/`packages` (real code sits one level deeper at `apps/*/src/`, already caught by `src`), `utils`, `worker`/`processor`, `robot`, `libs`/`models`/`jobs`/`common`/`scripts`/`vite-plugins` (single-repo evidence only) — regression-locked in `TestLayer1RegressionLockRejectedWords`.
+- **Layer 2 (+2c) — structural marker-file fallback**, only reached when Layer 1 misses (`src/pacemaker/core_path_markers.py`, `has_core_marker()`/`find_project_marker()`): an uncapped upward directory walk from `dirname(file_path)` to the filesystem root, looking for `*.csproj`/`*.sln` (.NET), `pyproject.toml`/`setup.py` (Python), `package.json` (Node), `build.gradle`/`build.gradle.kts`/`pom.xml` (Java/Kotlin), `go.mod` (Go), `Cargo.toml` (Rust). Closes a structural gap no word list can ever cover: 47 of the 301 surveyed repos (15.6%) have real production code whose source-root directory name IS the project name (~9 .NET solutions, ~20 Python flat-layout packages) — a bare-directory-name check can never match a string that's different every time by construction. **No depth cap** — termination (Messi Rule 14) is proven by construction (a real filesystem path has a finite number of ancestors, and the walk strictly climbs toward the root each iteration), not by an arbitrary number; see `TestFindProjectMarkerTermination` (200-level-deep synthetic tree).
+- **Layer 2c — test-project marker exclusion**: a found marker whose OWN filename matches `*.Tests.csproj`/`*.Test.csproj`/`*Tests.sln` denotes a dedicated test project, not production code — `has_core_marker()` returns `False` even though a marker was found. Needed because `.NET` test projects (`MyProject.Tests/MyProject.Tests.csproj`) aren't caught by the pre-existing `tests/`/`test/`-only exclusion (case-sensitive, directory-substring only — `.Tests/` with a capital T and no trailing `/tests/` never matched).
+
+**`excluded_paths.py` matcher extension**: `is_excluded_path()` now accepts `*`-prefixed filename-suffix patterns (`matches_filename_pattern()`) in addition to its original directory-substring patterns — needed because Go's `_test.go` has no directory-level signal at all (test files sit in the SAME directory as production code, under the SAME `go.mod`). `core_path_markers.py` reuses this matcher for both Layer 0's `matches_test_filename_pattern()` and Layer 2c's `matches_test_project_marker()` rather than duplicating suffix logic. `get_default_exclusions()` is unchanged (no `*` pattern in the defaults) — the capability is opt-in.
+
+**Wiring fix — `core_paths.yaml` is now live.** Before this story, `_is_core_path()` ignored `core_paths.yaml` entirely; the YAML was only read by `generate_validation_prompt`, unreachable from the real PreToolUse hook path — customizing via `pace-maker core-paths add/remove` had zero effect on actual TDD gating. `validate_intent_and_code()` now loads `core_path_segments` via `core_paths.load_paths_with_migration(DEFAULT_CORE_PATHS_PATH)` and `extensions` via `extension_registry.load_extensions(DEFAULT_EXTENSION_REGISTRY_PATH)`, threading both into `_regex_stage1_check()` → `_is_core_path()`. Plain `core_paths.load_paths()` (used by the CLI) is deliberately left untouched — it does NOT run migration, so a CLI `list`/`add`/`remove` never has the disk-write side effect described next.
+
+**One-time migration** (`core_paths.migrate_if_needed()`, called by `load_paths_with_migration()` on every real hook load): since the YAML was dead code, existing customized files never benefited from anything saved in them — but they also never picked up new code defaults. On first load after this fix, if `core_paths.yaml` exists and is missing any of the 4 new words, they're appended (existing entries — including prior customizations — left untouched, never reordered/removed) and a `_migrated_story_92: true` marker is set in the YAML so a later manual removal of a migrated word is never silently re-added. No-ops safely on a missing file, an already-migrated file, an explicitly-empty `paths:` list (leaves `load_paths()`'s existing defaults-fallback intact rather than synthesizing a partial 4-word list), or malformed YAML. Verified against a real local file found during spec review (`~/.claude-pace-maker/core_paths.yaml`: 6 of 7 pre-story defaults, missing `lib/`, plus `myapp/`/`custom/` custom entries) — primary fixture in `tests/unit/test_core_paths_migration.py`.
+
+**CWD-relative-path caveat (test-isolation gotcha, not a production bug)**: `find_project_marker()` requires an absolute `file_path` and returns `None` immediately for a relative one — it does NOT resolve relative paths via `os.path.abspath()` against the process's CWD. Production is unaffected (Claude Code's Write/Edit `tool_input.file_path` is always absolute), but the first implementation used `abspath()` and broke ~19 pre-existing unit tests that use bare relative shorthand like `"utils.py"`/`"helpers/utils.py"` as `file_path` — these resolved against the test runner's own CWD (this repo's root, which has a real `pyproject.toml`), spuriously finding a marker. If you ever "simplify" `find_project_marker()` back to `os.path.abspath()`, you will reintroduce this exact class of flaky-by-CWD failures across the test suite.
+
+**Test-isolation guard**: `tests/conftest.py`'s `_guard_production_db` autouse fixture monkeypatches `pacemaker.constants.DEFAULT_CORE_PATHS_PATH`/`DEFAULT_EXCLUDED_PATHS_PATH`/`DEFAULT_EXTENSION_REGISTRY_PATH` to fake tmp_path locations — these constants are read via local (call-time) imports in `intent_validator.py`, so patching the module attribute is effective. Without this, the migration's disk WRITE would hit the developer's real `~/.claude-pace-maker/core_paths.yaml` on every test run that exercises `validate_intent_and_code()` end-to-end.
+
+**Deliberate behavior change — `.md`/non-source files under `src/` no longer require TDD.** Layer 0's extension gate runs before Layer 1, so a `.md` file under `src/` (previously flagged `NO_TDD` by the old regex-only check, since it never looked at extension) is now `YES` (no declaration required) — this is the correct, spec-mandated consequence of "no core-path word can bypass a non-source-extension file", not a regression. `tests/fixtures/real_transcript_replay/manifest.json`'s `case_23`/`case_24_md_under_src` fixtures were updated in the same commit (their `expected_stage1` flipped `NO_TDD` → `YES`) per `tests/test_real_transcript_replay.py`'s own "update this helper/manifest IN THE SAME COMMIT" contract.
+
+**Known/accepted blast radius — this repo's own scripts become core paths (issue #92 review finding F-4).** Layer 2's marker-fallback walk means any source file that shares a directory tree with a project marker gets flagged core even with no matching Layer 1 word. In THIS repo specifically, `pyproject.toml` at the repo root is itself a project marker, so `scripts/run_tests.sh`, `install.sh`, `docs/*.py`, and `examples/*.py` all resolve to core paths under Layer 2 (there is already a marker-adjacent test that needed a `chdir` trick to avoid tripping over this in the test suite itself). This is spec-faithful — the marker-fallback design was explicitly discussed and deliberately left this way pending real usage data — not a defect to "fix" by narrowing the walk. If you hit an unexpected TDD-required prompt on a script/docs file in this or another repo, this is why.
+
+**Key files**:
+- `src/pacemaker/intent_validator.py` — `_is_core_path()` (3-layer algorithm), `_regex_stage1_check()` (wiring, optional `core_path_segments`/`extensions` params default to pure in-memory `get_default_paths()`/`get_default_extensions()` for tests), `validate_intent_and_code()` (real hook wiring)
+- `src/pacemaker/core_path_markers.py` — Layer 2/2c: `find_project_marker()`, `has_core_marker()`, `matches_test_project_marker()`, `matches_test_filename_pattern()`, `_find_marker_in_dir()` (candidate-name-first via `os.scandir()`, deterministic fixed-priority multi-marker selection — issue #92 review findings F-2/F-7)
+- `src/pacemaker/core_paths.py` — `get_default_paths()` (11 entries), `migrate_if_needed()`, `load_paths_with_migration()`, `NEW_STORY_92_WORDS`, `MIGRATION_MARKER_KEY`, `add_path()` (rejects degenerate slash-only segments — F-5), `_write_paths()` (read-modify-write, preserves non-`paths` top-level keys like the migration marker — F-1)
+- `src/pacemaker/excluded_paths.py` — `matches_filename_pattern()`, extended `is_excluded_path()`, `add_exclusion()` (skips trailing-slash normalization for `*`-prefixed suffix patterns — F-6)
+- `tests/unit/test_is_core_path_story92.py` (27 tests), `tests/unit/test_core_path_markers.py` (33 tests), `tests/unit/test_core_paths_migration.py` (22 tests), `tests/unit/test_core_paths.py` (23 tests), `tests/test_excluded_paths_suffix_patterns.py` (25 tests), `tests/test_core_paths_cli_wiring_story92.py` (2 tests — real CLI-to-gate round-trip, F-3)
 
 ---
 
@@ -291,29 +325,30 @@ pace-maker sessions list   # Show active registry sessions (filters out >20min s
 
 ## Minimum Claude Code Version Check (Story #66)
 
-> # ⚠️ STATUS: NOT WIRED — THIS FEATURE DOES NOTHING AT RUNTIME (issue #96)
+> **STATUS: WIRED (issue #96, v2.34.6) — plus a user-visible notice (issue #100).**
 >
-> The three modules below exist and are unit-tested, but **nothing in `hook.py` imports or calls any of them**. Concretely:
-> - **No caller** for `perform_session_start_version_check()` anywhere in `src/` — the SessionStart wiring described in Story #66 was never added.
-> - **No SessionStart block ever occurs.** A user on a Claude Code below the minimum sees nothing.
-> - **`version_block_active` is never written** to `state.json`, and no code reads it.
-> - **PreToolUse and Stop have NO early-return guard.** There is no such code to find.
+> This section read "NOT WIRED — THIS FEATURE DOES NOTHING AT RUNTIME" from the moment it was written in commit `5901676` (2026-08-10 09:30:21) until bug #100 corrected it here today (2026-08-29) — roughly 19 days, not the "two months" an earlier version of this note claimed (that figure had been copied from an unrelated paragraph about issue #94 elsewhere in this file). The underlying code was actually fixed far sooner than the doc: `8b88701` landed the wiring the same day, 2h35m later (2026-08-10 12:05:47), so the code was correct for nearly the entire 19-day window while this doc still said otherwise. Corrected here (bug #100 review finding F-1) against the code as it exists today — verify current line numbers yourself before citing them again, they drift.
 >
-> This is orphan code (Messi Rule 12). Everything below describes the modules **as written**, not as reachable. Do not cite this feature as an active safeguard, and do not "fix a bug" in it without first wiring it — see issue #96.
+> - `perform_session_start_version_check()` **is called** from `run_session_start_hook()` at `src/pacemaker/hook.py:389`.
+> - `state["version_block_active"]` **is read** by both downstream gates: `run_stop_hook()` at `hook.py:2171` and `run_pre_tool_hook()` at `hook.py:2527`. Both return `{"continue": True}` immediately when the flag is set, before stdin is even read (so no CSA/danger-bash/intent-validation work runs at all on a blocked session).
+> - **PostToolUse (`run_hook()`, `hook.py:1045`) has NO version guard, by design** — it keeps running normally under a version block (Langfuse pushes, CSA registry writes, `usage.db` telemetry, pacing all still fire). PostToolUse is not the only hook this applies to, though: the guard exists at exactly two call sites, `run_stop_hook()` and `run_pre_tool_hook()` — so four other hook entry points are equally unguarded by design: `run_subagent_start_hook()`, `run_subagent_stop_hook()`, `run_hook()` (PostToolUse), and `run_user_prompt_submit()`. This matches the guard comments at `hook.py:2166-2170` and `hook.py:2522-2526`, which correctly scope the guard to "PreToolUse and Stop ONLY".
+> - **Issue #100 adds a user-visible notice.** SessionStart prints `state["version_block_message"]` to stdout, wrapped in the `version_block_notice` provenance tag via `prompt_provenance.format_tag()` (`hook.py:404-413`). SessionStart cannot be blocked via a non-zero exit code — confirmed against Claude Code's own hooks documentation during #100's review — so `additionalContext` (plain stdout) is the only reliably-surfaced channel; the pre-existing stderr-only `_BLOCK_MESSAGE` is not reliably visible (transcript/debug mode only).
 
-### Architecture (module behavior as written — unreachable today)
+### Architecture
 
 - **Version probe**: `subprocess.run(["claude", "--version"], timeout=5)` — any failure (FileNotFoundError, TimeoutExpired, non-zero exit, parse error) returns `None` and the check fails-open (no block).
-- **Minimum value**: `_FALLBACK_MIN_VERSION = "2.1.39"` in `src/pacemaker/version_check.py:20`. **There is NO `DEFAULT_CONFIG["min_claude_version"]`** — `constants.py` has no such key, and **setting `min_claude_version` in `config.json` has no effect whatsoever**.
-- **Block flag**: `state["version_block_active"] = True` would be written to `state.json` when the installed version is below minimum — **never executed, since the function has no caller**.
-- **Downstream hooks**: the design called for PreToolUse and Stop to check `version_block_active` at entry and return `{"continue": True}` — **this guard does not exist in the code**.
+- **Minimum value**: `_FALLBACK_MIN_VERSION = "2.1.39"` in `src/pacemaker/version_check.py:32` (shifted from line 20 by #100's docstring expansion — verify the current line before citing it, it has already moved once). `DEFAULT_CONFIG["min_claude_version"] = "2.1.39"` **does exist**, at `src/pacemaker/constants.py:36` — the prior claim that no such key exists was wrong; setting `min_claude_version` in `config.json` overrides the fallback via `config.get("min_claude_version", _FALLBACK_MIN_VERSION)` (`version_check.py:121`).
+- **Block flag**: `state["version_block_active"]` is set `True` when the installed version is below minimum, `False` on every other path (parse failure, probe failure, version OK, or an unexpected exception caught by the outer fail-open wrapper).
+- **`version_block_message`** (issue #100): set to an actionable plain-text notice body (`_CONTEXT_NOTICE.format(...)`) only on the blocked path; explicitly set to `None` on every other path — parse failure, probe failure, version OK, AND the outer exception handler — so a stale notice from an earlier blocked check can never leak into a later clean session (e.g. after the user upgrades). See the docstring at `version_check.py:1-23` for the full rationale, including why this is a separate channel from the stderr-only `_BLOCK_MESSAGE`.
+- **Fail-open is adversarially verified**, not just claimed: bug #100's review forced an `ImportError` in the check path together with a malformed on-disk `version_block_message` simultaneously, and the session still proceeded cleanly with empty stderr and no block.
+- **Downstream hooks**: PreToolUse and Stop check `version_block_active` at entry and return `{"continue": True}` before any other work — see the Stop/PreToolUse line citations above.
 
 ### Key Files
 
 - `src/pacemaker/claude_code_version.py` — `ClaudeCodeVersion` dataclass: `parse()`, `compare()`, `is_below()`, `probe_installed_version()`
 - `src/pacemaker/version_status_db.py` — SQLite DB following session_registry pattern: `resolve_db_path()`, `record_status()`, `read_status()`
-- `src/pacemaker/version_check.py` — `perform_session_start_version_check(state, config, stderr)` with full fail-open wrapper; `_FALLBACK_MIN_VERSION` at line 20. **No caller in `src/`.**
-- `src/pacemaker/hook.py` — **nothing.** The SessionStart wiring and the PreToolUse/Stop guards were never written.
+- `src/pacemaker/version_check.py` — `perform_session_start_version_check(state, config, stderr)` with full fail-open wrapper; `_FALLBACK_MIN_VERSION` at line 32; `version_block_message` set/cleared on every path (issue #100).
+- `src/pacemaker/hook.py` — SessionStart caller (`:389`) and additionalContext notice emission (`:404-413`); Stop guard (`:2171`); PreToolUse guard (`:2527`); PostToolUse (`run_hook()`, `:1045`) has no guard, by design.
 
 ### Version Status DB
 
@@ -324,7 +359,7 @@ Follows the session_registry pattern exactly:
 - **Fail-open reads**: `read_status()` catches all exceptions at DEBUG level, returns `None`
 - **Named constant**: `_READ_TIMEOUT_SECONDS = 5.0`
 
-**No CLI, no status line.** `pace-maker min-claude-version` **does not exist** (command patterns in `user_commands.py` stop at 26; there is no `_execute_min_claude_version()`), and `pace-maker status` has **no "Claude Code:" line**. Both were previously documented here and were removed as fiction — do not re-add them without the implementation.
+**No CLI, no status line.** `pace-maker min-claude-version` **does not exist** (command patterns in `user_commands.py` stop at 26; there is no `_execute_min_claude_version()`), and `pace-maker status` has **no "Claude Code:" line**. Both were previously documented here and were removed as fiction — do not re-add them without the implementation. (Verified still true as of this correction.)
 
 ### Test Isolation
 
@@ -332,8 +367,12 @@ Follows the session_registry pattern exactly:
 
 ### Test Files
 
-- `tests/test_claude_code_version.py` — **38** unit tests (parse, compare, is_below, probe, DB). **No CLI coverage and no config-defaults coverage** — neither exists to cover.
-- `tests/test_version_check_integration.py` — **9** component tests. **⚠️ Its 2 `TestBlockedHooksEarlyReturn` tests pass VACUOUSLY**: they assert only `decision != "block"`, which is trivially true precisely *because* no early-return guard exists. Green here is not evidence the feature works — it is evidence of the absence being untested.
+- `tests/test_claude_code_version.py` — **48** unit tests (parse, compare, is_below, probe, DB, plus issue #100's 3 SessionStart notice-emission tests under "issue #100: SessionStart user-visible signal").
+- `tests/test_version_check_integration.py` — **14** component tests, including issue #100's 5 `version_block_message` tests under "issue #100: `state["version_block_message"]`". `TestBlockedHooksEarlyReturn`'s 2 tests are **no longer vacuous**: they were rewritten (see the class docstring, `tests/test_version_check_integration.py:314-320`) to assert the exact `{"continue": True}` early-return payload AND that stdin was never read, so removing the guard now makes them fail for real.
+
+### A note for future edits to this feature
+
+Read the current code (the line citations above, and the module docstrings) before changing anything here — they have already drifted once (#96 wired the feature the same day this doc was written claiming it wasn't, yet this doc kept calling it "NOT WIRED" for ~19 days until #100 corrected it) and the constants/line numbers move as the file changes. There is no "unwired" state to worry about anymore; this is ordinary maintenance discipline, not a prohibition.
 
 ---
 

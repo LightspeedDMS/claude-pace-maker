@@ -20,8 +20,14 @@ import yaml
 from pacemaker import core_paths
 
 
-def test_get_default_paths_returns_expected_list():
-    """Test that default paths include all expected core directories."""
+def test_get_default_paths_returns_expected_eleven_entry_list():
+    """Test that default paths include all expected core directories.
+
+    Expanded to 11 entries by issue #92 (evidence-based survey): the
+    original 7 words plus app/, routes/, services/, internal/. See
+    tests/unit/test_core_paths_migration.py::TestGetDefaultPathsExpanded
+    for dedicated coverage of the 4 new words.
+    """
     defaults = core_paths.get_default_paths()
 
     assert isinstance(defaults, list)
@@ -32,7 +38,11 @@ def test_get_default_paths_returns_expected_list():
     assert "source/" in defaults
     assert "libraries/" in defaults
     assert "kernel/" in defaults
-    assert len(defaults) == 7
+    assert "app/" in defaults
+    assert "routes/" in defaults
+    assert "services/" in defaults
+    assert "internal/" in defaults
+    assert len(defaults) == 11
 
 
 def test_get_default_paths_includes_code():
@@ -162,6 +172,33 @@ def test_add_path_normalizes_trailing_slash():
         paths = core_paths.load_paths(config_path)
         assert "custom/" in paths
         assert "custom" not in paths
+
+
+@pytest.mark.parametrize("degenerate_segment", ["/", "", "///"])
+def test_add_path_rejects_degenerate_segments(degenerate_segment):
+    """Issue #92 review finding F-5: a segment that normalizes to '/'
+    (bare '/', empty string, or slashes-only) rstrips to '' in
+    _is_core_path's regex builder — an empty alternative that poisons the
+    Layer 1 regex into matching every absolute path (which Claude Code's
+    Write/Edit tool_input always is). `pace-maker core-paths add /` must
+    be rejected at the source instead of ever reaching disk."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_path = os.path.join(tmpdir, "core_paths.yaml")
+
+        with pytest.raises(ValueError):
+            core_paths.add_path(config_path, degenerate_segment)
+
+
+def test_add_path_rejects_bare_slash_leaves_no_file_on_disk():
+    """The rejection must happen before any write — no config file should
+    be created as a side effect of a rejected add."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_path = os.path.join(tmpdir, "core_paths.yaml")
+
+        with pytest.raises(ValueError):
+            core_paths.add_path(config_path, "/")
+
+        assert not os.path.exists(config_path)
 
 
 def test_remove_path_removes_from_config():

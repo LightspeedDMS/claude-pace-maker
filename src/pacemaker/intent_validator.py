@@ -12,7 +12,7 @@ This module validates if Claude completed the user's original request by:
 
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .transcript_reader import (
     build_stop_hook_context,
@@ -486,11 +486,72 @@ def _mentions_file(text: str, file_path: str) -> bool:
     return basename in text or file_path in text
 
 
-def _is_core_path(file_path: str) -> bool:
-    """Return True if file_path is under a core directory (src/lib/core/source/libraries/kernel)."""
-    return bool(
-        re.search(r"(?:^|/)(src|lib|code|core|source|libraries|kernel)/", file_path)
-    )
+def _is_core_path(
+    file_path: str,
+    core_path_segments: List[str],
+    exclusions: List[str],
+    extensions: List[str],
+) -> bool:
+    """Return True if file_path is a core (production) code path requiring
+    a TDD test-coverage declaration (issue #92 3-layer algorithm).
+
+    Layer 0 — universal negative signals, evaluated BEFORE any positive
+    match (Layer 1 or Layer 2/2c) so no core-path word or marker can ever
+    bypass them: excluded path, non-source-code extension, or a
+    test-filename-suffix pattern (e.g. *_test.go, which has no
+    directory-level exclusion signal at all).
+
+    Layer 1 — fast path: bare-segment word-list match, config-driven via
+    core_path_segments (e.g. core_paths.yaml).
+
+    Layer 2 (+2c) — structural marker-file fallback, only reached when
+    Layer 1 misses: an uncapped upward directory walk for per-ecosystem
+    project markers, excluding a found marker that is itself a dedicated
+    test project.
+
+    Args:
+        file_path: Target file path (relative or absolute)
+        core_path_segments: Bare-segment word list (e.g. from
+            core_paths.load_paths_with_migration())
+        exclusions: Excluded path prefixes/patterns (e.g. from
+            excluded_paths.load_exclusions())
+        extensions: Recognized source-code extensions (e.g. from
+            extension_registry.load_extensions())
+
+    Returns:
+        True if file_path requires a TDD test-coverage declaration
+    """
+    from .excluded_paths import is_excluded_path
+    from .extension_registry import is_source_code_file
+    from .core_path_markers import matches_test_filename_pattern, has_core_marker
+
+    # Layer 0 — universal negative signals.
+    if is_excluded_path(file_path, exclusions):
+        return False
+    if not is_source_code_file(file_path, extensions):
+        return False
+    if matches_test_filename_pattern(file_path):
+        return False
+
+    # Layer 1 — fast path: bare-segment word-list match.
+    # A segment that reduces to "" after stripping trailing slashes (e.g.
+    # a bare "/") must be filtered out here, at the regex-construction
+    # site itself — not just at the CLI's add_path() layer — because a
+    # hand-edited core_paths.yaml bypasses that CLI guard entirely. An
+    # empty segment would otherwise become an empty regex alternation
+    # branch that matches every path (issue #92 review finding N-2).
+    escaped_segments = [
+        re.escape(stripped)
+        for seg in core_path_segments
+        if (stripped := seg.rstrip("/"))
+    ]
+    if escaped_segments:
+        pattern = r"(?:^|/)(?:" + "|".join(escaped_segments) + r")/"
+        if re.search(pattern, file_path):
+            return True
+
+    # Layer 2 (+2c) — structural marker-file fallback.
+    return has_core_marker(file_path)
 
 
 def _is_version_bump(intent_text: str) -> bool:
@@ -544,13 +605,28 @@ def _has_tdd_declaration(intent_text: str) -> bool:
     return bool(re.search(r"(?i)user\s+permission\s+(to\s+)?skip\s+tdd", intent_text))
 
 
-def _regex_stage1_check(current_message: str, file_path: str, exclusions: list) -> str:
+def _regex_stage1_check(
+    current_message: str,
+    file_path: str,
+    exclusions: list,
+    core_path_segments: Optional[List[str]] = None,
+    extensions: Optional[List[str]] = None,
+) -> str:
     """Regex-based Stage 1 structural check. Returns YES, NO, or NO_TDD.
 
     Args:
         current_message: Current assistant message text
         file_path: Target file path (relative or absolute)
         exclusions: List of excluded path prefixes (e.g. ["tests/", ".tmp/"])
+        core_path_segments: Optional bare-segment word list for Layer 1 of
+            _is_core_path(). Defaults to core_paths.get_default_paths()
+            (pure, in-memory, no file I/O) when not supplied — the real
+            hook entry point (validate_intent_and_code) passes the
+            migrated on-disk list via core_paths.load_paths_with_migration().
+        extensions: Optional recognized source-code extensions for Layer 0
+            of _is_core_path(). Defaults to
+            extension_registry.get_default_extensions() (pure, in-memory,
+            no file I/O) when not supplied.
 
     Returns:
         "YES"    – intent declared, file mentioned, TDD satisfied (or not required)
@@ -567,12 +643,16 @@ def _regex_stage1_check(current_message: str, file_path: str, exclusions: list) 
     if not _mentions_file(current_message, file_path):
         return "NO"
 
-    from .excluded_paths import is_excluded_path
+    if core_path_segments is None:
+        from .core_paths import get_default_paths
 
-    if is_excluded_path(file_path, exclusions):
-        return "YES"
+        core_path_segments = get_default_paths()
+    if extensions is None:
+        from .extension_registry import get_default_extensions
 
-    if not _is_core_path(file_path):
+        extensions = get_default_extensions()
+
+    if not _is_core_path(file_path, core_path_segments, exclusions, extensions):
         return "YES"
 
     intent_text = current_message[intent_match.end() :]
@@ -838,14 +918,31 @@ def validate_intent_and_code(
         )
 
         # Load exclusions for regex check
-        from .constants import DEFAULT_EXCLUDED_PATHS_PATH
+        from .constants import (
+            DEFAULT_EXCLUDED_PATHS_PATH,
+            DEFAULT_CORE_PATHS_PATH,
+            DEFAULT_EXTENSION_REGISTRY_PATH,
+        )
         from .excluded_paths import load_exclusions
+        from . import core_paths
+        from . import extension_registry
 
         exclusions = load_exclusions(DEFAULT_EXCLUDED_PATHS_PATH)
+        # Wires core_paths.yaml into the live hook path (issue #92) —
+        # running the one-time migration first so an existing customized
+        # file picks up the 4 new default words.
+        core_path_segments = core_paths.load_paths_with_migration(
+            DEFAULT_CORE_PATHS_PATH
+        )
+        extensions = extension_registry.load_extensions(DEFAULT_EXTENSION_REGISTRY_PATH)
 
         # STAGE 1: Fast regex structural check (no LLM call)
         stage1_response_upper = _regex_stage1_check(
-            current_message, file_path, exclusions
+            current_message,
+            file_path,
+            exclusions,
+            core_path_segments,
+            extensions,
         )
         log_debug(
             "intent_validator", f"Stage 1 regex response: '{stage1_response_upper}'"

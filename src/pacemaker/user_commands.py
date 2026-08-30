@@ -241,8 +241,14 @@ CORE PATHS:
   and TDD enforcement are enabled, files under these paths require test
   declarations before modification.
 
-  Default paths: src/, lib/, core/, source/, libraries/, kernel/
+  Default paths: src/, lib/, code/, core/, source/, libraries/, kernel/,
+                 app/, routes/, services/, internal/
   Config file: ~/.claude-pace-maker/core_paths.yaml
+
+  A file also counts as core if no path above matches, but a project
+  marker file (e.g. pyproject.toml, go.mod, *.csproj, package.json) is
+  found anywhere in its ancestor directories — see CLAUDE.md "Core-Path
+  Detection" for the full per-ecosystem marker list.
 
   Users can customize which paths trigger TDD requirements using:
   - 'pace-maker core-paths list' to see current paths
@@ -2445,11 +2451,10 @@ def _execute_excluded_paths(subcommand: Optional[str]) -> Dict[str, Any]:
         path = parts[1].strip()
 
         try:
-            excluded_paths.add_exclusion(DEFAULT_EXCLUDED_PATHS_PATH, path)
-            normalized = path if path.endswith("/") else path + "/"
+            stored = excluded_paths.add_exclusion(DEFAULT_EXCLUDED_PATHS_PATH, path)
             return {
                 "success": True,
-                "message": f"✓ Excluded path '{normalized}' added successfully",
+                "message": f"✓ Excluded path '{stored}' added successfully",
             }
         except ValueError as e:
             return {"success": False, "message": str(e)}

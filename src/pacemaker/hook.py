@@ -391,31 +391,66 @@ def run_session_start_hook():
     except Exception as e:
         log_warning("hook", f"Version check failed: {e}")
 
+    # Version-block user-visible signal (issue #100). SessionStart cannot be
+    # blocked via a non-zero exit code (Claude Code hooks reference: exit
+    # code 2 is not a documented blocking case for SessionStart), and a
+    # hook that exits 0 has its stderr surfaced only in transcript/debug
+    # mode — so plain stdout (treated as additionalContext for
+    # SessionStart, same as the intent-validation guidance printed further
+    # below in this function) is the only channel that reliably reaches
+    # Claude/the user. Purely informational: if version_block_active is
+    # unset/False, or the message is missing (fail-open path already
+    # cleared it to None), nothing is printed and nothing can block.
+    try:
+        if state.get("version_block_active") and state.get("version_block_message"):
+            from .prompt_provenance import format_tag
+
+            safe_print(
+                format_tag(state["version_block_message"], "version_block_notice"),
+                file=sys.stdout,
+            )
+    except Exception as e:
+        log_warning("hook", f"Failed to display version block notice: {e}")
+
     # Cross-Session Awareness: register session and emit sibling banner if any.
     # csa.on_session_start() mutates state to cache workspace_root, so we save
     # state again after the call. init_schema is idempotent and ensures the
     # registry DB file exists before the first CSA operation.
     # os.getcwd() and os.getpid() are recomputed here because hook_data does
     # not expose cwd directly and no pre-existing local variable holds them.
+    #
+    # Issue #105: init_schema() (and everything else in this block) must be
+    # gated behind `cross_session_awareness_enabled`, not just the master
+    # `enabled` switch checked earlier in this function. Without this check,
+    # init_schema() previously ran unconditionally and created an empty
+    # session_registry.db file/schema even when a user explicitly disabled
+    # CSA. csa_on_session_start() itself already checks _is_enabled(config)
+    # internally and no-ops when disabled — this check mirrors that same
+    # canonical flag semantic so the DB file is never touched in the first
+    # place, rather than being created and then immediately unused.
     try:
-        from .session_registry._csa import on_session_start as csa_on_session_start
+        from .session_registry._csa import (
+            _is_enabled as _csa_is_enabled,
+            on_session_start as csa_on_session_start,
+        )
         from .session_registry.db import resolve_db_path, init_schema
 
-        csa_db_path = resolve_db_path()
-        init_schema(csa_db_path)
-        csa_banner = csa_on_session_start(
-            session_id=session_id or "",
-            source=source,
-            cwd=os.getcwd(),
-            pid=os.getpid(),
-            db_path=csa_db_path,
-            state=state,
-            config=config,
-        )
-        # Persist state mutation from csa.on_session_start (workspace_root cache)
-        save_state(state, DEFAULT_STATE_PATH)
-        if csa_banner:
-            safe_print(csa_banner, file=sys.stdout)
+        if _csa_is_enabled(config):
+            csa_db_path = resolve_db_path()
+            init_schema(csa_db_path)
+            csa_banner = csa_on_session_start(
+                session_id=session_id or "",
+                source=source,
+                cwd=os.getcwd(),
+                pid=os.getpid(),
+                db_path=csa_db_path,
+                state=state,
+                config=config,
+            )
+            # Persist state mutation from csa.on_session_start (workspace_root cache)
+            save_state(state, DEFAULT_STATE_PATH)
+            if csa_banner:
+                safe_print(csa_banner, file=sys.stdout)
     except Exception as e:
         log_warning("hook", f"CSA session_start failed: {e}")
 
@@ -594,10 +629,17 @@ def run_subagent_start_hook():
     # Save state
     save_state(state, DEFAULT_STATE_PATH)
 
-    # Early CSA agent registration — must run BEFORE Langfuse (which can timeout)
+    # Early CSA agent registration — must run BEFORE Langfuse (which can timeout).
+    # Issue #99: the gate is enforced INSIDE on_subagent_start_register() via
+    # _is_enabled(config) (checks BOTH `enabled` and
+    # `cross_session_awareness_enabled`) — do NOT re-add an inline
+    # `cross_session_awareness_enabled`-only check here; that duplication
+    # diverging from _is_enabled() is exactly what caused this bug.
     try:
-        if hook_data and config.get("cross_session_awareness_enabled", True):
-            from .session_registry.registry import register_agent as _early_register
+        if hook_data:
+            from .session_registry._csa import (
+                on_subagent_start_register as _csa_on_subagent_start_register,
+            )
             from .session_registry.db import resolve_db_path as _early_resolve_db
 
             _session_id = hook_data.get("session_id", "")
@@ -607,12 +649,12 @@ def run_subagent_start_hook():
             _cs = _csa_ns.get(_session_id, {})
             _ws = _cs.get("workspace_root", "")
             if _session_id and _agent_id and _ws:
-                _early_register(
-                    agent_id=_agent_id,
+                _csa_on_subagent_start_register(
                     session_id=_session_id,
-                    role="subagent",
+                    agent_id=_agent_id,
                     workspace_root=_ws,
                     db_path=_early_resolve_db(),
+                    config=config,
                     subagent_type=hook_data.get("agent_type"),
                 )
     except Exception as e:
@@ -2132,9 +2174,14 @@ def run_stop_hook():
         state = load_state(DEFAULT_STATE_PATH)
 
         # Minimum Claude Code version check (Story #66 / issue #96): when
-        # SessionStart flagged an unsupported Claude Code version, skip ALL
-        # downstream work (stdin is not even read) and degrade silently
-        # rather than validating against a version we don't support.
+        # SessionStart flagged an unsupported Claude Code version, skip this
+        # hook's own downstream work (stdin is not even read) and degrade
+        # silently rather than validating against a version we don't
+        # support. Scope (issue #100): PreToolUse and Stop ONLY — PostToolUse
+        # (run_hook(), ~line 1045) has NO version guard at all and continues
+        # running normally under a version block (Langfuse pushes, CSA
+        # registry writes, usage.db telemetry, pacing all still fire), by
+        # design per Story #66.
         if state.get("version_block_active"):
             log_info("hook", "Version block active - allowing exit")
             return {"continue": True}
@@ -2483,9 +2530,14 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         _csa_result: Dict[str, Any] = {}
 
         # Minimum Claude Code version check (Story #66 / issue #96): when
-        # SessionStart flagged an unsupported Claude Code version, skip ALL
-        # downstream work (stdin is not even read) and degrade silently
-        # rather than validating against a version we don't support.
+        # SessionStart flagged an unsupported Claude Code version, skip this
+        # hook's own downstream work (stdin is not even read) and degrade
+        # silently rather than validating against a version we don't
+        # support. Scope (issue #100): PreToolUse and Stop ONLY — PostToolUse
+        # (run_hook(), ~line 1045) has NO version guard at all and continues
+        # running normally under a version block (Langfuse pushes, CSA
+        # registry writes, usage.db telemetry, pacing all still fire), by
+        # design per Story #66.
         if load_state(DEFAULT_STATE_PATH).get("version_block_active"):
             return {"continue": True}
 

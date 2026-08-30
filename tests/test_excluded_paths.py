@@ -188,6 +188,88 @@ class TestIsExcludedPath:
         assert excluded_paths.is_excluded_path("tests\\test_foo.py", exclusions) is True
 
 
+class TestIsExcludedPathCaseInsensitiveTestsDirectory:
+    """Bug #103: is_excluded_path() did a case-sensitive substring/prefix
+    match against directory-name exclusions. Default exclusions are all
+    lowercase, so a directory named with different casing (e.g. `Tests/`,
+    `TESTS/` — the standard .NET naming convention) was NOT excluded."""
+
+    def test_capitalized_tests_directory_is_excluded(self):
+        """Reproduces the issue's exact repro: cs/Tests/unit/mod.py."""
+        exclusions = [".tmp/", "test/", "tests/", "fixtures/", "vendor/"]
+        assert (
+            excluded_paths.is_excluded_path("cs/Tests/unit/mod.py", exclusions) is True
+        )
+
+    def test_uppercase_tests_directory_is_excluded(self):
+        """Reproduces the issue's exact repro: cs/TESTS/unit/mod.py."""
+        exclusions = [".tmp/", "test/", "tests/", "fixtures/", "vendor/"]
+        assert (
+            excluded_paths.is_excluded_path("cs/TESTS/unit/mod.py", exclusions) is True
+        )
+
+    def test_lowercase_tests_directory_still_excluded_regression(self):
+        """Reproduces the issue's exact repro: cs/tests/unit/mod.py (baseline
+        that already passed before this fix and must keep passing)."""
+        exclusions = [".tmp/", "test/", "tests/", "fixtures/", "vendor/"]
+        assert (
+            excluded_paths.is_excluded_path("cs/tests/unit/mod.py", exclusions) is True
+        )
+
+
+class TestIsExcludedPathCaseInsensitivePrefixAndNegative:
+    """Case-insensitivity must be a pure WIDENING: it applies to the prefix
+    branch too, and it must never introduce a false-positive match."""
+
+    def test_capitalized_prefix_match_is_excluded(self):
+        """Prefix-match branch (normalized_file.startswith(exclusion)) must
+        also be case-insensitive, not just the substring branch."""
+        exclusions = ["tests/"]
+        assert excluded_paths.is_excluded_path("Tests/test_foo.py", exclusions) is True
+
+    def test_non_matching_path_still_not_excluded_any_case(self):
+        """Case-insensitivity must never cause a false-positive match on a
+        genuinely non-matching path."""
+        exclusions = [".tmp/", "tests/"]
+        assert excluded_paths.is_excluded_path("src/module.py", exclusions) is False
+        assert excluded_paths.is_excluded_path("Src/Module.py", exclusions) is False
+
+
+class TestIsExcludedPathCaseInsensitiveUserAdded:
+    """User-added mixed-case exclusions must match leniently (in the user's
+    favor), and pre-existing default-exclusion behavior must be untouched."""
+
+    def test_user_added_mixed_case_exclusion_matches_any_case(self):
+        """A user explicitly adds 'MyTests/' via the CLI. Case-insensitive
+        matching must work IN THEIR FAVOR — matching 'mytests/' and
+        'MYTESTS/' too — never narrowing what they intentionally excluded."""
+        exclusions = ["MyTests/"]
+        assert (
+            excluded_paths.is_excluded_path("project/MyTests/foo.py", exclusions)
+            is True
+        )
+        assert (
+            excluded_paths.is_excluded_path("project/mytests/foo.py", exclusions)
+            is True
+        )
+        assert (
+            excluded_paths.is_excluded_path("project/MYTESTS/foo.py", exclusions)
+            is True
+        )
+
+    def test_existing_default_exclusions_regression_unaffected(self):
+        """Re-asserts the original TestIsExcludedPath.test_match_returns_true
+        cases to lock in that this fix does not alter any pre-existing
+        case-matching behavior."""
+        exclusions = [".tmp/", "tests/", "__pycache__/"]
+        assert excluded_paths.is_excluded_path(".tmp/test.py", exclusions) is True
+        assert excluded_paths.is_excluded_path("tests/test_foo.py", exclusions) is True
+        assert (
+            excluded_paths.is_excluded_path("lib/__pycache__/module.pyc", exclusions)
+            is True
+        )
+
+
 class TestAddExclusion:
     """Test adding exclusions to config."""
 

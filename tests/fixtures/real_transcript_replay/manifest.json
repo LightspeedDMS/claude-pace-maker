@@ -410,7 +410,7 @@
   {
     "fixture": "case_23_md_under_src.jsonl",
     "category": "md_under_src",
-    "expected_stage1": "NO_TDD",
+    "expected_stage1": "YES",
     "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/tool_docs/search/store_xray_pattern.md",
     "tool_name": "Edit",
     "source": "91c9d43d-db19-465e-b510-4b49c8ce5c8c.jsonl",
@@ -418,12 +418,12 @@
     "tool_use_in_fixture": true,
     "historical_outcome": "ALLOWED",
     "decl_tags": [],
-    "note": "\"The file /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/tool_docs/search/store_xray_pattern.md has"
+    "note": "issue #92 (v2.34.9): flipped NO_TDD -> YES. Layer 0's is_source_code_file check now excludes .md (not a recognized source extension) from core-path treatment BEFORE Layer 1's src/ word-list match is ever consulted, superseding the pre-story '.md under src/ = core by policy' behavior this fixture pinned. Original note: \"The file /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/tool_docs/search/store_xray_pattern.md has"
   },
   {
     "fixture": "case_24_md_under_src.jsonl",
     "category": "md_under_src",
-    "expected_stage1": "NO_TDD",
+    "expected_stage1": "YES",
     "file_path": "/home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/tool_docs/search/store_xray_pattern.md",
     "tool_name": "Edit",
     "source": "91c9d43d-db19-465e-b510-4b49c8ce5c8c.jsonl",
@@ -431,7 +431,7 @@
     "tool_use_in_fixture": true,
     "historical_outcome": "ALLOWED",
     "decl_tags": [],
-    "note": "\"The file /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/tool_docs/search/store_xray_pattern.md has"
+    "note": "issue #92 (v2.34.9): flipped NO_TDD -> YES. Layer 0's is_source_code_file check now excludes .md (not a recognized source extension) from core-path treatment BEFORE Layer 1's src/ word-list match is ever consulted, superseding the pre-story '.md under src/ = core by policy' behavior this fixture pinned. Original note: \"The file /home/jsbattig/Dev/code-indexer-clone-3/src/code_indexer/server/mcp/tool_docs/search/store_xray_pattern.md has"
   },
   {
     "fixture": "case_25_no_intent.jsonl",

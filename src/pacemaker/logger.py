@@ -36,15 +36,45 @@ from .constants import (
 
 
 def _get_log_level() -> int:
-    """Get current log level from config."""
+    """Get current log level from config.
+
+    Coerces the config's log_level value to int (bug #106): a hand-edited
+    or corrupted config.json can store log_level as a non-int (a string
+    like "DEBUG", a numeric string, or null). Without coercion, a
+    malformed value propagates an unhandled TypeError out of log()'s
+    `level > current_level` comparison, silently disabling the calling
+    hook handler. A non-coercible value falls back to LOG_LEVEL_WARNING,
+    same as a missing key or corrupted JSON.
+    """
     import json
 
     try:
         if os.path.exists(DEFAULT_CONFIG_PATH):
             with open(DEFAULT_CONFIG_PATH) as f:
                 config = json.load(f)
-            return config.get("log_level", LOG_LEVEL_WARNING)
-    except Exception:
+            if not isinstance(config, dict):
+                # Valid JSON that decodes to a non-object (e.g. `[]` or
+                # `null`) has no "log_level" key to read — treat exactly
+                # like a missing/malformed value.
+                return LOG_LEVEL_WARNING
+            raw_level = config.get("log_level", LOG_LEVEL_WARNING)
+            try:
+                return int(raw_level)
+            except (TypeError, ValueError):
+                return LOG_LEVEL_WARNING
+    except (OSError, ValueError):
+        # Config unreadable, corrupted JSON, or containing bytes that are
+        # not valid UTF-8 (json.load() raises UnicodeDecodeError while
+        # decoding the stream before the JSON parser even runs -- a
+        # ValueError subclass, not an OSError and not a
+        # json.JSONDecodeError, so a narrower clause misses it -- issue
+        # #106 review comment 5466550628). json.JSONDecodeError is itself
+        # a ValueError subclass, so `ValueError` alone is a strict superset
+        # covering both cases. Cannot log this failure via the logging
+        # system itself (this IS the logging system's own config lookup),
+        # so fall through to the safe default below, matching this
+        # function's pre-existing graceful-degradation contract (see
+        # test_returns_default_when_config_corrupted).
         pass
     return LOG_LEVEL_WARNING
 

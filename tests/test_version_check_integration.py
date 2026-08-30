@@ -200,6 +200,87 @@ class TestSessionStartVersionCheck:
         # Must not raise; must fail open
         perform_session_start_version_check(state, config, stderr=stderr_capture)
         assert state.get("version_block_active") is False
+        assert state.get("version_block_message") is None
+
+    # ── issue #100: state["version_block_message"] (additionalContext body) ──
+    # All five tests below reuse _run_version_check(), which stubs only
+    # subprocess.run — the external `claude` CLI binary boundary. This is
+    # the SAME pre-existing, single approved anti-mock exception already
+    # documented on _run_version_check()'s own docstring above and used by
+    # every other test in this class (test_above_minimum_does_not_block,
+    # test_below_minimum_sets_block_flag, etc.). No new mocking is
+    # introduced; pacemaker.version_check, state.json read/write, and
+    # version_status_db all still run for real, unmocked.
+
+    def test_below_minimum_sets_block_message_with_actionable_content(
+        self, pacemaker_env, monkeypatch
+    ):
+        """When blocked, state carries a ready-to-emit message describing the
+        installed/minimum versions AND that governance is not enforced —
+        this is the body threaded into the SessionStart additionalContext
+        channel (issue #100), independent of the stderr-only _BLOCK_MESSAGE."""
+        state, _stderr = _run_version_check(
+            pacemaker_env,
+            monkeypatch,
+            _make_probe_stub("2.1.10 (Claude Code)\n"),
+        )
+        message = state.get("version_block_message")
+        assert isinstance(message, str) and message != ""
+        assert "2.1.10" in message
+        assert "2.1.39" in message
+        assert "not" in message.lower() and "enforc" in message.lower()
+
+    def test_above_minimum_leaves_block_message_none(self, pacemaker_env, monkeypatch):
+        state, _stderr = _run_version_check(
+            pacemaker_env,
+            monkeypatch,
+            _make_probe_stub("2.1.126 (Claude Code)\n"),
+        )
+        assert state.get("version_block_message") is None
+
+    def test_probe_failure_leaves_block_message_none(self, pacemaker_env, monkeypatch):
+        state, _stderr = _run_version_check(
+            pacemaker_env,
+            monkeypatch,
+            _make_failing_probe_stub(FileNotFoundError("claude not found")),
+        )
+        assert state.get("version_block_message") is None
+
+    def test_malformed_output_leaves_block_message_none(
+        self, pacemaker_env, monkeypatch
+    ):
+        state, _stderr = _run_version_check(
+            pacemaker_env,
+            monkeypatch,
+            _make_probe_stub("something completely garbled\n"),
+        )
+        assert state.get("version_block_message") is None
+
+    def test_recovery_clears_stale_block_message_on_next_check(
+        self, pacemaker_env, monkeypatch
+    ):
+        """A block message set by a below-minimum check must not linger once
+        a later check on the SAME state dict (e.g. after upgrading) reports
+        the version is OK — otherwise a stale notice could be re-emitted
+        after recovery. Both calls reuse _run_version_check(), which
+        persists state to pacemaker_env["state_path"] between calls via
+        load_state/save_state, so the second call picks up the first
+        call's on-disk state exactly like two real SessionStart hook
+        invocations would."""
+        blocked_state, _stderr1 = _run_version_check(
+            pacemaker_env,
+            monkeypatch,
+            _make_probe_stub("2.1.10 (Claude Code)\n"),
+        )
+        assert blocked_state.get("version_block_message") is not None
+
+        recovered_state, _stderr2 = _run_version_check(
+            pacemaker_env,
+            monkeypatch,
+            _make_probe_stub("2.1.126 (Claude Code)\n"),
+        )
+        assert recovered_state.get("version_block_active") is False
+        assert recovered_state.get("version_block_message") is None
 
 
 # ── Blocked hooks early-return ────────────────────────────────────────────────

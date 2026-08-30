@@ -98,6 +98,107 @@ class TestLogLevelRetrieval:
         assert _get_log_level() == LOG_LEVEL_WARNING
 
 
+def write_config_raw(config_path: str, log_level) -> None:
+    """Helper to write config file with an arbitrary (possibly malformed)
+    log_level value, bypassing write_config()'s int type hint so tests can
+    exercise non-int values (bug #106)."""
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    with open(config_path, "w") as f:
+        json.dump({"log_level": log_level}, f)
+
+
+class TestLogLevelMalformedTypeCoercion:
+    """Bug #106: a malformed (non-int) log_level in config.json must not
+    raise TypeError out of _get_log_level() — it must coerce when possible
+    and fall back to LOG_LEVEL_WARNING otherwise."""
+
+    def test_non_numeric_string_falls_back_to_default(self, temp_log_dir):
+        """A non-coercible string ('DEBUG') must fall back to WARNING, not
+        raise ValueError."""
+        write_config_raw(temp_log_dir["config_path"], "DEBUG")
+        assert _get_log_level() == LOG_LEVEL_WARNING
+
+    def test_numeric_string_is_coerced_to_int(self, temp_log_dir):
+        """A numeric string ('4') is coercible and must resolve to its int
+        value (LOG_LEVEL_DEBUG), not the fallback default."""
+        write_config_raw(temp_log_dir["config_path"], "4")
+        assert _get_log_level() == LOG_LEVEL_DEBUG
+
+    def test_none_value_falls_back_to_default(self, temp_log_dir):
+        """A JSON null log_level must fall back to WARNING, not raise
+        TypeError."""
+        write_config_raw(temp_log_dir["config_path"], None)
+        assert _get_log_level() == LOG_LEVEL_WARNING
+
+
+class TestLogLevelCoercionRegression:
+    """Bug #106 regression guard: normal integer log_level values must be
+    completely unaffected by the coercion fix."""
+
+    def test_normal_integer_values_continue_to_work(self, temp_log_dir):
+        write_config(temp_log_dir["config_path"], LOG_LEVEL_DEBUG)
+        assert _get_log_level() == LOG_LEVEL_DEBUG
+
+
+class TestLogLevelNonUtf8Config:
+    """Bug #106 fix-pass regression (issue #106, review comment 5466550628):
+    the first fix pass narrowed _get_log_level()'s bare `except Exception`
+    to `except (OSError, json.JSONDecodeError)`. But json.load() on a
+    config file containing bytes that are not valid UTF-8 raises
+    UnicodeDecodeError while decoding the stream BEFORE the JSON parser
+    ever runs -- UnicodeDecodeError is a ValueError subclass, not an
+    OSError and not a json.JSONDecodeError, so the narrowed clause lets it
+    escape uncaught. _get_log_level() must degrade to LOG_LEVEL_WARNING
+    for this case exactly like corrupted-JSON or missing-file, not raise."""
+
+    def test_non_utf8_bytes_falls_back_to_default(self, temp_log_dir):
+        """A config file containing invalid-UTF-8 bytes must not raise
+        UnicodeDecodeError out of _get_log_level(); it must fall back to
+        LOG_LEVEL_WARNING like any other unreadable/corrupted config."""
+        with open(temp_log_dir["config_path"], "wb") as f:
+            f.write(b"\xff\xfe\x00\x01not-valid-utf8-log_level-DEBUG\x80\x81")
+        assert _get_log_level() == LOG_LEVEL_WARNING
+
+
+class TestLogLevelNonDictConfigCoverage:
+    """Bug #106 review coverage gap: the isinstance(config, dict) branch
+    added by the original #106 fix (logger.py ~55-59) had no test exercising
+    it -- valid JSON that decodes to a non-dict value (e.g. a JSON array or
+    JSON null) has no "log_level" key to read, and must fall back to
+    LOG_LEVEL_WARNING rather than raising AttributeError from config.get()."""
+
+    def test_json_array_config_falls_back_to_default(self, temp_log_dir):
+        """A config file whose JSON root is a list (not an object) must
+        fall back to LOG_LEVEL_WARNING."""
+        with open(temp_log_dir["config_path"], "w") as f:
+            json.dump([], f)
+        assert _get_log_level() == LOG_LEVEL_WARNING
+
+    def test_json_null_config_falls_back_to_default(self, temp_log_dir):
+        """A config file whose JSON root is `null` must fall back to
+        LOG_LEVEL_WARNING."""
+        with open(temp_log_dir["config_path"], "w") as f:
+            json.dump(None, f)
+        assert _get_log_level() == LOG_LEVEL_WARNING
+
+
+class TestLogFunctionsSurviveMalformedConfig:
+    """Bug #106: log_debug/log_warning/log_error must not raise TypeError
+    when config.json has a malformed (string) log_level."""
+
+    def test_log_debug_does_not_raise_with_malformed_config(self, temp_log_dir):
+        write_config_raw(temp_log_dir["config_path"], "DEBUG")
+        log_debug("test_component", "test message")  # must not raise
+
+    def test_log_warning_does_not_raise_with_malformed_config(self, temp_log_dir):
+        write_config_raw(temp_log_dir["config_path"], "DEBUG")
+        log_warning("test_component", "test message")  # must not raise
+
+    def test_log_error_does_not_raise_with_malformed_config(self, temp_log_dir):
+        write_config_raw(temp_log_dir["config_path"], "DEBUG")
+        log_error("test_component", "test message")  # must not raise
+
+
 class TestLogDirectoryCreation:
     """Test _ensure_log_dir() function."""
 

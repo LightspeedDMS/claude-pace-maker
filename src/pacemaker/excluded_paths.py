@@ -104,22 +104,45 @@ def _normalize_path(path: str) -> str:
     return path
 
 
-def add_exclusion(config_path: str, path: str) -> None:
+def add_exclusion(config_path: str, path: str) -> str:
     """
     Add a new excluded path to the YAML config file.
 
     Creates the config file with defaults if it doesn't exist.
-    Normalizes path by ensuring trailing slash.
+    Normalizes path by ensuring trailing slash (except a "*"-prefixed
+    filename-suffix pattern, stored as-is).
 
     Args:
         config_path: Path to YAML config file
-        path: Path to add (will be normalized with trailing slash)
+        path: Path to add (will be normalized with trailing slash,
+            unless it is a "*"-prefixed filename-suffix pattern)
+
+    Returns:
+        The exact string actually written to the config file — callers
+        MUST use this instead of re-deriving a normalized display string.
 
     Raises:
-        ValueError: If path already exists in config
+        ValueError: If path already exists in config, or if it is a
+            degenerate "*"-prefixed pattern that reduces to matching
+            every filename (issue #92 review finding N-1).
     """
-    # Normalize path
-    normalized = _normalize_path(path)
+    # Normalize path — but NOT a "*"-prefixed filename-suffix pattern
+    # (e.g. "*.min.js", "*_test.go"): forcing a trailing slash onto it
+    # would make matches_filename_pattern's suffix check against a real
+    # filename permanently unmatchable, since no real filename ends in
+    # "/" (issue #92 review finding F-6).
+    normalized = path if path.startswith("*") else _normalize_path(path)
+
+    # Reject a degenerate "*"-prefixed pattern: once the leading "*" is
+    # stripped, an empty suffix makes matches_filename_pattern's
+    # `filename.endswith("")` check True for EVERY filename, silently
+    # turning `pace-maker excluded-paths add *` into a repo-wide TDD-gate
+    # off switch (issue #92 review finding N-1). Mirrors the analogous
+    # degenerate-"/"" guard in core_paths.add_path() (F-5).
+    if normalized.startswith("*") and not normalized[1:]:
+        raise ValueError(
+            f"Invalid path '{path}': cannot add a pattern that matches every filename"
+        )
 
     # Load existing paths or get defaults
     paths = load_exclusions(config_path)
@@ -133,6 +156,8 @@ def add_exclusion(config_path: str, path: str) -> None:
 
     # Write back to file
     _write_exclusions(config_path, paths)
+
+    return normalized
 
 
 def _write_exclusions(config_path: str, paths: List[str]) -> None:
@@ -175,16 +200,56 @@ def remove_exclusion(config_path: str, path: str) -> None:
     _write_exclusions(config_path, filtered_paths)
 
 
+def matches_filename_pattern(filename: str, patterns: List[str]) -> bool:
+    """
+    Check if a bare filename matches any of the given suffix/exact patterns.
+
+    A pattern starting with ``*`` is a filename-suffix match (e.g.
+    ``*_test.go`` matches any filename ending in ``_test.go``). A pattern
+    without a leading ``*`` requires an exact filename match.
+
+    This is deliberately a filename-only matcher (no directory component) so
+    it can express negative signals that have no directory-level signal at
+    all — e.g. Go's ``_test.go`` files live in the same directory as their
+    production counterparts under the same ``go.mod``, and .NET dedicated
+    test projects are identified by their own project-file name
+    (``MyProject.Tests.csproj``), not by a directory segment.
+
+    Args:
+        filename: Bare filename to check (e.g. "foo_test.go")
+        patterns: List of suffix (``*``-prefixed) or exact patterns
+
+    Returns:
+        True if filename matches any pattern, False otherwise
+    """
+    for pattern in patterns:
+        if pattern.startswith("*"):
+            suffix = pattern[1:]
+            # A bare "*" (empty suffix) would make `endswith("")` True for
+            # EVERY filename — refuse to treat it as a universal match
+            # even if it slipped past add_exclusion()'s CLI-layer guard,
+            # e.g. via a hand-edited YAML (issue #92 review finding N-1,
+            # defense in depth).
+            if suffix and filename.endswith(suffix):
+                return True
+        elif filename == pattern:
+            return True
+    return False
+
+
 def is_excluded_path(file_path: str, exclusions: List[str]) -> bool:
     """
-    Check if file path matches any excluded path prefix.
+    Check if file path matches any excluded path prefix or filename pattern.
 
     Works with both relative and absolute paths by checking if any
-    exclusion appears in the file path.
+    directory-substring exclusion appears in the file path. Exclusions
+    starting with ``*`` are treated as filename-suffix patterns and matched
+    against the file's basename instead (see ``matches_filename_pattern``).
 
     Args:
         file_path: File path to check (relative or absolute)
-        exclusions: List of excluded paths to match against
+        exclusions: List of excluded paths (directory substrings) or
+            filename-suffix patterns (``*``-prefixed) to match against
 
     Returns:
         True if file_path contains any exclusion pattern, False otherwise
@@ -194,12 +259,29 @@ def is_excluded_path(file_path: str, exclusions: List[str]) -> bool:
 
     # Normalize file path to use forward slashes (handle Windows paths)
     normalized_file = file_path.replace("\\", "/")
+    basename = normalized_file.rsplit("/", 1)[-1]
 
-    # Check if any exclusion is present in the file path
+    suffix_patterns = [e for e in exclusions if e.startswith("*")]
+    if suffix_patterns and matches_filename_pattern(basename, suffix_patterns):
+        return True
+
+    # Check if any directory-substring exclusion is present in the file path.
+    # Case-insensitive (issue #103): default exclusions are all lowercase, so
+    # a directory using a different casing convention (e.g. .NET's `Tests/`)
+    # would otherwise never match. This is a pure WIDENING of what matches —
+    # it can only turn a previously-missed exclusion into a match, never the
+    # reverse, so it also benefits user-added mixed-case exclusion entries.
+    normalized_file_lower = normalized_file.lower()
     for exclusion in exclusions:
+        if exclusion.startswith("*"):
+            continue
+        exclusion_lower = exclusion.lower()
         # For absolute paths, check if exclusion appears anywhere
         # For relative paths, check if it's a prefix
-        if normalized_file.startswith(exclusion) or f"/{exclusion}" in normalized_file:
+        if (
+            normalized_file_lower.startswith(exclusion_lower)
+            or f"/{exclusion_lower}" in normalized_file_lower
+        ):
             return True
 
     return False

@@ -267,7 +267,12 @@ that checks password strength, to improve security.
 
 ### TDD Enforcement for Core Code
 
-Files in core paths (`src/`, `lib/`, `core/`, `source/`, `libraries/`, `kernel/`) require:
+Files in core paths require a TDD declaration. A file is treated as a core path in two ways:
+
+1. **Directory name match** — the file sits under one of these segments (customizable via `pace-maker core-paths add/remove`, see below): `src/`, `lib/`, `code/`, `core/`, `source/`, `libraries/`, `kernel/`, `app/`, `routes/`, `services/`, `internal/`.
+2. **Structural project-marker fallback** — no directory name matches, but a per-ecosystem project marker file is found anywhere in the file's ancestor directories: `*.csproj`/`*.sln` (.NET), `pyproject.toml`/`setup.py` (Python), `package.json` (Node), `build.gradle`/`build.gradle.kts`/`pom.xml` (Java/Kotlin), `go.mod` (Go), `Cargo.toml` (Rust). This catches production code whose source-root directory is named after the project itself (e.g. a .NET solution's `MyProject/Program.cs` with no `src/` wrapper) rather than a generic word. Test files (excluded paths, non-source extensions, filename-suffix patterns like `*_test.go`, and dedicated test projects like `MyProject.Tests.csproj`) never trigger either check.
+
+Once a file is identified as core, it requires:
 
 **Option A - Declare test coverage:**
 ```
