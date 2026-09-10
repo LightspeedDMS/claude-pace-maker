@@ -2496,6 +2496,38 @@ def _fail_closed_message(error: BaseException) -> str:
     )
 
 
+def _record_degraded_review_telemetry(
+    degradation: Optional[Dict[str, Any]], reviewer: str, session_id: str
+) -> None:
+    """Record DG activity + governance events for a degraded-but-approved
+    review (issue #131) — a verifier failed to respond but the review was
+    still APPROVED by the responders. Shared by the Write/Edit and
+    Danger-Bash gates (Messi Anti-Duplication).
+
+    No-op when degradation is falsy or not actually degraded. Never raises —
+    telemetry recording must never break the pre-tool hook.
+    """
+    if not degradation or not degradation.get("degraded"):
+        return
+    try:
+        record_activity_event(DEFAULT_DB_PATH, "DG", "yellow", session_id)
+        _failed = degradation.get("failed_providers", {})
+        _failed_desc = "; ".join(f"{m}: {r}" for m, r in _failed.items())
+        _project_name = os.path.basename(os.getcwd())
+        record_governance_event(
+            db_path=DEFAULT_DB_PATH,
+            event_type="DG",
+            project_name=_project_name,
+            session_id=session_id,
+            feedback_text=(
+                f"[{reviewer}] Degraded approval — verifier(s) unavailable: "
+                f"{_failed_desc}"
+            ),
+        )
+    except Exception:
+        pass
+
+
 def run_pre_tool_hook() -> Dict[str, Any]:
     """
     Pre-tool hook: Unified validation (intent + code review).
@@ -2913,6 +2945,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                         if _danger_warning:
                             bash_prompt = bash_prompt + f"\n\n{_danger_warning}"
 
+                        _bash_degradation: Dict[str, Any] = {}
                         response, reviewer = resolve_and_call_with_reviewer(
                             hook_model=bash_config.get("hook_model", "auto"),
                             prompt=bash_prompt,
@@ -2924,6 +2957,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             ),
                             call_context="intent_validation",
                             max_thinking_tokens=2000,
+                            _degradation=_bash_degradation,
                         )
 
                         if verdict_passes(response):
@@ -2934,6 +2968,12 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 )
                             except Exception:
                                 pass
+                            # Issue #131: a competitive verifier infra
+                            # failure or single-model fallback still yielded
+                            # APPROVED — record it as degraded, not silent.
+                            _record_degraded_review_telemetry(
+                                _bash_degradation, reviewer, _sid
+                            )
                             log_debug("hook", "Danger bash Phase 2: APPROVED")
                         else:
                             # Phase 2 BLOCKED — intent mismatch
@@ -3203,6 +3243,14 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 record_activity_event(DEFAULT_DB_PATH, "BG", "green", _sid)
             except Exception:
                 pass  # Activity recording must never break pre-tool hook
+            # Issue #131: a competitive verifier infra failure or
+            # single-model fallback still yielded APPROVED — record it as
+            # degraded, not silent.
+            _record_degraded_review_telemetry(
+                result.get("degradation"),
+                result.get("reviewer", "unknown"),
+                session_id or "unknown",
+            )
             return _merge_csa_reminder({"continue": True}, _csa_result)
         else:
             # AC4: Record blockage for intent validation failure

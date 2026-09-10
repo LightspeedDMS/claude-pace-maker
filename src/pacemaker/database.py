@@ -214,7 +214,9 @@ def record_activity_event(
     Args:
         db_path: Path to SQLite database file
         event_code: 2-letter event code (IV, TD, CC, ST, CX, PA, PL, LF,
-                    SS, SM, SE, SA, UP)
+                    SS, SM, SE, SA, UP, BG, DB, EV, DG — DG = Degraded
+                    review, issue #131: an APPROVED verdict where one or
+                    more verifiers failed to respond)
         status: Event status ('green', 'red', or 'blue')
         session_id: Unique identifier for the current session
 

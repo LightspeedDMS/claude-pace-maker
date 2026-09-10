@@ -5,6 +5,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     wait as futures_wait,
 )
+from typing import Optional
 
 from ..logger import log_warning, log_debug
 from .registry import get_provider, resolve_model_for_call
@@ -101,19 +102,53 @@ def _call_single_reviewer(
     return response, label
 
 
+def _collect_timeouts(not_done: set, future_to_model: dict) -> list:
+    """Cancel timed-out futures. Returns [(model, reason), ...] failures."""
+    failed = []
+    for future in not_done:
+        future.cancel()
+        model = future_to_model[future]
+        reason = f"timed out after {REVIEWER_WAIT_TIMEOUT_SEC}s"
+        log_warning("competitive", f"Reviewer {model} {reason}")
+        failed.append((model, reason))
+    return failed
+
+
+def _collect_results(done: set, future_to_model: dict) -> tuple:
+    """Resolve completed futures. Returns (succeeded, failed)."""
+    succeeded = []
+    failed = []
+    for future in done:
+        model = future_to_model[future]
+        try:
+            result = future.result()
+            succeeded.append(result)
+            log_debug("competitive", f"Reviewer {model} succeeded")
+            response_text, _label = result
+            log_debug(
+                "competitive",
+                f"Reviewer {model} verdict: {response_text[:MAX_REVIEW_LOG_CHARS]!r}",
+            )
+        except Exception as e:
+            log_warning("competitive", f"Reviewer {model} failed: {e}")
+            failed.append((model, str(e)))
+    return succeeded, failed
+
+
 def _dispatch_reviewers(
     reviewers: list,
     prompt: str,
     system_prompt: str,
     call_context: str,
     max_thinking_tokens: int,
-) -> list:
-    """Dispatch all reviewers in parallel. Returns list of (response, label) for survivors.
+) -> tuple:
+    """Dispatch all reviewers in parallel. Returns (succeeded, failed).
 
-    Uses futures_wait() with a bounded timeout so partial results are collected
-    even when some reviewers time out. Threads that are already running cannot be
-    force-killed; executor.shutdown(wait=False) releases the executor without
-    blocking on in-flight threads.
+    succeeded: list of (response, label). failed: list of (model, reason) for
+    a reviewer that timed out or raised — an INFRASTRUCTURE FAILURE, never a
+    verdict (issue #131). futures_wait() bounds the timeout so partial
+    results are collected; executor.shutdown(wait=False) doesn't block on
+    in-flight threads (they cannot be force-killed).
     """
     executor = ThreadPoolExecutor(max_workers=len(reviewers))
     future_to_model = {
@@ -132,32 +167,12 @@ def _dispatch_reviewers(
         list(future_to_model.keys()), timeout=REVIEWER_WAIT_TIMEOUT_SEC
     )
 
-    for future in not_done:
-        future.cancel()
-        model = future_to_model[future]
-        log_warning(
-            "competitive",
-            f"Reviewer {model} timed out after {REVIEWER_WAIT_TIMEOUT_SEC}s",
-        )
-
+    failed = _collect_timeouts(not_done, future_to_model)
     executor.shutdown(wait=False)
+    succeeded, result_failed = _collect_results(done, future_to_model)
+    failed.extend(result_failed)
 
-    succeeded = []
-    for future in done:
-        model = future_to_model[future]
-        try:
-            result = future.result()
-            succeeded.append(result)
-            log_debug("competitive", f"Reviewer {model} succeeded")
-            response_text, _label = result
-            log_debug(
-                "competitive",
-                f"Reviewer {model} verdict: {response_text[:MAX_REVIEW_LOG_CHARS]!r}",
-            )
-        except Exception as e:
-            log_warning("competitive", f"Reviewer {model} failed: {e}")
-
-    return succeeded
+    return succeeded, failed
 
 
 def _format_failure_message(
@@ -242,6 +257,18 @@ def _strip_leading_blocked_prefix(text: str) -> str:
     return _BLOCKED_PREFIX_RE.sub("", text, count=1)
 
 
+def _record_degradation(_degradation: Optional[dict], failed: list) -> None:
+    """Populate the optional _degradation out-param for a degraded APPROVED result.
+
+    No-op when _degradation is None (default — existing callers unaffected).
+    """
+    if _degradation is None:
+        return
+    _degradation["degraded"] = True
+    _degradation["failed_providers"] = {model: reason for model, reason in failed}
+    _degradation["context"] = "competitive"
+
+
 def run_mechanical(
     verifiers: list,
     synthesizer: str,
@@ -249,25 +276,32 @@ def run_mechanical(
     system_prompt: str,
     call_context: str,
     max_thinking_tokens: int = DEFAULT_MAX_THINKING_TOKENS,
+    _degradation: Optional[dict] = None,
 ) -> tuple:
     """N-verifier mechanical decision engine with message-only synthesizer.
 
-    Decision is computed in code (PASS iff all verifiers PASS for the gate type).
-    Synthesizer is demoted to message-only formatter — it can NEVER flip the verdict.
+    Decision is computed in code (PASS iff all PRESENT survivors PASS).
+    Synthesizer is demoted to message-only formatter, it can NEVER flip the verdict.
     'BLOCKED:' prefix is applied mechanically by this function regardless of what
     the synthesizer returns, closing the false-allow-via-encoded-message trap.
 
-    Pre-tool gate (call_context != 'stop_hook'):
-    - ALL verifiers must respond AND pass → APPROVED (fail-closed)
-    - Missing verifier (infra failure) → BLOCKED
-    - Zero survivors → '' (verdict_passes('') = False → gate blocks)
+    Both gates share IDENTICAL pass logic (issue #131): a verifier that never
+    responds is an INFRASTRUCTURE FAILURE, not a verdict, and is never counted
+    the same as a verifier that voted BLOCKED:
+    - All present survivors must pass, APPROVED (missing verifiers ignored;
+      _degradation records it when one or more verifiers failed to respond)
+    - Any non-passing survivor, BLOCKED (unchanged)
+    - Zero survivors, '' (stop: parse_sdk_response('') fail-open, avoids
+      infinite stop loop; pre-tool: verdict_passes('') = False so fail-closed,
+      the ONLY remaining way a competitive expression blocks via emptiness)
 
-    Stop gate (call_context == 'stop_hook'):
-    - All present survivors must pass → APPROVED (missing verifiers ignored)
-    - Any non-passing survivor → BLOCKED
-    - Zero survivors → '' (parse_sdk_response('') → fail-open, avoids infinite stop loop)
+    _degradation: optional out-param dict (same idiom as _diagnostics/_outcome
+    in transcript_reader.py). Populated with {"degraded": False} normally, or
+    {"degraded": True, "failed_providers": {model: reason, ...},
+    "context": "competitive"} when APPROVED but one or more verifiers failed
+    to respond. Never raises; None (default) is a no-op for existing callers.
 
-    Returns (response, reviewer_label) tuple.
+    Returns (response, reviewer_label) tuple, contract unchanged.
     """
     expression = "+".join(verifiers) + "->" + synthesizer
     log_debug(
@@ -275,17 +309,21 @@ def run_mechanical(
         f"Dispatching {len(verifiers)} verifiers in parallel: {verifiers}",
     )
 
-    survivors = _dispatch_reviewers(
+    survivors, failed = _dispatch_reviewers(
         verifiers, prompt, system_prompt, call_context, max_thinking_tokens
     )
 
+    if _degradation is not None:
+        _degradation.clear()
+        _degradation["degraded"] = False
+
     # Zero survivors: return empty string and let gate semantics handle it.
-    # Stop gate: parse_sdk_response('') → {"continue": True} — fail-open (avoids infinite loop)
-    # Pre-tool gate: verdict_passes('') → False → block — fail-closed
+    # Stop gate: parse_sdk_response('') -> {"continue": True} - fail-open (avoids infinite loop)
+    # Pre-tool gate: verdict_passes('') -> False -> block - fail-closed
     if len(survivors) == 0:
         log_debug(
             "competitive",
-            "Zero survivors — returning '' (stop: fail-open, pre-tool: fail-closed)",
+            "Zero survivors - returning '' (stop: fail-open, pre-tool: fail-closed)",
         )
         return "", expression
 
@@ -294,33 +332,30 @@ def run_mechanical(
         verdict_passes_for_context(resp, call_context) for resp, _label in survivors
     ]
 
-    # Mechanical decision — computed in code, NOT delegated to the LLM
-    is_stop = call_context == "stop_hook"
-    if is_stop:
-        # Stop gate: missing verifiers are ignored; all present survivors must pass
-        overall_pass = all(passed)
-    else:
-        # Pre-tool gate: every verifier must respond AND pass (fail-closed)
-        overall_pass = (len(survivors) == len(verifiers)) and all(passed)
+    # Mechanical decision, computed in code, NOT delegated to the LLM. Both
+    # gates now share this single rule (issue #131): missing verifiers are
+    # ignored, only a responder's own non-passing verdict blocks.
+    overall_pass = all(passed)
 
     if overall_pass:
+        if failed:
+            _record_degradation(_degradation, failed)
+        missing_models = [m for m, _r in failed]
         log_debug(
             "competitive",
-            f"Mechanical APPROVED ({len(survivors)}/{len(verifiers)} verifiers passed)",
+            f"Mechanical APPROVED ({len(survivors)}/{len(verifiers)} verifiers passed) "
+            f"degraded={bool(failed)} missing={missing_models}",
         )
         return "APPROVED", expression
 
-    # Build failure message from failing survivors only
+    # Build failure message from failing survivors only. `failing` is
+    # guaranteed non-empty here: overall_pass is False means all(passed) is
+    # False, so at least one survivor's verdict didn't pass (Messi Rule 12,
+    # no dead "missing verifier but nothing failing" branch: a missing
+    # verifier alone can no longer produce overall_pass=False).
     failing = [(resp, label) for (resp, label), p in zip(survivors, passed) if not p]
 
-    if not failing:
-        # All present survivors passed but a verifier was missing (pre-tool fail-closed edge case)
-        message = "a required verifier did not respond (fail-closed)"
-        log_debug(
-            "competitive",
-            "BLOCKED: missing verifier, all present passed — fail-closed",
-        )
-    elif len(failing) == 1:
+    if len(failing) == 1:
         # Single failing verifier: raw response used; synthesizer NOT called
         message = failing[0][0]
         log_debug(

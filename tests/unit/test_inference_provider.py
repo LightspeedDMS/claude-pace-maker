@@ -242,6 +242,59 @@ class TestCodexProvider:
                 assert "empty" in str(e).lower()
             assert raised
 
+    def test_codex_provider_empty_response_includes_stderr(self):
+        """Bug #132: empty-stdout branch must report stderr, symmetric with the
+        non-zero-exit branch. Codex writes diagnostics to stderr while leaving
+        stdout empty, so discarding stderr here throws away the only evidence
+        of what actually went wrong."""
+        from pacemaker.inference.codex_provider import CodexProvider
+        from pacemaker.inference.provider import ProviderError
+
+        provider = CodexProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = (
+            "OpenAI Codex v0.153.4 ... ERROR: Reconnecting... 2/5 ... 404 Not Found"
+        )
+
+        with patch("subprocess.run", return_value=mock_result):
+            raised = False
+            try:
+                provider.query("test", "", "o3", 4000)
+            except ProviderError as e:
+                raised = True
+                message = str(e)
+                assert "empty response" in message.lower()
+                assert "404 Not Found" in message
+                assert "exit 0" in message
+            assert raised
+
+    def test_codex_provider_empty_response_no_stderr_fallback(self):
+        """Bug #132: empty-stdout branch with genuinely empty stderr falls back
+        to 'no stderr', symmetric with the non-zero-exit branch's fallback."""
+        from pacemaker.inference.codex_provider import CodexProvider
+        from pacemaker.inference.provider import ProviderError
+
+        provider = CodexProvider()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            raised = False
+            try:
+                provider.query("test", "", "o3", 4000)
+            except ProviderError as e:
+                raised = True
+                message = str(e)
+                assert "empty response" in message.lower()
+                assert "no stderr" in message
+            assert raised
+
     def test_codex_provider_default_model_is_o3(self):
         """CodexProvider should default to o3 when model_hint is empty."""
         from pacemaker.inference.codex_provider import CodexProvider
@@ -454,6 +507,64 @@ class TestResolveAndCallWithReviewer:
                     )
 
         assert response == "FALLBACK_YES"
+        assert reviewer == "anthropic-sdk"
+
+    def test_fallback_populates_degradation_out_param(self):
+        """Bug #131: single-model fallback is a degraded review too — when the
+        caller passes a _degradation dict, it must be populated so the
+        degradation is queryable/visible, not silently swallowed."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+        from pacemaker.inference.provider import ProviderError
+
+        mock_primary = MagicMock()
+        mock_primary.query.side_effect = ProviderError("codex empty response (exit 0)")
+
+        mock_fallback = MagicMock()
+        mock_fallback.query.return_value = "FALLBACK_YES"
+
+        degradation = {}
+        with patch(
+            "pacemaker.inference.registry.get_provider", return_value=mock_primary
+        ):
+            with patch(
+                "pacemaker.inference.anthropic_provider.AnthropicProvider",
+                return_value=mock_fallback,
+            ):
+                with patch(
+                    "pacemaker.inference.registry.get_latest_codex_usage",
+                    return_value=None,
+                ):
+                    response, reviewer = resolve_and_call_with_reviewer(
+                        "gpt-5",
+                        "prompt",
+                        "sys",
+                        "stage1",
+                        4000,
+                        _degradation=degradation,
+                    )
+
+        assert response == "FALLBACK_YES"
+        assert reviewer == "anthropic-sdk"
+        assert degradation["degraded"] is True
+        assert degradation["context"] == "single_model_fallback"
+        assert "gpt-5" in degradation["failed_providers"]
+        assert "codex empty response" in degradation["failed_providers"]["gpt-5"]
+
+    def test_degradation_out_param_defaults_to_none_and_is_a_noop(self):
+        """resolve_and_call_with_reviewer without _degradation behaves exactly
+        as before — the param is optional and backward compatible."""
+        from pacemaker.inference.registry import resolve_and_call_with_reviewer
+
+        with patch("pacemaker.inference.registry.get_provider") as mock_get:
+            mock_provider = MagicMock()
+            mock_provider.query.return_value = "YES"
+            mock_get.return_value = mock_provider
+
+            response, reviewer = resolve_and_call_with_reviewer(
+                "auto", "prompt", "sys", "stage1", 4000
+            )
+
+        assert response == "YES"
         assert reviewer == "anthropic-sdk"
 
     def test_both_fail_returns_empty_and_unknown_reviewer(self):

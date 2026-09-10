@@ -681,13 +681,17 @@ def _log_stage1_rejection(verdict: str, file_path: str, current_message: str) ->
     )
 
 
-def _call_stage2_validation(prompt: str, hook_model: str = "auto") -> "tuple[str, str]":
+def _call_stage2_validation(
+    prompt: str, hook_model: str = "auto", _degradation: Optional[dict] = None
+) -> "tuple[str, str]":
     """
     Synchronous Stage 2 validation via provider abstraction.
 
     Args:
         prompt: Stage 2 validation prompt
         hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5.4", "gpt-5.5" (legacy alias: "gpt-5")
+        _degradation: optional out-param dict (issue #131), passed straight
+            through to resolve_and_call_with_reviewer() — see its docstring.
 
     Returns:
         Tuple of (response_text, reviewer_name) where reviewer_name identifies
@@ -701,6 +705,7 @@ def _call_stage2_validation(prompt: str, hook_model: str = "auto") -> "tuple[str
         system_prompt="You are a strict code validator. Return empty response ONLY if all checks pass. Otherwise return detailed feedback.",
         call_context="stage2_unified",
         max_thinking_tokens=4000,
+        _degradation=_degradation,
     )
 
 
@@ -1043,8 +1048,9 @@ System failing closed to prevent bypassing intent declaration requirements."""
             "intent_validator", f"Stage 2 prompt length: {len(stage2_prompt)} chars"
         )
 
+        _stage2_degradation: Dict[str, Any] = {}
         stage2_feedback, reviewer = _call_stage2_validation(
-            stage2_prompt, hook_model=hook_model
+            stage2_prompt, hook_model=hook_model, _degradation=_stage2_degradation
         )
         log_debug(
             "intent_validator",
@@ -1059,7 +1065,14 @@ System failing closed to prevent bypassing intent declaration requirements."""
         if verdict_passes(stage2_feedback):
             # APPROVED (guarded-lenient) response = approved
             log_debug("intent_validator", "=== STAGE 2 APPROVED ===")
-            return {"approved": True, "reviewer": reviewer}
+            return {
+                "approved": True,
+                "reviewer": reviewer,
+                # Issue #131: surfaces the degraded-review flag from a
+                # competitive verifier infra failure or single-model
+                # fallback, so the pre-tool gate can record telemetry.
+                "degradation": _stage2_degradation,
+            }
         else:
             # Any other response = blocked with feedback
             log_debug("intent_validator", "=== STAGE 2 BLOCKED (has feedback) ===")

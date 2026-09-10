@@ -1140,6 +1140,65 @@ def test_validate_intent_and_code_stage2_blocked_includes_reviewer():
     assert result["reviewer"] == "anthropic-sdk"
 
 
+def test_validate_intent_and_code_stage2_approved_degraded_includes_degradation():
+    """Bug #131: a degraded APPROVED (one competitive verifier failed to
+    respond, the rest passed) must surface the degradation info in the
+    result dict so the pre-tool gate can record telemetry."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_and_code
+
+    def _fake_resolve(*args, **kwargs):
+        degradation = kwargs.get("_degradation")
+        if degradation is not None:
+            degradation["degraded"] = True
+            degradation["failed_providers"] = {"gpt-5.6-terra": "empty response"}
+            degradation["context"] = "competitive"
+        return "APPROVED", "haiku+gpt-5.6-terra->codex-beast"
+
+    with patch(
+        "pacemaker.inference.resolve_and_call_with_reviewer",
+        side_effect=_fake_resolve,
+    ):
+        result = validate_intent_and_code(
+            messages=[
+                "INTENT: Modify scripts/foo.py to add bar().\n"
+                "Test: tests/test_foo.py::test_bar"
+            ],
+            code="def bar(): pass",
+            file_path="scripts/foo.py",
+            tool_name="Write",
+            hook_model="haiku+gpt-5.6-terra->codex-beast",
+        )
+
+    assert result["approved"] is True
+    assert result["degradation"]["degraded"] is True
+    assert "gpt-5.6-terra" in result["degradation"]["failed_providers"]
+
+
+def test_validate_intent_and_code_stage2_approved_not_degraded_has_no_degraded_flag():
+    """A clean APPROVED (no verifier failure) must not report degraded=True."""
+    from unittest.mock import patch
+    from pacemaker.intent_validator import validate_intent_and_code
+
+    with patch(
+        "pacemaker.inference.resolve_and_call_with_reviewer",
+        return_value=("APPROVED", "codex-gpt5"),
+    ):
+        result = validate_intent_and_code(
+            messages=[
+                "INTENT: Modify scripts/foo.py to add bar().\n"
+                "Test: tests/test_foo.py::test_bar"
+            ],
+            code="def bar(): pass",
+            file_path="scripts/foo.py",
+            tool_name="Write",
+            hook_model="gpt-5",
+        )
+
+    assert result["approved"] is True
+    assert result.get("degradation", {}).get("degraded", False) is False
+
+
 # ---------------------------------------------------------------------------
 # Fix 1: validator accepts the EXACT TDD format the feedback prescribes
 # ---------------------------------------------------------------------------

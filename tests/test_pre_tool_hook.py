@@ -239,6 +239,160 @@ class TestPreToolHook:
     @patch("pacemaker.extension_registry.load_extensions")
     @patch("pacemaker.extension_registry.is_source_code_file")
     @patch("pacemaker.hook.get_last_n_messages_for_validation")
+    @patch("pacemaker.intent_validator.validate_intent_and_code")
+    @patch("sys.stdin")
+    def test_allows_when_validation_passes_degraded_records_dg_telemetry(
+        self,
+        mock_stdin,
+        mock_validate,
+        mock_get_messages,
+        mock_is_source,
+        mock_load_ext,
+        mock_load_config,
+    ):
+        """Bug #131: an APPROVED result carrying a degraded "degradation"
+        dict must record a DG activity event and a DG governance event —
+        a degraded approval must not be silent."""
+        import sqlite3
+        from pacemaker.hook import DEFAULT_DB_PATH
+
+        transcript_path = _write_transcript_file(
+            [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Write",
+                                "input": {
+                                    "file_path": "/path/to/test.py",
+                                    "content": "code",
+                                },
+                            }
+                        ],
+                    }
+                },
+            ]
+        )
+        try:
+            hook_data = {
+                "session_id": "test-degraded",
+                "transcript_path": transcript_path,
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/path/to/test.py", "content": "code"},
+            }
+            mock_stdin.read.return_value = json.dumps(hook_data)
+            mock_load_config.return_value = {"intent_validation_enabled": True}
+            mock_load_ext.return_value = [".py"]
+            mock_is_source.return_value = True
+            mock_get_messages.return_value = ["I will modify test.py to add logging"]
+            mock_validate.return_value = {
+                "approved": True,
+                "reviewer": "haiku+gpt-5.6-terra->codex-beast",
+                "degradation": {
+                    "degraded": True,
+                    "failed_providers": {"gpt-5.6-terra": "empty response"},
+                    "context": "competitive",
+                },
+            }
+
+            result = run_pre_tool_hook()
+
+            assert result == {"continue": True}
+
+            conn = sqlite3.connect(DEFAULT_DB_PATH)
+            try:
+                activity_rows = conn.execute(
+                    "SELECT status FROM activity_events WHERE event_code = 'DG'"
+                ).fetchall()
+                governance_rows = conn.execute(
+                    "SELECT feedback_text FROM governance_events WHERE event_type = 'DG'"
+                ).fetchall()
+            finally:
+                conn.close()
+            assert activity_rows, "Expected a DG activity event"
+            assert activity_rows[0][0] == "yellow"
+            assert governance_rows, "Expected a DG governance event"
+            assert "gpt-5.6-terra" in governance_rows[0][0]
+        finally:
+            os.unlink(transcript_path)
+
+    @patch("pacemaker.hook.load_config")
+    @patch("pacemaker.extension_registry.load_extensions")
+    @patch("pacemaker.extension_registry.is_source_code_file")
+    @patch("pacemaker.hook.get_last_n_messages_for_validation")
+    @patch("pacemaker.intent_validator.validate_intent_and_code")
+    @patch("sys.stdin")
+    def test_allows_when_validation_passes_not_degraded_records_no_dg_telemetry(
+        self,
+        mock_stdin,
+        mock_validate,
+        mock_get_messages,
+        mock_is_source,
+        mock_load_ext,
+        mock_load_config,
+    ):
+        """A clean (non-degraded) APPROVED must NOT emit any DG event."""
+        import sqlite3
+        from pacemaker.hook import DEFAULT_DB_PATH
+
+        transcript_path = _write_transcript_file(
+            [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Write",
+                                "input": {
+                                    "file_path": "/path/to/test.py",
+                                    "content": "code",
+                                },
+                            }
+                        ],
+                    }
+                },
+            ]
+        )
+        try:
+            hook_data = {
+                "session_id": "test-clean",
+                "transcript_path": transcript_path,
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/path/to/test.py", "content": "code"},
+            }
+            mock_stdin.read.return_value = json.dumps(hook_data)
+            mock_load_config.return_value = {"intent_validation_enabled": True}
+            mock_load_ext.return_value = [".py"]
+            mock_is_source.return_value = True
+            mock_get_messages.return_value = ["I will modify test.py to add logging"]
+            mock_validate.return_value = {
+                "approved": True,
+                "reviewer": "codex-gpt5",
+                "degradation": {"degraded": False},
+            }
+
+            result = run_pre_tool_hook()
+
+            assert result == {"continue": True}
+
+            conn = sqlite3.connect(DEFAULT_DB_PATH)
+            try:
+                activity_rows = conn.execute(
+                    "SELECT event_code FROM activity_events WHERE event_code = 'DG'"
+                ).fetchall()
+            finally:
+                conn.close()
+            assert not activity_rows, "No DG event expected for a non-degraded approval"
+        finally:
+            os.unlink(transcript_path)
+
+    @patch("pacemaker.hook.load_config")
+    @patch("pacemaker.extension_registry.load_extensions")
+    @patch("pacemaker.extension_registry.is_source_code_file")
+    @patch("pacemaker.hook.get_last_n_messages_for_validation")
     @patch("pacemaker.hook.get_current_turn_message_for_validation")
     @patch("pacemaker.intent_validator.validate_intent_and_code")
     @patch("pacemaker.hook.get_transcript_path")

@@ -1179,6 +1179,7 @@ The activity indicator system records hook events to the `activity_events` table
 | `SE` | Secrets declaration | UserPromptSubmit |
 | `SA` | Subagent start/stop | SubagentStart / SubagentStop |
 | `UP` | User prompt submitted | UserPromptSubmit |
+| `DG` | Degraded review (APPROVED, but one or more verifiers failed to respond — issue #131) | PreToolUse |
 
 ### Status Values
 

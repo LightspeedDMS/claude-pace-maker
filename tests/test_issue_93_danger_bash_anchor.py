@@ -739,6 +739,102 @@ class TestFoundUsesAnchorNotUnanchoredNBack(_DbHarness):
         assert "sandbox probe file" in kwargs.get("prompt", "")
 
 
+class TestDangerBashDegradedApprovalTelemetry(_DbHarness):
+    """Bug #131: when Phase 2 competitive review APPROVES but a verifier
+    failed to respond, the danger-bash gate must record a DG activity event
+    and a DG governance event naming the failed verifier and reason — a
+    degraded approval must not be silent."""
+
+    def test_degraded_phase2_approval_records_dg_telemetry(self):
+        from pacemaker.hook import run_pre_tool_hook
+
+        stdin_payload = _hook_stdin(BASH_CMD, self.transcript)
+        rules_patches = self._rules_patch()
+
+        def _fake_resolve(*args, **kwargs):
+            degradation = kwargs.get("_degradation")
+            if degradation is not None:
+                degradation["degraded"] = True
+                degradation["failed_providers"] = {
+                    "gpt-5.6-terra": "Codex CLI returned empty response (exit 0): no stderr"
+                }
+                degradation["context"] = "competitive"
+            return "APPROVED", "haiku+gpt-5.6-terra->codex-beast"
+
+        with (
+            patch("sys.stdin", MagicMock(read=lambda: stdin_payload)),
+            patch("pacemaker.hook.load_config", return_value=_config_enabled()),
+            patch("pacemaker.hook.DEFAULT_DB_PATH", self.db_path),
+            patch(
+                "pacemaker.hook.get_current_turn_message_for_validation",
+                side_effect=_mock_anchor(BASH_INTENT, "found"),
+            ),
+            patch(
+                "pacemaker.inference.resolve_and_call_with_reviewer",
+                side_effect=_fake_resolve,
+            ),
+            rules_patches[0],
+            rules_patches[1],
+        ):
+            result = run_pre_tool_hook()
+
+        assert result == {"continue": True}
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            activity_rows = conn.execute(
+                "SELECT event_code, status FROM activity_events WHERE event_code = 'DG'"
+            ).fetchall()
+            governance_rows = conn.execute(
+                "SELECT event_type, feedback_text FROM governance_events "
+                "WHERE event_type = 'DG'"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert activity_rows, "Expected a DG activity event for the degraded approval"
+        assert activity_rows[0][1] == "yellow"
+        assert (
+            governance_rows
+        ), "Expected a DG governance event for the degraded approval"
+        assert "gpt-5.6-terra" in governance_rows[0][1]
+
+    def test_non_degraded_phase2_approval_records_no_dg_telemetry(self):
+        """A clean (non-degraded) APPROVED must NOT emit any DG event."""
+        from pacemaker.hook import run_pre_tool_hook
+
+        stdin_payload = _hook_stdin(BASH_CMD, self.transcript)
+        rules_patches = self._rules_patch()
+
+        with (
+            patch("sys.stdin", MagicMock(read=lambda: stdin_payload)),
+            patch("pacemaker.hook.load_config", return_value=_config_enabled()),
+            patch("pacemaker.hook.DEFAULT_DB_PATH", self.db_path),
+            patch(
+                "pacemaker.hook.get_current_turn_message_for_validation",
+                side_effect=_mock_anchor(BASH_INTENT, "found"),
+            ),
+            patch(
+                "pacemaker.inference.resolve_and_call_with_reviewer",
+                return_value=("APPROVED", "test-reviewer"),
+            ),
+            rules_patches[0],
+            rules_patches[1],
+        ):
+            result = run_pre_tool_hook()
+
+        assert result == {"continue": True}
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            activity_rows = conn.execute(
+                "SELECT event_code FROM activity_events WHERE event_code = 'DG'"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert not activity_rows, "No DG event expected for a non-degraded approval"
+
+
 class TestSecurityRegressionDifferentCommandNeverAccepted(_DbHarness):
     """The single most important test in this change (per issue #93): a
     prior turn's INTENT for a DIFFERENT Bash command must NEVER be accepted

@@ -609,13 +609,12 @@ class TestRunMechanical:
         assert response.startswith("BLOCKED:")
         assert "concern X" in response or "concern Y" in response
 
-    # ---- Pre-tool fail-closed ----
+    # ---- Pre-tool: infra failure is tolerated, not a vote (issue #131) ----
 
-    def test_pretool_missing_verifier_infra_fail_blocked(self):
-        """Pre-tool: one verifier raises ProviderError → BLOCKED (fail-closed).
-
-        The present verifier passed (APPROVED) but the missing one causes fail-closed.
-        Message: 'a required verifier did not respond (fail-closed)'.
+    def test_pretool_missing_verifier_degraded_approved(self):
+        """Pre-tool: one verifier raises ProviderError, the other APPROVEs →
+        APPROVED, recorded as degraded (issue #131 — infra failure is not a
+        verdict; only a responder's own BLOCKED: is a vote).
         """
         from pacemaker.inference.competitive import run_mechanical
         from pacemaker.inference.codex_provider import CodexProvider
@@ -623,7 +622,7 @@ class TestRunMechanical:
         from pacemaker.inference.provider import ProviderError
 
         v1 = MagicMock(spec=CodexProvider)
-        v1.query.return_value = "APPROVED"  # passes! but other verifier missing
+        v1.query.return_value = "APPROVED"
         v2 = MagicMock(spec=GeminiProvider)
         v2.query.side_effect = ProviderError("gemini unavailable")
 
@@ -632,6 +631,7 @@ class TestRunMechanical:
                 return v1
             return v2
 
+        degradation = {}
         with patch("pacemaker.inference.competitive.get_provider", side_effect=_get):
             response, label = run_mechanical(
                 verifiers=["gpt-5.5", "gemini-flash"],
@@ -639,11 +639,78 @@ class TestRunMechanical:
                 prompt="p",
                 system_prompt="",
                 call_context="intent_validation",
+                _degradation=degradation,
+            )
+
+        assert response == "APPROVED"
+        assert label == "gpt-5.5+gemini-flash->sonnet"
+        assert degradation["degraded"] is True
+        assert "gemini-flash" in degradation["failed_providers"]
+        assert "gemini unavailable" in degradation["failed_providers"]["gemini-flash"]
+
+    def test_pretool_missing_verifier_and_responder_blocked_stays_blocked(self):
+        """Pre-tool: one verifier infra-fails, the other responds BLOCKED: →
+        still BLOCKED (unchanged) — a responder's own negative verdict blocks
+        regardless of a sibling's infra failure. Not reported as degraded,
+        since it was never an APPROVED result (issue #131)."""
+        from pacemaker.inference.competitive import run_mechanical
+        from pacemaker.inference.codex_provider import CodexProvider
+        from pacemaker.inference.gemini_provider import GeminiProvider
+        from pacemaker.inference.provider import ProviderError
+
+        v1 = MagicMock(spec=CodexProvider)
+        v1.query.return_value = "BLOCKED: concern X"
+        v2 = MagicMock(spec=GeminiProvider)
+        v2.query.side_effect = ProviderError("gemini unavailable")
+
+        def _get(model):
+            if model == "gpt-5.5":
+                return v1
+            return v2
+
+        degradation = {}
+        with patch("pacemaker.inference.competitive.get_provider", side_effect=_get):
+            response, label = run_mechanical(
+                verifiers=["gpt-5.5", "gemini-flash"],
+                synthesizer="sonnet",
+                prompt="p",
+                system_prompt="",
+                call_context="intent_validation",
+                _degradation=degradation,
             )
 
         assert response.startswith("BLOCKED:")
-        assert "did not respond" in response or "fail-closed" in response
-        assert label == "gpt-5.5+gemini-flash->sonnet"
+        assert "concern X" in response
+        assert degradation["degraded"] is False
+
+    def test_pretool_all_respond_and_pass_degradation_stays_false(self):
+        """Pre-tool: all verifiers respond and pass → degradation dict reports
+        {"degraded": False} — no false positive when nothing actually failed."""
+        from pacemaker.inference.competitive import run_mechanical
+        from pacemaker.inference.codex_provider import CodexProvider
+        from pacemaker.inference.gemini_provider import GeminiProvider
+
+        v1 = MagicMock(spec=CodexProvider)
+        v1.query.return_value = "APPROVED"
+        v2 = MagicMock(spec=GeminiProvider)
+        v2.query.return_value = "APPROVED"
+
+        def _get(model):
+            return v1 if model == "gpt-5.5" else v2
+
+        degradation = {}
+        with patch("pacemaker.inference.competitive.get_provider", side_effect=_get):
+            response, label = run_mechanical(
+                verifiers=["gpt-5.5", "gemini-flash"],
+                synthesizer="sonnet",
+                prompt="p",
+                system_prompt="",
+                call_context="intent_validation",
+                _degradation=degradation,
+            )
+
+        assert response == "APPROVED"
+        assert degradation == {"degraded": False}
 
     def test_pretool_zero_survivors_returns_empty_string(self):
         """Pre-tool: zero survivors → empty string (verdict_passes('') = False → gate blocks)."""
@@ -653,6 +720,7 @@ class TestRunMechanical:
         failing = MagicMock()
         failing.query.side_effect = ProviderError("all down")
 
+        degradation = {}
         with patch(
             "pacemaker.inference.competitive.get_provider", return_value=failing
         ):
@@ -662,10 +730,12 @@ class TestRunMechanical:
                 prompt="p",
                 system_prompt="",
                 call_context="intent_validation",
+                _degradation=degradation,
             )
 
         assert response == ""
         assert label == "gpt-5.5+gemini-flash->sonnet"
+        assert degradation == {"degraded": False}
 
     # ---- Truth table N=3 ----
 
@@ -744,8 +814,9 @@ class TestRunMechanical:
         assert "merged: A B C" in response
         synth.query.assert_called_once()
 
-    def test_n3_one_missing_pretool_blocked(self):
-        """N=3 pre-tool: one verifier infra-fails → BLOCKED (fail-closed)."""
+    def test_n3_one_missing_pretool_degraded_approved(self):
+        """N=3 pre-tool: one verifier infra-fails, the other two APPROVE →
+        APPROVED, recorded as degraded (issue #131)."""
         from pacemaker.inference.competitive import run_mechanical
         from pacemaker.inference.codex_provider import CodexProvider
         from pacemaker.inference.gemini_provider import GeminiProvider
@@ -766,6 +837,7 @@ class TestRunMechanical:
                 return v2
             return v3
 
+        degradation = {}
         with patch("pacemaker.inference.competitive.get_provider", side_effect=_get):
             response, label = run_mechanical(
                 verifiers=["gpt-5.5", "gemini-flash", "sonnet"],
@@ -773,11 +845,15 @@ class TestRunMechanical:
                 prompt="p",
                 system_prompt="",
                 call_context="intent_validation",
+                _degradation=degradation,
             )
 
-        # Pre-tool: missing verifier = fail-closed
-        assert response.startswith("BLOCKED:")
-        assert "did not respond" in response or "fail-closed" in response
+        # Pre-tool: missing verifier is an infra failure, not a vote — the two
+        # responders that approved are enough (issue #131).
+        assert response == "APPROVED"
+        assert degradation["degraded"] is True
+        assert "sonnet" in degradation["failed_providers"]
+        assert "v3 down" in degradation["failed_providers"]["sonnet"]
 
     # ---- Stop-gate matrix ----
 

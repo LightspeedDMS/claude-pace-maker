@@ -6,6 +6,10 @@ from .provider import InferenceProvider, ProviderError
 from .model_aliases import SHORT_ALIASES
 from ..logger import log_debug
 
+# Max chars of stderr to include in a ProviderError message (both failure
+# branches below use this — keeps them symmetric, see bug #132).
+_STDERR_PREVIEW_CHARS = 300
+
 
 def _parse_codex_target(model_hint: str) -> tuple:
     """Parse a model hint into (profile, model) for codex invocation.
@@ -103,15 +107,28 @@ class CodexProvider(InferenceProvider):
         except OSError as e:
             raise ProviderError(f"Codex CLI OS error: {e}")
 
+        # Computed once and reused by both failure branches below (bug #132) —
+        # codex writes its diagnostics to stderr while leaving stdout empty,
+        # so both a non-zero exit AND an exit-0-empty-stdout failure need it
+        # to be diagnosable.
+        stderr_preview = (
+            result.stderr[:_STDERR_PREVIEW_CHARS] if result.stderr else "no stderr"
+        )
+
         if result.returncode != 0:
-            stderr_preview = result.stderr[:300] if result.stderr else "no stderr"
             raise ProviderError(
                 f"Codex CLI failed (exit {result.returncode}): {stderr_preview}"
             )
 
         response = result.stdout.strip()
         if not response:
-            raise ProviderError("Codex CLI returned empty response")
+            # Bug #132: symmetric with the non-zero-exit branch above.
+            # Includes returncode too, so an exit-0 empty response (the
+            # observed failure mode) is distinguishable from other causes.
+            raise ProviderError(
+                f"Codex CLI returned empty response (exit {result.returncode}): "
+                f"{stderr_preview}"
+            )
 
         log_debug("codex_provider", f"Codex response_len={len(response)}")
         return response

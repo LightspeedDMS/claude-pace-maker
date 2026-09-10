@@ -1,5 +1,7 @@
 """Provider registry and orchestrator with cross-vendor fallback."""
 
+from typing import Optional
+
 from .provider import ProviderError
 from ..logger import log_warning
 from ..codex_usage import (
@@ -116,6 +118,7 @@ def resolve_and_call_with_reviewer(
     system_prompt: str,
     call_context: str,
     max_thinking_tokens: int = 4000,
+    _degradation: Optional[dict] = None,
 ) -> tuple:
     """Top-level orchestrator returning (response, reviewer_name) with fallback.
 
@@ -133,6 +136,16 @@ def resolve_and_call_with_reviewer(
         system_prompt: System instructions for the model
         call_context: Call site identifier for model resolution
         max_thinking_tokens: Max thinking tokens for the model
+        _degradation: optional out-param dict (same idiom as _diagnostics/
+            _outcome in transcript_reader.py). When provided, populated with
+            {"degraded": False} normally, or {"degraded": True,
+            "failed_providers": {model: reason}, "context": "..."} when the
+            review actually served was degraded — either a competitive
+            verifier failed to respond (context="competitive", forwarded
+            from run_mechanical()) or the single configured provider failed
+            and the Anthropic SDK fallback served instead
+            (context="single_model_fallback"). Issue #131. Never raises;
+            None (default) is a no-op for existing callers.
 
     Returns:
         Tuple of (response_text, reviewer_name) where reviewer_name identifies
@@ -143,6 +156,10 @@ def resolve_and_call_with_reviewer(
         - "anthropic-sdk" for Anthropic SDK
         - "unknown" on complete failure (fail-open)
     """
+    if _degradation is not None:
+        _degradation.clear()
+        _degradation["degraded"] = False
+
     # Competitive mode detection — must be checked before single-model path
     if "+" in hook_model:
         from .competitive import parse_competitive, run_mechanical
@@ -171,6 +188,7 @@ def resolve_and_call_with_reviewer(
                 system_prompt,
                 call_context,
                 max_thinking_tokens,
+                _degradation=_degradation,
             )
 
     from .codex_provider import CodexProvider
@@ -225,6 +243,13 @@ def resolve_and_call_with_reviewer(
                 response = fallback_provider.query(
                     prompt, system_prompt, fallback_hint, max_thinking_tokens
                 )
+                # Issue #131: the fallback succeeded, so the request WAS
+                # served — but by anthropic-sdk instead of the configured
+                # provider. That is a degraded review and must be visible.
+                if _degradation is not None:
+                    _degradation["degraded"] = True
+                    _degradation["failed_providers"] = {hook_model: str(e)}
+                    _degradation["context"] = "single_model_fallback"
                 return response, _REVIEWER_SDK
             except ProviderError as e2:
                 log_warning("registry", f"Fallback also failed ({e2}), fail-open")
