@@ -17,34 +17,57 @@ Matching strategy — guarded-lenient / starts-with:
 Stop-hook gets a second positive token: COMPLETE: (but BLOCKED still wins).
 """
 
+# Leading markdown decoration stripped before a line is token-matched (#133).
+# Only punctuation reviewers use to emphasise or list a verdict — never letters,
+# so "NOT APPROVED" can never be reduced to "APPROVED".
+_DECORATION_CHARS = "*_#`>-~ \t"
+
+
+def _line_starts_with(line: str, token_upper: str) -> bool:
+    """True iff *line*, ignoring leading markdown decoration, starts with the token.
+
+    Reviewers routinely emit "**APPROVED**", "## APPROVED", "> APPROVED" or
+    "- APPROVED". Matching the bare token only (issue #133) scored those as
+    failures: 81 of 211 blocks in one week were approvals read as rejections.
+    Stripping is limited to _DECORATION_CHARS, so a negation like
+    "NOT APPROVED" still fails — the leading letters are untouched.
+    """
+    return line.strip().lstrip(_DECORATION_CHARS).upper().startswith(token_upper)
+
 
 def is_positive(text: str, positive_token: str = "APPROVED") -> bool:
-    """Return True iff some line of *text*, stripped+uppercased, starts with
-    *positive_token* (uppercased).
+    """Return True iff some line of *text* starts with *positive_token*,
+    ignoring leading markdown decoration.
 
-    Guarded-lenient: accepts trailing commentary ("APPROVED.", "APPROVED — ok").
+    Guarded-lenient: accepts trailing commentary ("APPROVED.", "APPROVED — ok")
+    and leading decoration ("**APPROVED**", "## APPROVED").
     Fail-closed: empty / whitespace-only → False.
     Does NOT apply BLOCKED priority — callers that need that use verdict_passes.
     """
     token_upper = positive_token.upper()
     for line in text.splitlines():
-        if line.strip().upper().startswith(token_upper):
+        if _line_starts_with(line, token_upper):
             return True
     return False
 
 
 def has_block_marker(text: str) -> bool:
-    """Return True iff some line, stripped+uppercased, starts with "BLOCKED:"."""
+    """Return True iff some line starts with "BLOCKED:", ignoring decoration.
+
+    Shares _line_starts_with with is_positive deliberately: leniency must never
+    be easier on the approve side than the deny side, or "**BLOCKED:**" would
+    stop registering as a block.
+    """
     for line in text.splitlines():
-        if line.strip().upper().startswith("BLOCKED:"):
+        if _line_starts_with(line, "BLOCKED:"):
             return True
     return False
 
 
 def has_complete_marker(text: str) -> bool:
-    """Return True iff some line, stripped+uppercased, starts with "COMPLETE:"."""
+    """Return True iff some line starts with "COMPLETE:", ignoring decoration."""
     for line in text.splitlines():
-        if line.strip().upper().startswith("COMPLETE:"):
+        if _line_starts_with(line, "COMPLETE:"):
             return True
     return False
 

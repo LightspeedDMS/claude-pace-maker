@@ -274,3 +274,61 @@ class TestGateLenientFlip:
     def test_blocked_still_blocks(self):
         """BLOCKED: ... → verdict_passes False at every gate."""
         assert verdict_passes("BLOCKED: intent mismatch") is False
+
+
+class TestMarkdownDecoratedVerdicts:
+    """Issue #133 — leading markdown decoration must not defeat token matching.
+
+    Reviewers routinely emit "**APPROVED**". Matching the bare token only scored
+    those as failures: 81 of 211 blocks in one week were approvals read as
+    rejections, all from the expression containing a markdown-formatting model.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "**APPROVED**",
+            "__APPROVED__",
+            "## APPROVED",
+            "> APPROVED",
+            "- APPROVED",
+            "* APPROVED",
+            "`APPROVED`",
+            "  **APPROVED**  ",
+            # Verbatim strings recovered from governance_events.
+            "**APPROVED** (with limitation)",
+            "**APPROVED**\n\n**Justification:** matches the declared intent.",
+        ],
+    )
+    def test_decorated_approval_passes(self, text):
+        assert verdict_passes(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "NOT APPROVED",
+            "**NOT APPROVED**",
+            "## NOT APPROVED",
+            'we want to avoid "APPROVED" here',
+            "",
+            "   ",
+        ],
+    )
+    def test_decoration_does_not_weaken_the_deny_side(self, text):
+        """Stripping touches only punctuation, so negations still fail."""
+        assert verdict_passes(text) is False
+
+    def test_blocked_still_wins_over_decorated_approval(self):
+        assert verdict_passes("**APPROVED**\nBLOCKED: intent mismatch") is False
+
+    @pytest.mark.parametrize(
+        "text", ["**BLOCKED:** x", "## BLOCKED: x", "> BLOCKED: x"]
+    )
+    def test_decorated_block_marker_still_detected(self, text):
+        """Leniency is symmetric — approving must never be easier than blocking."""
+        assert has_block_marker(text) is True
+
+    @pytest.mark.parametrize("text", ["**COMPLETE:** done", "## COMPLETE: done"])
+    def test_decorated_complete_marker_still_detected(self, text):
+        assert has_complete_marker(text) is True
+        assert verdict_passes_for_context(text, "stop_hook") is True
