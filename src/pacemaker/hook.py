@@ -2496,6 +2496,42 @@ def _fail_closed_message(error: BaseException) -> str:
     )
 
 
+def _resolve_project_name(cwd: Optional[str] = None) -> str:
+    """Return the project label for a governance event (issue #134).
+
+    Previously every call site used `os.path.basename(os.getcwd())` — the HOOK
+    PROCESS's working directory, which is whatever the invoking tool call
+    happened to be in, not the project. That mislabelled 44% of governance
+    events as `hooks`, `src`, `.claude` and similar directory fragments; `src`
+    is the worst because it is ambiguous across every repository.
+
+    Resolves through the same `resolve_workspace_root()` that Cross-Session
+    Awareness keys on, so both subsystems agree on what a project is. Prefers
+    the hook payload's own `cwd` over the process cwd.
+
+    Degrades rather than raises: a telemetry label must never break the gate.
+    ImportError covers the local import, OSError the path handling.
+    `resolve_workspace_root` already absorbs its own git-subprocess failures
+    (TimeoutExpired, FileNotFoundError) and always returns, so no subprocess
+    exception can surface here. Each fallback is strictly less informative
+    than the last, never wrong in a new way.
+    """
+    base = cwd or os.getcwd()
+    try:
+        from .session_registry.workspace import resolve_workspace_root
+
+        return os.path.basename(resolve_workspace_root(base))
+    except (ImportError, OSError) as e:
+        # Deliberate degradation, not a swallowed error: fall back to the raw
+        # directory basename so the event is still recorded with the best
+        # label available. Logged so the loss of fidelity stays visible.
+        log_debug("hook", f"project-name resolution fell back for {base!r}: {e}")
+        try:
+            return os.path.basename(base)
+        except (TypeError, AttributeError):
+            return "unknown"
+
+
 def _record_degraded_review_telemetry(
     degradation: Optional[Dict[str, Any]], reviewer: str, session_id: str
 ) -> None:
@@ -2513,7 +2549,7 @@ def _record_degraded_review_telemetry(
         record_activity_event(DEFAULT_DB_PATH, "DG", "yellow", session_id)
         _failed = degradation.get("failed_providers", {})
         _failed_desc = "; ".join(f"{m}: {r}" for m, r in _failed.items())
-        _project_name = os.path.basename(os.getcwd())
+        _project_name = _resolve_project_name()
         record_governance_event(
             db_path=DEFAULT_DB_PATH,
             event_type="DG",
@@ -2877,7 +2913,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 record_activity_event(
                                     DEFAULT_DB_PATH, "DB", "red", _sid
                                 )
-                                _project_name = os.path.basename(os.getcwd())
+                                _project_name = _resolve_project_name()
                                 record_governance_event(
                                     db_path=DEFAULT_DB_PATH,
                                     event_type="IV",
@@ -2999,7 +3035,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 record_activity_event(
                                     DEFAULT_DB_PATH, "DB", "red", _sid
                                 )
-                                _project_name = os.path.basename(os.getcwd())
+                                _project_name = _resolve_project_name()
                                 record_governance_event(
                                     db_path=DEFAULT_DB_PATH,
                                     event_type="IV",
@@ -3174,7 +3210,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             )
             try:
                 record_activity_event(DEFAULT_DB_PATH, "IV", "red", _sid)
-                _project_name = os.path.basename(os.getcwd())
+                _project_name = _resolve_project_name()
                 record_governance_event(
                     db_path=DEFAULT_DB_PATH,
                     event_type="IV",
@@ -3286,7 +3322,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                     "intent_validation_bug": "BG",
                 }
                 _event_type = _category_to_event_type.get(category, "IV")
-                _project_name = os.path.basename(os.getcwd())
+                _project_name = _resolve_project_name()
                 # B2 (issue #101 review): governance-event feedback_text
                 # must stay UNTAGGED/raw — the pace-maker provenance tag
                 # (and reviewer-relay wrapper) belongs only on the
