@@ -46,7 +46,8 @@ def get_provider(hook_model: str):
     Args:
         hook_model: Config value - "auto", "sonnet", "opus", "haiku", "gpt-5.4",
                     "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra",
-                    "gpt-5.6-luna" (legacy aliases: "gpt-5", "gpt", "codex"),
+                    "gpt-5.6-luna", "gpt-6-astra"
+                    (legacy aliases: "gpt-5", "gpt", "codex"),
                     "gemini-flash", "gemini-pro"
 
     Returns:
@@ -64,6 +65,7 @@ def get_provider(hook_model: str):
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
+        "gpt-6-astra",
         "gpt",
         "codex",
     ):
@@ -99,8 +101,13 @@ def resolve_model_for_call(hook_model: str, call_context: str) -> str:
     current hardcoded behavior. Otherwise passes through the hook_model value.
 
     Args:
-        hook_model: Config value - "auto", "sonnet", "opus", "gpt-5.4", "gpt-5.5"
-                    (legacy aliases: "gpt-5", "gpt", "codex"), "gemini-flash", "gemini-pro"
+        hook_model: Config value - any token accepted by
+                    model_aliases.is_known_model(), which is the single source
+                    of truth: the KNOWN_MODELS set (Anthropic, Codex, Gemini
+                    and Antigravity models), the short aliases, or a
+                    "codex-<profile>" token. Not re-listed here on purpose —
+                    this docstring previously hardcoded the set and silently
+                    went stale as tokens were added.
         call_context: Identifies the call site - "stop_hook", "intent_validation",
                       "stage2_unified", "code_review"
 

@@ -23,6 +23,10 @@ KNOWN_MODELS = {
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
+    # GPT-6 family (issue #136). Deliberately NOT wired into SHORT_ALIASES:
+    # "gpt-5"/"gpt" keep pointing at gpt-5.6-sol, since repointing them would
+    # silently change the reviewer for every existing config.
+    "gpt-6-astra",
     "gemini-flash",
     "gemini-pro",
     # Antigravity CLI (agy) models — Story #72
