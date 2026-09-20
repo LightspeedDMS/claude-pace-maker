@@ -99,6 +99,28 @@ def parse_usage_response(response_data: Dict) -> Optional[Dict]:
             result["seven_day_util"] = 0.0
             result["seven_day_resets_at"] = None
 
+        # Parse usage credits (issue #138). The API returns this block and
+        # states its own semantics in the payload: "Usage credits cover you
+        # when you hit your plan limits." Pace-maker previously discarded it
+        # and throttled on plan utilization alone, so a user at 100% of the
+        # plan window was throttled at full strength while enabled credits
+        # were covering the overflow.
+        #
+        # Absent / null / malformed extra_usage degrades to credits_enabled
+        # False, which reproduces the previous behavior exactly — accounts
+        # without credits and older API shapes are unaffected.
+        extra = response_data.get("extra_usage")
+        if isinstance(extra, dict):
+            result["credits_enabled"] = bool(extra.get("is_enabled", False))
+            result["credits_util"] = float(extra.get("utilization", 0.0) or 0.0)
+            result["credits_exhausted"] = bool(extra.get("spend_limit_reached", False))
+            result["credits_user_disabled"] = bool(extra.get("user_disabled", False))
+        else:
+            result["credits_enabled"] = False
+            result["credits_util"] = 0.0
+            result["credits_exhausted"] = False
+            result["credits_user_disabled"] = False
+
         return result
 
     except Exception as e:

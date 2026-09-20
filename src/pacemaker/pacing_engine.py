@@ -27,6 +27,9 @@ def calculate_pacing_decision(
     preload_hours: float = 0.0,
     weekly_limit_enabled: bool = True,
     five_hour_limit_enabled: bool = True,
+    credits_enabled: bool = False,
+    credits_util: float = 0.0,
+    credits_exhausted: bool = False,
 ) -> Dict:
     """
     Calculate pacing decision based on current usage.
@@ -54,7 +57,8 @@ def calculate_pacing_decision(
         seven_day_resets_at, window_hours=168
     )  # 7 days
 
-    # Mark stale windows (sentinel value -1.0 means > 5 min past reset).
+    # Mark stale windows (sentinel -1.0 means resets_at has passed at all —
+    # the paired utilization belongs to a window that no longer exists, #137).
     # Stale windows are excluded from constraint calculation but the other
     # window can still be valid and drive throttling/display.
     five_hour_stale = five_hour_time_pct == -1.0
@@ -78,7 +82,7 @@ def calculate_pacing_decision(
                 "target": 0,
                 "time_elapsed_pct": -1.0,
             },
-            "error": "Both window data is stale (resets_at > 5min in past)",
+            "error": "Both window data is stale (resets_at has passed)",
         }
 
     # Nullify stale window's resets_at so it's excluded from constraint calc
@@ -242,8 +246,22 @@ def calculate_pacing_decision(
         if seven_day_stale:
             stale_windows.append("7-day")
         result["error"] = (
-            f"{' and '.join(stale_windows)} window data is stale (resets_at > 5min in past)"
+            f"{' and '.join(stale_windows)} window data is stale (resets_at has passed)"
         )
+
+    # Usage credits cover the plan window once it is exhausted (issue #138).
+    # Applied LAST and only ever zeroes a delay, so it is provably incapable of
+    # throttling harder than the plan-window calculation alone.
+    if (
+        result["should_throttle"]
+        and credits_enabled
+        and not credits_exhausted
+        and max(five_hour_util, seven_day_util) >= 100.0
+    ):
+        result["should_throttle"] = False
+        result["delay_seconds"] = 0
+        result["credits_covering"] = True
+        result["credits_util"] = credits_util
 
     return result
 
@@ -445,6 +463,11 @@ def run_pacing_check(
         preload_hours=preload_hours,
         weekly_limit_enabled=weekly_limit_enabled,
         five_hour_limit_enabled=five_hour_limit_enabled,
+        # Credits (issue #138). .get() with today's defaults so a cached
+        # usage_data written before this change behaves exactly as before.
+        credits_enabled=usage_data.get("credits_enabled", False),
+        credits_util=usage_data.get("credits_util", 0.0),
+        credits_exhausted=usage_data.get("credits_exhausted", False),
     )
 
     # Determine strategy

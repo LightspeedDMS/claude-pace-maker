@@ -41,7 +41,10 @@ def calculate_time_percent(
 
     Returns:
         Percentage of time elapsed (0-100), or 0.0 if window is inactive (NULL),
-        or -1.0 if data is stale (resets_at more than 5 minutes in the past)
+        or -1.0 if the data is stale — meaning resets_at has passed at all, so
+        the paired utilization belongs to a window that no longer exists
+        (issue #137; previously this tolerated a 5-minute grace and reported
+        100% elapsed, causing maximum throttling in a brand-new window).
     """
     if resets_at is None:
         # Inactive window (NULL reset time)
@@ -55,14 +58,23 @@ def calculate_time_percent(
     # Calculate time remaining until reset
     time_remaining = (resets_at - now).total_seconds()
 
-    # If reset time has passed
+    # Reset time has passed: a NEW window has begun, so the utilization value
+    # paired with this resets_at describes a window that no longer exists and
+    # is invalid the instant the boundary is crossed (issue #137).
+    #
+    # This previously returned 100.0 for the first 5 minutes ("window just
+    # ended"), which told the pacing calculation the user was at the point of
+    # MAXIMUM pressure. Paired with the stale utilization — 100% in the
+    # observed incident — that produced full-strength throttling at the start
+    # of every new window, exactly when the most headroom exists. With the
+    # poll interval also at 300s, worst-case exposure was ~10 minutes.
+    #
+    # Returning the stale sentinel makes pacing_engine nullify this window's
+    # resets_at and exclude it from the constraint calculation until a fresh
+    # poll supplies data for the new window. Not throttling on unknown data is
+    # the correct default: pacing is a throttle, not a safety gate.
     if time_remaining <= 0:
-        # Check if data is stale (reset time more than 5 minutes in the past)
-        # STALE_DATA_THRESHOLD_SECONDS = 300 (5 minutes)
-        if time_remaining < -300:
-            return -1.0  # Stale data sentinel
-        # Within 5 minutes past - treat as 100% (window just ended)
-        return 100.0
+        return -1.0  # Stale data sentinel
 
     # Calculate total window duration in seconds
     window_seconds = window_hours * 3600

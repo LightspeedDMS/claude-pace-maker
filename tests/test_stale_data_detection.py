@@ -26,11 +26,17 @@ class TestCalculateTimePercentStaleData:
         result = calculator.calculate_time_percent(resets_at, window_hours=5.0)
         assert 49.0 <= result <= 51.0, f"Expected ~50%, got {result}%"
 
-    def test_edge_case_resets_at_just_passed_within_5_min_returns_100(self):
-        """When resets_at just passed (within 5 min), should return 100%."""
+    def test_resets_at_just_passed_is_immediately_stale(self):
+        """A just-passed reset is stale at once — inverted for issue #137.
+
+        This case previously asserted 100.0 ("window just ended"), encoding the
+        defect as intended behavior: 100% means maximum pacing pressure, so a
+        window that had in fact just RESET drove full-strength throttling for
+        five minutes while the user had a brand-new, empty window.
+        """
         resets_at = datetime.now(timezone.utc) - timedelta(minutes=3)
         result = calculator.calculate_time_percent(resets_at, window_hours=5.0)
-        assert result == 100.0, f"Expected 100%, got {result}%"
+        assert result == -1.0, f"Expected -1.0 (stale sentinel), got {result}"
 
     def test_stale_case_resets_at_more_than_5_min_past_returns_sentinel(self):
         """When resets_at is more than 5 min in past, return -1.0 sentinel."""
