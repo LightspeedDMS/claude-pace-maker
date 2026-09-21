@@ -71,6 +71,37 @@ LOG_LEVEL_DEBUG = 4
 PROMPT_INJECTION_THRESHOLD_SECONDS = 30
 MAX_DELAY_SECONDS = 350  # 360s timeout - 10s safety margin
 
+# PreToolUse budget (issue #108) — SINGLE SOURCE OF TRUTH.
+#
+# A killed PreToolUse hook is an UNVALIDATED TOOL CALL, not a block: the
+# harness simply proceeds. So the gate must always return a verdict before the
+# harness kills it, even if that verdict is degraded.
+#
+# This value previously existed only as a literal in install.sh, while the
+# review budgets lived in inference/competitive.py, with nothing connecting
+# them. They drifted until the worst case (60s reviewer wait + 30s synthesis,
+# plus a 30s transcript-anchor wait) was double the allowance.
+#
+# install.sh reads this when registering the hook, and a test asserts the
+# internal budgets still fit inside it.
+PRE_TOOL_HOOK_TIMEOUT_SECONDS = 60
+
+# Reserved for telemetry writes and emitting the block response.
+PRE_TOOL_SAFETY_MARGIN_SECONDS = 10
+
+# Ceiling on the transcript-anchor wait, which runs BEFORE the review and is
+# sequential with it. Previously this lived only as a default argument in
+# transcript_reader and was invisible to the budget, so the real chain
+# (anchor -> reviewers -> synthesis) could reach 90s against a 60s allowance.
+# On the common path the anchor resolves in milliseconds; this cap only binds
+# when the transcript genuinely lags.
+PRE_TOOL_ANCHOR_CAP_SECONDS = 30.0
+
+# Wall-clock budget available to the whole review phase.
+PRE_TOOL_REVIEW_BUDGET_SECONDS = (
+    PRE_TOOL_HOOK_TIMEOUT_SECONDS - PRE_TOOL_SAFETY_MARGIN_SECONDS
+)
+
 # Blockage telemetry categories (Story #21)
 # Used for tracking and categorizing hook blockages
 BLOCKAGE_CATEGORIES = (

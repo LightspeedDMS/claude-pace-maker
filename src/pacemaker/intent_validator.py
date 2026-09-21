@@ -682,7 +682,10 @@ def _log_stage1_rejection(verdict: str, file_path: str, current_message: str) ->
 
 
 def _call_stage2_validation(
-    prompt: str, hook_model: str = "auto", _degradation: Optional[dict] = None
+    prompt: str,
+    hook_model: str = "auto",
+    _degradation: Optional[dict] = None,
+    _deadline: Optional[float] = None,
 ) -> "tuple[str, str]":
     """
     Synchronous Stage 2 validation via provider abstraction.
@@ -706,6 +709,7 @@ def _call_stage2_validation(
         call_context="stage2_unified",
         max_thinking_tokens=4000,
         _degradation=_degradation,
+        _deadline=_deadline,
     )
 
 
@@ -879,6 +883,7 @@ def validate_intent_and_code(
     tool_name: str,
     hook_model: str = "auto",
     current_message_override: str = "",
+    _deadline: Optional[float] = None,
 ) -> dict:
     """
     Two-stage pre-tool validation with short-circuit logic.
@@ -1050,7 +1055,10 @@ System failing closed to prevent bypassing intent declaration requirements."""
 
         _stage2_degradation: Dict[str, Any] = {}
         stage2_feedback, reviewer = _call_stage2_validation(
-            stage2_prompt, hook_model=hook_model, _degradation=_stage2_degradation
+            stage2_prompt,
+            hook_model=hook_model,
+            _degradation=_stage2_degradation,
+            _deadline=_deadline,
         )
         log_debug(
             "intent_validator",

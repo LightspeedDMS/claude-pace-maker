@@ -1,12 +1,14 @@
 """Competitive multi-model review pipeline for hook inference."""
 
 import re
+import time
 from concurrent.futures import (
     ThreadPoolExecutor,
     wait as futures_wait,
 )
 from typing import Optional
 
+from ..constants import PRE_TOOL_REVIEW_BUDGET_SECONDS
 from ..logger import log_warning, log_debug
 from .registry import get_provider, resolve_model_for_call
 from .codex_provider import CodexProvider
@@ -14,7 +16,7 @@ from .gemini_provider import GeminiProvider
 from .agy_provider import AgyProvider
 from .provider import ProviderError
 from .model_aliases import SHORT_ALIASES, is_known_model
-from .verdict import verdict_passes_for_context
+from .verdict import has_verdict_marker, verdict_passes_for_context
 
 _ANTHROPIC_MODELS = {"auto", "sonnet", "opus", "haiku", "fable"}
 
@@ -24,8 +26,18 @@ _REVIEWER_GEMINI_PRO = "gem-pro"
 _REVIEWER_SDK = "anthropic-sdk"
 
 # Named constants for timeouts and token budget
-REVIEWER_WAIT_TIMEOUT_SEC = 60  # individual per-reviewer timeout
-SYNTHESIS_TIMEOUT_SEC = 30  # synthesis phase timeout
+# Review budgets derived from the PreToolUse allowance (issue #108), NOT
+# hardcoded. These were 60 and 30 — summing to 90s against a 60s registered
+# timeout — so a slow verifier plus a synthesis round could get the hook
+# killed, and a killed PreToolUse hook is an UNVALIDATED TOOL CALL, not a
+# block.
+#
+# Split 70/30 of the review budget. A verifier that overruns its share is a
+# non-responder, which run_mechanical already handles as a degraded approval
+# (issue #131) rather than as a negative verdict — so overrunning costs
+# review depth, never correctness.
+REVIEWER_WAIT_TIMEOUT_SEC = int(PRE_TOOL_REVIEW_BUDGET_SECONDS * 0.7)  # 35s
+SYNTHESIS_TIMEOUT_SEC = PRE_TOOL_REVIEW_BUDGET_SECONDS - REVIEWER_WAIT_TIMEOUT_SEC
 DEFAULT_MAX_THINKING_TOKENS = 4000
 MIN_REVIEWERS = 2
 MAX_REVIEWERS = 3
@@ -141,8 +153,14 @@ def _dispatch_reviewers(
     system_prompt: str,
     call_context: str,
     max_thinking_tokens: int,
+    wait_timeout: float = None,
 ) -> tuple:
     """Dispatch all reviewers in parallel. Returns (succeeded, failed).
+
+    wait_timeout bounds the WHOLE GROUP, not each reviewer — they run
+    concurrently, so N verifiers cost max(latency), never the sum. Defaults to
+    REVIEWER_WAIT_TIMEOUT_SEC; the caller passes a smaller value when the
+    gate's deadline leaves less than that (issue #108).
 
     succeeded: list of (response, label). failed: list of (model, reason) for
     a reviewer that timed out or raised — an INFRASTRUCTURE FAILURE, never a
@@ -163,8 +181,11 @@ def _dispatch_reviewers(
         for model in reviewers
     }
 
+    effective_timeout = (
+        REVIEWER_WAIT_TIMEOUT_SEC if wait_timeout is None else wait_timeout
+    )
     done, not_done = futures_wait(
-        list(future_to_model.keys()), timeout=REVIEWER_WAIT_TIMEOUT_SEC
+        list(future_to_model.keys()), timeout=effective_timeout
     )
 
     failed = _collect_timeouts(not_done, future_to_model)
@@ -182,8 +203,12 @@ def _format_failure_message(
     system_prompt: str,
     call_context: str,
     max_thinking_tokens: int,
+    synth_timeout: float = None,
 ) -> str:
     """Call synthesizer to format a combined message from 2+ failing verifier verdicts.
+
+    synth_timeout defaults to SYNTHESIS_TIMEOUT_SEC; the caller passes a
+    smaller value when the gate's deadline leaves less than that (issue #108).
 
     Synthesizer is a MESSAGE-ONLY formatter — the caller applies the 'BLOCKED:' prefix.
     On synthesizer error/timeout/empty: falls back to concatenated raw feedbacks.
@@ -227,7 +252,11 @@ def _format_failure_message(
             max_thinking_tokens,
         )
         try:
-            result = future.result(timeout=SYNTHESIS_TIMEOUT_SEC)
+            result = future.result(
+                timeout=(
+                    SYNTHESIS_TIMEOUT_SEC if synth_timeout is None else synth_timeout
+                )
+            )
             if not result:
                 raise ValueError("Synthesizer returned empty response")
             log_debug("competitive", f"Synthesis complete, len={len(result)}")
@@ -277,6 +306,7 @@ def run_mechanical(
     call_context: str,
     max_thinking_tokens: int = DEFAULT_MAX_THINKING_TOKENS,
     _degradation: Optional[dict] = None,
+    _deadline: Optional[float] = None,
 ) -> tuple:
     """N-verifier mechanical decision engine with message-only synthesizer.
 
@@ -309,8 +339,22 @@ def run_mechanical(
         f"Dispatching {len(verifiers)} verifiers in parallel: {verifiers}",
     )
 
+    # Clamp each phase to the time actually left before the harness kills the
+    # hook (issue #108). A killed PreToolUse hook is an unvalidated tool call,
+    # so the review must always finish and answer with whatever it has. Phases
+    # are sequential, so each re-reads the clock.
+    def _budget(cap: float) -> float:
+        if _deadline is None:
+            return cap
+        return max(0.0, min(cap, _deadline - time.monotonic()))
+
     survivors, failed = _dispatch_reviewers(
-        verifiers, prompt, system_prompt, call_context, max_thinking_tokens
+        verifiers,
+        prompt,
+        system_prompt,
+        call_context,
+        max_thinking_tokens,
+        wait_timeout=_budget(REVIEWER_WAIT_TIMEOUT_SEC),
     )
 
     if _degradation is not None:
@@ -326,6 +370,33 @@ def run_mechanical(
             "Zero survivors - returning '' (stop: fail-open, pre-tool: fail-closed)",
         )
         return "", expression
+
+    # Stop gate only: a survivor carrying NO recognisable verdict marker did
+    # not render a judgment — it returned something unusable (truncation, or a
+    # model narrating its plan). Treat it as a non-responder, exactly like a
+    # verifier that raised ProviderError, rather than as a negative vote
+    # (issue #135). Previously such prose was scored False, stamped with
+    # "BLOCKED: " here, and surfaced to the user as the governance reason,
+    # which also made parse_sdk_response's documented fail-open unreachable.
+    #
+    # The pre-tool gate is deliberately NOT given this leniency: unparseable
+    # output there must never become an approval.
+    if call_context == "stop_hook":
+        scored = [(r, lbl) for r, lbl in survivors if has_verdict_marker(r)]
+        if not scored:
+            log_debug(
+                "competitive",
+                f"Stop gate: all {len(survivors)} survivor(s) unparseable - "
+                "returning '' (fail-open, same as zero survivors)",
+            )
+            return "", expression
+        if len(scored) != len(survivors):
+            log_debug(
+                "competitive",
+                f"Stop gate: ignoring {len(survivors) - len(scored)} unparseable "
+                "survivor(s) as non-responders",
+            )
+        survivors = scored
 
     # Evaluate each survivor with context-aware positive predicate
     passed = [
@@ -375,6 +446,7 @@ def run_mechanical(
             system_prompt,
             call_context,
             max_thinking_tokens,
+            synth_timeout=_budget(SYNTHESIS_TIMEOUT_SEC),
         )
 
     # Strip any leading 'BLOCKED:' the message already carries (case-insensitive,

@@ -6,6 +6,7 @@ Unit tests for run_pre_tool_hook() function in hook.py.
 import json
 import os
 import tempfile
+import time
 from unittest.mock import patch
 from pacemaker.hook import run_pre_tool_hook
 
@@ -491,6 +492,7 @@ class TestPreToolHook:
                 "tool_name": "Edit",
                 "tool_input": {
                     "file_path": "/path/to/config.py",
+                    "old_string": "old",
                     "new_string": "new code",
                 },
             }
@@ -507,14 +509,19 @@ class TestPreToolHook:
             # verify validate_intent_and_code received correct args.
             # The transcript text has no INTENT, so the tool-matched anchor
             # returns "" (no-INTENT fallback) → current_message_override="".
-            mock_validate.assert_called_once_with(
-                messages=messages,
-                code="new code",
-                file_path="/path/to/config.py",
-                tool_name="Edit",
-                hook_model="auto",
-                current_message_override="",
-            )
+            # Asserted field-by-field rather than with assert_called_once_with:
+            # the gate also passes _deadline (issue #108), and an exact kwargs
+            # match rejects any added argument.
+            assert mock_validate.call_count == 1
+            kwargs = mock_validate.call_args.kwargs
+            assert kwargs["messages"] == messages
+            assert kwargs["code"] == "new code"
+            assert kwargs["file_path"] == "/path/to/config.py"
+            assert kwargs["tool_name"] == "Edit"
+            assert kwargs["hook_model"] == "auto"
+            assert kwargs["current_message_override"] == ""
+            # The gate must hand down a live budget, not None.
+            assert kwargs["_deadline"] > time.monotonic()
         finally:
             os.unlink(transcript_path)
 

@@ -126,6 +126,7 @@ def resolve_and_call_with_reviewer(
     call_context: str,
     max_thinking_tokens: int = 4000,
     _degradation: Optional[dict] = None,
+    _deadline: Optional[float] = None,
 ) -> tuple:
     """Top-level orchestrator returning (response, reviewer_name) with fallback.
 
@@ -196,6 +197,7 @@ def resolve_and_call_with_reviewer(
                 call_context,
                 max_thinking_tokens,
                 _degradation=_degradation,
+                _deadline=_deadline,
             )
 
     from .codex_provider import CodexProvider

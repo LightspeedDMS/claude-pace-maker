@@ -518,7 +518,7 @@ This applies to:
 
 3. **Fail-CLOSED on not-ready (v2.33.2)** — if still no match after retries, returns `None` (not `""`). Both the Write/Edit gate AND the danger-bash gate interpret `None` as "transcript-not-ready" and BLOCK (`{"decision": "block", "reason": "..."}`) with a message instructing the agent to re-issue the IDENTICAL tool call — never evaluates the previous turn. **This was changed from fail-OPEN (`{"continue": True}`) to fail-CLOSED** after live observation showed the Write/Edit gate's fail-open branch let raced edits through completely unvalidated (intent validation enforced nothing for any edit that hit this race). The danger-bash gate already proved fail-closed + re-issue works in practice: the agent re-issues the identical command, the re-issue's turn is then flushed, the tool-matched anchor binds to it, and validation proceeds normally on the second attempt (Messi Rule 14: bounded to 2 turns). The `intent_validation_deferred` blockage category and telemetry (activity event + governance event) are still recorded on this path so the race remains observable in `usage.db` / the claude-usage monitor.
 
-   **🚨 SUPERSEDED BY ISSUE #93 — the two gates are NO LONGER symmetric on `None`, and this paragraph is the single most dangerous stale claim in this file.** Current behaviour: the **Write/Edit gate still blocks on every `None`**, but the **danger-bash gate blocks only when the outcome is `not_found`** — a `stale` outcome is **ACCEPTED**, because `_tool_input_matches` requires the Bash `command` to be byte-identical, so a stale match is provably a re-issue of exactly this command. **Do NOT "restore symmetry" by deleting the `elif _bash_outcome == "stale":` branch at `hook.py:2649`.** That branch is the entire fix for #93; removing it re-creates the deadlock where EVERY Bash command was refused with "transcript not ready" after burning the full ceiling, with no recovery on re-issue.
+   **🚨 SUPERSEDED BY ISSUES #93 AND #139 — neither gate blocks on every `None` any more.** Both gates now block only when the outcome is `not_found`, and both ACCEPT `stale` (Write/Edit since #139 — see "Issue #139" below; the sentence that follows describes the #93-era state where only danger-bash did). At #93 time: the Write/Edit gate still blocked on every `None`, but the **danger-bash gate blocks only when the outcome is `not_found`** — a `stale` outcome is **ACCEPTED**, because `_tool_input_matches` requires the Bash `command` to be byte-identical, so a stale match is provably a re-issue of exactly this command. **Do NOT "restore symmetry" by deleting the `elif _bash_outcome == "stale":` branch at `hook.py:2649`.** That branch is the entire fix for #93; removing it re-creates the deadlock where EVERY Bash command was refused with "transcript not ready" after burning the full ceiling, with no recovery on re-issue.
 
 4. **Defense-in-depth** — `extract_current_assistant_message(messages, file_path=file_path)` cross-checks the selected message via `_mentions_file`. If it carries an INTENT: marker but mentions a different file → discards and returns `""`, preventing false-passes from wrong-file stale turns. Messages without an INTENT: marker are returned as-is (no silent discard — their Stage-1 rejection log is preserved).
 
@@ -536,7 +536,7 @@ A first fix attempt replaced the full scan with a tail-read (last 512KB via `_re
 **Key files**:
 - `src/pacemaker/transcript_reader.py` — `_tool_input_matches()`, `_read_tail_raw_entries()`, `_last_n_assistant_turn_keys()`, `_find_turn_matching_tool_input()` (fixed-cost tail read + last-N-logical-turns scoping, `TAIL_READ_BYTES`/`LAST_N_TURNS_FOR_TOOL_MATCH` constants), updated `get_current_turn_message_for_validation()` (default `_max_wait_seconds`=30.0/`_initial_sleep`/`_backoff_multiplier`/`_max_sleep`/`_diagnostics`, issue #91)
 - `src/pacemaker/intent_validator.py` — `extract_current_assistant_message(file_path="")` hardening; `validate_intent_and_code` threads `file_path` through
-- `src/pacemaker/hook.py` — Write/Edit gate (~lines 2949-2956, `if current_message_override is None:`): threads `tool_input`/`tool_name`/`_diagnostics`, fails CLOSED on `None` (v2.33.2), uses the 30.0s default ceiling; Danger-bash gate (~line 2590): **DOES override the retry params** — `_max_wait_seconds=_DANGER_BASH_MAX_WAIT_SECONDS` (3.0s, `hook.py:64`) — and additionally consumes `_diagnostics["outcome"]` / `_diagnostics["stale_text"]` to distinguish `stale` (accept) from `not_found` (block). It does **not** share the Write/Edit ceiling (issue #93).
+- `src/pacemaker/hook.py` — Write/Edit gate (~lines 2949-2956, `if current_message_override is None:`): threads `tool_input`/`tool_name`/`_diagnostics`, fails CLOSED on `not_found` (v2.33.2), ACCEPTS `stale` after `_WRITE_EDIT_STALE_GRACE_SECONDS` (3.0s) anchor-only (issue #139), 30.0s ceiling for not_found; Danger-bash gate (~line 2590): **DOES override the retry params** — `_max_wait_seconds=_DANGER_BASH_MAX_WAIT_SECONDS` (3.0s, `hook.py:64`) — and additionally consumes `_diagnostics["outcome"]` / `_diagnostics["stale_text"]` to distinguish `stale` (accept) from `not_found` (block). It does **not** share the Write/Edit ceiling (issue #93).
 - `src/pacemaker/constants.py` — `BLOCKAGE_CATEGORIES["intent_validation_deferred"]` comment reflects fail-closed (v2.33.2)
 
 **Tests**:
@@ -575,6 +575,38 @@ A first fix attempt replaced the full scan with a tail-read (last 512KB via `_re
 **Known cosmetic defect (not fixed)**: the retry loop logs `WARNING ... gave up after N attempt(s)` even on the SUCCESSFUL stale path, because `_find_turn_matching_tool_input` returns `None` for stale and the loop exhausts its ceiling before the caller reads `_outcome`. A "gave up" warning in the log does NOT imply the gate blocked — check `blockage_events` for a matching row before concluding it did.
 
 **Key files**: `src/pacemaker/transcript_reader.py` (`_outcome` threading, `_merge_anchor_turn`, `INTENT_MARKER_PATTERN`), `src/pacemaker/hook.py` (danger-bash gate ~2600-2700, `_DANGER_BASH_MAX_WAIT_SECONDS`), `src/pacemaker/intent_validator.py` (imports the shared pattern), `tests/test_issue_93_danger_bash_anchor.py` (22 tests).
+
+### Issue #139 — the same deadlock, in the Write/Edit gate
+
+**Symptom**: 5 back-to-back `intent_validation_deferred` blocks, each taking the full 30s (`attempts: 19`), on a one-line Edit in code-indexer-master (Claude Code 2.1.278). The agent never recovered. Across that session, 55 Write/Edit calls passed and 8 were deferred.
+
+**Root cause (proven by replaying the real transcript)**:
+- The matcher was correct: every attempt resolved to `found` once its line was written to disk.
+- Sometimes Claude Code writes nothing to the transcript during the whole PreToolUse window, which is the Bash finding from #93 now seen for Write/Edit. The first attempt is then `not_found`.
+- The identical re-issue that the block message asks for resolves to `stale`, because the earlier attempt is one turn back.
+- The Write/Edit gate blocked on every `None`, so the recovery path could never succeed. #93 had fixed this only for danger-bash.
+
+**Fix (Write/Edit gate, `hook.py` stale branch)**:
+- **`stale` is accepted.** `stale_text` becomes `current_message_override` and the edit goes through normal Stage 1 and Stage 2.
+- **`not_found` still blocks** fail-closed. `outcome` is now recorded in the blockage details.
+- **An empty `stale_text` never falls back to the older messages.** It sets `messages = []`, so Stage 1 blocks.
+  - Without this, `validate_intent_and_code`'s `override or extract_current_assistant_message(messages)` would read the n-back messages.
+  - Those messages include rendered tool parameters, so an `INTENT:` inside written file content, or an INTENT from `messages[-2]`, would pass. Review proved this end-to-end.
+  - On the stale path both gates are now anchor-only.
+- **The Edit match is byte-exact.** `_tool_input_matches` now compares `file_path`, `old_string`, `new_string` and `bool(replace_all)`.
+  - Before, it compared only `file_path` and `new_string`. A deletion (`new_string=""`) of `critical_auth()` could then reuse an earlier "delete `foo()`" INTENT.
+  - Stage 2 cannot catch that, because for Edit it sees only `new_string`.
+  - **Do not loosen this match.**
+- **Stale grace period.** The new opt-in `_stale_grace_seconds` in `get_current_turn_message_for_validation` defaults to `None`, which keeps the old behaviour. The Write/Edit gate passes `_WRITE_EDIT_STALE_GRACE_SECONDS = 3.0`.
+  - Once the outcome is `stale` and the grace period has passed, the retry loop returns early rather than running to the full 30s. A `found` before then still wins.
+  - The `not_found` ceiling is unchanged.
+- **Logging.** A stale acceptance is logged with `log_info` and `outcome=stale_accepted`.
+
+**Known edge case (accepted)**: if the original attempt had no INTENT and the re-issue adds one, the re-issue can hit a Stage-1 "missing INTENT" block. The reason text is misleading, and the next re-issue recovers. The verdict is never more permissive than waiting would have been.
+
+**Not fixed here: #140.** On the found path, an empty anchor text still falls back to n-back, which renders tool parameters, so INTENT inside file content can satisfy Stage 1 there. That flaw predates #139.
+
+**Tests**: `tests/test_issue_139_write_edit_stale_accept.py`, `tests/test_issue_139_code_review_followup.py`.
 
 ---
 

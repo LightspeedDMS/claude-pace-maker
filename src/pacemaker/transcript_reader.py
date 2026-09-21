@@ -11,7 +11,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Union
 
-from .logger import log_warning
+from .logger import log_warning, log_debug
 
 MAX_MESSAGE_LENGTH = 10000
 
@@ -399,9 +399,23 @@ def _tool_input_matches(tool: dict, tool_name: str, tool_input: dict) -> bool:
             "content"
         ) == tool_input.get("content")
     if tool_name == "Edit":
-        return inp.get("file_path") == tool_input.get("file_path") and inp.get(
-            "new_string"
-        ) == tool_input.get("new_string")
+        # Issue #139 code-review finding #1: file_path+new_string alone is
+        # NOT byte-exact -- Stage 2 (the LLM review) only ever sees
+        # new_string (the code being written), never old_string (the code
+        # being replaced). A stale prior turn's INTENT for editing one
+        # function (e.g. deleting foo()) could therefore be accepted for a
+        # DIFFERENT, unrelated edit to the same file with the same
+        # new_string but a different old_string (e.g. replacing
+        # critical_auth() instead) -- proven end-to-end by the reviewer.
+        # old_string and replace_all (bool-normalized: Claude Code omits it
+        # entirely unless explicitly True) must also match exactly for two
+        # Edit calls to be considered the same call.
+        return (
+            inp.get("file_path") == tool_input.get("file_path")
+            and inp.get("old_string") == tool_input.get("old_string")
+            and inp.get("new_string") == tool_input.get("new_string")
+            and bool(inp.get("replace_all")) == bool(tool_input.get("replace_all"))
+        )
     if tool_name == "Bash":
         return inp.get("command") == tool_input.get("command")
     return inp == tool_input
@@ -730,21 +744,21 @@ def get_current_turn_message_for_validation(
     _backoff_multiplier: float = 2.0,
     _max_sleep: float = 2.0,
     _diagnostics: Optional[dict] = None,
+    _stale_grace_seconds: Optional[float] = None,
 ) -> Optional[str]:
     """Extract the current assistant turn message for intent validation.
 
     When ``tool_input`` is provided (bug #83 fix): uses a content-matched
     anchor to find the exact tool_use being validated.  Returns None when
     the matching entry is not yet in the transcript (TOCTOU race) — the
-    caller decides how to react. The Write/Edit gate fails CLOSED
-    unconditionally on this signal (v2.33.2): block + instruct the agent to
-    re-issue the identical tool call, rather than silently passing the
-    unvalidated edit through. The danger-bash gate (issue #93) fails CLOSED
-    only when ``_diagnostics["outcome"]`` is ``"not_found"``; on ``"stale"``
-    it instead consumes ``_diagnostics["stale_text"]`` and proceeds to
-    Phase 1/2 validation for the byte-identical re-issue — see the
+    caller decides how to react. Both pre-tool gates now CONSUME a "stale"
+    outcome (issue #93 for the danger-bash gate; issue #139 for the
+    Write/Edit gate) via ``_diagnostics["outcome"]``/``["stale_text"]``
+    rather than failing closed unconditionally on every ``None`` — see the
     ``_diagnostics`` Args entry below for the full outcome/stale_text
-    contract.
+    contract. Only a genuinely ``"not_found"`` outcome still fails closed
+    (block + instruct the agent to re-issue the identical tool call) on
+    both gates.
 
     When ``tool_input`` is None (legacy path): returns str (never None) using
     the old last-Write/Edit anchor for backward compatibility.
@@ -777,10 +791,12 @@ def get_current_turn_message_for_validation(
             This makes each attempt cheap (flat cost, not proportional to
             file size) for BOTH the found and not-found cases, so widening
             the ceiling to 30s buys mostly genuine waiting time instead of
-            scan cost. Both the Write/Edit gate and the danger-bash gate
-            call this function without overriding these parameters, so this
-            default is the single source of truth for the wait ceiling on
-            both pre-tool gates.
+            scan cost. This 30.0s default is the effective not_found
+            ceiling for the Write/Edit gate, which does not override
+            ``_max_wait_seconds`` (only ``_stale_grace_seconds``, see
+            below). The danger-bash gate DOES override this to a much
+            smaller ``_DANGER_BASH_MAX_WAIT_SECONDS`` (3.0s, issue #93) —
+            it is not a shared single source of truth across both gates.
         _initial_sleep: Seconds slept after the first miss. Default 0.25s.
         _backoff_multiplier: Multiplier applied to the sleep duration after
             each miss. Default 2.0 (exponential backoff: 0.25, 0.5, 1.0,
@@ -794,6 +810,21 @@ def get_current_turn_message_for_validation(
             old 15s ceiling — expected and fine, since each attempt is now
             cheap (fixed-size tail read) rather than a multi-second full or
             growing scan.
+        _stale_grace_seconds: Optional, additive (issue #139 finding #4).
+            When set, once an attempt classifies as ``"stale"`` AND at
+            least this many REAL (monotonic) seconds have elapsed since the
+            loop started, the loop returns early (None, with
+            ``_diagnostics["outcome"] == "stale"``) instead of retrying
+            through the full ``_max_wait_seconds`` ceiling. Safe because a
+            "stale" match's only remaining upside from further retrying is
+            a LATER attempt superseding it with "found" (see the loop
+            comment below) — a caller that opts in has decided that
+            possibility isn't worth the extra latency for its use case.
+            Default None preserves the exact prior behavior (retry through
+            the full ceiling) for every caller that does not pass it,
+            including the danger-bash gate. Termination remains provable:
+            this can only make the loop return SOONER than the
+            unconditional ceiling, never later.
         _diagnostics: Optional dict the caller can pass to receive
             observability data after the call returns (issue #91): on every
             return path (both success and give-up), this function sets
@@ -858,17 +889,41 @@ def get_current_turn_message_for_validation(
                 _diagnostics["elapsed_seconds"] = round(time.monotonic() - start, 3)
                 _diagnostics["outcome"] = _attempt_outcome.get("outcome", "found")
             return result
-        # Deliberately does NOT early-return here on a "stale" outcome
-        # (_find_turn_matching_tool_input still returned None for stale,
-        # same as not_found -- only _attempt_outcome distinguishes them).
-        # Retrying through the ceiling lets a LATER attempt's "found" result
-        # (the fresh, correctly-attributed turn actually flushing) win over
-        # an earlier "stale" hit on a prior attempt -- strictly safer than
-        # freezing on the first stale classification and potentially using
-        # a stale turn's text when the real, current turn was about to
-        # flush anyway. Only give-up (ceiling reached) falls back to the
-        # last attempt's stale/not_found classification below.
+        # By default (_stale_grace_seconds=None) this does NOT early-return
+        # on a "stale" outcome (_find_turn_matching_tool_input still
+        # returned None for stale, same as not_found -- only
+        # _attempt_outcome distinguishes them). Retrying through the
+        # ceiling lets a LATER attempt's "found" result (the fresh,
+        # correctly-attributed turn actually flushing) win over an earlier
+        # "stale" hit on a prior attempt -- strictly safer than freezing on
+        # the first stale classification and potentially using a stale
+        # turn's text when the real, current turn was about to flush
+        # anyway. Only give-up (ceiling reached) falls back to the last
+        # attempt's stale/not_found classification below.
         elapsed = time.monotonic() - start
+        # Issue #139 finding #4 (opt-in, additive): a caller MAY pass
+        # _stale_grace_seconds to shorten this specifically for "stale"
+        # outcomes once they have persisted for at least that long. This
+        # can only make the loop return SOONER than the unconditional
+        # ceiling below, never later, and elapsed still strictly increases
+        # every iteration regardless -- termination remains provable.
+        if (
+            _stale_grace_seconds is not None
+            and _attempt_outcome.get("outcome") == "stale"
+            and elapsed >= _stale_grace_seconds
+        ):
+            if _diagnostics is not None:
+                _diagnostics["attempts"] = attempts
+                _diagnostics["elapsed_seconds"] = round(elapsed, 3)
+                _diagnostics["outcome"] = "stale"
+                _diagnostics["stale_text"] = _attempt_outcome.get("stale_text", "")
+            log_debug(
+                "transcript_reader",
+                "get_current_turn_message_for_validation: stale-grace early "
+                f"return after {attempts} attempt(s) / {elapsed:.2f}s (grace "
+                f"{_stale_grace_seconds}s) for tool={tool_name}",
+            )
+            return None
         remaining = _max_wait_seconds - elapsed
         if remaining <= 0:
             if _diagnostics is not None:

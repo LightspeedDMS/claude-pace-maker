@@ -72,6 +72,24 @@ def has_complete_marker(text: str) -> bool:
     return False
 
 
+def has_verdict_marker(text: str, positive_token: str = "APPROVED") -> bool:
+    """True iff *text* carries ANY recognisable verdict marker.
+
+    Distinguishes "this response says no" from "this response contains no
+    verdict at all" (issue #135) — verdict_passes_for_context collapses both
+    into a bare False, so a reviewer that returned prose with no marker was
+    counted as a negative vote and its narration surfaced as the block reason.
+
+    Shares _line_starts_with with the other predicates, so it inherits the
+    same markdown leniency (issue #133).
+    """
+    return (
+        has_block_marker(text)
+        or is_positive(text, positive_token)
+        or has_complete_marker(text)
+    )
+
+
 def verdict_passes(text: str, positive_token: str = "APPROVED") -> bool:
     """Canonical pass/fail check for a single-gate LLM response.
 

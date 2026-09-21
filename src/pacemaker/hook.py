@@ -31,6 +31,9 @@ from .constants import (
     DEFAULT_EXTENSION_REGISTRY_PATH,
     DEFAULT_DANGER_RULES_PATH,
     MAX_DELAY_SECONDS,
+    PRE_TOOL_ANCHOR_CAP_SECONDS,
+    PRE_TOOL_HOOK_TIMEOUT_SECONDS,
+    PRE_TOOL_SAFETY_MARGIN_SECONDS,
 )
 from .transcript_reader import (
     get_last_n_messages_for_validation,
@@ -59,10 +62,27 @@ _codex_migration_done: bool = False
 # exponential-backoff retries (0.25, 0.5, 1.0, 1.25(clamped) ~= 5 attempts
 # with the default 0.25s/2x/2.0s-cap schedule) in case the turn flushes
 # within a couple seconds, while capping the worst-case latency per attempt
-# far below the old 30s. The Write/Edit gate is intentionally left
-# untouched (out of scope for issue #93) -- it still uses the function's
-# 30s default.
+# far below the old 30s. The Write/Edit gate's not_found ceiling is a
+# SEPARATE concern (still the function's 30s default, clamped further by
+# PRE_TOOL_ANCHOR_CAP_SECONDS/the gate deadline -- issue #108) -- it now
+# also consumes a "stale" outcome (issue #139), just via its own
+# _WRITE_EDIT_STALE_GRACE_SECONDS below rather than this constant.
 _DANGER_BASH_MAX_WAIT_SECONDS = 3.0
+
+# Issue #139 finding #4: a "found" result still wins over "stale" at any
+# point before this grace window elapses -- the retry loop returns
+# immediately the moment ANY attempt classifies as "found" (see the loop in
+# transcript_reader.get_current_turn_message_for_validation), regardless of
+# an earlier "stale" hit. Only once a "stale" classification has PERSISTED
+# for at least this many real seconds -- i.e. no "found" superseded it in
+# that window -- does the gate stop waiting and accept the stale match
+# early (see the "stale" branch a few hundred lines below, which then
+# accepts it unconditionally). There is no correctness reason to keep
+# paying the full not_found ceiling once that grace has passed -- this only
+# shortens the LATENCY of the eventual accept, exactly like
+# _DANGER_BASH_MAX_WAIT_SECONDS shortens the not_found path above, but
+# scoped to "stale" only (does NOT lower the not_found ceiling itself).
+_WRITE_EDIT_STALE_GRACE_SECONDS = 3.0
 
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
@@ -2591,6 +2611,19 @@ def run_pre_tool_hook() -> Dict[str, Any]:
     # decided to block (e.g. a sqlite error inside record_blockage) —
     # silently fell back to {"continue": True}, defeating the gate.
     _gate_committed = False
+
+    # Single wall clock for the whole gate (issue #108). Claude Code kills
+    # this hook at PRE_TOOL_HOOK_TIMEOUT_SECONDS, and a KILLED PreToolUse hook
+    # is an UNVALIDATED TOOL CALL — the harness simply proceeds. The phases
+    # (anchor wait -> reviewers -> synthesis) each used to carry their own
+    # fixed timeout with nothing summing them, so the chain could reach 90s
+    # against a 60s allowance. Every phase now takes min(its cap, remaining),
+    # so the gate always answers in time — with fewer reviewers if it must.
+    _gate_deadline = (
+        time.monotonic()
+        + PRE_TOOL_HOOK_TIMEOUT_SECONDS
+        - PRE_TOOL_SAFETY_MARGIN_SECONDS
+    )
     try:
         # CSA result must be initialized before ANY operation that could throw,
         # so the outer except handler at the bottom of this function can safely
@@ -3164,85 +3197,154 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             tool_input=tool_input,
             tool_name=tool_name,
             _diagnostics=_write_edit_diagnostics,
+            # Clamp to the gate's remaining time (issue #108). This wait is
+            # SEQUENTIAL with the review that follows, so its full 30s cap
+            # plus the review budget overran the harness timeout.
+            _max_wait_seconds=max(
+                0.0,
+                min(
+                    PRE_TOOL_ANCHOR_CAP_SECONDS,
+                    _gate_deadline - time.monotonic(),
+                ),
+            ),
+            # Issue #139 finding #4: shortens ONLY the "stale" path's
+            # latency -- does not lower the not_found ceiling above.
+            _stale_grace_seconds=_WRITE_EDIT_STALE_GRACE_SECONDS,
         )
 
         if current_message_override is None:
             # Bug #83 follow-up (v2.33.2): mirror the danger-bash gate's
             # fail-CLOSED handling (see the `_bash_outcome` not_found
             # `else:` branch above, issue #93) instead of failing open.
-            # NOTE: unlike the danger-bash gate, this Write/Edit gate does
-            # NOT consume a stale match -- that is intentionally out of
-            # scope for issue #93 (this gate's own 30s default and None
-            # handling are left unchanged). Failing open here meant intent
-            # validation enforced NOTHING for any Write/Edit that raced the
-            # transcript flush — confirmed live via this exact telemetry
-            # category plus a raced edit that passed unvalidated. Fail-closed
-            # is safe because the block is transient: the agent re-issues the
-            # IDENTICAL tool call, that turn is then flushed, the tool-matched
-            # anchor binds to it, and validation proceeds normally on the
-            # second attempt (same recovery path already proven by the
-            # danger-bash gate). Not wrapped in _merge_csa_reminder, matching
-            # the danger-bash template exactly.
-            _sid = session_id or "unknown"
-            _is_subagent = "/agent-" in (transcript_path or "")
-            log_warning(
-                "hook",
-                "Intent validation: transcript not yet flushed for current "
-                f"{tool_name} tool_use on {file_path} "
-                f"(subagent={_is_subagent}). Failing closed — re-issue.",
-            )
-            record_blockage(
-                db_path=DEFAULT_DB_PATH,
-                category="intent_validation_deferred",
-                reason=(
-                    "Transcript not yet flushed: current tool_use absent. "
-                    "Failing closed — re-issue (TOCTOU race guard)."
-                ),
-                hook_type="pre_tool_use",
-                session_id=_sid,
-                details={
-                    "tool": tool_name,
-                    "file_path": file_path,
-                    "subagent": _is_subagent,
-                    "attempts": _write_edit_diagnostics.get("attempts"),
-                    "elapsed_seconds": _write_edit_diagnostics.get("elapsed_seconds"),
-                },
-            )
-            try:
-                record_activity_event(DEFAULT_DB_PATH, "IV", "red", _sid)
-                _project_name = _resolve_project_name()
-                record_governance_event(
-                    db_path=DEFAULT_DB_PATH,
-                    event_type="IV",
-                    project_name=_project_name,
-                    session_id=_sid,
-                    feedback_text=(
-                        f"[RegEx] Transcript-flush race: current {tool_name} "
-                        f"tool_use on {file_path} not yet flushed. Failing "
-                        f"closed — re-issue the identical tool call."
-                    ),
+            # Issue #139 (the issue #93 deadlock's Write/Edit twin): this
+            # gate now ALSO consumes a "stale" outcome exactly like the
+            # danger-bash gate does -- the previous "NOTE: ... does NOT
+            # consume a stale match, intentionally out of scope" comment
+            # here was itself the bug. get_current_turn_message_for_validation
+            # returns None for BOTH "not_found" and "stale"
+            # (_write_edit_diagnostics["outcome"] disambiguates them). The
+            # not_found block message below instructs a byte-identical
+            # re-issue; that re-issue's own tool_use is frequently STILL not
+            # flushed within the window, but the ORIGINAL attempt is now one
+            # turn back, which resolves to "stale" -- not "found". Blocking
+            # unconditionally on every None (as before) meant that recovery
+            # path could never succeed, producing an infinite deadlock (live
+            # evidence: 5 consecutive 30s blocks on a one-line Edit).
+            _write_edit_outcome = _write_edit_diagnostics.get("outcome")
+            if _write_edit_outcome == "stale":
+                # stale_text is already INTENT-gated on the turn's own TEXT
+                # by transcript_reader (never leaks a sibling tool_use's
+                # rendered content) -- see _find_turn_matching_tool_input's
+                # "stale" branch. The match itself is byte-identical
+                # file_path+old_string+new_string/content (+replace_all for
+                # Edit -- issue #139 finding #1), so this is provably a
+                # re-issue of exactly this edit; falls through to normal
+                # Stage 1/2 validation below rather than the not-ready block.
+                current_message_override = _write_edit_diagnostics.get("stale_text", "")
+                if not current_message_override:
+                    # Issue #139 code-review finding #2: an empty
+                    # stale_text must NOT fall through to
+                    # intent_validator.validate_intent_and_code's n-back
+                    # RESCUE fallback (`current_message_override or
+                    # extract_current_assistant_message(messages, ...)`).
+                    # That fallback renders the newest message WITH its
+                    # FULL tool content (get_last_n_messages_for_validation's
+                    # own documented behavior -- an INTENT:-looking string
+                    # inside a Write's `content` field would leak straight
+                    # through) and additionally checks messages[-2] for an
+                    # INTENT that merely names the file, with no relation to
+                    # the stale-matched turn at all. The stale path must be
+                    # ANCHOR-ONLY, exactly like the danger-bash gate's Phase
+                    # 1 (which checks its anchor text directly, with no
+                    # n-back fallback at all). Overriding `messages` to []
+                    # makes intent_validator's fallback resolve to "" too
+                    # (identical to a genuinely empty transcript), so Stage
+                    # 1 blocks on the ordinary "no INTENT" reason without
+                    # duplicating that block's construction here.
+                    messages = []
+                log_info(
+                    "hook",
+                    "Intent validation: accepted STALE anchor turn "
+                    f"(byte-identical re-issue, outcome=stale_accepted) for "
+                    f"{tool_name} on {file_path} "
+                    f"(attempts={_write_edit_diagnostics.get('attempts')}, "
+                    "elapsed_seconds="
+                    f"{_write_edit_diagnostics.get('elapsed_seconds')})",
                 )
-            except Exception:
-                pass
-            return {
-                "decision": "block",
-                "reason": format_tag(
-                    "⛔ Intent validation deferred — transcript timing race "
-                    "(not a rejection)\n\n"
-                    f"The current {tool_name} tool call has not yet been "
-                    "flushed to the conversation transcript. This is a "
-                    "TRANSIENT TIMING ISSUE, not a rejection of your intent "
-                    "or code.\n\n"
-                    f"RE-ISSUE THE IDENTICAL {tool_name} TOOL CALL with the "
-                    "SAME INTENT: declaration in the same message. The "
-                    "re-issue will find the now-flushed turn and validate "
-                    "normally.\n\n"
-                    "IMPORTANT: the file_path and content must be IDENTICAL "
-                    "to this attempt — the validator binds to the exact "
-                    "tool call content, and a different edit will not match.",
-                    "intent_validation_deferred",
-                ),
-            }
+            else:
+                # Failing open here meant intent validation enforced
+                # NOTHING for any Write/Edit that raced the transcript
+                # flush — confirmed live via this exact telemetry category
+                # plus a raced edit that passed unvalidated. Fail-closed is
+                # safe because the block is transient: the agent re-issues
+                # the IDENTICAL tool call, that turn is then flushed (or, if
+                # not, the re-issue now resolves to "stale" per the branch
+                # above), and validation proceeds normally. Not wrapped in
+                # _merge_csa_reminder, matching the danger-bash template
+                # exactly.
+                _sid = session_id or "unknown"
+                _is_subagent = "/agent-" in (transcript_path or "")
+                log_warning(
+                    "hook",
+                    "Intent validation: transcript not yet flushed for current "
+                    f"{tool_name} tool_use on {file_path} "
+                    f"(subagent={_is_subagent}). Failing closed — re-issue.",
+                )
+                record_blockage(
+                    db_path=DEFAULT_DB_PATH,
+                    category="intent_validation_deferred",
+                    reason=(
+                        "Transcript not yet flushed: current tool_use absent. "
+                        "Failing closed — re-issue (TOCTOU race guard)."
+                    ),
+                    hook_type="pre_tool_use",
+                    session_id=_sid,
+                    details={
+                        "tool": tool_name,
+                        "file_path": file_path,
+                        "subagent": _is_subagent,
+                        "attempts": _write_edit_diagnostics.get("attempts"),
+                        "elapsed_seconds": _write_edit_diagnostics.get(
+                            "elapsed_seconds"
+                        ),
+                        "outcome": _write_edit_outcome,
+                    },
+                )
+                try:
+                    record_activity_event(DEFAULT_DB_PATH, "IV", "red", _sid)
+                    _project_name = _resolve_project_name()
+                    record_governance_event(
+                        db_path=DEFAULT_DB_PATH,
+                        event_type="IV",
+                        project_name=_project_name,
+                        session_id=_sid,
+                        feedback_text=(
+                            f"[RegEx] Transcript-flush race: current {tool_name} "
+                            f"tool_use on {file_path} not yet flushed. Failing "
+                            f"closed — re-issue the identical tool call."
+                        ),
+                    )
+                except Exception:
+                    pass
+                return {
+                    "decision": "block",
+                    "reason": format_tag(
+                        "⛔ Intent validation deferred — transcript timing race "
+                        "(not a rejection)\n\n"
+                        f"The current {tool_name} tool call has not yet been "
+                        "flushed to the conversation transcript. This is a "
+                        "TRANSIENT TIMING ISSUE, not a rejection of your intent "
+                        "or code.\n\n"
+                        f"RE-ISSUE THE IDENTICAL {tool_name} TOOL CALL with the "
+                        "SAME INTENT: declaration in the same message. The "
+                        "re-issue will find the now-flushed turn and validate "
+                        "normally.\n\n"
+                        "IMPORTANT: the file_path and content must be IDENTICAL "
+                        "to this attempt — the validator binds to the exact "
+                        "tool call content, and a different edit will not match.",
+                        "intent_validation_deferred",
+                    ),
+                }
 
         # Activity events: IV/TD/CC blue (validation in-progress) — settings-aware
         try:
@@ -3266,6 +3368,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             tool_name=tool_name,
             hook_model=config.get("hook_model", "auto"),
             current_message_override=current_message_override,
+            _deadline=_gate_deadline,
         )
 
         # 8. Return result
