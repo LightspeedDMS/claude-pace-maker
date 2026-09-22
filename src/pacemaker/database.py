@@ -27,6 +27,23 @@ DB_TIMEOUT = 5.0  # Wait up to 5 seconds for lock
 MAX_RETRIES = 3  # Retry up to 3 times on lock
 RETRY_DELAY = 0.1  # Initial delay between retries (100ms)
 
+# Schema version (PRAGMA user_version), bumped whenever SCHEMA below changes.
+# initialize_database() uses this as a cheap fast-path check (issue #145):
+# on a database whose stored version already equals SCHEMA_VERSION, the
+# CREATE statements in SCHEMA are skipped entirely rather than re-parsed/
+# re-executed on every hook invocation.
+SCHEMA_VERSION = 1
+
+# Cleanup batching (issue #145): a single unbounded DELETE can hold the
+# WAL writer lock for as long as the delete takes, starving other
+# concurrent hook processes past their busy_timeout. Cleanup functions
+# instead delete at most CLEANUP_BATCH_SIZE rows per write transaction,
+# looping until nothing is left to delete or CLEANUP_MAX_BATCHES batches
+# have run (Messi Rule 14: the loop is bounded by construction -- it can
+# delete at most CLEANUP_MAX_BATCHES * CLEANUP_BATCH_SIZE rows per call).
+CLEANUP_BATCH_SIZE = 500
+CLEANUP_MAX_BATCHES = 200
+
 
 # Cache of db_paths that have already been initialized to avoid repeated
 # executescript() calls which require an exclusive lock and cause contention.
@@ -337,6 +354,95 @@ def get_recent_activity(
         return []
 
 
+# Allowlist of table -> timestamp column pairs _delete_old_rows_in_batches()
+# is ever called with. table/timestamp_column are interpolated into an
+# f-string-built DELETE statement (SQLite does not support binding
+# identifiers as query parameters); validating against this fixed allowlist
+# means that interpolation can only ever produce one of these three known,
+# hardcoded statements -- no caller-controlled value ever reaches it.
+#
+# Why batching exists (issue #145): a single unbounded DELETE can hold the
+# WAL writer lock for however long the whole delete takes, starving other
+# concurrent hook processes past their busy_timeout. Deleting at most
+# CLEANUP_BATCH_SIZE rows per write transaction, in a loop capped at
+# CLEANUP_MAX_BATCHES iterations, keeps each transaction short and bounds
+# the worst case to CLEANUP_MAX_BATCHES * CLEANUP_BATCH_SIZE rows deleted
+# per call (Messi Rule 14: provable termination).
+#
+# batch_size/max_batches below default to None so the CURRENT values of
+# the CLEANUP_BATCH_SIZE/CLEANUP_MAX_BATCHES module constants are read at
+# CALL time, not captured once at function-definition time -- tests rely
+# on monkeypatching those constants to keep seed data small. Both are
+# validated as positive ints (bool excluded, since bool is an int
+# subclass) -- 0/negative would silently delete nothing or skip cleanup.
+_CLEANUP_TABLE_TIMESTAMP_COLUMNS = {
+    "activity_events": "timestamp",
+    "governance_events": "timestamp",
+    "usage_snapshots": "timestamp",
+}
+
+
+def _is_positive_int(value: object) -> bool:
+    """True iff value is a non-bool int > 0 (bool is a subclass of int)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _delete_old_rows_in_batches(
+    db_path: str,
+    table: str,
+    timestamp_column: str,
+    cutoff: float,
+    batch_size: Optional[int] = None,
+    max_batches: Optional[int] = None,
+) -> int:
+    """Delete rows older than cutoff from table, in bounded batches.
+    table/timestamp_column must be allowlisted; returns total rows deleted.
+
+    Each batch is its own committed transaction, not one big rollback-able
+    unit. If a later batch raises, earlier batches that already committed
+    are NOT undone -- the exception simply propagates to the caller.
+    Callers that catch it and return -1 (e.g. cleanup_old_activity) are
+    reporting "this call did not finish cleanly", not "nothing was
+    deleted": rows from earlier, already-committed batches may still be
+    gone even though the overall call is reported as failed.
+    """
+    if _CLEANUP_TABLE_TIMESTAMP_COLUMNS.get(table) != timestamp_column:
+        raise ValueError(f"table/column not allowlisted: {table}.{timestamp_column}")
+    if batch_size is None:
+        batch_size = CLEANUP_BATCH_SIZE
+    if max_batches is None:
+        max_batches = CLEANUP_MAX_BATCHES
+    if not _is_positive_int(batch_size):
+        raise ValueError(f"batch_size must be a positive int, got {batch_size!r}")
+    if not _is_positive_int(max_batches):
+        raise ValueError(f"max_batches must be a positive int, got {max_batches!r}")
+
+    total_deleted = 0
+    for _ in range(max_batches):
+
+        def operation(conn: sqlite3.Connection) -> int:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE id IN (
+                    SELECT id FROM {table}
+                    WHERE {timestamp_column} < ?
+                    ORDER BY id
+                    LIMIT ?
+                )
+                """,
+                (cutoff, batch_size),
+            )
+            return cursor.rowcount
+
+        deleted = execute_with_retry(db_path, operation)
+        total_deleted += deleted
+        if deleted < batch_size:
+            break
+    return total_deleted
+
+
 def cleanup_old_activity(
     db_path: str,
     max_age_seconds: int = 60,
@@ -345,7 +451,8 @@ def cleanup_old_activity(
     Delete activity events older than max_age_seconds.
 
     Called periodically to prevent unbounded table growth.
-    Events within the time window are preserved.
+    Events within the time window are preserved. Deletes in bounded
+    batches (see _delete_old_rows_in_batches, issue #145).
 
     Args:
         db_path: Path to SQLite database file
@@ -356,16 +463,9 @@ def cleanup_old_activity(
     """
     try:
         cutoff = time.time() - max_age_seconds
-
-        def operation(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM activity_events WHERE timestamp < ?",
-                (cutoff,),
-            )
-            return cursor.rowcount
-
-        return execute_with_retry(db_path, operation)
+        return _delete_old_rows_in_batches(
+            db_path, "activity_events", "timestamp", cutoff
+        )
 
     except Exception as e:
         log_error("database", "Failed to cleanup old activity events", e)
@@ -380,7 +480,8 @@ def cleanup_old_governance_events(
     Delete governance events older than max_age_seconds.
 
     Called periodically (e.g., from SessionStart) to prevent unbounded
-    table growth. Default retention is 24 hours.
+    table growth. Default retention is 24 hours. Deletes in bounded
+    batches (see _delete_old_rows_in_batches, issue #145).
 
     Args:
         db_path: Path to SQLite database file
@@ -391,16 +492,9 @@ def cleanup_old_governance_events(
     """
     try:
         cutoff = time.time() - max_age_seconds
-
-        def operation(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM governance_events WHERE timestamp < ?",
-                (cutoff,),
-            )
-            return cursor.rowcount
-
-        return execute_with_retry(db_path, operation)
+        return _delete_old_rows_in_batches(
+            db_path, "governance_events", "timestamp", cutoff
+        )
 
     except Exception as e:
         log_error("database", "Failed to cleanup old governance events", e)
@@ -488,10 +582,21 @@ def initialize_database(db_path: str) -> bool:
     """
     Initialize database with required schema.
 
-    Uses an in-memory cache (_initialized_dbs) to avoid calling
-    executescript() more than once per db_path. executescript() requires
-    an exclusive lock; repeated calls on the same path cause WAL-mode
-    contention that can hang tests indefinitely.
+    Uses an in-memory cache (_initialized_dbs) to avoid touching the
+    database at all more than once per db_path PER PROCESS. This cache
+    does NOT survive across processes -- each hook invocation is a fresh
+    `python3 -m pacemaker.hook <event>` process, so it was previously
+    re-running cursor.executescript(SCHEMA) (all of the CREATE statements
+    in SCHEMA) on every single hook call in production.
+
+    Issue #145 fix: when the process-local cache misses, a cheap
+    PRAGMA user_version check decides whether real DDL is needed at all --
+    on a database whose version already equals SCHEMA_VERSION,
+    executescript() is skipped entirely. The whole operation is wrapped in
+    execute_with_retry() (previously it was NOT retried at all, unlike
+    every other writer in this module), so a transient lock on a
+    genuinely-first-time schema creation is retried instead of failing
+    the hook outright.
 
     Args:
         db_path: Path to SQLite database file
@@ -506,10 +611,17 @@ def initialize_database(db_path: str) -> bool:
         # Ensure parent directory exists
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-        with get_db_connection(db_path) as conn:
+        def operation(conn: sqlite3.Connection) -> bool:
             cursor = conn.cursor()
-            # Execute schema creation
-            cursor.executescript(SCHEMA)
+            current_version = cursor.execute("PRAGMA user_version").fetchone()[0]
+            if current_version < SCHEMA_VERSION:
+                cursor.executescript(SCHEMA)
+                cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            return True
+
+        succeeded: bool = execute_with_retry(db_path, operation)
+        if not succeeded:
+            return False
 
         _initialized_dbs.add(db_path)
         return True
@@ -627,6 +739,10 @@ def cleanup_old_snapshots(db_path: str, retention_days: int = 60) -> int:
     """
     Delete usage snapshots older than retention_days.
 
+    Deletes in bounded batches (see _delete_old_rows_in_batches, issue
+    #145) so a large backlog cannot hold the WAL writer lock in one long
+    transaction.
+
     Args:
         db_path: Path to SQLite database file
         retention_days: Keep snapshots from last N days (default 60 = 2 months)
@@ -636,20 +752,9 @@ def cleanup_old_snapshots(db_path: str, retention_days: int = 60) -> int:
     """
     try:
         cutoff_time = datetime.now(timezone.utc) - timedelta(days=retention_days)
-
-        def operation(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            # Delete old records
-            cursor.execute(
-                """
-                DELETE FROM usage_snapshots
-                WHERE timestamp < ?
-            """,
-                (int(cutoff_time.timestamp()),),
-            )
-            return cursor.rowcount
-
-        return execute_with_retry(db_path, operation)
+        return _delete_old_rows_in_batches(
+            db_path, "usage_snapshots", "timestamp", int(cutoff_time.timestamp())
+        )
 
     except Exception as e:
         log_error("database", "Failed to cleanup old snapshots", e)
