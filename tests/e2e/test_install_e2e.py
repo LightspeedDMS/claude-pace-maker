@@ -90,8 +90,9 @@ class TestInstallationE2E:
         assert config["max_delay"] == 120
         assert config["threshold_percent"] == 0
         # poll_interval default was deliberately changed 60 -> 300 by commit
-        # 66b64bae (2026-03-05, credit-aware adaptive throttling); this
-        # assertion was never updated to match (issue #144).
+        # 66b64bae (2026-03-05, "feat: Add exponential backoff for 429s,
+        # increase poll interval to 300s, intent validator fail-open");
+        # this assertion was never updated to match (issue #144).
         assert config["poll_interval"] == 300
 
         # Verify database created with correct schema

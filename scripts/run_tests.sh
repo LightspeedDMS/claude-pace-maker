@@ -13,10 +13,40 @@
 #   ./scripts/run_tests.sh --tb     # Show failure tracebacks
 #
 # Env vars:
-#   PACEMAKER_TEST_TIMEOUT  Per-file timeout in seconds (default 120,
-#                            issue #143 -- raised from the original 30s,
-#                            which a normal file can exceed on a loaded
-#                            box even when it passes when run alone).
+#   PACEMAKER_TEST_TIMEOUT       Per-file timeout in seconds for
+#                                 tests/*.py and tests/unit/*.py (default
+#                                 120, issue #143 -- raised from the
+#                                 original 30s, which a normal file can
+#                                 exceed on a loaded box even when it
+#                                 passes when run alone).
+#   PACEMAKER_E2E_TEST_TIMEOUT   Per-file timeout in seconds for
+#                                 tests/e2e/*.py (default 900, issue #144
+#                                 code-review follow-up). Files under
+#                                 tests/e2e/ run real subprocesses
+#                                 (install.sh, bootstrap-plugin.sh) and
+#                                 were never given their own budget --
+#                                 they inherited the fast-suite's 120s
+#                                 file / 15s test caps, so a FULL run
+#                                 (this script without --quick) always
+#                                 timed them out even though --quick
+#                                 (which skips tests/e2e/ entirely) was
+#                                 green.
+#   PACEMAKER_E2E_PYTEST_TIMEOUT Per-test --timeout for tests/e2e/*.py
+#                                 (default 90, same follow-up).
+#   PACEMAKER_TEST_PYTHON        Interpreter to run pytest with. Default:
+#                                 mirrors src/hooks/*.sh's find_python()
+#                                 -- prefer an interpreter where
+#                                 claude_agent_sdk actually imports among
+#                                 python3.11/python3.10/python3, else
+#                                 fall back to existence-only order. Bare
+#                                 `python` was previously hardcoded, which
+#                                 on this box resolves to 3.9 (no
+#                                 claude_agent_sdk installed) instead of
+#                                 the 3.11 production hooks actually use
+#                                 -- any test exercising the real SDK
+#                                 spawn-guard path silently no-op'd via
+#                                 ImportError instead of running against
+#                                 the production interpreter.
 #
 # Issue #143: a killed/errored file must never be silently dropped from
 # the totals with a green exit. See the EXIT_CODE capture below for why
@@ -38,13 +68,55 @@ for arg in "$@"; do
     esac
 done
 
-# Timeout per test file (seconds). Issue #143: configurable via env var,
-# default raised from 30 to 120 -- on a loaded box, files that pass fine
-# individually (e.g. test_issue_93_danger_bash_anchor.py at 103s,
+# Timeout per test file (seconds), for tests/*.py and tests/unit/*.py.
+# Issue #143: configurable via env var, default raised from 30 to 120 --
+# on a loaded box, files that pass fine individually (e.g.
+# test_issue_93_danger_bash_anchor.py at 103s,
 # test_post_tool_use_subagent_context.py at 47s) were exceeding the old
 # 30s cap and getting silently dropped from the totals (see the EXIT_CODE
 # fix below -- this is a SEPARATE, compounding cause of the same symptom).
 TIMEOUT="${PACEMAKER_TEST_TIMEOUT:-120}"
+
+# Separate, more generous budgets for tests/e2e/*.py (issue #144
+# code-review follow-up #1). These files run real subprocesses
+# (install.sh does a real `pip install --user` per fresh HOME, ~20-40s;
+# bootstrap-plugin.sh does a real venv + pip install, similar cost) and
+# were measured well over the fast-suite's 120s/15s caps even after
+# fixture-sharing speedups (e.g. test_install_old_bloated.py at ~837s
+# for 34 tests before the site-packages-seeding speedup below).
+E2E_TIMEOUT="${PACEMAKER_E2E_TEST_TIMEOUT:-900}"
+E2E_PYTEST_TIMEOUT="${PACEMAKER_E2E_PYTEST_TIMEOUT:-90}"
+
+# Resolve which Python interpreter to run pytest with. Mirrors
+# src/hooks/*.sh's find_python(): prefer an interpreter where
+# claude_agent_sdk actually imports (so tests exercising the real SDK
+# spawn-guard path run against the same interpreter production hooks
+# use), falling back to existence-only preference order
+# python3.11 -> python3.10 -> python3 when none has the SDK. Overridable
+# via PACEMAKER_TEST_PYTHON.
+resolve_test_python() {
+    if [ -n "${PACEMAKER_TEST_PYTHON:-}" ]; then
+        echo "$PACEMAKER_TEST_PYTHON"
+        return 0
+    fi
+    local py
+    for py in python3.11 python3.10 python3; do
+        if command -v "$py" >/dev/null 2>&1; then
+            if "$py" -c "import claude_agent_sdk" >/dev/null 2>&1; then
+                echo "$py"
+                return 0
+            fi
+        fi
+    done
+    for py in python3.11 python3.10 python3; do
+        if command -v "$py" >/dev/null 2>&1; then
+            echo "$py"
+            return 0
+        fi
+    done
+    echo "python3"
+}
+TEST_PYTHON="$(resolve_test_python)"
 
 # Counters
 TOTAL_PASSED=0
@@ -80,7 +152,12 @@ if [ "$QUICK" = false ]; then
 fi
 
 TOTAL_FILES=${#TEST_FILES[@]}
-echo "Running $TOTAL_FILES test files independently (timeout=${TIMEOUT}s each)..."
+echo "Using $TEST_PYTHON for tests"
+echo "Running $TOTAL_FILES test files independently"
+echo "  tests/*.py, tests/unit/*.py : timeout=${TIMEOUT}s/file, 15s/test"
+if [ "$QUICK" = false ]; then
+    echo "  tests/e2e/*.py              : timeout=${E2E_TIMEOUT}s/file, ${E2E_PYTEST_TIMEOUT}s/test"
+fi
 echo ""
 
 START_TIME=$(date +%s)
@@ -88,6 +165,20 @@ START_TIME=$(date +%s)
 for f in "${TEST_FILES[@]}"; do
     BASENAME=$(basename "$f")
     printf "  %-55s " "$BASENAME"
+
+    # tests/e2e/*.py gets its own, more generous budget (issue #144
+    # code-review follow-up #1) -- see the E2E_TIMEOUT/E2E_PYTEST_TIMEOUT
+    # comment near the top of this file.
+    case "$f" in
+        tests/e2e/*)
+            FILE_TIMEOUT="$E2E_TIMEOUT"
+            PYTEST_INNER_TIMEOUT="$E2E_PYTEST_TIMEOUT"
+            ;;
+        *)
+            FILE_TIMEOUT="$TIMEOUT"
+            PYTEST_INNER_TIMEOUT=15
+            ;;
+    esac
 
     # Run with timeout, capture output AND the real exit code.
     #
@@ -103,7 +194,7 @@ for f in "${TEST_FILES[@]}"; do
     # Fixed by disabling errexit around the substitution and reading `$?`
     # directly, immediately after the command -- no pipe, no `|| true`.
     set +e
-    OUTPUT=$(timeout "$TIMEOUT" python -m pytest "$f" -q --timeout=15 "$TB_FLAG" 2>&1)
+    OUTPUT=$(timeout "$FILE_TIMEOUT" "$TEST_PYTHON" -m pytest "$f" -q --timeout="$PYTEST_INNER_TIMEOUT" "$TB_FLAG" 2>&1)
     EXIT_CODE=$?
     set -e
 
@@ -242,7 +333,8 @@ echo "TOTAL: ${TOTAL_PASSED} passed, ${TOTAL_FAILED} failed, ${TOTAL_ERRORED} er
 
 if [ ${#TIMED_OUT_FILES[@]} -gt 0 ]; then
     echo ""
-    echo -e "${RED}TIMED OUT (${#TIMED_OUT_FILES[@]} files, exceeded ${TIMEOUT}s -- set PACEMAKER_TEST_TIMEOUT to raise):${NC}"
+    echo -e "${RED}TIMED OUT (${#TIMED_OUT_FILES[@]} files, exceeded ${TIMEOUT}s for tests/*.py and tests/unit/*.py"
+    echo -e "or ${E2E_TIMEOUT}s for tests/e2e/*.py -- set PACEMAKER_TEST_TIMEOUT / PACEMAKER_E2E_TEST_TIMEOUT to raise):${NC}"
     for f in "${TIMED_OUT_FILES[@]}"; do
         echo "  - $f"
     done

@@ -277,24 +277,27 @@ class TestScenario7MissingDeps:
     """hook.sh exits gracefully when Python execution fails."""
 
     @pytest.mark.timeout(30)
-    def test_hook_exits_zero_when_python_fails(
-        self, tmp_path, prebaked_session_start_home
-    ):
+    def test_hook_exits_zero_when_python_fails(self, tmp_path):
         """hook.sh must exit 0 (graceful) even when Python module execution
         fails.
 
-        Cloning the prebaked home is safe here because the ONLY assertion
-        is `returncode == 0`, and hook.sh's final line is an unconditional
-        `exit 0` regardless of whether the inner pacemaker.hook invocation
-        succeeded or failed -- so this assertion holds identically whether
-        the fake python3 shim actually gets reached or the pre-seeded venv
-        (from the clone) short-circuits past it. See
-        test_hook_logs_error_when_python_fails below for the DIFFERENT
-        test where cloning would NOT be safe."""
-        home = _clone_home(prebaked_session_start_home.home, tmp_path)
+        Deliberately NOT cloning prebaked_session_start_home (issue #144
+        code-review follow-up #5): a pre-seeded working venv would let
+        resolve_runtime_python()'s stamp-only fast check succeed WITHOUT
+        ever invoking (or needing) any interpreter shim, so `returncode
+        == 0` would hold for the wrong reason -- hook.sh's unconditional
+        final `exit 0`, true regardless of whether Python actually failed
+        -- making the test vacuous (an earlier revision of this test did
+        exactly that). Shimming every interpreter name resolve_python()
+        tries, on a fresh HOME, matches its sibling
+        test_hook_logs_error_when_python_fails below and makes Python
+        genuinely fail, so this test exercises the graceful-degradation
+        path it's named for. Still fast: resolve_python() aborts before
+        any real venv/pip work once every candidate is shimmed to fail."""
+        home = tmp_path / "home"
+        home.mkdir()
         pacemaker_dir = home / ".claude-pace-maker"
-        # Write a valid config so we get past the enabled check (overwrites
-        # the prebaked default -- keeps the original test's exact config).
+        pacemaker_dir.mkdir()
         config = {
             "enabled": True,
             "log_level": 2,
@@ -305,12 +308,23 @@ class TestScenario7MissingDeps:
         with open(pacemaker_dir / "config.json", "w") as f:
             json.dump(config, f)
 
-        # Create a fake python3 that always exits with error
+        # Fake every interpreter name resolve_python() tries (python3.13
+        # down to python3.10, plus bare python3) -- must be first on PATH.
+        # See test_hook_logs_error_when_python_fails below for why a
+        # narrower list is insufficient on this box.
         fake_python_dir = tmp_path / "fake_python"
         fake_python_dir.mkdir()
-        fake_python = fake_python_dir / "python3"
-        fake_python.write_text("#!/bin/bash\nexit 1\n")
-        fake_python.chmod(0o755)
+        for name in (
+            "python3",
+            "python3.10",
+            "python3.11",
+            "python3.12",
+            "python3.13",
+            "python3.14",
+        ):
+            fake_py = fake_python_dir / name
+            fake_py.write_text("#!/bin/bash\nexit 1\n")
+            fake_py.chmod(0o755)
 
         result = run_hook(
             home,
@@ -387,9 +401,10 @@ class TestScenario7MissingDeps:
             },
         )
         # hook.sh always exits 0 regardless of the inner failure (graceful
-        # degradation) -- this test's focus is the LOG content, not the
-        # exit code, so `result` is captured but its returncode is not
-        # separately asserted.
+        # degradation). This test's real focus is the LOG content below,
+        # not the exit code -- but `result` is captured either way, so
+        # asserting the (tautological, always-true) returncode costs
+        # nothing and documents the graceful-degradation contract inline.
         assert result.returncode == 0
 
         debug_log = pacemaker_dir / "hook_debug.log"

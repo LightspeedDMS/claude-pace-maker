@@ -148,6 +148,62 @@ _BLOCKED_CLI_NAMES = {"codex", "gemini", "claude"}
 _REAL_SUBPROCESS_RUN = subprocess.run
 
 
+class _ExternalCallGuard:
+    """Records every leaked real-external-call attempt, then raises loudly.
+
+    Extracted out of `_block_real_external_cli_calls` (issue #144
+    code-review follow-up #4) so the detection logic is directly
+    unit-testable (see tests/test_external_cli_guard.py) without needing a
+    nested pytest process, and so a leak can be caught at fixture
+    TEARDOWN via `check()` even when the immediate RuntimeError raised by
+    `guarded_run`/`guarded_sdk_query` gets silently swallowed by the
+    caller's own exception handling -- which is exactly what
+    `AnthropicProvider._query_async`'s broad `except Exception` does
+    (converts it into an empty response, then a ProviderError). Relying
+    on the immediate raise alone let a leaked, unmocked SDK call pass
+    undetected; `check()` is the reliable signal.
+    """
+
+    def __init__(self):
+        self.leaked_calls = []
+
+    def guarded_run(self, cmd, *args, **kwargs):
+        argv0 = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else cmd
+        name = os.path.basename(str(argv0)) if argv0 else ""
+        if name in _BLOCKED_CLI_NAMES:
+            self.leaked_calls.append(f"subprocess.run(cmd={cmd!r})")
+            raise RuntimeError(
+                f"Real external CLI call in a non-e2e test (cmd={cmd!r}). "
+                f"Mock the provider/inference call instead of hitting {name}."
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    async def guarded_sdk_query(self, *args, **kwargs):
+        self.leaked_calls.append("claude_agent_sdk.query(...)")
+        raise RuntimeError(
+            "Real external claude_agent_sdk.query() call in a non-e2e "
+            "test. Mock AnthropicProvider.query (or "
+            "pacemaker.inference.resolve_and_call_with_reviewer) instead "
+            "of letting execution reach the real Claude Agent SDK."
+        )
+        yield  # pragma: no cover - unreachable; makes this an async generator
+
+    def check(self):
+        """Fail loudly if any real external call was attempted during
+        this guard's lifetime, regardless of whether the caller's own
+        exception handling swallowed the immediate raise above."""
+        if self.leaked_calls:
+            pytest.fail(
+                "Real external CLI/SDK call(s) leaked past mocking in a "
+                f"non-e2e test: {self.leaked_calls}. A provider's own "
+                "exception handling may have swallowed the guard's "
+                "immediate RuntimeError (e.g. AnthropicProvider._query_async's "
+                "broad `except Exception`), so this teardown check is the "
+                "reliable signal -- do not remove it.",
+                pytrace=False,
+            )
+
+
 @pytest.fixture(autouse=True)
 def _block_real_external_cli_calls(request, monkeypatch):
     """Fail fast if a test makes a real external CLI call (codex/gemini/claude).
@@ -163,38 +219,81 @@ def _block_real_external_cli_calls(request, monkeypatch):
         transport module, entirely bypassing `subprocess.run`. A test whose
         code path reaches `AnthropicProvider.query()` unmocked previously made
         a real, unauthenticated CLI call instead of being caught here.
+
+    See `_ExternalCallGuard.check()` for why this is a generator fixture
+    with a teardown check, not just the immediate raise inside the guarded
+    functions.
     """
     # e2e tests may legitimately hit real systems — don't guard those.
     if os.sep + "e2e" + os.sep in str(request.node.fspath):
+        yield
         return
 
-    def _guarded_run(cmd, *args, **kwargs):
-        argv0 = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else cmd
-        name = os.path.basename(str(argv0)) if argv0 else ""
-        if name in _BLOCKED_CLI_NAMES:
-            raise RuntimeError(
-                f"Real external CLI call in a non-e2e test (cmd={cmd!r}). "
-                f"Mock the provider/inference call instead of hitting {name}."
-            )
-        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
-
-    monkeypatch.setattr(subprocess, "run", _guarded_run)
+    guard = _ExternalCallGuard()
+    monkeypatch.setattr(subprocess, "run", guard.guarded_run)
 
     try:
         import claude_agent_sdk
 
-        async def _guarded_sdk_query(*args, **kwargs):
-            raise RuntimeError(
-                "Real external claude_agent_sdk.query() call in a non-e2e "
-                "test. Mock AnthropicProvider.query (or "
-                "pacemaker.inference.resolve_and_call_with_reviewer) instead "
-                "of letting execution reach the real Claude Agent SDK."
-            )
-            yield  # pragma: no cover - unreachable; makes this an async generator
-
-        monkeypatch.setattr(claude_agent_sdk, "query", _guarded_sdk_query)
+        monkeypatch.setattr(claude_agent_sdk, "query", guard.guarded_sdk_query)
     except ImportError:
         pass
+
+    yield
+
+    guard.check()
+
+
+# Files that legitimately test perform_session_start_version_check()'s OWN
+# logic -- they mock subprocess.run themselves, at the correct lower level,
+# so the blanket stub below (which no-ops the whole function) must not
+# apply to them or it would silently defeat what they're testing.
+_VERSION_CHECK_EXEMPT_FILES = {
+    "test_claude_code_version.py",
+    "test_version_check_integration.py",
+}
+
+
+@pytest.fixture(autouse=True)
+def _stub_session_start_version_probe(request, monkeypatch):
+    """No-op perform_session_start_version_check() for every test except
+    the two that specifically test it (see _VERSION_CHECK_EXEMPT_FILES)
+    and e2e tests (which may legitimately hit real systems).
+
+    run_session_start_hook() unconditionally calls
+    perform_session_start_version_check(), which does a real
+    `subprocess.run(["claude", "--version"], timeout=5)`. Every test file
+    that calls run_session_start_hook() directly for unrelated reasons
+    (CSA schema gating, provenance tagging, stdin handling, intel
+    injection, subagent reminders, ...) was making this real external
+    call on every run -- invisible because
+    perform_session_start_version_check()'s own fail-open exception
+    handling silently swallowed any error, including the
+    _block_real_external_cli_calls guard's immediate RuntimeError, until
+    that guard's teardown check (`_ExternalCallGuard.check()`, issue #144
+    code-review follow-up #4) started catching it for real.
+    """
+    fspath = str(request.node.fspath)
+    if os.path.basename(fspath) in _VERSION_CHECK_EXEMPT_FILES:
+        yield
+        return
+    if os.sep + "e2e" + os.sep in fspath:
+        yield
+        return
+
+    # pacemaker.version_check is this project's OWN internal module
+    # (unlike the optional claude_agent_sdk dependency guarded elsewhere
+    # in this file) -- it must always be importable, so a failure here is
+    # a real setup problem, not something to silently swallow.
+    import pacemaker.version_check as version_check
+
+    monkeypatch.setattr(
+        version_check,
+        "perform_session_start_version_check",
+        lambda *args, **kwargs: None,
+    )
+
+    yield
 
 
 # ---------------------------------------------------------------------------

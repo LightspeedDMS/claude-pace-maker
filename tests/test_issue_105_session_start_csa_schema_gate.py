@@ -71,6 +71,17 @@ def _run_session_start(tmp_path, config: dict):
         patch("pacemaker.hook.DEFAULT_CONFIG_PATH", str(config_path)),
         patch("pacemaker.hook.DEFAULT_STATE_PATH", str(state_path)),
         patch("sys.stdin.read", return_value=""),
+        # run_session_start_hook() does `from .version_check import
+        # perform_session_start_version_check` as a LOCAL import inside
+        # its own try/except, so the patch target is version_check's own
+        # module attribute (where the local import resolves it at call
+        # time), not a nonexistent pacemaker.hook.perform_session_start_
+        # version_check. Unmocked, this real function does
+        # `subprocess.run(["claude", "--version"], timeout=5)` -- a real
+        # external CLI call this test has nothing to do with (it's
+        # testing CSA schema gating), caught by
+        # tests/conftest.py::_ExternalCallGuard's teardown check.
+        patch("pacemaker.version_check.perform_session_start_version_check"),
     ):
         hook.run_session_start_hook()
 

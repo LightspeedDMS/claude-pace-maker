@@ -21,16 +21,22 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 INSTALL_SH = REPO_ROOT / "install.sh"
 
 
-@pytest.mark.timeout(60)
 class TestInstallScript:
     """Streamlined installation tests - minimize installer runs.
 
     Each test below runs `install.sh` for real (~20-40s per run, one test
     does 2 runs) -- there is no further consolidation available given this
-    file's own design goal ("runs installer minimally"). The class-level
-    timeout override lets that real cost survive run_tests.sh's default
-    --timeout=15 (issue #144: this file was previously reported "pass
-    alone but ~75-115s, time out under load")."""
+    file's own design goal ("runs installer minimally"). No class-level
+    timeout marker: this file lives under tests/e2e/, which
+    scripts/run_tests.sh gives its own, more generous per-test --timeout
+    default (issue #144 code-review follow-up #1/#3) -- a hardcoded
+    marker here would SILENTLY OVERRIDE that CLI default (pytest-timeout
+    markers win over --timeout regardless of value), which is exactly
+    what happened with the previous 60s marker: it was tighter than the
+    e2e default and made test_install_preserves_other_hooks time out
+    under load. (Issue #144: this file was previously reported "pass
+    alone but ~75-115s, time out under load" when it still lived in the
+    fast suite.)"""
 
     @pytest.fixture
     def temp_home(self, tmp_path):

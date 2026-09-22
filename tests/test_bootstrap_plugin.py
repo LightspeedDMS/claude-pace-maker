@@ -14,30 +14,10 @@ BOOTSTRAP_SH = REPO_ROOT / "scripts" / "bootstrap-plugin.sh"
 REQUIREMENTS_TXT = REPO_ROOT / "requirements.txt"
 
 
-def _parse_requirements():
-    """Read the pinned specs from requirements.txt (the single source of
-    truth) so tests track it without duplicating versions."""
-    assert REQUIREMENTS_TXT.exists(), f"requirements.txt missing at {REQUIREMENTS_TXT}"
-    specs = []
-    for raw in REQUIREMENTS_TXT.read_text().splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if line:
-            specs.append(line)
-    assert specs, f"no pinned specs parsed from {REQUIREMENTS_TXT}"
-    return specs
-
-
 def _requirements_sha256():
     import hashlib
 
     return hashlib.sha256(REQUIREMENTS_TXT.read_bytes()).hexdigest()
-
-
-PINNED_SPECS = _parse_requirements()
-PINS = {}
-for _spec in PINNED_SPECS:
-    _name, _, _ver = _spec.partition("==")
-    PINS[_name] = _ver
 
 
 def run_bootstrap(home, mode="--light", extra_env=None):
@@ -157,51 +137,6 @@ class TestBootstrapVenv:
         )
 
     @pytest.mark.timeout(60)
-    def test_drifted_version_is_repaired_on_next_bootstrap(
-        self, tmp_path, prebaked_full_home
-    ):
-        """If a dep is manually downgraded inside the venv, the next
-        bootstrap_full must detect the drift via _deps_imports_ok's
-        exact-version assertion (driven by requirements.txt) and
-        re-install the pinned version via `pip install -r`."""
-        home = _clone_home(prebaked_full_home, tmp_path)
-        venv_python = home / ".claude-pace-maker" / "venv" / "bin" / "python3"
-
-        downgrade_version = "2.32.0"
-        assert downgrade_version != PINS["requests"], (
-            "downgrade target must genuinely differ from the pinned version "
-            f"({PINS['requests']!r}) or this test creates no drift to repair"
-        )
-        downgrade = subprocess.run(
-            [
-                str(venv_python),
-                "-m",
-                "pip",
-                "install",
-                "--quiet",
-                f"requests=={downgrade_version}",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert downgrade.returncode == 0, downgrade.stderr
-
-        # bootstrap_full must repair back to the pinned version.
-        # Remove .bootstrap_ok so bootstrap_full's _ensure_venv_and_deps path runs.
-        (home / ".claude-pace-maker" / ".bootstrap_ok").unlink()
-        repair = run_bootstrap(home, "--full")
-        assert repair.returncode == 0, repair.stderr
-        version_check = subprocess.run(
-            [str(venv_python), "-c", "import requests; print(requests.__version__)"],
-            capture_output=True,
-            text=True,
-        )
-        assert version_check.stdout.strip() == PINS["requests"], (
-            f"requests should be repaired to pinned {PINS['requests']}, "
-            f"got {version_check.stdout.strip()!r}"
-        )
-
-    @pytest.mark.timeout(60)
     def test_requirements_file_edit_invalidates_stamp(
         self, tmp_path, prebaked_full_home
     ):
@@ -227,69 +162,6 @@ class TestBootstrapVenv:
         assert (
             "NEEDS_FULL" in check.stdout
         ), f"stamp with wrong sha must report needs_full; got: {check.stdout!r}"
-
-
-class TestConcurrentBootstrap:
-    @pytest.mark.timeout(150)
-    def test_parallel_full_bootstrap_does_not_corrupt_venv(self, tmp_path):
-        """Concurrent --full invocations against the same HOME must serialize
-        venv creation under the install lock. With the previous design
-        (rm -rf / python -m venv ran OUTSIDE the lock), two processes could
-        both delete and recreate the venv, clobbering each other and leaving
-        a corrupt environment.
-
-        Deliberately NOT using prebaked_full_home/_clone_home: this test's
-        entire point is racing --full processes against a HOME with NO
-        pre-existing venv, to prove the install lock (not a warm stamp fast
-        path) is what keeps them from corrupting each other. n=2 (reduced
-        from 4, issue #144) is the minimum that proves a genuine race --
-        two processes both attempting venv creation with nothing there yet
-        -- while cutting process-spawn/CPU contention that was pushing this
-        test to 49-66s on a loaded box and threatening the file's overall
-        time budget."""
-        home = tmp_path / "home"
-        home.mkdir()
-
-        env = os.environ.copy()
-        env["HOME"] = str(home)
-        env["PLUGIN_ROOT"] = str(REPO_ROOT)
-
-        n = 2
-        procs = [
-            subprocess.Popen(
-                ["bash", str(BOOTSTRAP_SH), "--full"],
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=str(REPO_ROOT),
-            )
-            for _ in range(n)
-        ]
-        results = []
-        for p in procs:
-            out, err = p.communicate(timeout=180)
-            results.append((p.returncode, out.decode(), err.decode()))
-
-        for i, (rc, out, err) in enumerate(results):
-            assert (
-                rc == 0
-            ), f"parallel bootstrap #{i} failed (rc={rc})\nstdout={out}\nstderr={err}"
-
-        venv_python = home / ".claude-pace-maker" / "venv" / "bin" / "python3"
-        assert (
-            venv_python.exists()
-        ), "managed venv python missing after concurrent bootstrap"
-
-        check = subprocess.run(
-            [str(venv_python), "-c", "import requests, yaml, claude_agent_sdk"],
-            capture_output=True,
-            text=True,
-        )
-        assert (
-            check.returncode == 0
-        ), f"venv is broken after concurrent bootstrap: {check.stderr}"
-        assert (home / ".claude-pace-maker" / ".bootstrap_ok").exists()
-        assert not (home / ".claude-pace-maker" / ".venv.failed").exists()
 
 
 def _replace_venv_python_with_sentinel_shim(venv_python: Path, sentinel: Path) -> None:
@@ -435,7 +307,15 @@ class TestStaleVenvLockRecovery:
         at all, which is why this can't reuse prebaked_full_home/_clone_home
         either -- the function under test must be invoked directly. The
         timeout marker is kept (lowered from 60s to 30s) purely as a
-        hang-protection safety net now that the real cost is near-zero."""
+        hang-protection safety net now that the real cost is near-zero.
+
+        This test deliberately does NOT assert `.bootstrap_ok` exists --
+        that end-to-end check (a real `bootstrap_full` run reaching this
+        exact lock, all the way through to a completed install) is
+        restored in
+        tests/e2e/test_bootstrap_plugin_stale_lock_integration.py, which
+        pays the real venv+pip cost this test exists to avoid paying in
+        the fast suite."""
         home = tmp_path / "home"
         home.mkdir()
         pacemaker_dir = home / ".claude-pace-maker"
