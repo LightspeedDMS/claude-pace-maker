@@ -462,27 +462,32 @@ class TestStage1FallbackMessagesParameter:
     def test_default_none_falls_back_to_messages(self):
         """Backward compatibility: omitting stage1_fallback_messages must
         behave exactly as before (uses `messages` for the n-back
-        fallback)."""
+        fallback). Stage 2 is mocked -- REAL_INTENT_MOD names mod.py (the
+        target), so Stage 1 must PASS via the 1-back rescue and reach
+        Stage 2; without mocking, that reach-Stage-2 behavior previously
+        hit the real Anthropic SDK (no login in this sandbox), which the
+        #144 test guard now flags as a leaked external call."""
         messages = [REAL_INTENT_MOD, ""]
-        result = validate_intent_and_code(
-            messages=messages,
-            code="x = 1",
-            file_path=NONCORE_CURRENT_FILE,
-            tool_name="Write",
-            current_message_override="",
-        )
-        # REAL_INTENT_MOD names mod.py (the target), so Stage 1 must PASS
-        # via the 1-back rescue and reach Stage 2 -- reviewer becomes
-        # "anthropic-sdk" (the SDK fallback) since no real SDK login is
-        # available in this sandbox; that degraded-Stage-2 detail is
-        # irrelevant to what this test checks (it is NOT "RegEx", which
-        # would mean Stage 1 blocked it).
-        assert result.get("approved") is False
-        assert result.get("reviewer") != "RegEx", (
+        with patch(
+            "pacemaker.inference.resolve_and_call_with_reviewer",
+            return_value=("APPROVED", "test-reviewer"),
+        ) as mock_reviewer:
+            result = validate_intent_and_code(
+                messages=messages,
+                code="x = 1",
+                file_path=NONCORE_CURRENT_FILE,
+                tool_name="Write",
+                current_message_override="",
+            )
+        assert result.get("approved") is True, (
             f"REAL_INTENT_MOD mentions mod.py, so Stage 1 should PASS via "
-            f"the 1-back rescue and reach Stage 2, not block at Stage 1 "
-            f"(RegEx); got: {result}"
+            f"the 1-back rescue and reach (mocked) Stage 2; got: {result}"
         )
+        assert result.get("reviewer") != "RegEx", (
+            f"reaching (mocked) Stage 2 means Stage 1 did NOT block it at "
+            f"the RegEx gate; got: {result}"
+        )
+        mock_reviewer.assert_called_once()
 
     def test_explicit_stage1_fallback_messages_overrides_messages(self):
         """A caller-supplied prose-only list is used INSTEAD of `messages`
