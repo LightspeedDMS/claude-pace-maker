@@ -158,6 +158,7 @@ except (sqlite3.Error, OSError) as e:
 - **Additive `ALTER TABLE` only** — never drop or rename columns; the consumer tolerates missing columns but does not tolerate missing tables well (returns `None` for the whole read). If you must remove a table, coordinate a migration on both sides in the same release.
 - **Idempotent migrations** — use `ALTER TABLE` inside try/except for `OperationalError: duplicate column name`. Example: `migrate_codex_usage_schema()` in `hook.py` SubagentStop handler.
 - **Document the contract** in this CLAUDE.md section when adding a new table the monitor will read.
+- **If you change `database.py`'s `SCHEMA` string, bump `SCHEMA_VERSION` in the same change, and update the pinned hash in `tests/test_database_lock_contention_145.py::TestSchemaVersionPinnedToHash._EXPECTED_SCHEMA_HASHES`.** `initialize_database()` (issue #145) checks `PRAGMA user_version` against `SCHEMA_VERSION` and skips the `CREATE`/`ALTER` statements entirely once they already match — it never diffs the stored schema against the current `SCHEMA` text. A `SCHEMA` change with no matching `SCHEMA_VERSION` bump means every database already at the current version silently never receives the new table/column, since the fast path trusts the version number, not the content. `TestSchemaVersionPinnedToHash` pins `sha256(SCHEMA)` to `SCHEMA_VERSION` precisely to catch this: it fails loudly ("SCHEMA changed: bump SCHEMA_VERSION and record new hash") the moment `SCHEMA` changes without a corresponding version bump.
 
 ---
 

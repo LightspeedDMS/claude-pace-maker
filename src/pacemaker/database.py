@@ -30,8 +30,8 @@ RETRY_DELAY = 0.1  # Initial delay between retries (100ms)
 # Schema version (PRAGMA user_version), bumped whenever SCHEMA below changes.
 # initialize_database() uses this as a cheap fast-path check (issue #145):
 # on a database whose stored version already equals SCHEMA_VERSION, the
-# 9 CREATE TABLE + ~8 CREATE INDEX statements in SCHEMA are skipped
-# entirely rather than re-parsed/re-executed on every hook invocation.
+# CREATE statements in SCHEMA are skipped entirely rather than re-parsed/
+# re-executed on every hook invocation.
 SCHEMA_VERSION = 1
 
 # Cleanup batching (issue #145): a single unbounded DELETE can hold the
@@ -397,6 +397,14 @@ def _delete_old_rows_in_batches(
 ) -> int:
     """Delete rows older than cutoff from table, in bounded batches.
     table/timestamp_column must be allowlisted; returns total rows deleted.
+
+    Each batch is its own committed transaction, not one big rollback-able
+    unit. If a later batch raises, earlier batches that already committed
+    are NOT undone -- the exception simply propagates to the caller.
+    Callers that catch it and return -1 (e.g. cleanup_old_activity) are
+    reporting "this call did not finish cleanly", not "nothing was
+    deleted": rows from earlier, already-committed batches may still be
+    gone even though the overall call is reported as failed.
     """
     if _CLEANUP_TABLE_TIMESTAMP_COLUMNS.get(table) != timestamp_column:
         raise ValueError(f"table/column not allowlisted: {table}.{timestamp_column}")
@@ -578,8 +586,8 @@ def initialize_database(db_path: str) -> bool:
     database at all more than once per db_path PER PROCESS. This cache
     does NOT survive across processes -- each hook invocation is a fresh
     `python3 -m pacemaker.hook <event>` process, so it was previously
-    re-running cursor.executescript(SCHEMA) (9 CREATE TABLE + ~8 CREATE
-    INDEX statements) on every single hook call in production.
+    re-running cursor.executescript(SCHEMA) (all of the CREATE statements
+    in SCHEMA) on every single hook call in production.
 
     Issue #145 fix: when the process-local cache misses, a cheap
     PRAGMA user_version check decides whether real DDL is needed at all --

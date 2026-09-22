@@ -40,6 +40,7 @@ Every behavior is proven by black-box input/output on real files:
   never produce that outcome.
 """
 
+import hashlib
 import os
 import sqlite3
 import tempfile
@@ -54,6 +55,7 @@ import pacemaker.database as database
 from pacemaker.database import (
     CLEANUP_BATCH_SIZE,
     CLEANUP_MAX_BATCHES,
+    SCHEMA,
     SCHEMA_VERSION,
     cleanup_old_activity,
     cleanup_old_governance_events,
@@ -456,3 +458,39 @@ class TestBusyTimeoutAlreadyReal:
         with get_db_connection(temp_db) as conn:
             value = conn.execute("PRAGMA busy_timeout").fetchone()[0]
         assert value == int(database.DB_TIMEOUT * 1000)
+
+
+class TestSchemaVersionPinnedToHash:
+    """issue #145 code review, HIGH/blocking finding: nothing prevented
+    changing SCHEMA without bumping SCHEMA_VERSION. Since
+    initialize_database() skips DDL once PRAGMA user_version >=
+    SCHEMA_VERSION, an existing database already at the current version
+    would silently NEVER receive new tables/columns if SCHEMA changed
+    without a matching SCHEMA_VERSION bump -- the claude-usage monitor
+    consumer cannot tolerate a missing table (see CLAUDE.md "When Adding
+    New Tables / Columns").
+
+    This pins the SHA-256 of the current SCHEMA text to the current
+    SCHEMA_VERSION. If SCHEMA changes, this test fails, forcing whoever
+    changed it to also bump SCHEMA_VERSION and record the new hash below.
+    """
+
+    # SCHEMA_VERSION -> sha256(SCHEMA.encode("utf-8")).hexdigest() for
+    # every version this codebase has ever shipped. When you change
+    # SCHEMA, bump SCHEMA_VERSION in database.py, then add the new hash
+    # here in the same commit.
+    _EXPECTED_SCHEMA_HASHES = {
+        1: "6e2addf3a441e5ea3c09f183f297317b94404b60b0f2618d78ee34af466bef0c",
+    }
+
+    def test_schema_hash_matches_pinned_version(self):
+        actual_hash = hashlib.sha256(SCHEMA.encode("utf-8")).hexdigest()
+        expected_hash = self._EXPECTED_SCHEMA_HASHES.get(database.SCHEMA_VERSION)
+
+        assert expected_hash is not None, (
+            f"SCHEMA_VERSION={database.SCHEMA_VERSION} has no pinned hash in "
+            f"_EXPECTED_SCHEMA_HASHES -- add one for the new version."
+        )
+        assert (
+            actual_hash == expected_hash
+        ), "SCHEMA changed: bump SCHEMA_VERSION and record new hash"
