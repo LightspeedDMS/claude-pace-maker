@@ -713,7 +713,13 @@ class TestRunMechanical:
         assert degradation == {"degraded": False}
 
     def test_pretool_zero_survivors_returns_empty_string(self):
-        """Pre-tool: zero survivors → empty string (verdict_passes('') = False → gate blocks)."""
+        """Pre-tool: zero survivors → empty string (verdict_passes('') = False → gate blocks).
+
+        Issue #142: the "", expression return contract is unchanged, but
+        _degradation is now populated (not left at {"degraded": False}) so
+        callers can surface WHY nobody responded instead of relaying a
+        blank body as reviewer feedback.
+        """
         from pacemaker.inference.competitive import run_mechanical
         from pacemaker.inference.provider import ProviderError
 
@@ -735,7 +741,10 @@ class TestRunMechanical:
 
         assert response == ""
         assert label == "gpt-5.5+gemini-flash->sonnet"
-        assert degradation == {"degraded": False}
+        assert degradation["degraded"] is True
+        assert degradation["zero_survivors"] is True
+        assert degradation["context"] == "competitive"
+        assert set(degradation["failed_providers"]) == {"gpt-5.5", "gemini-flash"}
 
     # ---- Truth table N=3 ----
 

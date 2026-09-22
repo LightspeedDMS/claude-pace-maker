@@ -38,6 +38,7 @@ from .constants import (
 from .transcript_reader import (
     get_last_n_messages_for_validation,
     get_current_turn_message_for_validation,
+    THINKING_ONLY_NOTICE,
 )
 from .logger import log_warning, log_debug, log_info, log_error
 from .prompt_provenance import format_tag, format_reviewer_relay
@@ -2868,6 +2869,15 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             _diagnostics=_bash_diagnostics,
                         )
                         _bash_outcome = _bash_diagnostics.get("outcome")
+                        # Issue #141: same computation as the Write/Edit
+                        # gate -- `is False` (not falsy) requires an
+                        # EXPLICIT False, since a not_found anchor leaves
+                        # both diagnostics keys absent (.get returns None).
+                        _bash_thinking_only = (
+                            bool(_bash_diagnostics.get("anchor_has_thinking"))
+                            and _bash_diagnostics.get("anchor_has_visible_text")
+                            is False
+                        )
 
                         if _bash_anchor is not None:
                             current_message = _bash_anchor
@@ -2937,6 +2947,12 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                     "command": command[:500],
                                     "matched_rules": matched_ids,
                                     "reviewer": "unknown",
+                                    # Issue #141 code-review follow-up
+                                    # (item 3): lets usage.db / the
+                                    # claude-usage monitor distinguish a
+                                    # thinking-only block from an ordinary
+                                    # missing-INTENT block.
+                                    "thinking_only": _bash_thinking_only,
                                 },
                             )
                             try:
@@ -2959,14 +2975,24 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 )
                             except Exception:
                                 pass
+                            _bash_no_intent_reason = (
+                                f"⛔ Dangerous Bash command detected — no INTENT: declaration\n\n"
+                                f"Matched danger rules: {matched_ids}\n"
+                                f"Command: {command[:300]}\n\n"
+                                f"You must declare INTENT: specifying exactly what this command "
+                                f"will do before executing dangerous Bash operations."
+                            )
+                            if _bash_thinking_only:
+                                # Issue #141: the anchored turn had thinking
+                                # but NO visible text -- explain why this
+                                # block occurred instead of leaving the
+                                # agent believing it already declared
+                                # INTENT (in its reasoning).
+                                _bash_no_intent_reason += "\n\n" + THINKING_ONLY_NOTICE
                             return {
                                 "decision": "block",
                                 "reason": format_tag(
-                                    f"⛔ Dangerous Bash command detected — no INTENT: declaration\n\n"
-                                    f"Matched danger rules: {matched_ids}\n"
-                                    f"Command: {command[:300]}\n\n"
-                                    f"You must declare INTENT: specifying exactly what this command "
-                                    f"will do before executing dangerous Bash operations.",
+                                    _bash_no_intent_reason,
                                     "danger_bash_block",
                                 ),
                             }
@@ -2980,6 +3006,9 @@ def run_pre_tool_hook() -> Dict[str, Any]:
 
                         from .inference import resolve_and_call_with_reviewer
                         from .inference.verdict import verdict_passes
+                        from .intent_validator import (
+                            build_reviewer_unavailable_message,
+                        )
 
                         matched_descriptions = ", ".join(
                             f"{m['id']}: {m['description']}" for m in matched
@@ -3044,6 +3073,70 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 _bash_degradation, reviewer, _sid
                             )
                             log_debug("hook", "Danger bash Phase 2: APPROVED")
+                        elif not response:
+                            # Issue #142: zero reviewers responded at all —
+                            # relaying "" under intent_validation_dangerbash
+                            # via format_reviewer_relay("") produced a blank
+                            # block indistinguishable from a genuine intent
+                            # mismatch. Build a pace-maker-authored
+                            # explanation and record it under its own
+                            # category instead.
+                            _sid = session_id or "unknown"
+                            _raw = build_reviewer_unavailable_message(_bash_degradation)
+                            record_blockage(
+                                db_path=DEFAULT_DB_PATH,
+                                category="intent_validation_reviewer_unavailable",
+                                reason=_raw,
+                                hook_type="pre_tool_use",
+                                session_id=_sid,
+                                details={
+                                    "tool": "Bash",
+                                    "command": command[:500],
+                                    "matched_rules": matched_ids,
+                                    "reviewer": reviewer,
+                                    # Issue #142 code-review follow-up
+                                    # (item 4): persist WHY nobody
+                                    # responded instead of leaving it
+                                    # write-only on _bash_degradation.
+                                    "failed_providers": _bash_degradation.get(
+                                        "failed_providers", {}
+                                    ),
+                                    "zero_survivors": _bash_degradation.get(
+                                        "zero_survivors", False
+                                    ),
+                                },
+                            )
+                            try:
+                                record_activity_event(
+                                    DEFAULT_DB_PATH, "DB", "red", _sid
+                                )
+                                _project_name = _resolve_project_name()
+                                # Issue #142 code-review follow-up (item 3):
+                                # prefix with the reviewer identity, matching
+                                # the sibling genuine-mismatch branch below.
+                                _gov_feedback = _raw
+                                if reviewer:
+                                    _gov_feedback = f"[{reviewer}] {_gov_feedback}"
+                                record_governance_event(
+                                    db_path=DEFAULT_DB_PATH,
+                                    event_type="IV",
+                                    project_name=_project_name,
+                                    session_id=_sid,
+                                    feedback_text=_gov_feedback[:1000],
+                                )
+                            except Exception:
+                                # Telemetry recording is best-effort — the
+                                # governance decision is already recorded
+                                # via record_blockage() above, and activity/
+                                # governance recording must never break the
+                                # pre-tool hook (same pattern used by every
+                                # other telemetry try/except in this
+                                # function).
+                                pass
+                            return {
+                                "decision": "block",
+                                "reason": format_tag(_raw, "fail_closed_error"),
+                            }
                         else:
                             # Phase 2 BLOCKED — intent mismatch
                             _sid = session_id or "unknown"
@@ -3361,6 +3454,18 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # 7. Call unified validation via SDK
         from . import intent_validator
 
+        # Issue #141: the anchored turn had a `thinking` block but NO
+        # visible text block at all -- the model wrote its INTENT
+        # declaration only inside its own (summarized, not shown to the
+        # user) reasoning. `is False` (not falsy) requires an EXPLICIT
+        # False from transcript_reader, since a not_found/no-anchor case
+        # leaves both diagnostics keys absent (.get returns None), which
+        # must never be misread as "thinking-only".
+        _write_edit_thinking_only = (
+            bool(_write_edit_diagnostics.get("anchor_has_thinking"))
+            and _write_edit_diagnostics.get("anchor_has_visible_text") is False
+        )
+
         result = intent_validator.validate_intent_and_code(
             messages=messages,
             code=proposed_code,
@@ -3369,6 +3474,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             hook_model=config.get("hook_model", "auto"),
             current_message_override=current_message_override,
             _deadline=_gate_deadline,
+            thinking_only=_write_edit_thinking_only,
         )
 
         # 8. Return result
@@ -3398,6 +3504,13 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 category = "intent_validation_tdd"
             elif result.get("bug_failure", False):
                 category = "intent_validation_bug"
+            elif result.get("reviewer_unavailable_failure", False):
+                # Issue #142: zero reviewers responded — a reviewer
+                # infrastructure failure, never a genuine clean-code/bug
+                # rejection or a missing-INTENT block. Checked BEFORE
+                # clean_code_failure so it can never be mislabeled as a
+                # clean-code rejection.
+                category = "intent_validation_reviewer_unavailable"
             elif result.get("clean_code_failure", False):
                 category = "intent_validation_cleancode"
             else:
@@ -3413,6 +3526,21 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                     "tool": tool_name,
                     "file_path": file_path,
                     "reviewer": result.get("reviewer", "unknown"),
+                    # Issue #141 code-review follow-up (item 3): lets
+                    # usage.db / the claude-usage monitor distinguish a
+                    # thinking-only block from an ordinary block.
+                    "thinking_only": _write_edit_thinking_only,
+                    # Issue #142 code-review follow-up (item 4): persist WHY
+                    # nobody responded on a reviewer_unavailable_failure
+                    # block instead of leaving it write-only on the
+                    # in-memory degradation dict. A no-op for every other
+                    # category (empty dict/False).
+                    "failed_providers": result.get("degradation", {}).get(
+                        "failed_providers", {}
+                    ),
+                    "zero_survivors": result.get("degradation", {}).get(
+                        "zero_survivors", False
+                    ),
                 },
             )
 
@@ -3454,7 +3582,19 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             try:
                 _sid = session_id or "unknown"
                 _tdd_on = config.get("tdd_enabled", True)
-                _iv_status = "red" if category == "intent_validation" else "green"
+                _iv_status = (
+                    "red"
+                    if category
+                    in (
+                        "intent_validation",
+                        # Issue #142 code-review follow-up (item 1): a
+                        # zero-survivor reviewer-infrastructure failure is
+                        # a real block — IV must not show green just
+                        # because no *specific* check (TD/CC/BG) fired.
+                        "intent_validation_reviewer_unavailable",
+                    )
+                    else "green"
+                )
                 _td_status = (
                     "red"
                     if category == "intent_validation_tdd" and _tdd_on

@@ -93,5 +93,8 @@ class TestNoRegressionToProcessCwd:
         assert offenders == [], f"process-cwd label sites remain: {offenders}"
 
     def test_all_label_sites_use_the_resolver(self):
+        # Issue #142 added a 6th call site: the danger-bash Phase 2
+        # zero-survivor governance-event block, which correctly uses the
+        # resolver like every other site (issue #134).
         src = pathlib.Path(__file__).resolve().parents[2] / "src/pacemaker/hook.py"
-        assert src.read_text().count("_project_name = _resolve_project_name()") == 5
+        assert src.read_text().count("_project_name = _resolve_project_name()") == 6

@@ -84,7 +84,7 @@ MAX_DELAY_SECONDS = 350  # 360s timeout - 10s safety margin
 #
 # install.sh reads this when registering the hook, and a test asserts the
 # internal budgets still fit inside it.
-PRE_TOOL_HOOK_TIMEOUT_SECONDS = 60
+PRE_TOOL_HOOK_TIMEOUT_SECONDS = 120
 
 # Reserved for telemetry writes and emitting the block response.
 PRE_TOOL_SAFETY_MARGIN_SECONDS = 10
@@ -111,6 +111,7 @@ BLOCKAGE_CATEGORIES = (
     "intent_validation_bug",  # Clear logic bug detected in proposed code
     "intent_validation_dangerbash",  # Danger bash command intent mismatch
     "intent_validation_deferred",  # Transcript not yet flushed — fails CLOSED + re-issue (v2.33.2)
+    "intent_validation_reviewer_unavailable",  # Zero survivors — no reviewer responded at all (issue #142)
     "pacing_tempo",  # Tempo validation blocked
     "pacing_quota",  # Throttle delay applied
     "other",  # Catch-all for unexpected blockages
@@ -125,6 +126,7 @@ BLOCKAGE_CATEGORY_LABELS: Dict[str, str] = {
     "intent_validation_bug": "Bug Detected",
     "intent_validation_dangerbash": "Danger Bash",
     "intent_validation_deferred": "IV Deferred",
+    "intent_validation_reviewer_unavailable": "Reviewer Unavailable",
     "pacing_tempo": "Pacing Tempo",
     "pacing_quota": "Pacing Quota",
     "other": "Other",

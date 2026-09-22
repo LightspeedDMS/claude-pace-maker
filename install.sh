@@ -1070,7 +1070,7 @@ register_hooks() {
      .hooks.PreToolUse += [{
        "matcher": "Write|Edit|Bash",
        "hooks": [
-         {"type": "command", "command": $pre_tool_hook, "timeout": 60}
+         {"type": "command", "command": $pre_tool_hook, "timeout": 120}
        ]
      }] |
      .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_hook, "timeout": 120}]}] |

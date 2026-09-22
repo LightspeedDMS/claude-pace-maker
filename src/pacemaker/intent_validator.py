@@ -18,6 +18,7 @@ from .transcript_reader import (
     build_stop_hook_context,
     format_stop_hook_context,
     INTENT_MARKER_PATTERN,
+    THINKING_ONLY_NOTICE,
 )
 from .constants import DEFAULT_CONFIG
 from .logger import log_warning, log_debug
@@ -681,6 +682,46 @@ def _log_stage1_rejection(verdict: str, file_path: str, current_message: str) ->
     )
 
 
+def build_reviewer_unavailable_message(degradation: Optional[Dict[str, Any]]) -> str:
+    """Build the pace-maker-authored explanation for a zero-survivor review
+    (issue #142): every configured reviewer failed to respond at all —
+    timeout, ProviderError (e.g. CLI not found), or any other infrastructure
+    failure — so there is no third-party feedback to relay.
+
+    Public (not `_`-prefixed): shared across module boundaries by both the
+    Write/Edit Stage 2 gate (intent_validator.py) and the danger-bash Phase
+    2 gate (hook.py imports it directly).
+
+    Previously the blank response was wrapped in format_reviewer_relay() and
+    recorded under the "intent_validation_cleancode"/"intent_validation_
+    dangerbash" categories, producing an empty-looking rejection
+    indistinguishable from a genuine rejection. This builds a real
+    explanation from the _degradation out-param's "failed_providers"
+    ({model: reason}), populated by resolve_and_call_with_reviewer()/
+    run_mechanical() on their zero-survivor paths (see inference/registry.py
+    and inference/competitive.py).
+
+    Wording is deliberately neutral about WHY nobody responded — "timed out"
+    would misdescribe a non-timeout failure such as a missing CLI binary,
+    and this message is shared by both gates (danger-bash, not just
+    Write/Edit), so it must not bake in Write/Edit-specific phrasing.
+
+    Degrades gracefully when degradation info is missing/empty — still
+    returns a non-empty, actionable message rather than raising.
+    """
+    failed = (degradation or {}).get("failed_providers") or {}
+    if failed:
+        detail = "; ".join(f"{model}: {reason}" for model, reason in failed.items())
+        providers_text = f" ({detail})"
+    else:
+        providers_text = ""
+    return (
+        f"⛔ No reviewer responded{providers_text}. This is a reviewer "
+        "infrastructure failure, NOT a rejection of your intent or code — "
+        "re-issue the identical tool call."
+    )
+
+
 def _call_stage2_validation(
     prompt: str,
     hook_model: str = "auto",
@@ -884,6 +925,7 @@ def validate_intent_and_code(
     hook_model: str = "auto",
     current_message_override: str = "",
     _deadline: Optional[float] = None,
+    thinking_only: bool = False,
 ) -> dict:
     """
     Two-stage pre-tool validation with short-circuit logic.
@@ -905,6 +947,19 @@ def validate_intent_and_code(
         code: Proposed code that will be written
         file_path: Target file path
         tool_name: Write or Edit
+        thinking_only: Issue #141. True when the caller (hook.py) determined
+            the anchored turn had a `thinking` block but NO visible text
+            block at all -- i.e. the model wrote its INTENT (and/or test
+            coverage) declaration only inside its own (summarized,
+            not-shown-to-the-user) reasoning. When True AND Stage 1 rejects
+            with EITHER "NO" (missing INTENT) OR "NO_TDD" (missing test
+            coverage declaration -- reachable via the n-back rescue, where
+            a thinking-only anchor's empty override falls back to a prior
+            turn's visible INTENT with no TDD declaration), the block
+            reason gets THINKING_ONLY_NOTICE appended so the agent
+            understands WHY it was blocked instead of believing it already
+            declared the missing piece. Never widens what passes Stage 1 --
+            thinking is still never accepted as a declaration source.
 
     Returns:
         {"approved": True} if all checks pass
@@ -984,6 +1039,13 @@ Example (all in same message as Write/Edit):
    that checks user input for XSS attacks, to improve security."
 
 Then use your Write/Edit tool in the same message."""
+            if thinking_only:
+                # Issue #141: the anchored turn had thinking but NO visible
+                # text -- append the explanatory notice so the agent
+                # understands WHY it was blocked instead of believing it
+                # already declared INTENT (in its reasoning, which is
+                # summarized and never shown to the user).
+                _raw += "\n\n" + THINKING_ONLY_NOTICE
             return {
                 "approved": False,
                 "reviewer": "RegEx",
@@ -1018,6 +1080,15 @@ Example citing user permission (in same message as Write/Edit):
    User permission to skip TDD: User said 'skip tests for this' in message 3."
 
 CRITICAL: Quote must reference actual user words from recent context."""
+            if thinking_only:
+                # Issue #141 code-review follow-up (item 2): reachable via
+                # the n-back rescue -- a thinking-only anchor's empty
+                # override falls back to extract_current_assistant_message,
+                # which can resolve a PRIOR turn's real visible INTENT
+                # (with file mention but no TDD declaration). The agent
+                # still needs to know its OWN current turn had no visible
+                # text, same rationale as the NO branch above.
+                _raw += "\n\n" + THINKING_ONLY_NOTICE
             return {
                 "approved": False,
                 "tdd_failure": True,
@@ -1079,6 +1150,35 @@ System failing closed to prevent bypassing intent declaration requirements."""
                 # Issue #131: surfaces the degraded-review flag from a
                 # competitive verifier infra failure or single-model
                 # fallback, so the pre-tool gate can record telemetry.
+                "degradation": _stage2_degradation,
+            }
+        elif not stage2_feedback:
+            # Issue #142: verdict_passes("") is False, but an empty response
+            # is NEVER genuine reviewer feedback — it means EVERY reviewer
+            # (competitive zero survivors, or a single provider whose
+            # Anthropic fallback also failed) failed to respond at all.
+            # Relaying "" through format_reviewer_relay() produced a blank
+            # "[expr] " block recorded under "intent_validation_cleancode",
+            # indistinguishable from a genuine clean-code rejection. Build a
+            # pace-maker-authored explanation instead, tagged as an
+            # infrastructure failure (fail_closed_error channel — no
+            # reviewer said anything, so reviewer-relay would be wrong),
+            # under its own blockage category.
+            log_debug(
+                "intent_validator", "=== STAGE 2 REVIEWER UNAVAILABLE (empty) ==="
+            )
+            _raw = build_reviewer_unavailable_message(_stage2_degradation)
+            return {
+                "approved": False,
+                "reviewer_unavailable_failure": True,
+                "feedback": format_tag(_raw, "fail_closed_error"),
+                "raw_feedback": _raw,
+                "reviewer": reviewer,
+                # Issue #142 code-review follow-up (item 4): carries
+                # failed_providers/zero_survivors out to the caller so
+                # hook.py can attach them to record_blockage()'s details —
+                # previously written by run_mechanical()/
+                # resolve_and_call_with_reviewer() but never read anywhere.
                 "degradation": _stage2_degradation,
             }
         else:

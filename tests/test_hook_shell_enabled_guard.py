@@ -13,6 +13,18 @@ controlled $HOME, a sentinel fake-python that records whether it was
 invoked, and a config.json whose 'enabled' field is varied per test.
 """
 
+# Issue #143 round 2, point 5: this file used PEP 604 `X | None` union
+# syntax in annotations (`dict | None = None`), which only works as a
+# runtime-evaluated expression on Python 3.10+. This machine's test
+# environment runs Python 3.9.25, where `dict | None` raises
+# `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'`
+# at IMPORT time, failing collection of the whole file. `from __future__
+# import annotations` (PEP 563) defers all annotation evaluation to
+# strings, so the `|` operator is never actually evaluated at runtime --
+# minimal fix, no annotation in this file is introspected via
+# typing.get_type_hints() or similar, so deferred evaluation is safe here.
+from __future__ import annotations
+
 import json
 import os
 import subprocess

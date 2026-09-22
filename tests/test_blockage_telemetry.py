@@ -82,22 +82,26 @@ class TestBlockageCategoriesConstant:
 
         assert "intent_validation_bug" in BLOCKAGE_CATEGORIES
 
-    def test_blockage_categories_has_exactly_nine_categories(self):
-        """BLOCKAGE_CATEGORIES must have exactly 9 categories.
+    def test_blockage_categories_has_exactly_ten_categories(self):
+        """BLOCKAGE_CATEGORIES must have exactly 10 categories.
 
         Categories: intent_validation, intent_validation_tdd, intent_validation_cleancode,
         intent_validation_bug, intent_validation_dangerbash, intent_validation_deferred,
-        pacing_tempo, pacing_quota, other.
+        intent_validation_reviewer_unavailable, pacing_tempo, pacing_quota, other.
 
         intent_validation_deferred was added as a telemetry canary for the Write/Edit
         fail-open (transcript-not-ready) branch — hardening item #2 from bug #83 review.
+
+        intent_validation_reviewer_unavailable was added (issue #142) to record a
+        zero-survivor reviewer-infrastructure failure distinctly from a genuine
+        clean-code/bug/dangerbash rejection.
         """
         from pacemaker.constants import BLOCKAGE_CATEGORIES
 
-        # 9 categories: intent_validation, intent_validation_tdd, intent_validation_cleancode,
+        # 10 categories: intent_validation, intent_validation_tdd, intent_validation_cleancode,
         # intent_validation_bug, intent_validation_dangerbash, intent_validation_deferred,
-        # pacing_tempo, pacing_quota, other
-        assert len(BLOCKAGE_CATEGORIES) == 9
+        # intent_validation_reviewer_unavailable, pacing_tempo, pacing_quota, other
+        assert len(BLOCKAGE_CATEGORIES) == 10
 
 
 # ==============================================================================

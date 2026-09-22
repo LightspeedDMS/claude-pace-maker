@@ -286,16 +286,28 @@ def _strip_leading_blocked_prefix(text: str) -> str:
     return _BLOCKED_PREFIX_RE.sub("", text, count=1)
 
 
-def _record_degradation(_degradation: Optional[dict], failed: list) -> None:
-    """Populate the optional _degradation out-param for a degraded APPROVED result.
+def _record_degradation(
+    _degradation: Optional[dict], failed: list, zero_survivors: bool = False
+) -> None:
+    """Populate the optional _degradation out-param for a degraded result.
 
     No-op when _degradation is None (default — existing callers unaffected).
+
+    zero_survivors distinguishes two shapes of "degraded" (issue #142):
+    - False (default): APPROVED, but one or more verifiers failed to
+      respond — the responders' verdict still decided the outcome.
+    - True: EVERY verifier failed to respond — there is no verdict at all,
+      only infrastructure failures. Callers (the Write/Edit and danger-bash
+      gates) use this to surface WHY no reviewer answered instead of
+      relaying a blank response as if it were reviewer feedback.
     """
     if _degradation is None:
         return
     _degradation["degraded"] = True
     _degradation["failed_providers"] = {model: reason for model, reason in failed}
     _degradation["context"] = "competitive"
+    if zero_survivors:
+        _degradation["zero_survivors"] = True
 
 
 def run_mechanical(
@@ -329,7 +341,12 @@ def run_mechanical(
     in transcript_reader.py). Populated with {"degraded": False} normally, or
     {"degraded": True, "failed_providers": {model: reason, ...},
     "context": "competitive"} when APPROVED but one or more verifiers failed
-    to respond. Never raises; None (default) is a no-op for existing callers.
+    to respond. Issue #142: on the ZERO-SURVIVORS path (empty-string
+    return) the same dict is populated with an additional
+    {"zero_survivors": True} so callers can tell "nobody answered at all"
+    apart from a degraded-but-approved review, and build a real explanation
+    instead of relaying the blank response as reviewer feedback. Never
+    raises; None (default) is a no-op for existing callers.
 
     Returns (response, reviewer_label) tuple, contract unchanged.
     """
@@ -369,6 +386,11 @@ def run_mechanical(
             "competitive",
             "Zero survivors - returning '' (stop: fail-open, pre-tool: fail-closed)",
         )
+        # Issue #142: even though the response is empty, WHY nobody
+        # answered is known (every verifier timed out or raised) — surface
+        # it via _degradation so callers can build a real explanation
+        # instead of relaying a blank body as reviewer feedback.
+        _record_degradation(_degradation, failed, zero_survivors=True)
         return "", expression
 
     # Stop gate only: a survivor carrying NO recognisable verdict marker did

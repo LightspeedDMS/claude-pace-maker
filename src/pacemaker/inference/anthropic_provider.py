@@ -46,6 +46,49 @@ def _is_limit_error(response: str) -> bool:
     return "usage limit" in lower or "limit reached" in lower or "resets" in lower
 
 
+def _build_options(
+    options_cls,
+    model: str,
+    system_prompt: str,
+    max_thinking_tokens: int,
+):
+    """Build ClaudeAgentOptions for a reviewer call, fully isolated from the user's
+    own Claude Code session (issue #147).
+
+    Without isolation, the nested `claude` process spawned by the SDK loads the
+    user's own settings — hooks (including pace-maker's own), plugins, and MCP
+    servers (including unreachable ones) — turning a ~3-5s reviewer call into a
+    20-49s one and causing reviewer timeouts. `setting_sources=[]` skips loading
+    user/project/local settings (which is also what keeps plugins from loading —
+    plugins are configured via settings, and `plugins` itself already defaults to
+    an empty list on ClaudeAgentOptions, so no separate flag is needed for that).
+    `mcp_servers={}` + `strict_mcp_config=True` together guarantee no MCP server
+    is loaded from any other source either.
+
+    Used for BOTH the primary call and the limit-error fallback call so the two
+    constructions cannot diverge (single source of truth for isolation).
+    """
+    return options_cls(
+        max_turns=1,
+        model=model,
+        effort=_EFFORT_LEVEL,
+        max_thinking_tokens=max(max_thinking_tokens, 1024),
+        system_prompt=system_prompt or "You are a helpful assistant.",
+        disallowed_tools=[
+            "Write",
+            "Edit",
+            "Bash",
+            "TodoWrite",
+            "Read",
+            "Grep",
+            "Glob",
+        ],
+        setting_sources=[],
+        strict_mcp_config=True,
+        mcp_servers={},
+    )
+
+
 def _resolve_model(model_hint: str) -> str:
     """Resolve model hint to the string passed to the Claude Agent SDK.
 
@@ -100,21 +143,8 @@ class AnthropicProvider(InferenceProvider):
             "anthropic_provider", f"Querying model={model}, prompt_len={len(prompt)}"
         )
 
-        options = FreshOptions(
-            max_turns=1,
-            model=model,
-            effort=_EFFORT_LEVEL,
-            max_thinking_tokens=max(max_thinking_tokens, 1024),
-            system_prompt=system_prompt or "You are a helpful assistant.",
-            disallowed_tools=[
-                "Write",
-                "Edit",
-                "Bash",
-                "TodoWrite",
-                "Read",
-                "Grep",
-                "Glob",
-            ],
+        options = _build_options(
+            FreshOptions, model, system_prompt, max_thinking_tokens
         )
 
         response_text = ""
@@ -135,21 +165,8 @@ class AnthropicProvider(InferenceProvider):
                     "anthropic_provider",
                     f"Limit error, trying fallback model={fallback_model}",
                 )
-                options_fb = FreshOptions(
-                    max_turns=1,
-                    model=fallback_model,
-                    effort=_EFFORT_LEVEL,
-                    max_thinking_tokens=max(max_thinking_tokens, 1024),
-                    system_prompt=system_prompt or "You are a helpful assistant.",
-                    disallowed_tools=[
-                        "Write",
-                        "Edit",
-                        "Bash",
-                        "TodoWrite",
-                        "Read",
-                        "Grep",
-                        "Glob",
-                    ],
+                options_fb = _build_options(
+                    FreshOptions, fallback_model, system_prompt, max_thinking_tokens
                 )
                 response_text = ""
                 try:

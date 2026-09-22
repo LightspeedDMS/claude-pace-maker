@@ -679,7 +679,7 @@ A first fix attempt replaced the full scan with a tail-read (last 512KB via `_re
 | All respond, ≥1 returns `BLOCKED:` | BLOCKED (their feedback) |
 | Some respond, all responders pass | **APPROVED, recorded as degraded** |
 | Some respond, ≥1 responder returns `BLOCKED:` | BLOCKED |
-| Zero survivors | BLOCKED (unchanged — `""` → gate semantics) |
+| Zero survivors | BLOCKED (unchanged — `""` → gate semantics). **Since #142** the pre-tool gates no longer relay that `""` as a blank "reviewer" rejection: they block with a pace-maker-authored `format_tag(..., "fail_closed_error")` message, `build_reviewer_unavailable_message()`: "No reviewer responded (<provider>: <reason>; …) — infrastructure failure, NOT a rejection — re-issue". The block is recorded under the new blockage category **`intent_validation_reviewer_unavailable`** ("Reviewer Unavailable"), with `failed_providers` in its details. `run_mechanical()` / `resolve_and_call_with_reviewer()` fill `_degradation` (`zero_survivors=True`, `failed_providers`) on this path. The Stop hook is unaffected: it calls `resolve_and_call()`, which passes no `_degradation`, and `""` still fails OPEN there. **Cross-repo contract:** the claude-usage monitor's `get_blockage_stats()` hard-codes its category list and currently drops this category, and `_bug`/`_deferred`, from the panel and from Total. Tracked as claude-usage #7. |
 
 **Degraded-approval telemetry (issue #131)**: `run_mechanical()` and `resolve_and_call_with_reviewer()` (registry.py) both take an optional `_degradation: Optional[dict] = None` out-param — same idiom as `_diagnostics`/`_outcome` in `transcript_reader.py` (additive, backward-compatible; `None` is a no-op for existing callers). Populated `{"degraded": True, "failed_providers": {model: reason}, "context": "competitive"|"single_model_fallback"}` when (a) a competitive verifier failed to respond but the survivors' verdict still APPROVED, or (b) the single configured provider raised `ProviderError` and the Anthropic SDK fallback served instead. `_call_stage2_validation()` (`intent_validator.py`) threads it through and `validate_intent_and_code()` attaches it as `result["degradation"]` on the APPROVED path. `hook.py`'s new shared helper `_record_degraded_review_telemetry(degradation, reviewer, session_id)` (defined just above `run_pre_tool_hook`, Messi Anti-Duplication) records a `DG` activity event (status `"yellow"`) and a `DG` governance event (`feedback_text` names the failed verifier(s) and reason) — wired at both the Write/Edit gate's approved branch and the danger-bash Phase 2 approved branch. `DG` is registered in `record_activity_event()`'s docstring (`database.py`) and the Activity Indicators table in `docs/ARCHITECTURE.md`. **Not yet implemented**: the claude-usage monitor display of a degraded-vs-fully-verified approval (tracked in issue #131 itself as follow-up; touches `claude-usage-reporting`, a separate repo).
 
@@ -693,11 +693,25 @@ A first fix attempt replaced the full scan with a tail-read (last 512KB via `_re
 
 **Reviewer verdict logging**: Each reviewer's raw response is logged at DEBUG level (first 300 chars via `MAX_REVIEW_LOG_CHARS`) via `log_debug("competitive", f"Reviewer {model} verdict: ...")`.
 
-**Timeouts**: `REVIEWER_WAIT_TIMEOUT_SEC = 60` (per-reviewer via `futures_wait`), `SYNTHESIS_TIMEOUT_SEC = 30` (synthesis via `future.result(timeout=...)`).
+**Timeouts: derived from one budget (#108).** Everything flows from `PRE_TOOL_HOOK_TIMEOUT_SECONDS` in `constants.py`, which is **120** since 2026-09-21 (it was 60):
+- `PRE_TOOL_REVIEW_BUDGET_SECONDS` = 120 - 10 (safety margin) = 110.
+- `REVIEWER_WAIT_TIMEOUT_SEC` = `int(110 * 0.7)` = **77s**.
+- `SYNTHESIS_TIMEOUT_SEC` = 110 - 77 = **33s**.
+- The gate's single `_gate_deadline` clamps the anchor wait and the review, so the gate always answers before the harness kills it.
 
-**The outer hook timeout is PER-EVENT, not a single 120s** (`~/.claude/settings.json`): Stop = 120s, **PreToolUse = 60s**, PostToolUse = 360s, SessionStart / SubagentStart / SubagentStop = 10s.
+**The PreToolUse hook timeout is configurable per hook, not hard-coded by Claude Code.** 60s is only Claude Code's default; each hook entry's `"timeout"` in `~/.claude/settings.json` overrides it. Current values: Stop = 120s, **PreToolUse = 120s**, PostToolUse = 360s, SessionStart / SubagentStart / SubagentStop = 10s.
+- **Four places must agree:** `PRE_TOOL_HOOK_TIMEOUT_SECONDS`, `install.sh` (the PreToolUse `"timeout"`), `hooks/hooks.json`, and the live `~/.claude/settings.json`.
+- `tests/unit/test_pretool_budget.py` asserts that `install.sh` matches the constant.
+- **Raise `settings.json` first.** If the code budget is higher than the harness timeout, the hook is killed mid-review, and **a killed PreToolUse hook is a silently unvalidated tool call**, not a block.
 
-**⚠️ The pipeline can outlive the PreToolUse budget.** Worst case is `REVIEWER_WAIT_TIMEOUT_SEC` (60) + `SYNTHESIS_TIMEOUT_SEC` (30) = **90s, which exceeds the 60s PreToolUse allowance**. One slow verifier plus a synthesis round is enough for the harness to kill the pre-tool gate mid-flight — **and a killed PreToolUse hook is a silently unvalidated tool call**, not a block. Budget accordingly when choosing competitive expressions for the pre-tool gate; the Stop gate's 120s has headroom, the pre-tool gate does not.
+**Why the budget was raised (issue #147).** On 9/20–9/21, with a 35s reviewer wait, there were **195–225 reviewer timeouts per day**, against 0–3 per day at 60s. That caused ~100 degraded approvals and ~50 blank blocks (#142) per day.
+- **Root cause:** the Claude reviewer (`AnthropicProvider`, via `claude_agent_sdk`) started a **full user Claude Code session** for every review. That session loaded `settings.json` hooks (pace-maker's own hooks, so every review also wrote Langfuse state and `usage.db` rows), plugins, and 11 MCP servers, including unreachable ones.
+- **Cost:** a one-word prompt took **20–49s**; isolated, it takes **2.5–3.9s**.
+
+**⚠️ The Claude reviewer MUST stay isolated.** `anthropic_provider._build_options()` passes `setting_sources=[]` (→ `--setting-sources=`) and `strict_mcp_config=True` (→ `--strict-mcp-config`) for both the primary and the limit-fallback call.
+- **Do not drop these.** Login still works without them, because auth comes from the CLI credential store, not from settings. Effort is passed explicitly.
+- Locked by `tests/test_issue_147_reviewer_isolation.py`.
+- `mcp_servers={}` is the SDK default and adds no flag; `--strict-mcp-config` alone does the MCP isolation.
 
 **Status display**: `pace-maker status` shows full expression (e.g. `opus+gpt-5->haiku`) in ANSI blue — no separate "reviewers:" breakdown line.
 
@@ -1009,7 +1023,7 @@ Two tag classes:
 | `intent_validation_deferred` | `hook.py::run_pre_tool_hook` (Write/Edit TOCTOU-race block, issue #91/#93 territory) |
 | `danger_bash_block` | `hook.py::run_pre_tool_hook` (danger-bash Phase 1, no-INTENT fast reject) |
 | `danger_bash_deferred` | `hook.py::run_pre_tool_hook` (danger-bash "transcript not ready" block) |
-| `fail_closed_error` | `hook.py::_fail_closed_message` (shared by both Write/Edit and danger-bash gates) |
+| `fail_closed_error` | `hook.py::_fail_closed_message` (shared by both Write/Edit and danger-bash gates); since #142 also the zero-survivor "No reviewer responded" block in `intent_validator.py` Stage 2 and in the danger-bash Phase 2 block in `hook.py` (no reviewer said anything, so it is NOT `reviewer-relay`) |
 | `stop_tempo_block` | `hook.py::run_stop_hook` (tempo/completion block reason) |
 | `stop_continuation_nudge` | `hook.py::run_stop_hook` (silent-tool-stop continuation nudge) |
 | `reviewer-relay` | not a `format_tag` channel — see `format_reviewer_relay` above; listed in `CHANNELS` only so the manifest declares this second tag class too |

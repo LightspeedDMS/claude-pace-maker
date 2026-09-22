@@ -153,7 +153,14 @@ def resolve_and_call_with_reviewer(
             from run_mechanical()) or the single configured provider failed
             and the Anthropic SDK fallback served instead
             (context="single_model_fallback"). Issue #131. Never raises;
-            None (default) is a no-op for existing callers.
+            None (default) is a no-op for existing callers. Issue #142:
+            when the response is empty because NOBODY answered at all
+            (competitive zero survivors, forwarded from run_mechanical();
+            or the single provider AND its Anthropic fallback both failed;
+            or hook_model="auto" failed outright), the dict additionally
+            carries {"zero_survivors": True} — callers use this to build a
+            real explanation instead of relaying a blank response as if it
+            were reviewer feedback.
 
     Returns:
         Tuple of (response_text, reviewer_name) where reviewer_name identifies
@@ -262,9 +269,36 @@ def resolve_and_call_with_reviewer(
                 return response, _REVIEWER_SDK
             except ProviderError as e2:
                 log_warning("registry", f"Fallback also failed ({e2}), fail-open")
+                # Issue #142: BOTH the configured provider and the
+                # anthropic-sdk fallback failed — nobody answered at all.
+                # Surface why, same idiom as the degraded-approval branch
+                # above, so callers never have to relay a blank response
+                # without an explanation.
+                if _degradation is not None:
+                    _degradation["degraded"] = True
+                    _degradation["zero_survivors"] = True
+                    # Issue #142 code-review follow-up (item 6): key by the
+                    # provider identity that actually failed
+                    # (_REVIEWER_SDK, "anthropic-sdk") — "auto" is a
+                    # model-resolution alias, not a reviewer identity, and
+                    # would be misleading next to hook_model's real
+                    # provider-token key.
+                    _degradation["failed_providers"] = {
+                        hook_model: str(e),
+                        _REVIEWER_SDK: str(e2),
+                    }
+                    _degradation["context"] = "single_model_fallback"
                 return "", _REVIEWER_UNKNOWN
         else:
             log_warning("registry", f"Anthropic failed ({e}), fail-open")
+            # Issue #142: hook_model == "auto" (no fallback attempted) and
+            # the single Anthropic call itself failed — same "nobody
+            # answered" signal as the competitive zero-survivors path.
+            if _degradation is not None:
+                _degradation["degraded"] = True
+                _degradation["zero_survivors"] = True
+                _degradation["failed_providers"] = {hook_model: str(e)}
+                _degradation["context"] = "single_model_fallback"
             return "", _REVIEWER_UNKNOWN
 
 

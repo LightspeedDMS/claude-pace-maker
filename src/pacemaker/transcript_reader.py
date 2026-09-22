@@ -48,6 +48,30 @@ LAST_N_TURNS_FOR_TOOL_MATCH = 2
 # need to change it here.
 INTENT_MARKER_PATTERN = re.compile(r"(?i)\bintent\s*:")
 
+# Issue #141: shared notice appended to a Stage-1/Phase-1 "missing
+# declaration" block reason when the anchored turn had a `thinking` block
+# but NO visible text block at all. Facts (see the GitHub issue):
+# `apiBlockIndex` numbers API response blocks with no gaps, so a turn
+# shaped `thinking(0), tool_use(1)` genuinely never had a text block -- the
+# model wrote its declaration (INTENT:, and/or a test-coverage line) only
+# inside its own (summarized, non-verbatim, not-shown-to-the-user)
+# reasoning. The pre-existing block messages don't say this, so the agent
+# believes it already declared and loops. This constant is a single source
+# of truth shared by all three block paths that can hit this shape: the
+# Write/Edit Stage 1 NO and NO_TDD blocks
+# (intent_validator.validate_intent_and_code) and the danger-bash Phase 1
+# block (hook.py) -- worded generically ("declarations ... INTENT:, test
+# coverage") rather than naming only INTENT:, since NO_TDD blocks on a
+# missing test-coverage line, not a missing INTENT. Thinking is NEVER
+# accepted as a declaration source -- this notice only explains an
+# existing block, it never changes whether one occurs.
+THINKING_ONLY_NOTICE = (
+    "Your message contained NO visible text — declarations written only "
+    "in your reasoning/thinking (INTENT:, test coverage) do not count and "
+    "are not visible to the user. Write them as visible response text in "
+    "the same message, before the tool call, then retry."
+)
+
 
 def get_all_user_messages(transcript_path: str) -> List[str]:
     """
@@ -531,6 +555,58 @@ def _merge_anchor_turn(
     return raw_entries[anchor_index]["parts"]
 
 
+def _content_has_thinking(content: Any) -> bool:
+    """Return True if ``content`` (a raw JSONL message content list) has at
+    least one ``thinking`` block with non-empty (post-strip) text.
+
+    Issue #141: distinguishes a genuinely empty/malformed entry from the
+    "wrote its INTENT only in reasoning" shape the block-message notice
+    exists to explain. Non-list/non-dict content is defensively treated as
+    "no thinking" rather than raising.
+
+    Issue #141 code-review regression fix: ``block.get("thinking", "")``
+    only substitutes its default when the ``"thinking"`` KEY is absent --
+    an explicit JSON ``null`` (``thinking: None`` after ``json.loads``)
+    passes straight through and ``.strip()`` on ``None`` raised
+    AttributeError. This guard is defensive against malformed/null values
+    -- an audit of real transcript data found only string ``thinking``
+    values, so a live ``thinking: null`` is unconfirmed, but the shape is
+    valid per the JSONL schema and the cost of guarding it is zero. An
+    ``isinstance(str, ...)`` guard treats a null/non-str value the same as
+    "no thinking text" instead of raising.
+    """
+    if not isinstance(content, list):
+        return False
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "thinking":
+            continue
+        thinking_text = block.get("thinking")
+        if isinstance(thinking_text, str) and thinking_text.strip():
+            return True
+    return False
+
+
+def _turn_has_thinking(
+    raw_entries: List[dict], anchor_index: int, anchor_request_id: Optional[str]
+) -> bool:
+    """Return True if the anchor turn (all entries sharing
+    ``anchor_request_id``, or just the anchor entry when ``request_id`` is
+    None) contains at least one non-empty ``thinking`` content block.
+
+    Scoped to the EXACT SAME turn grouping ``_merge_anchor_turn`` already
+    uses (same requestId, assistant role only) -- issue #141's notice must
+    never be triggered by thinking content from a different turn.
+    """
+    if anchor_request_id is None:
+        return _content_has_thinking(raw_entries[anchor_index]["content"])
+    for e in raw_entries:
+        if e["role"] != "assistant" or e["request_id"] != anchor_request_id:
+            continue
+        if _content_has_thinking(e["content"]):
+            return True
+    return False
+
+
 def _find_turn_matching_tool_input(
     transcript_path: str,
     tool_input: dict,
@@ -683,6 +759,39 @@ def _find_turn_matching_tool_input(
                                 raw_entries, anchor_index, anchor_request_id
                             )
                             _outcome["outcome"] = "stale"
+                            # Issue #141: surface the stale turn's SHAPE
+                            # (visible text vs. thinking-only) the same way
+                            # the "found" path does below -- a stale match
+                            # can be thinking-only too, and the block
+                            # message built from it deserves the same
+                            # explanatory notice.
+                            #
+                            # Issue #141 code-review finding: this whole
+                            # function body is wrapped in an OUTER
+                            # try/except (see the bottom of this function)
+                            # that treats ANY exception as "not_found". The
+                            # "outcome" field above is already correctly
+                            # set to "stale" at this point -- an exception
+                            # from the flag computation alone must never be
+                            # allowed to propagate up and let that outer
+                            # handler silently overwrite a real stale match
+                            # with not_found. Caught and swallowed here;
+                            # the flags simply stay absent (.get() reads as
+                            # None downstream) on the rare failure path.
+                            try:
+                                _outcome["anchor_has_visible_text"] = bool(
+                                    merged["text"].strip()
+                                )
+                                _outcome["anchor_has_thinking"] = _turn_has_thinking(
+                                    raw_entries, anchor_index, anchor_request_id
+                                )
+                            except Exception as _shape_exc:
+                                log_warning(
+                                    "transcript_reader",
+                                    "anchor-shape flag computation failed on "
+                                    "stale path (non-fatal, outcome unaffected)",
+                                    _shape_exc,
+                                )
                             # Intent-marker gate (issue #93 code review, FIX
                             # 1 — security regression): symmetric with the
                             # "found" path's gate a few lines below. Gate on
@@ -709,6 +818,29 @@ def _find_turn_matching_tool_input(
         # Merge all entries sharing the anchor's requestId (same logical turn).
         merged = _merge_anchor_turn(raw_entries, anchor_index, anchor_request_id)
 
+        # Issue #141: surface the anchored turn's SHAPE (visible text vs.
+        # thinking-only) regardless of which return branch below is taken --
+        # a caller needs this even when the turn IS found but has no INTENT
+        # in TEXT (the exact "missing INTENT" block this issue is about).
+        #
+        # Issue #141 code-review finding: same defensive wrapping as the
+        # stale branch above -- a failure here must never propagate to the
+        # function's OUTER try/except and silently flip a genuinely found
+        # match to not_found.
+        if _outcome is not None:
+            try:
+                _outcome["anchor_has_visible_text"] = bool(merged["text"].strip())
+                _outcome["anchor_has_thinking"] = _turn_has_thinking(
+                    raw_entries, anchor_index, anchor_request_id
+                )
+            except Exception as _shape_exc:
+                log_warning(
+                    "transcript_reader",
+                    "anchor-shape flag computation failed on found path "
+                    "(non-fatal, outcome unaffected)",
+                    _shape_exc,
+                )
+
         # Intent-marker gate: only return non-empty when INTENT: is in TEXT.
         if not INTENT_MARKER_PATTERN.search(merged["text"]):
             if _outcome is not None:
@@ -732,6 +864,26 @@ def _find_turn_matching_tool_input(
         if _outcome is not None:
             _outcome["outcome"] = "not_found"
         return None
+
+
+def _copy_anchor_shape_flags(diagnostics: dict, attempt_outcome: dict) -> None:
+    """Copy the additive anchor-shape diagnostics (issue #141:
+    ``anchor_has_visible_text``/``anchor_has_thinking``) from a single
+    retry attempt's ``_outcome`` dict into the caller-visible
+    ``_diagnostics`` dict.
+
+    Code review follow-up (item 5): this exact two-line copy was
+    triplicated across all three terminal paths of
+    ``get_current_turn_message_for_validation``'s retry loop (success,
+    stale-grace early return, ceiling give-up) -- Messi Rule 4 three-strike
+    dedup, same rationale as ``INTENT_MARKER_PATTERN``'s extraction. A
+    missing key on ``attempt_outcome`` (e.g. a genuine not_found, which
+    never populates these) correctly copies as ``None`` via ``.get()``.
+    """
+    diagnostics["anchor_has_visible_text"] = attempt_outcome.get(
+        "anchor_has_visible_text"
+    )
+    diagnostics["anchor_has_thinking"] = attempt_outcome.get("anchor_has_thinking")
 
 
 def get_current_turn_message_for_validation(
@@ -888,6 +1040,10 @@ def get_current_turn_message_for_validation(
                 _diagnostics["attempts"] = attempts
                 _diagnostics["elapsed_seconds"] = round(time.monotonic() - start, 3)
                 _diagnostics["outcome"] = _attempt_outcome.get("outcome", "found")
+                # Issue #141: purely additive -- carries the anchored
+                # turn's shape (visible text vs. thinking-only) so a
+                # caller can explain a subsequent "missing INTENT" block.
+                _copy_anchor_shape_flags(_diagnostics, _attempt_outcome)
             return result
         # By default (_stale_grace_seconds=None) this does NOT early-return
         # on a "stale" outcome (_find_turn_matching_tool_input still
@@ -917,6 +1073,9 @@ def get_current_turn_message_for_validation(
                 _diagnostics["elapsed_seconds"] = round(elapsed, 3)
                 _diagnostics["outcome"] = "stale"
                 _diagnostics["stale_text"] = _attempt_outcome.get("stale_text", "")
+                # Issue #141: additive turn-shape propagation (see the
+                # success branch above for the full rationale).
+                _copy_anchor_shape_flags(_diagnostics, _attempt_outcome)
             log_debug(
                 "transcript_reader",
                 "get_current_turn_message_for_validation: stale-grace early "
@@ -932,6 +1091,11 @@ def get_current_turn_message_for_validation(
                 _diagnostics["outcome"] = _attempt_outcome.get("outcome", "not_found")
                 if _attempt_outcome.get("outcome") == "stale":
                     _diagnostics["stale_text"] = _attempt_outcome.get("stale_text", "")
+                # Issue #141: additive turn-shape propagation (see the
+                # success branch above for the full rationale). On a
+                # genuine not_found give-up these are simply absent from
+                # _attempt_outcome, so .get() correctly yields None.
+                _copy_anchor_shape_flags(_diagnostics, _attempt_outcome)
             log_warning(
                 "transcript_reader",
                 "get_current_turn_message_for_validation: gave up after "

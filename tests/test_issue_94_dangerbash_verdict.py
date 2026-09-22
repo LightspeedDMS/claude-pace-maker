@@ -174,6 +174,22 @@ def _dangerbash_blockage_rows(harness: _DbHarness):
         conn.close()
 
 
+def _reviewer_unavailable_blockage_rows(harness: _DbHarness):
+    """Issue #142: an empty Phase 2 reviewer response (zero survivors) is
+    recorded under the new 'intent_validation_reviewer_unavailable'
+    category — a reviewer infrastructure failure, not a genuine
+    intent-mismatch rejection — so it is deliberately NOT counted by
+    _dangerbash_blockage_rows() above."""
+    conn = sqlite3.connect(harness.db_path)
+    try:
+        return conn.execute(
+            "SELECT reason, details FROM blockage_events "
+            "WHERE category = 'intent_validation_reviewer_unavailable'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
 class TestPhase2RecordedFalseBlocksNowAllow(_DbHarness):
     """The three exact reviewer strings recorded in usage.db for issue #94
     must now ALLOW the command (verdict_passes semantics)."""
@@ -245,10 +261,18 @@ class TestPhase2HardRejectionsStillBlock(_DbHarness):
         assert len(rows) == 1
 
     def test_empty_response_still_blocks(self):
+        """Issue #142: an empty Phase 2 response means EVERY reviewer
+        failed to respond (zero survivors) — the gate still blocks
+        (fail-closed, unchanged), but the telemetry category moved from
+        'intent_validation_dangerbash' to the new
+        'intent_validation_reviewer_unavailable', since this is a reviewer
+        infrastructure failure, not a genuine intent-mismatch rejection."""
         result = _run_gate_with_reviewer_response(self, "")
         assert result.get("decision") == "block", result
-        rows = _dangerbash_blockage_rows(self)
+        assert _dangerbash_blockage_rows(self) == []
+        rows = _reviewer_unavailable_blockage_rows(self)
         assert len(rows) == 1
+        assert "No reviewer responded" in rows[0][0]
 
 
 class TestPhase2SoftRejectionsAndTelemetryStillBlock(_DbHarness):
