@@ -254,77 +254,75 @@ class TestScenario5MigrateToPlugin:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="module")
+def prebaked_plugin_mode_install(tmp_path_factory):
+    """One real `install.sh` run with CLAUDE_PLUGIN_ROOT set (real
+    filesystem writes, real venv/db init -- no mocking), shared read-only
+    across every test in TestScenario6InstallPluginMode below.
+
+    Issue #144: each of the 4 tests in that class independently ran a
+    fresh `install.sh` (~26-43s each -- confirmed by direct measurement),
+    which is what actually caused the "4 failed" the GitHub issue
+    reported: `run_tests.sh`'s `--timeout=15` is shorter than a single
+    real install.sh run, so every one of these 4 tests was being killed
+    by pytest-timeout, not failing on its own assertion (re-running with
+    `--timeout=170` showed 12 passed / 0 failed for the whole file). All
+    four tests below are pure read-only post-condition checks (settings
+    absent, config present, db table present, exit code) against the SAME
+    install outcome, so one real run is enough."""
+    home = tmp_path_factory.mktemp("plugin_mode_home")
+    result = run_script(
+        INSTALL_SH,
+        env_overrides={
+            "HOME": str(home),
+            "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT),
+        },
+    )
+    return home, result
+
+
+@pytest.mark.timeout(90)
 class TestScenario6InstallPluginMode:
     """When CLAUDE_PLUGIN_ROOT is set, install.sh skips hook registration."""
 
-    @pytest.fixture
-    def plugin_mode_home(self, tmp_path):
-        """A fresh home directory for plugin mode install test."""
-        home = tmp_path / "home"
-        home.mkdir()
-        return home
-
-    def test_install_skips_settings_modification_in_plugin_mode(self, plugin_mode_home):
+    def test_install_skips_settings_modification_in_plugin_mode(
+        self, prebaked_plugin_mode_install
+    ):
         """install.sh must NOT create/modify settings.json when CLAUDE_PLUGIN_ROOT is set."""
-        settings_file = plugin_mode_home / ".claude" / "settings.json"
-        run_script(
-            INSTALL_SH,
-            env_overrides={
-                "HOME": str(plugin_mode_home),
-                "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT),
-            },
-        )
+        home, _result = prebaked_plugin_mode_install
+        settings_file = home / ".claude" / "settings.json"
         assert not settings_file.exists(), (
             "install.sh must NOT create settings.json in plugin mode. "
             "File was unexpectedly created."
         )
 
-    def test_install_creates_config_in_plugin_mode(self, plugin_mode_home):
+    def test_install_creates_config_in_plugin_mode(self, prebaked_plugin_mode_install):
         """install.sh still creates config.json in plugin mode."""
-        result = run_script(
-            INSTALL_SH,
-            env_overrides={
-                "HOME": str(plugin_mode_home),
-                "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT),
-            },
-        )
-        config_file = plugin_mode_home / ".claude-pace-maker" / "config.json"
+        home, result = prebaked_plugin_mode_install
+        config_file = home / ".claude-pace-maker" / "config.json"
         assert config_file.exists(), (
             f"install.sh must still create config.json in plugin mode. "
             f"returncode={result.returncode} stderr={result.stderr[:300]}"
         )
 
-    def test_install_initializes_db_in_plugin_mode(self, plugin_mode_home):
+    def test_install_initializes_db_in_plugin_mode(self, prebaked_plugin_mode_install):
         """install.sh still initializes usage.db in plugin mode."""
-        run_script(
-            INSTALL_SH,
-            env_overrides={
-                "HOME": str(plugin_mode_home),
-                "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT),
-            },
-        )
-        db_file = plugin_mode_home / ".claude-pace-maker" / "usage.db"
+        home, _result = prebaked_plugin_mode_install
+        db_file = home / ".claude-pace-maker" / "usage.db"
         assert (
             db_file.exists()
         ), "install.sh must still initialize usage.db in plugin mode"
-        conn = sqlite3.connect(str(db_file))
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='usage_snapshots'"
-        )
-        count = cursor.fetchone()[0]
-        conn.close()
+        with sqlite3.connect(str(db_file)) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='usage_snapshots'"
+            )
+            count = cursor.fetchone()[0]
         assert count == 1, "usage_snapshots table must exist in plugin mode"
 
-    def test_install_exits_zero_in_plugin_mode(self, plugin_mode_home):
+    def test_install_exits_zero_in_plugin_mode(self, prebaked_plugin_mode_install):
         """install.sh exits 0 in plugin mode."""
-        result = run_script(
-            INSTALL_SH,
-            env_overrides={
-                "HOME": str(plugin_mode_home),
-                "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT),
-            },
-        )
+        _home, result = prebaked_plugin_mode_install
         assert result.returncode == 0, (
             f"install.sh must exit 0 in plugin mode. "
             f"stdout={result.stdout[-500:]} stderr={result.stderr[-300:]}"

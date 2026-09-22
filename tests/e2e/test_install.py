@@ -12,9 +12,25 @@ from pathlib import Path
 
 import pytest
 
+# This file was moved from tests/test_install.py to
+# tests/e2e/test_install.py (issue #144), so three .parent hops
+# (e2e -> tests -> repo root) are now needed to reach the repo root of
+# whichever checkout/worktree this test is running from (two hops would
+# resolve to tests/, not the repo root).
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+INSTALL_SH = REPO_ROOT / "install.sh"
 
+
+@pytest.mark.timeout(60)
 class TestInstallScript:
-    """Streamlined installation tests - minimize installer runs."""
+    """Streamlined installation tests - minimize installer runs.
+
+    Each test below runs `install.sh` for real (~20-40s per run, one test
+    does 2 runs) -- there is no further consolidation available given this
+    file's own design goal ("runs installer minimally"). The class-level
+    timeout override lets that real cost survive run_tests.sh's default
+    --timeout=15 (issue #144: this file was previously reported "pass
+    alone but ~75-115s, time out under load")."""
 
     @pytest.fixture
     def temp_home(self, tmp_path):
@@ -37,7 +53,7 @@ class TestInstallScript:
 
     def _run_install(self, temp_home):
         """Helper to run install script."""
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
         env = os.environ.copy()
         env["HOME"] = str(temp_home)
         return subprocess.run(

@@ -19,9 +19,23 @@ from pathlib import Path
 
 import pytest
 
+# This file was moved from tests/test_install_local_mode.py to
+# tests/e2e/test_install_local_mode.py (issue #144), so three .parent hops
+# (e2e -> tests -> repo root) are now needed to reach the repo root of
+# whichever checkout/worktree this test is running from (two hops would
+# resolve to tests/, not the repo root).
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+INSTALL_SH = REPO_ROOT / "install.sh"
 
+
+@pytest.mark.timeout(60)
 class TestLocalInstallMode:
-    """Test suite for local project installation mode."""
+    """Test suite for local project installation mode.
+
+    Class-level timeout override lets the real install.sh calls below
+    (~20-40s each) survive run_tests.sh's default --timeout=15 (issue
+    #144: this file was previously reported "pass alone but ~75-115s,
+    time out under load")."""
 
     @pytest.fixture
     def temp_home(self, tmp_path):
@@ -306,7 +320,7 @@ class TestLocalInstallMode:
         relative_path = test_project.name
 
         result = subprocess.run(
-            ["/home/jsbattig/Dev/claude-pace-maker/install.sh", relative_path],
+            [str(INSTALL_SH), relative_path],
             env={**os.environ, "HOME": str(temp_home)},
             capture_output=True,
             text=True,
@@ -341,7 +355,7 @@ class TestLocalInstallMode:
 
     def _run_install(self, home_dir, args):
         """Helper to run install.sh with custom HOME directory and arguments."""
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         # Run from home_dir to avoid detecting pace-maker's own .claude directory
         result = subprocess.run(
@@ -356,7 +370,7 @@ class TestLocalInstallMode:
 
     def _run_install_with_args(self, args):
         """Helper to run install.sh with arguments (no HOME override)."""
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         result = subprocess.run(
             [str(install_script)] + args,

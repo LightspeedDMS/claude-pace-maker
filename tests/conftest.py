@@ -8,8 +8,24 @@ instantiate UsageModel without an explicit db_path will get a temp DB.
 
 import os
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
+
+# Ensure THIS checkout's own src/ resolves FIRST, ahead of any stale
+# editable-install (`pip install -e`) .pth entry pointing at a different
+# checkout. A machine-wide editable install's .pth file always points at
+# whichever checkout it was `pip install -e`'d from -- on a machine with
+# multiple worktrees of this repo, that silently shadows every OTHER
+# worktree's own src/pacemaker for any test that imports pacemaker
+# in-process (subprocess-based tests that build their own PYTHONPATH from
+# this test file's own location are unaffected). Must run before any
+# `import pacemaker` anywhere in the suite, including below.
+_REPO_SRC = str(Path(__file__).resolve().parent.parent / "src")
+if _REPO_SRC in sys.path:
+    sys.path.remove(_REPO_SRC)
+sys.path.insert(0, _REPO_SRC)
 
 # Enable test mode globally — skips fsync in SQLite for 20x faster DB operations.
 # Must be set before any pacemaker imports to ensure all connections see it.
@@ -139,6 +155,14 @@ def _block_real_external_cli_calls(request, monkeypatch):
     These must be mocked — a real call (often in a background reviewer thread)
     blocks on a network timeout and Python waits for the lingering thread at exit,
     making the suite slow. e2e tests are exempt (they may use real systems).
+
+    Two separate spawn paths are guarded:
+      - `subprocess.run` — used by CodexProvider/GeminiProvider/AgyProvider.
+      - `claude_agent_sdk.query` — used by AnthropicProvider, which spawns the
+        real `claude` CLI via `anyio.open_process` deep inside the SDK's own
+        transport module, entirely bypassing `subprocess.run`. A test whose
+        code path reaches `AnthropicProvider.query()` unmocked previously made
+        a real, unauthenticated CLI call instead of being caught here.
     """
     # e2e tests may legitimately hit real systems — don't guard those.
     if os.sep + "e2e" + os.sep in str(request.node.fspath):
@@ -155,6 +179,22 @@ def _block_real_external_cli_calls(request, monkeypatch):
         return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", _guarded_run)
+
+    try:
+        import claude_agent_sdk
+
+        async def _guarded_sdk_query(*args, **kwargs):
+            raise RuntimeError(
+                "Real external claude_agent_sdk.query() call in a non-e2e "
+                "test. Mock AnthropicProvider.query (or "
+                "pacemaker.inference.resolve_and_call_with_reviewer) instead "
+                "of letting execution reach the real Claude Agent SDK."
+            )
+            yield  # pragma: no cover - unreachable; makes this an async generator
+
+        monkeypatch.setattr(claude_agent_sdk, "query", _guarded_sdk_query)
+    except ImportError:
+        pass
 
 
 # ---------------------------------------------------------------------------
