@@ -248,6 +248,20 @@ def _block_real_external_cli_calls(request, monkeypatch):
 # logic -- they mock subprocess.run themselves, at the correct lower level,
 # so the blanket stub below (which no-ops the whole function) must not
 # apply to them or it would silently defeat what they're testing.
+#
+# CAVEAT (issue #144 code-review follow-up #5): this match is by BASENAME
+# only, not by any marker or introspection of what the file actually
+# tests. If a future test file is added that also legitimately exercises
+# perform_session_start_version_check() (e.g. a differently-named split
+# of test_version_check_integration.py, or a new regression file for a
+# future version-check bug), it will be silently stubbed by the autouse
+# fixture below unless someone remembers to add its basename here too --
+# there is no automated signal that would catch the omission. If this
+# set grows past two entries, or a rename/split becomes likely, consider
+# switching to a pytest marker (e.g. `@pytest.mark.exercises_version_check`
+# read via `request.node.get_closest_marker(...)`) instead of a basename
+# set, so the exemption travels with the test itself rather than living
+# in a second file that must be kept in sync by hand.
 _VERSION_CHECK_EXEMPT_FILES = {
     "test_claude_code_version.py",
     "test_version_check_integration.py",

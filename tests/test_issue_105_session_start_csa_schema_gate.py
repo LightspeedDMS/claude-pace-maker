@@ -81,6 +81,17 @@ def _run_session_start(tmp_path, config: dict):
         # external CLI call this test has nothing to do with (it's
         # testing CSA schema gating), caught by
         # tests/conftest.py::_ExternalCallGuard's teardown check.
+        #
+        # NOTE (issue #144 code-review follow-up #5): this local patch is
+        # now REDUNDANT with tests/conftest.py's global autouse
+        # `_stub_session_start_version_probe` fixture, added after this
+        # one -- this file's basename is not in that fixture's
+        # `_VERSION_CHECK_EXEMPT_FILES`, so the global fixture already
+        # stubs the same function for every test in this file. Left in
+        # place deliberately (belt-and-suspenders / local
+        # self-documentation of exactly why this mock exists here), not
+        # an oversight -- do not "clean it up" without checking the
+        # global fixture is still in effect.
         patch("pacemaker.version_check.perform_session_start_version_check"),
     ):
         hook.run_session_start_hook()

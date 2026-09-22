@@ -439,6 +439,16 @@ The `codex_usage.py` module handles both subscription and PAYG (Pay-As-You-Go) C
 
 **Test mode optimization:** `PACEMAKER_TEST_MODE=1` is set automatically by `conftest.py`, enabling `PRAGMA synchronous=OFF` for 20x faster DB operations in tests.
 
+**Dev/test setup (issue #144 code-review follow-up #4):** `requirements.txt` only pins the hooks' own runtime deps (`requests`, `pyyaml`, `claude-agent-sdk`) — it is NOT sufficient to run the suite. `requirements-dev.txt` additionally pins `pytest`, `pytest-timeout`, and `responses` (hard-imported by `tests/unit/test_langfuse_provisioner.py` / `test_langfuse_provision_command.py` to mock the Langfuse HTTP API). A clean checkout needs both:
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+Without `responses` installed, those two files collection-error on any interpreter. `run_tests.sh` detects this per-file and prints a hint (`pip install -r requirements-dev.txt`) alongside the file in the ERRORED list.
+
+**Which interpreter runs the tests:** `run_tests.sh`'s `resolve_test_python()` auto-picks an interpreter that has both `claude_agent_sdk` and `pytest` importable (preference order: `PACEMAKER_TEST_PYTHON` override → active `$VIRTUAL_ENV/bin/python` → `python`/`python3.11`/`python3.10`/`python3`), falling back to a pytest-only candidate (with a loud stderr warning — SDK spawn-guard tests won't exercise the real SDK path) or, as a last resort, the first existing candidate at all (louder warning still) if nothing has pytest. Override with `PACEMAKER_TEST_PYTHON=/path/to/python` if auto-detection picks the wrong one.
+
 ---
 
 ## Deployment After Code Changes

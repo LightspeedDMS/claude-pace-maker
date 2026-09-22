@@ -87,36 +87,99 @@ TIMEOUT="${PACEMAKER_TEST_TIMEOUT:-120}"
 E2E_TIMEOUT="${PACEMAKER_E2E_TEST_TIMEOUT:-900}"
 E2E_PYTEST_TIMEOUT="${PACEMAKER_E2E_PYTEST_TIMEOUT:-90}"
 
-# Resolve which Python interpreter to run pytest with. Mirrors
-# src/hooks/*.sh's find_python(): prefer an interpreter where
-# claude_agent_sdk actually imports (so tests exercising the real SDK
-# spawn-guard path run against the same interpreter production hooks
-# use), falling back to existence-only preference order
-# python3.11 -> python3.10 -> python3 when none has the SDK. Overridable
-# via PACEMAKER_TEST_PYTHON.
+# Resolve which Python interpreter to run pytest with (issue #144
+# code-review follow-up #3). Candidate order, highest priority first:
+#   1. PACEMAKER_TEST_PYTHON  -- explicit override.
+#   2. $VIRTUAL_ENV/bin/python -- an ACTIVE virtualenv must win over the
+#      system interpreters below it. The original version ignored
+#      VIRTUAL_ENV entirely, so running inside e.g. a 3.12 venv silently
+#      picked the SYSTEM python3.11 instead.
+#   3. python / python3.11 / python3.10 / python3 -- existence-only
+#      fallback order, mirrors src/hooks/*.sh's find_python().
+#
+# A candidate is only ACCEPTED if BOTH claude_agent_sdk AND pytest import
+# successfully in it -- the original version only checked for
+# claude_agent_sdk, so an interpreter that had the SDK but not pytest
+# (e.g. a stray system python3.11) was silently selected and every test
+# file then exited non-zero into the errored bucket with no explanation.
+# If no candidate has both:
+#   - fall back to the first candidate that has at least pytest (tests
+#     can still run; SDK spawn-guard tests just won't exercise the real
+#     SDK path) and print a loud warning to stderr, never silently;
+#   - if NONE has pytest either, fall back to the first existing
+#     candidate and warn even louder -- every file is about to fail to
+#     collect, but see the missing-dependency hint printed per-file
+#     below (issue #144 code-review follow-up #4) for how to fix it.
 resolve_test_python() {
+    local candidates=()
     if [ -n "${PACEMAKER_TEST_PYTHON:-}" ]; then
-        echo "$PACEMAKER_TEST_PYTHON"
-        return 0
+        candidates+=("$PACEMAKER_TEST_PYTHON")
+        # An explicit override that fails the both-imports check below
+        # still falls through to auto-detection (same rule as every
+        # other candidate) -- but silently discarding a user's explicit
+        # choice with zero explanation is its own footgun, so warn here
+        # specifically, before the unified loop, rather than leaving the
+        # user to infer it from which interpreter ends up printed.
+        if ! command -v "$PACEMAKER_TEST_PYTHON" >/dev/null 2>&1 || \
+           ! "$PACEMAKER_TEST_PYTHON" -c "import claude_agent_sdk, pytest" >/dev/null 2>&1; then
+            echo "WARNING: PACEMAKER_TEST_PYTHON='$PACEMAKER_TEST_PYTHON' is not usable (missing, or missing claude_agent_sdk/pytest); falling back to auto-detection." >&2
+        fi
     fi
+    if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+        candidates+=("$VIRTUAL_ENV/bin/python")
+    fi
+    candidates+=(python python3.11 python3.10 python3)
+
     local py
-    for py in python3.11 python3.10 python3; do
+    for py in "${candidates[@]}"; do
         if command -v "$py" >/dev/null 2>&1; then
-            if "$py" -c "import claude_agent_sdk" >/dev/null 2>&1; then
+            if "$py" -c "import claude_agent_sdk, pytest" >/dev/null 2>&1; then
                 echo "$py"
                 return 0
             fi
         fi
     done
-    for py in python3.11 python3.10 python3; do
+
+    for py in "${candidates[@]}"; do
         if command -v "$py" >/dev/null 2>&1; then
+            if "$py" -c "import pytest" >/dev/null 2>&1; then
+                echo "WARNING: no candidate interpreter has claude_agent_sdk installed; using '$py' (has pytest, missing claude_agent_sdk). Tests exercising the real SDK spawn-guard path will not run against the production interpreter. Install claude_agent_sdk on this interpreter, or set PACEMAKER_TEST_PYTHON to one that has it." >&2
+                echo "$py"
+                return 0
+            fi
+        fi
+    done
+
+    for py in "${candidates[@]}"; do
+        if command -v "$py" >/dev/null 2>&1; then
+            echo "WARNING: no candidate interpreter has pytest installed; using '$py' anyway -- every test file is about to fail to collect. Install pytest (see requirements-dev.txt) on this interpreter, or set PACEMAKER_TEST_PYTHON to one that has it." >&2
             echo "$py"
             return 0
         fi
     done
+
     echo "python3"
 }
 TEST_PYTHON="$(resolve_test_python)"
+
+# Scans a file's captured pytest output for a missing-module import error
+# and, if found, prints a hint naming the module and pointing at
+# requirements-dev.txt (issue #144 code-review follow-up #4). Silent
+# no-op when the output contains no such error -- most ERRORED files are
+# fixture/setup failures unrelated to a missing dependency, and this
+# must never print a misleading hint for those.
+print_missing_import_hint() {
+    local output="$1"
+    local missing
+    missing=$(echo "$output" | grep -oP "(?<=ModuleNotFoundError: No module named ')[^']+" | head -1)
+    if [ -n "$missing" ]; then
+        echo -e "    ${YELLOW}hint: missing module '${missing}' -- try: pip install -r requirements-dev.txt${NC}"
+        return 0
+    fi
+    if echo "$output" | grep -q "^ImportError:"; then
+        echo -e "    ${YELLOW}hint: ImportError during collection -- check requirements-dev.txt / requirements.txt are installed on $TEST_PYTHON${NC}"
+    fi
+}
 
 # Counters
 TOTAL_PASSED=0
@@ -290,6 +353,7 @@ for f in "${TEST_FILES[@]}"; do
         printf "${RED}${PASSED} passed, ${ERRORED} errored${NC}\n"
         ERRORED_FILES+=("$f")
         TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+        print_missing_import_hint "$OUTPUT"
         if [ "$TB_FLAG" = "--tb=short" ]; then
             echo "$OUTPUT" | tail -20
             echo ""
@@ -302,6 +366,7 @@ for f in "${TEST_FILES[@]}"; do
         printf "${RED}ERROR (exit ${EXIT_CODE})${NC}\n"
         ERRORED_FILES+=("$f")
         TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+        print_missing_import_hint "$OUTPUT"
         if [ "$TB_FLAG" = "--tb=short" ]; then
             echo "$OUTPUT" | tail -20
             echo ""

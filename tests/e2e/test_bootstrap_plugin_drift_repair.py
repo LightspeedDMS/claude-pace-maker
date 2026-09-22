@@ -24,6 +24,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BOOTSTRAP_SH = REPO_ROOT / "scripts" / "bootstrap-plugin.sh"
 REQUIREMENTS_TXT = REPO_ROOT / "requirements.txt"
 
+# pytest-timeout override for the whole test. Matches the sibling
+# test_bootstrap_plugin_concurrency.py's PER_TEST_TIMEOUT_SECONDS (issue
+# #144 code-review follow-up #2): measured 44.6s alone, but a real
+# bootstrap_full + two real pip installs left no headroom under the 90s
+# marker on a loaded box (observed "Timeout (>90.0s)" under parallel
+# full-suite execution). A pytest-timeout marker always overrides
+# --timeout regardless of value, so this must be raised directly rather
+# than relying on scripts/run_tests.sh's PACEMAKER_E2E_PYTEST_TIMEOUT.
+PER_TEST_TIMEOUT_SECONDS = 150
+
 
 def _parse_requirements():
     assert REQUIREMENTS_TXT.exists(), f"requirements.txt missing at {REQUIREMENTS_TXT}"
@@ -57,7 +67,7 @@ def run_bootstrap(home, mode="--light"):
 
 
 class TestBootstrapDriftRepair:
-    @pytest.mark.timeout(90)
+    @pytest.mark.timeout(PER_TEST_TIMEOUT_SECONDS)
     def test_drifted_version_is_repaired_on_next_bootstrap(self, tmp_path):
         """If a dep is manually downgraded inside the venv, the next
         bootstrap_full must detect the drift via _deps_imports_ok's
