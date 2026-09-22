@@ -1,29 +1,51 @@
 """
-Issue #141 regression tests: an assistant turn can carry NO visible text
-block at all -- only `thinking` block(s) then a `tool_use` (apiBlockIndex
-numbering is contiguous: thinking(0), tool_use(1); no gap means there never
-was a text block). The model wrote its INTENT declaration only inside its
-own reasoning, which is summarized (not verbatim) and never shown to the
-user. The gate is CORRECT to block (there is no visible INTENT), but the
-pre-existing "you must declare INTENT:" message doesn't say WHY, so the
-agent believes it already declared INTENT and loops.
+Issue #141 / #148 regression tests: an assistant turn can carry NO visible
+text block at all. This has THREE observed shapes (apiBlockIndex numbering
+is contiguous, so a gap-free sequence proves there never was a text block):
+  (a) `thinking` block(s) with non-empty text, then `tool_use` -- the model
+      wrote its INTENT declaration only inside its own reasoning, which is
+      summarized (not verbatim) and never shown to the user.
+  (b) an EMPTY `thinking: ""` block, then `tool_use` -- no reasoning shown
+      either.
+  (c) `tool_use` alone, with no `thinking` block at all.
+In all three shapes the gate is CORRECT to block (there is no visible
+INTENT), but the pre-existing "you must declare INTENT:" message doesn't
+say WHY, so the agent believes it already declared INTENT and loops.
 
-This module covers the issue #141 fix:
+Issue #141 shipped the notice only for shape (a) (gated on
+`anchor_has_thinking` being true). Issue #148 is the follow-up: shapes (b)
+and (c) got no notice either, because `anchor_has_thinking` is False for
+both. The fix: the notice fires whenever `anchor_has_visible_text is
+False`, regardless of `anchor_has_thinking` -- covering all three shapes.
+
+This module covers the combined #141/#148 fix:
 
 1. transcript_reader.py's `_find_turn_matching_tool_input` /
-   `get_current_turn_message_for_validation` now additionally record the
-   anchored turn's SHAPE in the existing `_outcome`/`_diagnostics` channel:
+   `get_current_turn_message_for_validation` record the anchored turn's
+   SHAPE in the existing `_outcome`/`_diagnostics` channel:
    `anchor_has_visible_text` (bool) and `anchor_has_thinking` (bool),
    scoped to the same requestId group `_merge_anchor_turn` already uses.
    Purely additive -- the return-value CONTRACT (None/""/str) is unchanged.
+   Unaffected by #148 -- both flags were already computed correctly for all
+   three shapes; #148 only fixed how the DOWNSTREAM gates (hook.py) combine
+   them.
 2. The Write/Edit Stage 1 "missing INTENT" block
    (intent_validator.validate_intent_and_code) and the danger-bash Phase 1
    "no INTENT" block (hook.py) both append a shared
-   `transcript_reader.THINKING_ONLY_NOTICE` to their block reason when the
-   anchored turn had thinking but NO visible text -- and only then.
+   `transcript_reader.THINKING_ONLY_NOTICE` to their block reason whenever
+   the anchored turn had NO visible text -- regardless of whether thinking
+   was present, empty, or absent entirely (#148).
 3. Thinking is NEVER accepted as an INTENT source. A turn with visible text
    (with or without INTENT) is unaffected; the notice is additive to an
    EXISTING block, it never changes whether a block occurs.
+4. The gating boolean (hook.py's `_bash_no_visible_text`/
+   `_write_edit_no_visible_text`, `validate_intent_and_code`'s
+   `no_visible_text` parameter, and the `blockage_events.details`
+   `"no_visible_text"` key) was renamed from `thinking_only` to
+   `no_visible_text` to keep the telemetry meaning honest post-#148 -- it
+   no longer implies thinking was present. No external consumer
+   (claude-usage-reporting) reads this key (verified by grep), so no
+   backward-compat shim was needed.
 
 MOCKING RATIONALE (mirrors tests/test_issue_139_write_edit_stale_accept.py
 and tests/test_issue_93_danger_bash_anchor.py)
@@ -225,6 +247,15 @@ class TestAnchorShapeExceptionLogsWarning:
             f"computation failure; got: {result!r}"
         )
         assert outcome.get("outcome") == "found"
+        # Issue #140 code-review re-review finding 1: anchor_prose_text is
+        # now a plain dict/string read placed BEFORE this same try/except,
+        # so it must survive the _turn_has_thinking raise this test
+        # already injects (previously it was the LAST statement inside
+        # the try, so the raise left the key entirely unset).
+        assert outcome.get("anchor_prose_text") == VALID_INTENT, (
+            f"anchor_prose_text must survive a _turn_has_thinking raise "
+            f"on the found path; got outcome={outcome}"
+        )
         mock_warn.assert_called_once()
         assert "anchor-shape" in mock_warn.call_args[0][1]
         mock_debug.assert_not_called()
@@ -269,6 +300,14 @@ class TestAnchorShapeExceptionLogsWarning:
         assert outcome.get("outcome") == "stale", (
             f"the stale outcome itself must be unaffected by the flag "
             f"computation failure; got: {outcome}"
+        )
+        # Issue #140 code-review re-review finding 1: anchor_prose_text
+        # must survive this same _turn_has_thinking raise on the stale
+        # path too (previously unset, which could cause an incorrect
+        # n-back fallback in hook.py, violating the ANCHOR-ONLY invariant).
+        assert outcome.get("anchor_prose_text") == VALID_INTENT, (
+            f"anchor_prose_text must survive a _turn_has_thinking raise "
+            f"on the stale path; got outcome={outcome}"
         )
         mock_warn.assert_called_once()
         assert "anchor-shape" in mock_warn.call_args[0][1]
@@ -331,6 +370,77 @@ class TestFindTurnMatchingToolInputDiagnosticsFlags:
         assert result == "", "found, but TEXT has no INTENT -> empty string"
         assert outcome.get("outcome") == "found"
         assert outcome.get("anchor_has_thinking") is True
+        assert outcome.get("anchor_has_visible_text") is False
+
+    def test_found_no_thinking_no_text_sets_both_flags_false(self, tmp_path):
+        """Issue #148 shape (c): a turn with ONLY a tool_use block -- no
+        thinking block at all, no text block. `anchor_has_visible_text` and
+        `anchor_has_thinking` were already correctly computed as False for
+        this shape before #148 -- this pins that pre-existing contract,
+        since #148's actual fix is entirely in the DOWNSTREAM gates
+        (hook.py) that combine these two flags, not in this computation."""
+        from pacemaker.transcript_reader import _find_turn_matching_tool_input
+
+        transcript = _write_transcript(
+            [
+                _asst(
+                    "req_A",
+                    _tool_use_block(
+                        "Write",
+                        {"file_path": NONCORE_FILE, "content": NEW_CONTENT},
+                        "toolu_A",
+                        0,
+                    ),
+                ),
+            ],
+            str(tmp_path / "t.jsonl"),
+        )
+        outcome: dict = {}
+        result = _find_turn_matching_tool_input(
+            transcript,
+            {"file_path": NONCORE_FILE, "content": NEW_CONTENT},
+            "Write",
+            _outcome=outcome,
+        )
+        assert result == "", "found, but TEXT has no INTENT -> empty string"
+        assert outcome.get("outcome") == "found"
+        assert outcome.get("anchor_has_thinking") is False
+        assert outcome.get("anchor_has_visible_text") is False
+
+    def test_found_empty_thinking_and_no_text_sets_both_flags_false(self, tmp_path):
+        """Issue #148 shape (b): an EMPTY `thinking: ""` block plus
+        tool_use -- the exact repro from the issue's own evidence (a
+        reviewer subagent transcript with an empty thinking block was
+        blocked with no notice)."""
+        from pacemaker.transcript_reader import _find_turn_matching_tool_input
+
+        transcript = _write_transcript(
+            [
+                _asst("req_A", _thinking_block("", 0)),
+                _asst(
+                    "req_A",
+                    _tool_use_block(
+                        "Write",
+                        {"file_path": NONCORE_FILE, "content": NEW_CONTENT},
+                        "toolu_A",
+                        1,
+                    ),
+                ),
+            ],
+            str(tmp_path / "t.jsonl"),
+        )
+        outcome: dict = {}
+        result = _find_turn_matching_tool_input(
+            transcript,
+            {"file_path": NONCORE_FILE, "content": NEW_CONTENT},
+            "Write",
+            _outcome=outcome,
+        )
+        assert result == "", "found, but TEXT has no INTENT -> empty string"
+        assert outcome.get("outcome") == "found"
+        assert (
+            outcome.get("anchor_has_thinking") is False
+        ), "an EMPTY thinking block must not count as 'has thinking'"
         assert outcome.get("anchor_has_visible_text") is False
 
     def test_thinking_null_with_visible_intent_still_resolves_found(self, tmp_path):
@@ -733,6 +843,84 @@ class TestWriteEditThinkingOnlyNotice(_DbHarness):
         )
 
 
+class TestIssue148WriteEditNoVisibleTextNotice(_DbHarness):
+    """Issue #148: the notice must fire for the two shapes issue #141
+    missed -- a turn with NO thinking block at all (pure tool_use), and a
+    turn with an EMPTY thinking block. Both have `anchor_has_visible_text
+    is False` and `anchor_has_thinking is False`, which issue #141's gate
+    (`bool(anchor_has_thinking) and anchor_has_visible_text is False`)
+    incorrectly treated as "don't show the notice"."""
+
+    def _run(self):
+        from pacemaker.hook import run_pre_tool_hook
+
+        stdin_payload = _make_hook_stdin(
+            "Write", NONCORE_FILE, NEW_CONTENT, self.transcript
+        )
+        with (
+            patch("sys.stdin", MagicMock(read=lambda: stdin_payload)),
+            patch("pacemaker.hook.load_config", return_value=_config_write_edit()),
+            patch("pacemaker.hook.DEFAULT_DB_PATH", self.db_path),
+        ):
+            return run_pre_tool_hook()
+
+    def test_no_thinking_no_text_turn_blocks_with_notice(self):
+        """Shape (c): tool_use only, no thinking block at all."""
+        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
+
+        _write_transcript(
+            [
+                _asst(
+                    "req_A",
+                    _tool_use_block(
+                        "Write",
+                        {"file_path": NONCORE_FILE, "content": NEW_CONTENT},
+                        "toolu_A",
+                        0,
+                    ),
+                ),
+            ],
+            self.transcript,
+        )
+        result = self._run()
+        assert result.get("decision") == "block"
+        reason = result.get("reason", "")
+        assert "INTENT" in reason
+        assert THINKING_ONLY_NOTICE in reason, (
+            f"A pure tool_use turn (no thinking at all) must surface the "
+            f"no-visible-text notice; got: {reason!r}"
+        )
+
+    def test_empty_thinking_only_turn_blocks_with_notice(self):
+        """Shape (b): an EMPTY thinking block plus tool_use -- the issue's
+        own repro (a reviewer subagent transcript with `thinking: ""`)."""
+        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
+
+        _write_transcript(
+            [
+                _asst("req_A", _thinking_block("", 0)),
+                _asst(
+                    "req_A",
+                    _tool_use_block(
+                        "Write",
+                        {"file_path": NONCORE_FILE, "content": NEW_CONTENT},
+                        "toolu_A",
+                        1,
+                    ),
+                ),
+            ],
+            self.transcript,
+        )
+        result = self._run()
+        assert result.get("decision") == "block"
+        reason = result.get("reason", "")
+        assert "INTENT" in reason
+        assert THINKING_ONLY_NOTICE in reason, (
+            f"An empty-thinking-only turn must surface the no-visible-text "
+            f"notice; got: {reason!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Group C: danger-bash gate hook-level tests (real run_pre_tool_hook, real
 # transcript_reader; danger rule matching mocked, mirrors test_issue_93's
@@ -824,7 +1012,7 @@ class TestDangerBashThinkingOnlyNotice(_DbHarness):
         attempt was thinking-only and already has its own tool_result; the
         byte-identical re-issue's own tool_use has NOT yet flushed. The
         gate's existing stale-outcome handling (accepted per issue #93)
-        must still surface the notice, since `_bash_thinking_only` is
+        must still surface the notice, since `_bash_no_visible_text` is
         computed from `_bash_diagnostics` right after `_bash_outcome` is
         read -- before the found/stale/not_found branching -- so it is
         populated identically regardless of which branch is taken."""
@@ -871,7 +1059,7 @@ class TestDangerBashThinkingOnlyNotice(_DbHarness):
 
     def test_thinking_only_records_thinking_only_true_in_blockage_details(self):
         """Code review follow-up item 3: the Phase-1 no-INTENT blockage
-        event's `details` JSON must record `thinking_only` so the
+        event's `details` JSON must record `no_visible_text` so the
         claude-usage monitor / usage.db telemetry can distinguish this
         block shape from an ordinary missing-INTENT block."""
         _write_transcript(
@@ -898,9 +1086,9 @@ class TestDangerBashThinkingOnlyNotice(_DbHarness):
             conn.close()
         assert rows, "Expected an intent_validation blockage event"
         details = json.loads(rows[0][0])
-        assert details.get("thinking_only") is True, (
-            f"Thinking-only Bash block must record thinking_only=True in "
-            f"blockage details; got: {details}"
+        assert details.get("no_visible_text") is True, (
+            f"No-visible-text Bash block must record no_visible_text=True "
+            f"in blockage details; got: {details}"
         )
 
     def test_visible_text_records_thinking_only_false_in_blockage_details(self):
@@ -925,9 +1113,151 @@ class TestDangerBashThinkingOnlyNotice(_DbHarness):
             conn.close()
         assert rows, "Expected an intent_validation blockage event"
         details = json.loads(rows[0][0])
-        assert details.get("thinking_only") is False, (
+        assert details.get("no_visible_text") is False, (
             f"Visible-text (no-INTENT) Bash block must record "
-            f"thinking_only=False in blockage details; got: {details}"
+            f"no_visible_text=False in blockage details; got: {details}"
+        )
+
+
+class TestIssue148DangerBashNoVisibleTextNotice(_DbHarness):
+    """Issue #148's own repro: a dangerous Bash turn with only an EMPTY
+    `thinking: ""` block plus the tool_use was blocked with no notice
+    (evidence: `agent-a2adca28bd8218fbc.jsonl`). This base class covers the
+    pure tool_use-only shape (no thinking block at all); subclasses below
+    (added separately, to keep each edit's method count small) reuse these
+    helpers to cover the empty-thinking-only shape plus blockage-detail
+    telemetry for both shapes."""
+
+    COMMAND = "rm -rf /tmp/pacemaker_issue148_scratch/doomed"
+
+    def _rules_patch(self):
+        rule = {"id": "SD-148", "description": "rm -rf (test fixture)"}
+        return (
+            patch("pacemaker.danger_bash_rules.load_rules", return_value=[rule]),
+            patch("pacemaker.danger_bash_rules.match_command", return_value=[rule]),
+        )
+
+    def _run(self):
+        from pacemaker.hook import run_pre_tool_hook
+
+        stdin_payload = json.dumps(
+            {
+                "session_id": "test-session-148-bash",
+                "transcript_path": self.transcript,
+                "tool_name": "Bash",
+                "tool_input": {"command": self.COMMAND},
+            }
+        )
+        p1, p2 = self._rules_patch()
+        with (
+            p1,
+            p2,
+            patch("sys.stdin", MagicMock(read=lambda: stdin_payload)),
+            patch("pacemaker.hook.load_config", return_value=_config_danger_bash()),
+            patch("pacemaker.hook.DEFAULT_DB_PATH", self.db_path),
+        ):
+            return run_pre_tool_hook()
+
+    def test_no_thinking_no_text_turn_blocks_with_notice(self):
+        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
+
+        _write_transcript(
+            [
+                _asst(
+                    "req_A",
+                    _tool_use_block("Bash", {"command": self.COMMAND}, "toolu_A", 0),
+                ),
+            ],
+            self.transcript,
+        )
+        result = self._run()
+        assert result.get("decision") == "block"
+        reason = result.get("reason", "")
+        assert "INTENT" in reason
+        assert THINKING_ONLY_NOTICE in reason, (
+            f"A pure tool_use Bash turn (no thinking at all) must surface "
+            f"the no-visible-text notice; got: {reason!r}"
+        )
+
+
+class TestIssue148DangerBashNoVisibleTextNoticeEmptyThinking(
+    TestIssue148DangerBashNoVisibleTextNotice
+):
+    """The exact repro from issue #148's own evidence: an EMPTY
+    `thinking: ""` block plus tool_use."""
+
+    def test_empty_thinking_only_turn_blocks_with_notice(self):
+        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
+
+        _write_transcript(
+            [
+                _asst("req_A", _thinking_block("", 0)),
+                _asst(
+                    "req_A",
+                    _tool_use_block("Bash", {"command": self.COMMAND}, "toolu_A", 1),
+                ),
+            ],
+            self.transcript,
+        )
+        result = self._run()
+        assert result.get("decision") == "block"
+        reason = result.get("reason", "")
+        assert "INTENT" in reason
+        assert THINKING_ONLY_NOTICE in reason, (
+            f"An empty-thinking-only Bash turn must surface the "
+            f"no-visible-text notice; got: {reason!r}"
+        )
+
+
+class TestIssue148DangerBashNoVisibleTextTelemetry(
+    TestIssue148DangerBashNoVisibleTextNotice
+):
+    """Blockage-detail `no_visible_text` telemetry for both #148 shapes."""
+
+    def _blockage_details(self):
+        conn = sqlite3.connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT details FROM blockage_events WHERE category = 'intent_validation'"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert rows, "Expected an intent_validation blockage event"
+        return json.loads(rows[0][0])
+
+    def test_no_thinking_no_text_records_no_visible_text_true(self):
+        _write_transcript(
+            [
+                _asst(
+                    "req_A",
+                    _tool_use_block("Bash", {"command": self.COMMAND}, "toolu_A", 0),
+                ),
+            ],
+            self.transcript,
+        )
+        self._run()
+        details = self._blockage_details()
+        assert details.get("no_visible_text") is True, (
+            f"No-thinking-no-text Bash block must record "
+            f"no_visible_text=True in blockage details; got: {details}"
+        )
+
+    def test_empty_thinking_only_records_no_visible_text_true(self):
+        _write_transcript(
+            [
+                _asst("req_A", _thinking_block("", 0)),
+                _asst(
+                    "req_A",
+                    _tool_use_block("Bash", {"command": self.COMMAND}, "toolu_A", 1),
+                ),
+            ],
+            self.transcript,
+        )
+        self._run()
+        details = self._blockage_details()
+        assert details.get("no_visible_text") is True, (
+            f"Empty-thinking-only Bash block must record "
+            f"no_visible_text=True in blockage details; got: {details}"
         )
 
 
@@ -979,9 +1309,9 @@ class TestWriteEditThinkingOnlyBlockageTelemetry(_DbHarness):
         )
         self._run()
         details = self._blockage_details()
-        assert details.get("thinking_only") is True, (
-            f"Thinking-only Write/Edit block must record thinking_only=True "
-            f"in blockage details; got: {details}"
+        assert details.get("no_visible_text") is True, (
+            f"No-visible-text Write/Edit block must record "
+            f"no_visible_text=True in blockage details; got: {details}"
         )
 
     def test_visible_text_without_intent_records_thinking_only_false(self):
@@ -1002,9 +1332,9 @@ class TestWriteEditThinkingOnlyBlockageTelemetry(_DbHarness):
         )
         self._run()
         details = self._blockage_details()
-        assert details.get("thinking_only") is False, (
+        assert details.get("no_visible_text") is False, (
             f"Visible-text (no-INTENT) Write/Edit block must record "
-            f"thinking_only=False in blockage details; got: {details}"
+            f"no_visible_text=False in blockage details; got: {details}"
         )
 
 
@@ -1038,18 +1368,18 @@ class TestNoTddBranchThinkingOnlyNotice:
             file_path=CORE_FILE_FOR_NO_TDD,
             tool_name="Write",
             current_message_override=NO_TDD_INTENT_TEXT,
-            thinking_only=True,
+            no_visible_text=True,
         )
         assert result.get("approved") is False
         assert (
             result.get("tdd_failure") is True
         ), f"Fixture must actually hit the NO_TDD branch; got: {result}"
         assert THINKING_ONLY_NOTICE in result.get("feedback", ""), (
-            f"NO_TDD block with thinking_only=True must surface the "
+            f"NO_TDD block with no_visible_text=True must surface the "
             f"notice in the tagged feedback; got: {result.get('feedback')!r}"
         )
         assert THINKING_ONLY_NOTICE in result.get("raw_feedback", ""), (
-            f"NO_TDD block with thinking_only=True must surface the "
+            f"NO_TDD block with no_visible_text=True must surface the "
             f"notice in raw_feedback too; got: {result.get('raw_feedback')!r}"
         )
 
@@ -1063,12 +1393,12 @@ class TestNoTddBranchThinkingOnlyNotice:
             file_path=CORE_FILE_FOR_NO_TDD,
             tool_name="Write",
             current_message_override=NO_TDD_INTENT_TEXT,
-            thinking_only=False,
+            no_visible_text=False,
         )
         assert result.get("approved") is False
         assert result.get("tdd_failure") is True
         assert THINKING_ONLY_NOTICE not in result.get("feedback", ""), (
-            f"NO_TDD block with thinking_only=False (the default) must "
+            f"NO_TDD block with no_visible_text=False (the default) must "
             f"NOT surface the notice; got: {result.get('feedback')!r}"
         )
         assert THINKING_ONLY_NOTICE not in result.get("raw_feedback", "")
@@ -1094,7 +1424,7 @@ class TestRawFeedbackNoticeUntagged:
             file_path=NONCORE_FILE,
             tool_name="Write",
             current_message_override="",
-            thinking_only=True,
+            no_visible_text=True,
         )
         assert result.get("approved") is False
         raw_feedback = result.get("raw_feedback", "")

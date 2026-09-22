@@ -449,7 +449,7 @@
   {
     "fixture": "case_26_no_intent.jsonl",
     "category": "no_decl_marker_from_tool_content",
-    "expected_stage1": "NO_TDD",
+    "expected_stage1": "YES",
     "file_path": "/home/jsbattig/Dev/claude-pace-maker/src/pacemaker/transcript_reader.py",
     "tool_name": "Edit",
     "source": "ef52762f-bc4a-4b00-9eb7-61dfabdc091b.jsonl",
@@ -457,7 +457,7 @@
     "tool_use_in_fixture": true,
     "historical_outcome": "BLOCKED_BY_HOOK",
     "decl_tags": [],
-    "note": "intent: marker appears only inside the edited file's code content ([TOOL:] block); no real declaration -> must remain blocked (NO_TDD)"
+    "note": "issue #140 (v2.35.x): flipped NO_TDD -> YES. The anchored turn (Edit, tool_use only, no text) is immediately preceded by the ONLY other intervening assistant turn, whose own PROSE genuinely declares 'INTENT: Modify `src/pacemaker/transcript_reader.py` in the `get_last_n_messages_for_validation` function...' plus 'Test coverage: `tests/test_approved_parsing.py`...' -- a real, on-topic 1-back rescue for this exact edit. Before #140's fix, the CURRENT turn's own rendered Edit content coincidentally contained the substring 'the INTENT: text' (inside a code comment being WRITTEN, not declared), which satisfied the OLD raw-string check in extract_current_assistant_message and skipped the 1-back merge entirely -- the real declaration in the preceding turn was never even considered, and NO_TDD resulted only because no TDD text happened to follow that FAKE match position inside the Edit's own content. After #140's prose-only fix, the merge decision correctly looks only at messages[-1]'s PROSE (empty here), rescues messages[-2]'s real declaration, and Stage 1's own marker search (also prose-gated) finds the pre-existing harmless false-positive 'has INTENT:' inside a markdown code-fence example within that SAME prose (unrelated to #140, always been there), after which the real 'Test coverage:' line later in that prose is found via unanchored re.search -- so the verdict is now YES. This is the intended, spec-correct 1-back rescue documented in CLAUDE.md's Issue #139/#140 sections, not a bypass: a real declaration for this exact file/function WAS available one turn back; the old verdict blocked for the wrong reason (a fake marker inside code being written, not a genuine TDD gap). The category name is kept (required by test_corpus_covers_required_categories) since this fixture still pins issue #140's exact bug pattern -- an INTENT-looking string sourced from rendered tool content -- it just also happens to have a legitimate rescue available, which the fix must not (and now does not) suppress."
   },
   {
     "fixture": "case_27_non_core.jsonl",

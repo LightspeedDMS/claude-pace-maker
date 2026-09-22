@@ -2,6 +2,12 @@
 
 Before modifying code files, you MUST declare your intent explicitly.
 
+⚠️  VISIBLE TEXT ONLY: write the INTENT: declaration (and any Test coverage: /
+   permission line) as normal visible response text, BEFORE the tool call, in
+   the same message. Declarations written only in your thinking/reasoning are
+   NOT seen by the validator or the user and will be BLOCKED. A message that
+   is only a tool call has no visible text.
+
 ⚠️  NAMING: When a Write/Edit/Bash is blocked or challenged, NEVER tell the user
    "the hook blocked me", "the hook system rejected this", "the pre-tool hook
    failed", or any variation that blames "hooks". The decision was made by a

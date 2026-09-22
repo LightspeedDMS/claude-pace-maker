@@ -9,7 +9,7 @@ for use in intent validation context building.
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
 from .logger import log_warning, log_debug
 
@@ -48,17 +48,26 @@ LAST_N_TURNS_FOR_TOOL_MATCH = 2
 # need to change it here.
 INTENT_MARKER_PATTERN = re.compile(r"(?i)\bintent\s*:")
 
-# Issue #141: shared notice appended to a Stage-1/Phase-1 "missing
-# declaration" block reason when the anchored turn had a `thinking` block
-# but NO visible text block at all. Facts (see the GitHub issue):
-# `apiBlockIndex` numbers API response blocks with no gaps, so a turn
-# shaped `thinking(0), tool_use(1)` genuinely never had a text block -- the
-# model wrote its declaration (INTENT:, and/or a test-coverage line) only
-# inside its own (summarized, non-verbatim, not-shown-to-the-user)
-# reasoning. The pre-existing block messages don't say this, so the agent
-# believes it already declared and loops. This constant is a single source
-# of truth shared by all three block paths that can hit this shape: the
-# Write/Edit Stage 1 NO and NO_TDD blocks
+# Issue #141 (extended by issue #148): shared notice appended to a
+# Stage-1/Phase-1 "missing declaration" block reason whenever the anchored
+# turn had NO visible text block at all -- regardless of whether it had a
+# `thinking` block with content, an EMPTY `thinking` block, or no
+# `thinking` block whatsoever. Facts (see the GitHub issues): `apiBlockIndex`
+# numbers API response blocks with no gaps, so a turn shaped e.g.
+# `thinking(0), tool_use(1)` or just `tool_use(0)` genuinely never had a
+# text block. In the thinking-present case the model wrote its declaration
+# (INTENT:, and/or a test-coverage line) only inside its own (summarized,
+# non-verbatim, not-shown-to-the-user) reasoning; in the no-thinking case it
+# never wrote a declaration anywhere visible at all. Either way the
+# pre-existing block messages don't say WHY, so the agent believes it
+# already declared and loops. Issue #141 shipped this notice gated on
+# "thinking present AND no visible text", which missed the empty-thinking
+# and no-thinking-at-all shapes (issue #148) -- the gating condition lives
+# in the callers (hook.py's `_bash_no_visible_text`/
+# `_write_edit_no_visible_text`, intent_validator.py's `no_visible_text`
+# parameter), not here; this constant is a single source of truth for the
+# TEXT shared by all three block paths that can hit any of these shapes:
+# the Write/Edit Stage 1 NO and NO_TDD blocks
 # (intent_validator.validate_intent_and_code) and the danger-bash Phase 1
 # block (hook.py) -- worded generically ("declarations ... INTENT:, test
 # coverage") rather than naming only INTENT:, since NO_TDD blocks on a
@@ -66,10 +75,11 @@ INTENT_MARKER_PATTERN = re.compile(r"(?i)\bintent\s*:")
 # accepted as a declaration source -- this notice only explains an
 # existing block, it never changes whether one occurs.
 THINKING_ONLY_NOTICE = (
-    "Your message contained NO visible text — declarations written only "
-    "in your reasoning/thinking (INTENT:, test coverage) do not count and "
-    "are not visible to the user. Write them as visible response text in "
-    "the same message, before the tool call, then retry."
+    "Your message contained NO visible text before this tool call — "
+    "declarations (INTENT:, test coverage) must be written as visible "
+    "response text, in the same message before the tool call, not only "
+    "in reasoning/thinking (if any was present) and not omitted "
+    "entirely. Retry with a visible declaration."
 )
 
 
@@ -215,7 +225,17 @@ def _format_message_with_tools(msg: dict) -> str:
     return "\n".join(parts)
 
 
-def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List[str]:
+@overload
+def get_last_n_messages_for_validation(
+    transcript_path: str, n: int = ..., *, _with_prose: Literal[False] = ...
+) -> List[str]: ...
+@overload
+def get_last_n_messages_for_validation(
+    transcript_path: str, n: int = ..., *, _with_prose: Literal[True]
+) -> Tuple[List[str], List[str]]: ...
+def get_last_n_messages_for_validation(
+    transcript_path: str, n: int = 5, *, _with_prose: bool = False
+) -> Union[List[str], Tuple[List[str], List[str]]]:
     """
     Extract last N assistant messages for pre-tool validation context.
 
@@ -226,9 +246,22 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
     Args:
         transcript_path: Path to JSONL transcript file
         n: Number of messages to extract (default: 5)
+        _with_prose: Issue #140 code-review finding 2 (performance): when
+            True, returns ``(rendered, prose)`` from a SINGLE parse pass
+            instead of requiring two separate calls that would each
+            re-read/re-parse the whole transcript. ``prose`` is every
+            message as ``msg["text"]`` only, never tool-rendered -- issue
+            #140 finding 3: never by string-splitting a rendered blob.
+            The two ``@overload`` stubs above give mypy an exact static
+            return type per call site (``List[str]`` by default,
+            ``Tuple[List[str], List[str]]`` when ``_with_prose=True``),
+            fixing the pre-commit ``mypy`` check without any behavior
+            change to this implementation.
 
     Returns:
-        List of formatted message texts
+        List of formatted message texts (default), or a
+        ``(rendered_messages, prose_messages)`` tuple when ``_with_prose``
+        is True.
     """
     from .logger import log_debug
 
@@ -283,9 +316,16 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
         recent = messages[-n:] if len(messages) >= n else messages
         log_debug("transcript_reader", f"Extracting last {len(recent)} messages")
 
-        # Format: text-only for first N-1, full for last
-        result = []
+        # Format: text-only for first N-1, full for last. Issue #140
+        # code-review finding 2: build BOTH the rendered-with-tools list
+        # AND the prose-only list in this SAME pass (rather than requiring
+        # a second full transcript parse via a separate call with a
+        # prose-only flag) -- prose_result is simply msg["text"] for every
+        # entry, computed for free alongside rendered_result.
+        rendered_result: List[str] = []
+        prose_result: List[str] = []
         for i, msg in enumerate(recent):
+            prose_result.append(msg["text"])
             if i == len(recent) - 1 and msg["tools"]:
                 # Last message: include tool info
                 formatted = _format_message_with_tools(msg)
@@ -293,20 +333,26 @@ def get_last_n_messages_for_validation(transcript_path: str, n: int = 5) -> List
                     "transcript_reader",
                     f"Message {i} (with tools): {formatted[:100]}...",
                 )
-                result.append(formatted)
+                rendered_result.append(formatted)
             else:
                 # Earlier messages: text only
                 log_debug(
                     "transcript_reader",
                     f"Message {i} (text only): {msg['text'][:100]}...",
                 )
-                result.append(msg["text"])
+                rendered_result.append(msg["text"])
 
-        log_debug("transcript_reader", f"Returning {len(result)} formatted messages")
-        return result
+        log_debug(
+            "transcript_reader", f"Returning {len(rendered_result)} formatted messages"
+        )
+        if _with_prose:
+            return rendered_result, prose_result
+        return rendered_result
 
     except Exception as e:
         log_warning("transcript_reader", "Failed to extract messages for validation", e)
+        if _with_prose:
+            return [], []
         return []
 
 
@@ -778,6 +824,22 @@ def _find_turn_matching_tool_input(
                             # with not_found. Caught and swallowed here;
                             # the flags simply stay absent (.get() reads as
                             # None downstream) on the rare failure path.
+                            # Issue #140 code-review re-review finding 1
+                            # (MEDIUM): assign anchor_prose_text BEFORE the
+                            # try below, as a plain dict/string read
+                            # (merged["text"] is already a computed str --
+                            # zero exception risk). It was previously the
+                            # LAST statement inside that try, so a raise
+                            # from _turn_has_thinking left the key entirely
+                            # UNSET (not merely None) -- a later
+                            # _copy_anchor_shape_flags call would then copy
+                            # None for a real, real-INTENT stale/found
+                            # match, and hook.py's substitution below could
+                            # produce a false "transcript not ready" block
+                            # or an incorrect fallback to n-back on the
+                            # stale path. This line's success must not
+                            # depend on _turn_has_thinking()'s.
+                            _outcome["anchor_prose_text"] = merged["text"]
                             try:
                                 _outcome["anchor_has_visible_text"] = bool(
                                     merged["text"].strip()
@@ -828,6 +890,13 @@ def _find_turn_matching_tool_input(
         # function's OUTER try/except and silently flip a genuinely found
         # match to not_found.
         if _outcome is not None:
+            # Issue #140 code-review re-review finding 1 (MEDIUM): assign
+            # anchor_prose_text BEFORE the try below, as a plain
+            # dict/string read (merged["text"] is already a computed str
+            # -- zero exception risk) -- see the identical rationale on
+            # the stale branch above. This line's success must not depend
+            # on _turn_has_thinking()'s.
+            _outcome["anchor_prose_text"] = merged["text"]
             try:
                 _outcome["anchor_has_visible_text"] = bool(merged["text"].strip())
                 _outcome["anchor_has_thinking"] = _turn_has_thinking(
@@ -868,9 +937,9 @@ def _find_turn_matching_tool_input(
 
 def _copy_anchor_shape_flags(diagnostics: dict, attempt_outcome: dict) -> None:
     """Copy the additive anchor-shape diagnostics (issue #141:
-    ``anchor_has_visible_text``/``anchor_has_thinking``) from a single
-    retry attempt's ``_outcome`` dict into the caller-visible
-    ``_diagnostics`` dict.
+    ``anchor_has_visible_text``/``anchor_has_thinking``; issue #140 code
+    review finding 3: ``anchor_prose_text``) from a single retry attempt's
+    ``_outcome`` dict into the caller-visible ``_diagnostics`` dict.
 
     Code review follow-up (item 5): this exact two-line copy was
     triplicated across all three terminal paths of
@@ -884,6 +953,7 @@ def _copy_anchor_shape_flags(diagnostics: dict, attempt_outcome: dict) -> None:
         "anchor_has_visible_text"
     )
     diagnostics["anchor_has_thinking"] = attempt_outcome.get("anchor_has_thinking")
+    diagnostics["anchor_prose_text"] = attempt_outcome.get("anchor_prose_text")
 
 
 def get_current_turn_message_for_validation(

@@ -147,7 +147,7 @@ class TestPreToolHook:
             mock_load_config.return_value = {"intent_validation_enabled": True}
             mock_load_ext.return_value = [".py"]
             mock_is_source.return_value = True
-            mock_get_messages.return_value = ["Some message"]
+            mock_get_messages.return_value = (["Some message"], ["Some message"])
             mock_validate.return_value = {
                 "approved": False,
                 "feedback": "Intent declaration required",
@@ -225,7 +225,10 @@ class TestPreToolHook:
             mock_load_config.return_value = {"intent_validation_enabled": True}
             mock_load_ext.return_value = [".py"]
             mock_is_source.return_value = True
-            mock_get_messages.return_value = ["I will modify test.py to add logging"]
+            mock_get_messages.return_value = (
+                ["I will modify test.py to add logging"],
+                ["I will modify test.py to add logging"],
+            )
             mock_validate.return_value = {"approved": True}
 
             result = run_pre_tool_hook()
@@ -287,7 +290,10 @@ class TestPreToolHook:
             mock_load_config.return_value = {"intent_validation_enabled": True}
             mock_load_ext.return_value = [".py"]
             mock_is_source.return_value = True
-            mock_get_messages.return_value = ["I will modify test.py to add logging"]
+            mock_get_messages.return_value = (
+                ["I will modify test.py to add logging"],
+                ["I will modify test.py to add logging"],
+            )
             mock_validate.return_value = {
                 "approved": True,
                 "reviewer": "haiku+gpt-5.6-terra->codex-beast",
@@ -368,7 +374,10 @@ class TestPreToolHook:
             mock_load_config.return_value = {"intent_validation_enabled": True}
             mock_load_ext.return_value = [".py"]
             mock_is_source.return_value = True
-            mock_get_messages.return_value = ["I will modify test.py to add logging"]
+            mock_get_messages.return_value = (
+                ["I will modify test.py to add logging"],
+                ["I will modify test.py to add logging"],
+            )
             mock_validate.return_value = {
                 "approved": True,
                 "reviewer": "codex-gpt5",
@@ -427,14 +436,23 @@ class TestPreToolHook:
         mock_load_ext.return_value = [".py"]
         mock_is_source.return_value = True
         mock_get_transcript_path.return_value = "/tmp/transcript.jsonl"
-        mock_get_messages.return_value = ["INTENT: Modify test.py to add code"]
+        # Issue #140 code-review re-review finding 2: hook.py now makes a
+        # SINGLE call with _with_prose=True and unpacks a (rendered, prose)
+        # tuple -- one transcript parse instead of two.
+        mock_get_messages.return_value = (
+            ["INTENT: Modify test.py to add code"],
+            ["INTENT: Modify test.py to add code"],
+        )
         mock_get_override.return_value = "INTENT: Modify test.py to add code"
         mock_validate.return_value = {"approved": True}
 
         run_pre_tool_hook()
 
-        # Verify get_last_n_messages_for_validation was called with n=2
-        mock_get_messages.assert_called_once_with("/tmp/transcript.jsonl", n=2)
+        # Verify get_last_n_messages_for_validation was called EXACTLY ONCE
+        # with n=2 and _with_prose=True -- the single-parse contract.
+        mock_get_messages.assert_called_once_with(
+            "/tmp/transcript.jsonl", n=2, _with_prose=True
+        )
 
     @patch("pacemaker.hook.load_config")
     @patch("pacemaker.extension_registry.load_extensions")
@@ -501,7 +519,7 @@ class TestPreToolHook:
             mock_load_ext.return_value = [".py"]
             mock_is_source.return_value = True
             messages = ["I will edit config.py"]
-            mock_get_messages.return_value = messages
+            mock_get_messages.return_value = (messages, messages)
             mock_validate.return_value = {"approved": True}
 
             run_pre_tool_hook()
@@ -589,10 +607,11 @@ class TestPreToolHook:
             mock_is_source.return_value = True
             # Message must include INTENT: marker so Stage 1 passes and execution
             # reaches the SDK availability gate (which then blocks fail-closed).
-            mock_get_messages.return_value = [
+            _sdk_gate_message = [
                 "INTENT: Modify test.py to add foo() function that does nothing. "
                 "Test coverage: tests/test_foo.py::test_foo_returns_none"
             ]
+            mock_get_messages.return_value = (_sdk_gate_message, _sdk_gate_message)
 
             result = run_pre_tool_hook()
 
@@ -672,7 +691,7 @@ class TestPreToolHookFailsClosedOnUnexpectedException:
             mock_load_config.return_value = {"intent_validation_enabled": True}
             mock_load_ext.return_value = [".py"]
             mock_is_source.return_value = True
-            mock_get_messages.return_value = ["Some message"]
+            mock_get_messages.return_value = (["Some message"], ["Some message"])
             mock_validate.return_value = {
                 "approved": False,
                 "feedback": "Intent declaration required",
@@ -751,7 +770,10 @@ class TestPreToolHookFailsClosedOnUnexpectedException:
             mock_load_config.return_value = {"intent_validation_enabled": True}
             mock_load_ext.return_value = [".py"]
             mock_is_source.return_value = True
-            mock_get_messages.return_value = ["I will modify test.py to add logging"]
+            mock_get_messages.return_value = (
+                ["I will modify test.py to add logging"],
+                ["I will modify test.py to add logging"],
+            )
             mock_validate.return_value = {"approved": True}
 
             result = run_pre_tool_hook()

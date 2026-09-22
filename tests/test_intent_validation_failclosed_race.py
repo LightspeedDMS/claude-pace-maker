@@ -135,7 +135,7 @@ class TestCoreRegressionBugA(_DbHarness):
             ),
             patch(
                 "pacemaker.hook.get_last_n_messages_for_validation",
-                return_value=[],
+                return_value=([], []),
             ),
             patch("pacemaker.extension_registry.load_extensions", return_value=set()),
             patch(
@@ -216,7 +216,7 @@ class TestCoreRegressionBugA(_DbHarness):
             ),
             patch(
                 "pacemaker.hook.get_last_n_messages_for_validation",
-                return_value=[],
+                return_value=([], []),
             ),
             patch("pacemaker.extension_registry.load_extensions", return_value=set()),
             patch(
@@ -267,7 +267,7 @@ class TestValidOverrideProceedsToValidation(_DbHarness):
             ),
             patch(
                 "pacemaker.hook.get_last_n_messages_for_validation",
-                return_value=[],
+                return_value=([], []),
             ),
             patch("pacemaker.extension_registry.load_extensions", return_value=set()),
             patch(
@@ -309,7 +309,7 @@ class TestValidOverrideProceedsToValidation(_DbHarness):
             ),
             patch(
                 "pacemaker.hook.get_last_n_messages_for_validation",
-                return_value=[],
+                return_value=([], []),
             ),
             patch("pacemaker.extension_registry.load_extensions", return_value=set()),
             patch(
@@ -367,7 +367,10 @@ class TestEmptyOverrideStage1Block(_DbHarness):
             # n-back fallback also has no INTENT marker -> Stage 1 must reject.
             patch(
                 "pacemaker.hook.get_last_n_messages_for_validation",
-                return_value=["I will write the code now."],
+                return_value=(
+                    ["I will write the code now."],
+                    ["I will write the code now."],
+                ),
             ),
             patch("pacemaker.extension_registry.load_extensions", return_value=set()),
             patch(

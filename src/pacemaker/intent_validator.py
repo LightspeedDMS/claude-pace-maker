@@ -437,6 +437,26 @@ def extract_current_assistant_message(messages: List[str], file_path: str = "") 
     Only checks messages[-2] — never further back, to avoid picking up
     stale intent declarations from previous turns.
 
+    Issue #140 (code-review finding 3): this function's marker check is
+    intentionally PLAIN -- ``_has_intent_marker(current_tool)`` /
+    ``_has_intent_marker(prev)`` on the string exactly as given, with no
+    string-splitting on any "[TOOL: ...]"-shaped substring. An earlier
+    attempt at this fix stripped a rendered blob down to "everything before
+    the first '[TOOL: ' occurrence" -- that is unsafe against prose that
+    legitimately QUOTES the marker text (e.g. "the log showed
+    `[TOOL: Bash]`." followed by a real INTENT declaration), which would be
+    truncated away and produce a false block. The actual hardening against
+    an ``INTENT:``-looking string embedded only in rendered tool parameters
+    (a Write's ``content``, an Edit's ``old_string``/``new_string``) now
+    lives STRUCTURALLY upstream: the real hook path
+    (``validate_intent_and_code`` via ``hook.py``) supplies this function
+    with messages built from
+    ``transcript_reader.get_last_n_messages_for_validation(...,
+    _with_prose=True)``, which derives prose directly from the JSONL's own
+    text-block boundaries -- there is simply no tool-rendered content in
+    the strings this function receives from the real pipeline, so no
+    stripping is ever needed here.
+
     When ``file_path`` is provided, the selected message is checked with a
     defense-in-depth guard: if the message carries an INTENT: marker but does
     NOT mention the target file (by basename or full path), "" is returned to
@@ -452,11 +472,11 @@ def extract_current_assistant_message(messages: List[str], file_path: str = "") 
     else:
         current_tool = messages[-1]
 
-        if "intent:" in current_tool.lower():
+        if _has_intent_marker(current_tool):
             result = current_tool
         else:
             prev = messages[-2]
-            if prev and "intent:" in prev.lower():
+            if prev and _has_intent_marker(prev):
                 result = f"{prev}\n\n{current_tool}"
             else:
                 result = current_tool
@@ -637,6 +657,21 @@ def _regex_stage1_check(
     if not file_path or not os.path.basename(file_path):
         return "NO"
 
+    # Issue #140 (code review finding 3): current_message is a PLAIN string
+    # here -- no string-splitting on any "[TOOL: ...]"-shaped substring
+    # (that approach is unsafe against prose that legitimately quotes the
+    # marker text; see extract_current_assistant_message's docstring for
+    # the full rationale). The actual "must be prose only" guarantee is
+    # structural, enforced by the CALLER: validate_intent_and_code always
+    # passes a current_message built from either
+    # transcript_reader's anchor_prose_text diagnostic or
+    # get_last_n_messages_for_validation(..., _with_prose=True) on the real
+    # hook path, so there is no rendered tool content in current_message to
+    # begin with. That same guarantee is what closes findings 1 (the
+    # TDD-declaration/version-bump check below, over
+    # current_message[intent_match.end():]) and 2 (_mentions_file, just
+    # below) -- both operate on current_message AS GIVEN, and it is prose
+    # only by construction, not by any stripping performed here.
     intent_match = _has_intent_marker(current_message)
     if not intent_match:
         return "NO"
@@ -925,7 +960,8 @@ def validate_intent_and_code(
     hook_model: str = "auto",
     current_message_override: str = "",
     _deadline: Optional[float] = None,
-    thinking_only: bool = False,
+    no_visible_text: bool = False,
+    stage1_fallback_messages: Optional[List[str]] = None,
 ) -> dict:
     """
     Two-stage pre-tool validation with short-circuit logic.
@@ -943,18 +979,44 @@ def validate_intent_and_code(
       - Uses LLM for quality
 
     Args:
-        messages: Last 4 assistant messages (current + 3 before)
+        messages: Last 4 assistant messages (current + 3 before). Used for
+            Stage 2's prompt (``_build_stage2_prompt``), and as Stage 1's
+            n-back fallback source when ``stage1_fallback_messages`` is not
+            supplied.
         code: Proposed code that will be written
         file_path: Target file path
         tool_name: Write or Edit
-        thinking_only: Issue #141. True when the caller (hook.py) determined
-            the anchored turn had a `thinking` block but NO visible text
-            block at all -- i.e. the model wrote its INTENT (and/or test
-            coverage) declaration only inside its own (summarized,
-            not-shown-to-the-user) reasoning. When True AND Stage 1 rejects
-            with EITHER "NO" (missing INTENT) OR "NO_TDD" (missing test
-            coverage declaration -- reachable via the n-back rescue, where
-            a thinking-only anchor's empty override falls back to a prior
+        stage1_fallback_messages: Issue #140 code-review findings 1-3.
+            Optional PROSE-ONLY n-back message list (each entry is a
+            message's structural text -- never rendered with tool
+            parameters), used INSTEAD of ``messages`` for Stage 1's
+            ``extract_current_assistant_message`` fallback when
+            ``current_message_override`` is falsy. The real hook path
+            supplies this via ``transcript_reader.
+            get_last_n_messages_for_validation(..., _with_prose=True)``, so
+            an ``INTENT:``-looking string embedded only in a Write's
+            ``content`` or an Edit's ``old_string``/``new_string`` can
+            never satisfy Stage 1's marker check, and Stage 1's
+            file-mention/TDD-declaration/version-bump checks (which run
+            against whatever ``extract_current_assistant_message`` returns)
+            can never be satisfied by rendered tool parameters either --
+            all three are closed structurally, by never handing Stage 1 any
+            tool-rendered content, rather than by post-hoc string-stripping.
+            Defaults to ``None``, which falls back to ``messages`` --
+            preserves the exact pre-existing behavior for every direct
+            caller (tests, etc.) that does not supply this parameter.
+        no_visible_text: Issue #141, broadened by issue #148. True when the
+            caller (hook.py) determined the anchored turn had NO visible
+            text block at all -- whether or not it also had a `thinking`
+            block with content, an empty `thinking` block, or no
+            `thinking` block whatsoever. In the thinking-present case the
+            model wrote its INTENT (and/or test coverage) declaration only
+            inside its own (summarized, not-shown-to-the-user) reasoning;
+            in the other cases it never wrote a declaration anywhere
+            visible at all. When True AND Stage 1 rejects with EITHER "NO"
+            (missing INTENT) OR "NO_TDD" (missing test coverage
+            declaration -- reachable via the n-back rescue, where a
+            no-visible-text anchor's empty override falls back to a prior
             turn's visible INTENT with no TDD declaration), the block
             reason gets THINKING_ONLY_NOTICE appended so the agent
             understands WHY it was blocked instead of believing it already
@@ -969,8 +1031,16 @@ def validate_intent_and_code(
         # STAGE 1: Fast declaration check (CURRENT message only).
         # Prefer the requestId-anchored current-turn message (Fix 3) when the
         # caller supplied it; fall back to the n-back heuristic otherwise.
+        # Issue #140 code-review findings 1-3: the n-back fallback searches
+        # stage1_fallback_messages (PROSE ONLY) when supplied, never the
+        # possibly-tool-rendered `messages` that Stage 2 needs below.
+        _stage1_source_messages = (
+            stage1_fallback_messages
+            if stage1_fallback_messages is not None
+            else messages
+        )
         current_message = current_message_override or extract_current_assistant_message(
-            messages, file_path=file_path
+            _stage1_source_messages, file_path=file_path
         )
         log_debug("intent_validator", "=== STAGE 1 VALIDATION START ===")
         log_debug("intent_validator", f"File path: {file_path}")
@@ -1039,12 +1109,14 @@ Example (all in same message as Write/Edit):
    that checks user input for XSS attacks, to improve security."
 
 Then use your Write/Edit tool in the same message."""
-            if thinking_only:
-                # Issue #141: the anchored turn had thinking but NO visible
-                # text -- append the explanatory notice so the agent
-                # understands WHY it was blocked instead of believing it
+            if no_visible_text:
+                # Issue #141, broadened by issue #148: the anchored turn had
+                # NO visible text -- whether it had thinking, empty
+                # thinking, or no thinking at all -- so append the
+                # explanatory notice, since the agent may believe it
                 # already declared INTENT (in its reasoning, which is
-                # summarized and never shown to the user).
+                # summarized and never shown to the user) or may not
+                # realize its message had no visible text at all.
                 _raw += "\n\n" + THINKING_ONLY_NOTICE
             return {
                 "approved": False,
@@ -1080,14 +1152,15 @@ Example citing user permission (in same message as Write/Edit):
    User permission to skip TDD: User said 'skip tests for this' in message 3."
 
 CRITICAL: Quote must reference actual user words from recent context."""
-            if thinking_only:
-                # Issue #141 code-review follow-up (item 2): reachable via
-                # the n-back rescue -- a thinking-only anchor's empty
-                # override falls back to extract_current_assistant_message,
-                # which can resolve a PRIOR turn's real visible INTENT
-                # (with file mention but no TDD declaration). The agent
-                # still needs to know its OWN current turn had no visible
-                # text, same rationale as the NO branch above.
+            if no_visible_text:
+                # Issue #141 code-review follow-up (item 2), broadened by
+                # issue #148: reachable via the n-back rescue -- a
+                # no-visible-text anchor's empty override falls back to
+                # extract_current_assistant_message, which can resolve a
+                # PRIOR turn's real visible INTENT (with file mention but
+                # no TDD declaration). The agent still needs to know its
+                # OWN current turn had no visible text (with or without
+                # thinking), same rationale as the NO branch above.
                 _raw += "\n\n" + THINKING_ONLY_NOTICE
             return {
                 "approved": False,

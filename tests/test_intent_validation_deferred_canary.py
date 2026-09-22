@@ -125,7 +125,7 @@ class TestDeferredCanary:
             # so it doesn't matter what it returns here; avoid real transcript reads.
             patch(
                 "pacemaker.hook.get_last_n_messages_for_validation",
-                return_value=[],
+                return_value=([], []),
             ),
             # Stub extension registry: mark the file as source code so the gate
             # continues past the "is_source" check and reaches the None-check.

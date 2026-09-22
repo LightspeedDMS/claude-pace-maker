@@ -21,7 +21,10 @@ Corpus (tests/fixtures/real_transcript_replay/):
     preceding message (fragmented turns), pre-flush states (tool_use entry
     not yet appended to the transcript), intent-with-no-TDD-declaration
     (must block), "intent:" marker appearing only inside the edited file's
-    code content (must block), true no-intent (must block), .md under src/
+    rendered tool content -- must never satisfy Stage 1 ON ITS OWN (issue
+    #140); the one pinned case here specifically also has a legitimate
+    1-back rescue available, so its OWN verdict is YES (see the manifest
+    note) -- true no-intent (must block), .md under src/
     (issue #92, v2.34.9: Layer 0's non-source-extension gate now excludes
     .md from core-path treatment BEFORE Layer 1's src/ word-list match is
     ever consulted — no TDD declaration required, superseding the
@@ -31,16 +34,34 @@ Corpus (tests/fixtures/real_transcript_replay/):
 FIDELITY CONTRACT
 =================
 ``_replay_stage1`` below MUST mirror the pre-tool hook's Stage-1 sequence in
-``pacemaker/hook.py`` (see run_pre_tool_hook, step 6/6b/7) and
+``pacemaker/hook.py`` (see run_pre_tool_hook, step 6/6a/6b/7) and
 ``validate_intent_and_code`` exactly:
 
-    messages = get_last_n_messages_for_validation(transcript_path, n=2)
+    _rendered, messages_prose = get_last_n_messages_for_validation(
+        transcript_path, n=2, _with_prose=True)   # ONE parse, issue #140 re-review finding 2
+    diagnostics = {}
     override = get_current_turn_message_for_validation(transcript_path,
-                   tool_input=tool_input, tool_name=tool_name, _max_wait_seconds=0.0)
+                   tool_input=tool_input, tool_name=tool_name, _max_wait_seconds=0.0,
+                   _diagnostics=diagnostics)
     if override is None:
         return {"decision": "block", ...}   # fail-CLOSED (TOCTOU race / pre-flush), v2.33.2
-    current  = override or extract_current_assistant_message(messages)
+    if override:
+        _anchor_prose = diagnostics.get("anchor_prose_text")
+        if isinstance(_anchor_prose, str) and _anchor_prose:  # issue #140 re-review finding 1
+            override = _anchor_prose
+    current  = override or extract_current_assistant_message(messages_prose)
     verdict  = _regex_stage1_check(current, file_path, exclusions)
+
+Issue #140 code review (findings 1-3, re-review findings 1-2): Stage 1's
+fallback source is now a PROSE-ONLY n-back list (``_with_prose=True``,
+single transcript parse shared with the rendered list Stage 2 uses), and a
+truthy override is substituted with the anchor's structural
+``anchor_prose_text`` diagnostic -- never the rendered-with-tools form, and
+only when that diagnostic is a genuine non-empty string (never via
+``dict.get(key, default)``, which is skipped whenever the key is merely
+PRESENT, even with a ``None``/falsy value). This closes the TDD-
+declaration/version-bump/file-mention checks against rendered tool
+parameters, without any string-splitting.
 
 This helper now uses the SHIPPED tool-matched anchor path (bug #83 fix).
 Flushed fixtures supply the real tool_input extracted from the fixture file;
@@ -186,7 +207,13 @@ def _replay_stage1(
     _max_wait_seconds=0.0 is passed in both cases: fixtures are static
     files, re-reading them will never produce a different result.
     """
-    messages = get_last_n_messages_for_validation(fixture_path, n=2)
+    # Issue #140 code review (re-review finding 2): ONE call with
+    # _with_prose=True returns both the rendered list (unused here) and
+    # the PROSE-ONLY list, mirroring hook.py's single-parse
+    # `_write_edit_prose_messages` wiring -- not two separate parses.
+    _rendered_unused, messages_prose = get_last_n_messages_for_validation(
+        fixture_path, n=2, _with_prose=True
+    )
 
     if tool_use_in_fixture:
         # Flushed fixture: extract the real tool_input from the fixture.
@@ -213,18 +240,30 @@ def _replay_stage1(
             tool_input = {"command": "__PREFLUSH_SENTINEL__"}
 
     # Shipped path: _max_wait_seconds=0.0 avoids sleeping on static fixture files.
+    diagnostics: dict = {}
     override = get_current_turn_message_for_validation(
         fixture_path,
         tool_input=tool_input,
         tool_name=tool_name,
         _max_wait_seconds=0.0,
+        _diagnostics=diagnostics,
     )
 
     # Mimic hook.py ~2807 (v2.33.2): None → fail-CLOSED → {"decision": "block"} → "NO"
     if override is None:
         return "NO"
 
-    current = override or extract_current_assistant_message(messages)
+    # Issue #140 code review: a truthy override (found-with-intent) is the
+    # RENDERED form; substitute the structural prose-only text, exactly
+    # like hook.py's Write/Edit gate does. Re-review finding 1: guard with
+    # isinstance(..., str) and truthiness, never dict.get(key, default) --
+    # a PRESENT-but-falsy value must never downgrade a truthy override.
+    if override:
+        _anchor_prose = diagnostics.get("anchor_prose_text")
+        if isinstance(_anchor_prose, str) and _anchor_prose:
+            override = _anchor_prose
+
+    current = override or extract_current_assistant_message(messages_prose)
     return _regex_stage1_check(current, file_path, PINNED_EXCLUSIONS)
 
 
@@ -278,7 +317,13 @@ def test_corpus_covers_required_categories():
         "testcov_sameturn",  # Test coverage: declarations
         "intent_preceding",  # INTENT in the immediately-preceding message
         "no_intent_true",  # no INTENT anywhere -> must block
-        "no_decl_marker_from_tool_content",  # marker only in edited code -> must block
+        "no_decl_marker_from_tool_content",  # marker only in rendered tool
+        # content (Write/Edit params) must never satisfy Stage 1 on its
+        # own (issue #140) -- case_26's own verdict flipped NO_TDD -> YES
+        # because a REAL 1-back rescue happens to be legitimately
+        # available for it; see the manifest's note for the full
+        # justification. The category still exists to pin #140's bug
+        # pattern, just not via this particular case's final verdict.
         "non_core",  # non-core path -> allowed without TDD
     }
     present = {c["category"] for c in MANIFEST}

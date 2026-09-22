@@ -151,7 +151,10 @@ def _run_pre_tool(
             patch("pacemaker.extension_registry.load_extensions", return_value={".py"})
         )
         stack.enter_context(
-            patch("pacemaker.hook.get_last_n_messages_for_validation", return_value=[])
+            patch(
+                "pacemaker.hook.get_last_n_messages_for_validation",
+                return_value=([], []),
+            )
         )
         # transcript_path is a fixed, nonexistent "/tmp/fake.jsonl" placeholder
         # (this suite tests CSA wiring, not transcript content). Without this

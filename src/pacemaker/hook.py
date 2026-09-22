@@ -2869,14 +2869,20 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             _diagnostics=_bash_diagnostics,
                         )
                         _bash_outcome = _bash_diagnostics.get("outcome")
-                        # Issue #141: same computation as the Write/Edit
-                        # gate -- `is False` (not falsy) requires an
-                        # EXPLICIT False, since a not_found anchor leaves
-                        # both diagnostics keys absent (.get returns None).
-                        _bash_thinking_only = (
-                            bool(_bash_diagnostics.get("anchor_has_thinking"))
-                            and _bash_diagnostics.get("anchor_has_visible_text")
-                            is False
+                        # Issue #141, broadened by issue #148: same
+                        # computation as the Write/Edit gate -- fires
+                        # whenever the anchored turn had NO visible text,
+                        # regardless of whether `thinking` was present,
+                        # empty, or absent entirely. `is False` (not falsy)
+                        # requires an EXPLICIT False, since a not_found
+                        # anchor leaves the diagnostics key absent (.get
+                        # returns None), which must never be misread as
+                        # "no visible text". Issue #141 originally also
+                        # required `anchor_has_thinking` to be truthy,
+                        # which missed the empty-thinking and
+                        # no-thinking-at-all shapes -- see issue #148.
+                        _bash_no_visible_text = (
+                            _bash_diagnostics.get("anchor_has_visible_text") is False
                         )
 
                         if _bash_anchor is not None:
@@ -2948,11 +2954,12 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                     "matched_rules": matched_ids,
                                     "reviewer": "unknown",
                                     # Issue #141 code-review follow-up
-                                    # (item 3): lets usage.db / the
-                                    # claude-usage monitor distinguish a
-                                    # thinking-only block from an ordinary
-                                    # missing-INTENT block.
-                                    "thinking_only": _bash_thinking_only,
+                                    # (item 3), key renamed by issue #148:
+                                    # lets usage.db / the claude-usage
+                                    # monitor distinguish a no-visible-text
+                                    # block from an ordinary missing-INTENT
+                                    # block.
+                                    "no_visible_text": _bash_no_visible_text,
                                 },
                             )
                             try:
@@ -2982,12 +2989,13 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 f"You must declare INTENT: specifying exactly what this command "
                                 f"will do before executing dangerous Bash operations."
                             )
-                            if _bash_thinking_only:
-                                # Issue #141: the anchored turn had thinking
-                                # but NO visible text -- explain why this
+                            if _bash_no_visible_text:
+                                # Issue #141, broadened by issue #148: the
+                                # anchored turn had NO visible text -- with
+                                # or without thinking -- explain why this
                                 # block occurred instead of leaving the
                                 # agent believing it already declared
-                                # INTENT (in its reasoning).
+                                # INTENT (in its reasoning, if any).
                                 _bash_no_intent_reason += "\n\n" + THINKING_ONLY_NOTICE
                             return {
                                 "decision": "block",
@@ -3273,8 +3281,24 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         else:
             return {"continue": True}
 
-        # 6. Read last 2 messages for validation (text + tool_use are separate entries)
-        messages = get_last_n_messages_for_validation(transcript_path, n=2)
+        # 6. Read last 2 messages for validation (text + tool_use are separate entries).
+        # Issue #140 code-review findings 1-3 (structural PROSE-ONLY list)
+        # and re-review finding 2 (single-parse performance): ONE call with
+        # _with_prose=True returns BOTH the rendered-with-tools list (feeds
+        # Stage 2's prompt, unchanged) AND a SEPARATE prose-only list (every
+        # entry is structural text only, never rendered with tool
+        # parameters -- used exclusively for Stage 1's fallback below).
+        # Two independent calls here each re-read/re-parsed the WHOLE
+        # transcript (~0.86s measured on a real 99.7MB file, ~2.8s
+        # extrapolated to 324MB), eating into the gate's anchor budget for
+        # no benefit -- both lists cover the identical last-N messages.
+        # This is structural, not string-splitting: an INTENT:-looking
+        # string embedded only in a Write's `content` or an Edit's
+        # `old_string`/`new_string` is simply never present in the prose
+        # list to begin with.
+        messages, _write_edit_prose_messages = get_last_n_messages_for_validation(
+            transcript_path, n=2, _with_prose=True
+        )
 
         # 6b. Fix 3: anchor the Stage-1 current-turn message on the requestId
         # group of the Write/Edit tool_use being validated. This reliably
@@ -3305,6 +3329,31 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             _stale_grace_seconds=_WRITE_EDIT_STALE_GRACE_SECONDS,
         )
 
+        # Issue #140 code-review findings 1-3: when the anchor was FOUND
+        # with a real intent in its own text, current_message_override was
+        # the FULL RENDERED form (prose + tool params). Substitute the
+        # structural prose-only text -- computed by transcript_reader from
+        # the same merged["text"] that already satisfied the intent-marker
+        # gate -- so Stage 1's file-mention/TDD-declaration/version-bump
+        # checks (which operate on whatever current_message_override
+        # carries) can never see rendered tool parameters.
+        #
+        # Issue #140 code-review re-review finding 1 (MEDIUM): substitute
+        # ONLY when the diagnostic is a genuine non-empty string, not via
+        # `.get(key, default)` -- a `dict.get` default is skipped whenever
+        # the KEY IS PRESENT, even if its value is `None` or `""`. Since
+        # `current_message_override` is truthy here (real intent WAS
+        # found), a `None`/empty `anchor_prose_text` would be a defect
+        # (transcript_reader now sets it unconditionally before any
+        # exception-prone computation -- see the anchor-shape comments in
+        # transcript_reader.py), and falling BACK to the already-truthy
+        # rendered override is strictly safer than ever assigning `None`
+        # onto a currently-truthy value.
+        if current_message_override:
+            _anchor_prose = _write_edit_diagnostics.get("anchor_prose_text")
+            if isinstance(_anchor_prose, str) and _anchor_prose:
+                current_message_override = _anchor_prose
+
         if current_message_override is None:
             # Bug #83 follow-up (v2.33.2): mirror the danger-bash gate's
             # fail-CLOSED handling (see the `_bash_outcome` not_found
@@ -3334,27 +3383,49 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 # re-issue of exactly this edit; falls through to normal
                 # Stage 1/2 validation below rather than the not-ready block.
                 current_message_override = _write_edit_diagnostics.get("stale_text", "")
-                if not current_message_override:
+                if current_message_override:
+                    # Issue #140 code-review findings 1-3: substitute the
+                    # structural prose-only text for the rendered
+                    # stale_text -- same rationale as the found-path
+                    # substitution above. The truthy check above already
+                    # proved this turn's TEXT carries a real intent marker
+                    # (stale_text is only ever non-empty when that gate
+                    # passed), so anchor_prose_text is guaranteed to carry
+                    # the same declaration, minus the rendered tool params.
+                    #
+                    # Issue #140 code-review re-review finding 1 (MEDIUM):
+                    # substitute ONLY when the diagnostic is a genuine
+                    # non-empty string (same `isinstance` guard as the
+                    # found-path substitution above), never via
+                    # `.get(key, default)`. A `None`/falsy result here
+                    # would leave `current_message_override` falsy, which
+                    # would then fall through to validate_intent_and_code's
+                    # n-back RESCUE fallback -- violating the stale path's
+                    # documented ANCHOR-ONLY invariant (issue #93/#139),
+                    # not merely producing a wrong value.
+                    _anchor_prose = _write_edit_diagnostics.get("anchor_prose_text")
+                    if isinstance(_anchor_prose, str) and _anchor_prose:
+                        current_message_override = _anchor_prose
+                else:
                     # Issue #139 code-review finding #2: an empty
                     # stale_text must NOT fall through to
                     # intent_validator.validate_intent_and_code's n-back
                     # RESCUE fallback (`current_message_override or
-                    # extract_current_assistant_message(messages, ...)`).
-                    # That fallback renders the newest message WITH its
-                    # FULL tool content (get_last_n_messages_for_validation's
-                    # own documented behavior -- an INTENT:-looking string
-                    # inside a Write's `content` field would leak straight
-                    # through) and additionally checks messages[-2] for an
-                    # INTENT that merely names the file, with no relation to
-                    # the stale-matched turn at all. The stale path must be
+                    # extract_current_assistant_message(stage1_fallback_
+                    # messages, ...)`). That fallback additionally checks
+                    # the immediately-preceding message for an INTENT that
+                    # merely names the file, with no relation to the
+                    # stale-matched turn at all. The stale path must be
                     # ANCHOR-ONLY, exactly like the danger-bash gate's Phase
                     # 1 (which checks its anchor text directly, with no
-                    # n-back fallback at all). Overriding `messages` to []
-                    # makes intent_validator's fallback resolve to "" too
-                    # (identical to a genuinely empty transcript), so Stage
-                    # 1 blocks on the ordinary "no INTENT" reason without
-                    # duplicating that block's construction here.
-                    messages = []
+                    # n-back fallback at all). Overriding the PROSE-ONLY
+                    # n-back list (not `messages`, which still feeds Stage
+                    # 2's prompt) to [] makes intent_validator's Stage-1
+                    # fallback resolve to "" too (identical to a genuinely
+                    # empty transcript), so Stage 1 blocks on the ordinary
+                    # "no INTENT" reason without duplicating that block's
+                    # construction here.
+                    _write_edit_prose_messages = []
                 log_info(
                     "hook",
                     "Intent validation: accepted STALE anchor turn "
@@ -3454,16 +3525,17 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # 7. Call unified validation via SDK
         from . import intent_validator
 
-        # Issue #141: the anchored turn had a `thinking` block but NO
-        # visible text block at all -- the model wrote its INTENT
-        # declaration only inside its own (summarized, not shown to the
-        # user) reasoning. `is False` (not falsy) requires an EXPLICIT
-        # False from transcript_reader, since a not_found/no-anchor case
-        # leaves both diagnostics keys absent (.get returns None), which
-        # must never be misread as "thinking-only".
-        _write_edit_thinking_only = (
-            bool(_write_edit_diagnostics.get("anchor_has_thinking"))
-            and _write_edit_diagnostics.get("anchor_has_visible_text") is False
+        # Issue #141, broadened by issue #148: the anchored turn had NO
+        # visible text -- whether it had a `thinking` block with content,
+        # an empty `thinking` block, or no `thinking` block at all. `is
+        # False` (not falsy) requires an EXPLICIT False from
+        # transcript_reader, since a not_found/no-anchor case leaves the
+        # diagnostics key absent (.get returns None), which must never be
+        # misread as "no visible text". Issue #141 originally also
+        # required `anchor_has_thinking` to be truthy, which missed the
+        # empty-thinking and no-thinking-at-all shapes -- see issue #148.
+        _write_edit_no_visible_text = (
+            _write_edit_diagnostics.get("anchor_has_visible_text") is False
         )
 
         result = intent_validator.validate_intent_and_code(
@@ -3474,7 +3546,8 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             hook_model=config.get("hook_model", "auto"),
             current_message_override=current_message_override,
             _deadline=_gate_deadline,
-            thinking_only=_write_edit_thinking_only,
+            no_visible_text=_write_edit_no_visible_text,
+            stage1_fallback_messages=_write_edit_prose_messages,
         )
 
         # 8. Return result
@@ -3526,10 +3599,11 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                     "tool": tool_name,
                     "file_path": file_path,
                     "reviewer": result.get("reviewer", "unknown"),
-                    # Issue #141 code-review follow-up (item 3): lets
-                    # usage.db / the claude-usage monitor distinguish a
-                    # thinking-only block from an ordinary block.
-                    "thinking_only": _write_edit_thinking_only,
+                    # Issue #141 code-review follow-up (item 3), key
+                    # renamed by issue #148: lets usage.db / the
+                    # claude-usage monitor distinguish a no-visible-text
+                    # block from an ordinary block.
+                    "no_visible_text": _write_edit_no_visible_text,
                     # Issue #142 code-review follow-up (item 4): persist WHY
                     # nobody responded on a reviewer_unavailable_failure
                     # block instead of leaving it write-only on the

@@ -228,7 +228,7 @@ class TestWriteEditDeferredBlockTag:
         mock_load_config.return_value = {"intent_validation_enabled": True}
         mock_load_ext.return_value = [".py"]
         mock_is_source.return_value = True
-        mock_get_messages.return_value = ["some message"]
+        mock_get_messages.return_value = (["some message"], ["some message"])
         mock_get_override.return_value = None  # simulate not-yet-flushed turn
 
         result = run_pre_tool_hook()
@@ -429,7 +429,10 @@ class TestGovernanceFeedbackUntagged:
         mock_load_config.return_value = {"intent_validation_enabled": True}
         mock_load_ext.return_value = [".py"]
         mock_is_source.return_value = True
-        mock_get_messages.return_value = ["INTENT: fix auth.py"]
+        mock_get_messages.return_value = (
+            ["INTENT: fix auth.py"],
+            ["INTENT: fix auth.py"],
+        )
         mock_get_override.return_value = "INTENT: fix auth.py"
 
         raw_reviewer_text = "Clean code violation: Bare except clause found"
