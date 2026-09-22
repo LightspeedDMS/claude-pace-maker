@@ -13,6 +13,17 @@ from pathlib import Path
 
 import pytest
 
+# The previous hardcoded absolute path
+# (/home/jsbattig/Dev/claude-pace-maker/install.sh) pointed at the main
+# checkout unconditionally, even when this test file was running from a
+# different worktree -- a portability bug, not just an inconsistency with
+# the rest of the test suite's REPO_ROOT pattern. This file lives at
+# tests/e2e/test_install_e2e.py, so three .parent hops (e2e -> tests ->
+# repo root) reach the repo root of whichever checkout/worktree this test
+# is running from.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+INSTALL_SH = REPO_ROOT / "install.sh"
+
 
 class TestInstallationE2E:
     """End-to-end tests for complete installation workflow with no mocking."""
@@ -37,7 +48,7 @@ class TestInstallationE2E:
         5. Verifies hooks registered
         6. Verifies permissions set correctly
         """
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         # Run installation
         result = subprocess.run(
@@ -78,7 +89,11 @@ class TestInstallationE2E:
         assert config["base_delay"] == 5
         assert config["max_delay"] == 120
         assert config["threshold_percent"] == 0
-        assert config["poll_interval"] == 60
+        # poll_interval default was deliberately changed 60 -> 300 by commit
+        # 66b64bae (2026-03-05, "feat: Add exponential backoff for 429s,
+        # increase poll interval to 300s, intent validator fail-open");
+        # this assertion was never updated to match (issue #144).
+        assert config["poll_interval"] == 300
 
         # Verify database created with correct schema
         db_file = pacemaker_dir / "usage.db"
@@ -152,7 +167,7 @@ class TestInstallationE2E:
         3. Verifying configuration preserved
         4. Verifying database not corrupted
         """
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         # First installation
         result1 = subprocess.run(
@@ -229,7 +244,7 @@ class TestInstallationE2E:
         2. Hooks are added/updated correctly
         3. No data loss occurs
         """
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         # Pre-create settings.json with existing content
         claude_dir = isolated_home / ".claude"
@@ -290,7 +305,7 @@ class TestInstallationE2E:
         2. Scripts have correct shebang and are executable
         3. Scripts contain expected functionality
         """
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         # Run installation
         result = subprocess.run(
@@ -337,7 +352,7 @@ class TestInstallationE2E:
         2. Data can be queried back
         3. Indexes work correctly
         """
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         # Run installation
         result = subprocess.run(
@@ -412,7 +427,7 @@ class TestInstallationE2E:
         2. Pace-maker hooks are appended to existing hooks
         3. Multiple tools can coexist
         """
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         # Pre-create settings.json with hooks from another tool (tdd-guard)
         claude_dir = isolated_home / ".claude"
@@ -518,7 +533,7 @@ class TestInstallationE2E:
         2. Idempotent behavior is maintained
         3. Hook configuration remains clean
         """
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         # First installation
         result1 = subprocess.run(

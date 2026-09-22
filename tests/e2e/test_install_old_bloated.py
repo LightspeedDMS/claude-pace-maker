@@ -16,21 +16,79 @@ Tests cover all 10 acceptance criteria:
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
 
+# This file lives at tests/e2e/test_install_old_bloated.py -- three .parent
+# hops (e2e -> tests -> repo root) reach the repo root of whichever
+# checkout/worktree these tests are running from. The previous hardcoded
+# absolute paths (/home/jsbattig/Dev/claude-pace-maker/...) pointed at the
+# main checkout unconditionally, even when this test file itself was
+# running from a different worktree -- a portability bug, not just an
+# inconsistency with the rest of the test suite's REPO_ROOT pattern.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+INSTALL_SH = REPO_ROOT / "install.sh"
+HOOKS_SRC_DIR = REPO_ROOT / "src" / "hooks"
+
+
+@pytest.fixture(scope="module")
+def prebaked_local_site_packages(tmp_path_factory):
+    """One real `install.sh` run's `~/.local/` tree (pip --user installed
+    requests/pyyaml/claude-agent-sdk), shared read-only so every test
+    below can seed a FRESH HOME's `.local/` with it before running
+    install.sh for real (issue #144 code-review follow-up #1).
+
+    install.sh's classic (non-plugin) mode does a real `pip install
+    --user` per fresh HOME -- measured ~27-40s on this box against an
+    empty HOME, vs ~5s against a HOME that already has the packages
+    (pip's own already-satisfied check is fast). `pip install --user`
+    resolves its install target from `$HOME`
+    (`site.getusersitepackages()`), so an isolated test HOME always
+    starts from zero. Pre-seeding just `.local/` -- never
+    `.claude/`/`.claude-pace-maker/`, which every test below still gets
+    completely fresh -- gets the same speedup without changing what any
+    test actually asserts on.
+    """
+    home = tmp_path_factory.mktemp("prebaked_deps_home")
+    result = subprocess.run(
+        [str(INSTALL_SH)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        cwd=str(home),
+    )
+    assert result.returncode == 0, result.stderr
+    local_dir = home / ".local"
+    assert local_dir.exists(), "install.sh must create ~/.local"
+    return local_dir
+
+
+def _seed_local_site_packages(home: Path, prebaked_local: Path) -> None:
+    """Copy the prebaked `.local/` tree into `home` so install.sh's
+    dependency-install step finds everything already satisfied and skips
+    the real pip work. Never touches `.claude/`/`.claude-pace-maker/` --
+    those are created fresh by install.sh itself, per test, as before."""
+    shutil.copytree(prebaked_local, home / ".local", symlinks=True)
+
 
 class TestInstallScript:
     """Test suite for install.sh installation script."""
 
     @pytest.fixture
-    def temp_home(self, tmp_path):
-        """Create a temporary home directory for testing."""
+    def temp_home(self, tmp_path, prebaked_local_site_packages):
+        """Create a temporary home directory for testing, pre-seeded with
+        `.local/` so this test's real install.sh call skips the slow real
+        pip install (issue #144 code-review follow-up #1). `.claude/` and
+        `.claude-pace-maker/` are NOT seeded -- install.sh still creates
+        those completely fresh, which is what every test in this class
+        actually asserts on."""
         home = tmp_path / "test_home"
         home.mkdir()
+        _seed_local_site_packages(home, prebaked_local_site_packages)
         return home
 
     @pytest.fixture
@@ -47,13 +105,13 @@ class TestInstallScript:
 
     def test_install_script_exists(self):
         """AC1: Installation script exists at project root."""
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
         assert install_script.exists(), "install.sh must exist at project root"
         assert install_script.is_file(), "install.sh must be a file"
 
     def test_install_script_is_executable(self):
         """AC7: Installation script has executable permissions."""
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
         assert os.access(install_script, os.X_OK), "install.sh must be executable"
 
     def test_install_creates_claude_directory(self, install_env, temp_home):
@@ -146,7 +204,11 @@ class TestInstallScript:
         assert config["base_delay"] == 5, "base_delay should default to 5"
         assert config["max_delay"] == 120, "max_delay should default to 120"
         assert config["threshold_percent"] == 0, "threshold_percent should default to 0"
-        assert config["poll_interval"] == 60, "poll_interval should default to 60"
+        # poll_interval default was deliberately changed 60 -> 300 by commit
+        # 66b64bae (2026-03-05, "feat: Add exponential backoff for 429s,
+        # increase poll interval to 300s, intent validator fail-open");
+        # this assertion was never updated to match (issue #144).
+        assert config["poll_interval"] == 300, "poll_interval should default to 300"
 
     def test_install_creates_database(self, install_env, temp_home):
         """AC5: Installation initializes SQLite database."""
@@ -759,7 +821,7 @@ class TestInstallScript:
 
     def _run_install(self, home_dir):
         """Helper to run install.sh with custom HOME directory."""
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         # Run from home_dir to avoid detecting pace-maker's own .claude directory
         result = subprocess.run(
@@ -778,21 +840,17 @@ class TestHookScriptsExist:
 
     def test_post_tool_use_hook_exists(self):
         """Hook script sources must exist for installation to copy."""
-        hook_path = Path(
-            "/home/jsbattig/Dev/claude-pace-maker/src/hooks/post-tool-use.sh"
-        )
+        hook_path = HOOKS_SRC_DIR / "post-tool-use.sh"
         assert hook_path.exists(), "post-tool-use.sh must exist in src/hooks/"
 
     def test_stop_hook_exists(self):
         """Hook script sources must exist for installation to copy."""
-        hook_path = Path("/home/jsbattig/Dev/claude-pace-maker/src/hooks/stop.sh")
+        hook_path = HOOKS_SRC_DIR / "stop.sh"
         assert hook_path.exists(), "stop.sh must exist in src/hooks/"
 
     def test_user_prompt_submit_hook_exists(self):
         """Hook script sources must exist for installation to copy."""
-        hook_path = Path(
-            "/home/jsbattig/Dev/claude-pace-maker/src/hooks/user-prompt-submit.sh"
-        )
+        hook_path = HOOKS_SRC_DIR / "user-prompt-submit.sh"
         assert hook_path.exists(), "user-prompt-submit.sh must exist in src/hooks/"
 
 
@@ -800,10 +858,16 @@ class TestHookConflictDetection:
     """Test suite for hook conflict detection between global and project settings."""
 
     @pytest.fixture
-    def temp_home(self, tmp_path):
-        """Create a temporary home directory for testing."""
+    def temp_home(self, tmp_path, prebaked_local_site_packages):
+        """Create a temporary home directory for testing, pre-seeded with
+        `.local/` so each test's real install.sh call(s) skip the slow
+        real pip install (issue #144 code-review follow-up #1). Each
+        test's own global-vs-local sequencing (what actually matters for
+        conflict detection) is untouched -- only the pip-dependency
+        prerequisite is pre-satisfied."""
         home = tmp_path / "test_home"
         home.mkdir()
+        _seed_local_site_packages(home, prebaked_local_site_packages)
         return home
 
     @pytest.fixture
@@ -1002,7 +1066,7 @@ class TestHookConflictDetection:
 
     def _run_install(self, home_dir, args):
         """Helper to run install.sh with custom HOME directory and arguments."""
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         # Run from home_dir to avoid detecting pace-maker's own .claude directory
         result = subprocess.run(
@@ -1017,7 +1081,7 @@ class TestHookConflictDetection:
 
     def _run_install_with_input(self, home_dir, args, user_input):
         """Helper to run install.sh with simulated user input."""
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         # Run from home_dir to avoid detecting pace-maker's own .claude directory
         result = subprocess.run(
@@ -1033,7 +1097,7 @@ class TestHookConflictDetection:
 
     def _run_install_with_input_and_cwd(self, home_dir, args, user_input, cwd):
         """Helper to run install.sh with simulated user input and specific CWD."""
-        install_script = Path("/home/jsbattig/Dev/claude-pace-maker/install.sh")
+        install_script = INSTALL_SH
 
         result = subprocess.run(
             [str(install_script)] + args,

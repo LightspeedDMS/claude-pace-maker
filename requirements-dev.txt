@@ -1,0 +1,24 @@
+# Claude Pace Maker test-only dependencies (issue #144 code-review follow-up #4).
+#
+# These are NOT part of the managed venv that scripts/bootstrap-plugin.sh
+# builds at ~/.claude-pace-maker/venv (that venv only needs requirements.txt
+# -- runtime deps for the hooks themselves). requirements-dev.txt is for
+# whichever interpreter you run `./scripts/run_tests.sh` with (see its
+# PACEMAKER_TEST_PYTHON / resolve_test_python() docs).
+#
+# Without this file, a clean checkout gets real collection errors on a
+# fresh interpreter -- these packages are hard-imported by test modules
+# but were previously undeclared anywhere, only present on the original
+# dev box via an ad-hoc `pip install --user responses`.
+#
+# Install:  pip install -r requirements.txt -r requirements-dev.txt
+#
+# pytest / pytest-timeout: the test runner itself (scripts/run_tests.sh
+#   passes --timeout to every file; pyproject.toml's [tool.pytest.ini_options]
+#   is read by pytest itself).
+# responses: hard-imported by tests/unit/test_langfuse_provisioner.py and
+#   tests/unit/test_langfuse_provision_command.py to mock the Langfuse
+#   HTTP API without real network calls.
+pytest>=8.4.2
+pytest-timeout>=2.4.0
+responses>=0.25.8

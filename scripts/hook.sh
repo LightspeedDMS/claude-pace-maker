@@ -57,7 +57,21 @@ _log_python_fallback() {
     local now mtime age=999999
     now=$(date +%s 2>/dev/null || echo 0)
     if [ -f "$marker" ]; then
-        mtime=$(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || echo 0)
+        # GNU stat first: on Linux, `stat -f %m FILE` is NOT "format=%m" --
+        # GNU's `-f` means filesystem-status mode, so it treats `%m` and
+        # `FILE` as two separate file operands, fails on the bogus `%m`
+        # operand, but still prints a multi-line filesystem-info block to
+        # stdout for the real FILE operand before returning non-zero. That
+        # garbage then gets concatenated with the `stat -c %Y` fallback's
+        # correct output inside this command substitution, producing a
+        # multi-line "mtime" that crashes the `$(( now - mtime ))`
+        # arithmetic below under `set -u` (bug found via
+        # test_warning_is_throttled_within_one_hour). Trying the
+        # GNU-correct `-c %Y` form first fixes Linux outright (always
+        # succeeds there); real BSD/macOS stat cleanly fails on `-c` with
+        # no stdout, so the fallback `-f %m` (correct syntax there) still
+        # runs.
+        mtime=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null || echo 0)
         age=$(( now - mtime ))
     fi
     if [ "$age" -lt 3600 ]; then

@@ -23,7 +23,10 @@
 
 **Therefore:**
 - Prefer agentic/manual E2E. Do NOT add NEW scripted/automated E2E test files for this project.
-- Legacy scripted E2E files DO still exist and still run: `tests/e2e/test_secrets_e2e.py`, `tests/test_clean_code_rules_e2e.py`, `tests/test_install_e2e.py`, `tests/test_langfuse_provisioner_e2e.py`, `tests/test_subagent_output_correlation_e2e.py` (`./scripts/run_tests.sh --quick` skips them). Leave them alone unless a task specifically covers them.
+- Legacy scripted E2E files DO still exist and still run: `tests/e2e/test_secrets_e2e.py`, `tests/e2e/test_install_e2e.py`, `tests/e2e/test_install_old_bloated.py`, `tests/e2e/test_install.py`, `tests/e2e/test_install_local_mode.py`, `tests/test_clean_code_rules_e2e.py`, `tests/test_langfuse_provisioner_e2e.py`, `tests/test_subagent_output_correlation_e2e.py`. Leave them alone unless a task specifically covers them.
+- **`test_install.py` and `test_install_local_mode.py` moved into `tests/e2e/` in issue #144.** The original #144 commit added a class-level `@pytest.mark.timeout(60)` to each (they did NOT pre-exist) to survive `run_tests.sh`'s default per-test `--timeout=15`, but their AGGREGATE per-file cost (each test does 1-2 genuinely distinct, non-reducible real `install.sh` invocations, ~20-45s each measured) still exceeded the per-file budget under load — `test_install.py` alone measured 147.84s. A code-review follow-up moved both out of `--quick` (issue #144's own explicitly sanctioned alternative remedy to a per-test timeout raise) into `tests/e2e/`, which `scripts/run_tests.sh` now gives its own, more generous per-test `--timeout` default (`PACEMAKER_E2E_PYTEST_TIMEOUT`) — and REMOVED the `@pytest.mark.timeout(60)` markers again, because a marker always wins over `--timeout` regardless of value, so leaving the 60s marker in place would have silently overridden the new, more generous e2e default.
+- **`test_install_old_bloated.py` moved into `tests/e2e/` in issue #144 too.** Its `TestHookConflictDetection` class (global-vs-local install hook-conflict warnings) is NOT covered anywhere else in the suite — do not treat this file as pure legacy duplication of `test_install.py`/`test_install_local_mode.py` and delete it. `TestInstallScript`'s per-assertion tests (one real `install.sh` run per test) largely overlap `test_install.py`'s leaner consolidated coverage, but were left as-is rather than deduplicated (out of scope for #144's test-speed goal).
+- **Correction (issue #144): `--quick` only skips files actually under `tests/e2e/`.** `scripts/run_tests.sh --quick`'s exclusion is a directory glob (`tests/e2e/test_*.py`), not a filename-suffix match — an earlier revision of this line claimed all 5 files above were skipped by `--quick`, which was only ever true for the ones physically living in `tests/e2e/`. `test_install_e2e.py` was moved from `tests/test_install_e2e.py` into `tests/e2e/` in #144 (its ~10 real `install.sh` invocations across 7 tests, ~20-40s each, are exactly the "genuinely slow e2e" case that belongs behind the `--quick` exclusion) and now matches the documented behavior. `test_clean_code_rules_e2e.py`, `test_langfuse_provisioner_e2e.py`, and `test_subagent_output_correlation_e2e.py` are still directly under `tests/` and are therefore NOT skipped by `--quick` despite their `_e2e.py` filenames — they run every time via the plain `tests/test_*.py` glob. That mismatch is left as-is (out of scope for #144); do not assume `--quick` excludes them.
 - When end-to-end verification is needed, run pace-maker and inspect its behavior directly, then report the real observed output.
 
 **How the stop-hook gate enforces this (it is NOT in conflict — issue #98).** `src/pacemaker/prompts/stop/stop_hook_validator_prompt.md` accepts **three** evidence shapes, not one:
@@ -436,6 +439,16 @@ The `codex_usage.py` module handles both subscription and PAYG (Pay-As-You-Go) C
 **Why:** Each test file gets its own pytest process with a 30s timeout, avoiding WAL lock contention between concurrent DB teardown/setup cycles.
 
 **Test mode optimization:** `PACEMAKER_TEST_MODE=1` is set automatically by `conftest.py`, enabling `PRAGMA synchronous=OFF` for 20x faster DB operations in tests.
+
+**Dev/test setup (issue #144 code-review follow-up #4):** `requirements.txt` only pins the hooks' own runtime deps (`requests`, `pyyaml`, `claude-agent-sdk`) — it is NOT sufficient to run the suite. `requirements-dev.txt` additionally pins `pytest`, `pytest-timeout`, and `responses` (hard-imported by `tests/unit/test_langfuse_provisioner.py` / `test_langfuse_provision_command.py` to mock the Langfuse HTTP API). A clean checkout needs both:
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+Without `responses` installed, those two files collection-error on any interpreter. `run_tests.sh` detects this per-file and prints a hint (`pip install -r requirements-dev.txt`) alongside the file in the ERRORED list.
+
+**Which interpreter runs the tests:** `run_tests.sh`'s `resolve_test_python()` auto-picks an interpreter that has both `claude_agent_sdk` and `pytest` importable (preference order: `PACEMAKER_TEST_PYTHON` override → active `$VIRTUAL_ENV/bin/python` → `python`/`python3.11`/`python3.10`/`python3`), falling back to a pytest-only candidate (with a loud stderr warning — SDK spawn-guard tests won't exercise the real SDK path) or, as a last resort, the first existing candidate at all (louder warning still) if nothing has pytest. Override with `PACEMAKER_TEST_PYTHON=/path/to/python` if auto-detection picks the wrong one.
 
 ---
 

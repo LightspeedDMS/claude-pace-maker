@@ -207,19 +207,30 @@ class TestPerformanceAndTokenEfficiency:
         assert elapsed < STAGE1_MAX_SECONDS
 
     def test_stage1_uses_only_current_message(self):
-        """AC7b: Stage 1 uses ONLY CURRENT message, not full history.
+        """AC7b: Stage 1 uses ONLY the current message plus the deliberate
+        1-message-back rescue (commit fc14ff6), not arbitrary history.
 
-        Proof: INTENT: is present only in old messages but absent in the current
-        message. Stage 1 must block (NO), demonstrating it does NOT look at
-        history — only the current message.
+        Proof: INTENT: is present only 2 messages back -- one message
+        beyond the rescue window fc14ff6 added to extract_current_assistant_message
+        ("Never searches beyond messages[-2]") -- and absent from both the
+        current message and the immediately preceding one. Stage 1 must
+        still block (NO), demonstrating it does not search arbitrarily far
+        back into history.
+
+        (This test previously put INTENT: exactly 1 message back, which is
+        precisely the rescue window fc14ff6 added for ungrouped/legacy
+        JSONL turns -- Stage 1 legitimately finds and accepts it there, so
+        that premise no longer holds and the test was updated, issue #144.)
         """
-        # INTENT: is in old messages only, NOT in the current (last) message
+        # INTENT: is 2 messages back -- outside the 1-back rescue window,
+        # NOT in the current (last) message or the message just before it.
         old_message_with_intent = (
             "INTENT: Modify src/auth.py to add validate_token(). "
             "Test coverage: tests/test_auth.py - test_validate_token()"
         )
+        intervening_message = "Looking at the existing auth module."
         current_message = "Now writing the code."  # No INTENT: here
-        messages = [old_message_with_intent, current_message]
+        messages = [old_message_with_intent, intervening_message, current_message]
         file_path = "src/auth.py"
         tool_name = "Write"
 
