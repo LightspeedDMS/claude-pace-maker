@@ -86,6 +86,7 @@ COMMANDS:
   pace-maker hook-model opus                   Use Opus for hook inference
   pace-maker hook-model fable                  Use Fable for hook inference
   pace-maker hook-model gpt-6-astra            Use GPT-6 Astra (via Codex CLI) — most capable, 272K ctx, xhigh reasoning
+  pace-maker hook-model gpt-6-sol              Use GPT-6 Sol (via Codex CLI) for hook inference
   pace-maker hook-model gpt-5.6-sol            Use GPT-5.6 Sol (via Codex CLI) for hook inference (preferred / latest)
   pace-maker hook-model gpt-5.6-terra          Use GPT-5.6 Terra (via Codex CLI) for hook inference
   pace-maker hook-model gpt-5.6-luna           Use GPT-5.6 Luna (via Codex CLI) for hook inference
@@ -599,7 +600,7 @@ def parse_command(user_input: str) -> Dict[str, Any]:
     pattern_hook_model_single = (
         r"^pace-maker\s+hook-model\s+"
         r"(auto|sonnet|opus|haiku|fable"
-        r"|gpt-6-astra"
+        r"|gpt-6-astra|gpt-6-sol"
         r"|gpt-5\.6-sol|gpt-5\.6-terra|gpt-5\.6-luna"
         r"|gpt-5\.5|gpt-5\.4-mini|gpt-5\.4|gpt-5|gpt|codex"
         r"|gemini-flash|gemini-pro|gem-flash|gem-pro"

@@ -46,7 +46,7 @@ def get_provider(hook_model: str):
     Args:
         hook_model: Config value - "auto", "sonnet", "opus", "haiku", "gpt-5.4",
                     "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra",
-                    "gpt-5.6-luna", "gpt-6-astra"
+                    "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol"
                     (legacy aliases: "gpt-5", "gpt", "codex"),
                     "gemini-flash", "gemini-pro"
 
@@ -66,6 +66,7 @@ def get_provider(hook_model: str):
         "gpt-5.6-terra",
         "gpt-5.6-luna",
         "gpt-6-astra",
+        "gpt-6-sol",
         "gpt",
         "codex",
     ):

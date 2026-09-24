@@ -27,6 +27,7 @@ KNOWN_MODELS = {
     # "gpt-5"/"gpt" keep pointing at gpt-5.6-sol, since repointing them would
     # silently change the reviewer for every existing config.
     "gpt-6-astra",
+    "gpt-6-sol",
     "gemini-flash",
     "gemini-pro",
     # Antigravity CLI (agy) models — Story #72
