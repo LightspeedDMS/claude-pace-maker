@@ -329,7 +329,9 @@ class TestBuildReviewerUnavailableMessage:
 
 
 def _fake_stage2_zero_survivors(expression, failed_providers):
-    def _side_effect(prompt, hook_model="auto", _degradation=None, _deadline=None):
+    def _side_effect(
+        prompt, hook_model="auto", _degradation=None, _deadline=None, _db_path=None
+    ):
         if _degradation is not None:
             _degradation["degraded"] = True
             _degradation["zero_survivors"] = True
@@ -412,7 +414,9 @@ class TestValidateIntentAndCodeZeroSurvivorStage2:
         zero-survivor handling."""
         current_message = "INTENT: Modify utils.py to add helper function"
 
-        def _side_effect(prompt, hook_model="auto", _degradation=None, _deadline=None):
+        def _side_effect(
+            prompt, hook_model="auto", _degradation=None, _deadline=None, _db_path=None
+        ):
             if _degradation is not None:
                 _degradation["degraded"] = True
                 _degradation["failed_providers"] = {"haiku": "timed out after 35s"}

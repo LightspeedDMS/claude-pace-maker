@@ -31,10 +31,18 @@ This module covers the combined #141/#148 fix:
    them.
 2. The Write/Edit Stage 1 "missing INTENT" block
    (intent_validator.validate_intent_and_code) and the danger-bash Phase 1
-   "no INTENT" block (hook.py) both append a shared
-   `transcript_reader.THINKING_ONLY_NOTICE` to their block reason whenever
-   the anchored turn had NO visible text -- regardless of whether thinking
-   was present, empty, or absent entirely (#148).
+   "no INTENT" block (hook.py) both surface a shared explanatory notice to
+   their block reason whenever the anchored turn had NO visible text --
+   regardless of whether thinking was present, empty, or absent entirely
+   (#148). Issue #150 (2026-09-27) later replaced the notice's TEXT and
+   POSITION -- it now LEADS the block reason (via intent_validator.
+   build_no_visible_text_notice(), with a ready-to-copy INTENT: example
+   naming the actual file/command) instead of being appended at the end
+   via the old `transcript_reader.THINKING_ONLY_NOTICE` constant, which
+   #150 removed (zero remaining callers). The flags/telemetry this module
+   tests are UNCHANGED by #150 -- only the notice text/position moved; see
+   tests/test_issue_150_pilot_validated_wording.py and CLAUDE.md's "Issue
+   #150" section for that half of the fix.
 3. Thinking is NEVER accepted as an INTENT source. A turn with visible text
    (with or without INTENT) is unaffected; the notice is additive to an
    EXISTING block, it never changes whether a block occurs.
@@ -142,6 +150,22 @@ NO_INTENT_TEXT = "Let me go ahead and make this edit now.\n"
 THINKING_WITH_INTENT_LOOKING_TEXT = (
     "The user wants a version bump. INTENT: Bump version_bump.py's version "
     "string for the release.\n"
+)
+
+# Issue #150: the old THINKING_ONLY_NOTICE (appended at the END of the
+# generic block template) was replaced by intent_validator.
+# build_no_visible_text_notice(), which LEADS the block reason instead,
+# with a ready-to-copy INTENT: example naming the actual file/command. This
+# distinctive lead sentence is shared by every no-visible-text block
+# message regardless of which example follows it, so it is the correct
+# substring to assert presence/absence of in this file's hook-level tests
+# (which don't know the exact rendered example without duplicating this
+# module's own transcript-shape logic). See tests/
+# test_issue_150_pilot_validated_wording.py for the exact-example
+# assertions and CLAUDE.md's "Issue #150" section for the pilot evidence.
+NO_VISIBLE_TEXT_LEAD = (
+    "Your reasoning is invisible to the validator; an INTENT written "
+    "only in your reasoning does not exist."
 )
 
 
@@ -713,8 +737,6 @@ class TestWriteEditThinkingOnlyNotice(_DbHarness):
             return run_pre_tool_hook()
 
     def test_thinking_only_turn_blocks_with_notice(self):
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
-
         _write_transcript(
             [
                 _asst("req_A", _thinking_block(THINKING_WITH_INTENT_LOOKING_TEXT, 0)),
@@ -735,12 +757,10 @@ class TestWriteEditThinkingOnlyNotice(_DbHarness):
         reason = result.get("reason", "")
         assert "INTENT" in reason
         assert (
-            THINKING_ONLY_NOTICE in reason
+            NO_VISIBLE_TEXT_LEAD in reason
         ), f"Thinking-only turn must surface the explanatory notice; got: {reason!r}"
 
     def test_visible_text_without_intent_blocks_without_notice(self):
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
-
         _write_transcript(
             [
                 _asst("req_A", _text_block(NO_INTENT_TEXT, 0)),
@@ -760,7 +780,7 @@ class TestWriteEditThinkingOnlyNotice(_DbHarness):
         assert result.get("decision") == "block"
         reason = result.get("reason", "")
         assert "INTENT" in reason
-        assert THINKING_ONLY_NOTICE not in reason, (
+        assert NO_VISIBLE_TEXT_LEAD not in reason, (
             f"Visible text (even without INTENT) must NOT get the "
             f"thinking-only notice; got: {reason!r}"
         )
@@ -795,8 +815,6 @@ class TestWriteEditThinkingOnlyNotice(_DbHarness):
         re-issue's own tool_use has NOT yet flushed. The stale outcome must
         still surface the notice (transcript_reader gates anchor flags the
         same way on the stale branch as on found)."""
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
-
         _write_transcript(
             [
                 _asst("req_A", _thinking_block(THINKING_WITH_INTENT_LOOKING_TEXT, 0)),
@@ -837,7 +855,7 @@ class TestWriteEditThinkingOnlyNotice(_DbHarness):
             f"Must be an ordinary Stage-1 rejection via the accepted stale "
             f"match, not the deferred-race message; got: {reason!r}"
         )
-        assert THINKING_ONLY_NOTICE in reason, (
+        assert NO_VISIBLE_TEXT_LEAD in reason, (
             f"Stale thinking-only anchor must still surface the notice; "
             f"got: {reason!r}"
         )
@@ -866,8 +884,6 @@ class TestIssue148WriteEditNoVisibleTextNotice(_DbHarness):
 
     def test_no_thinking_no_text_turn_blocks_with_notice(self):
         """Shape (c): tool_use only, no thinking block at all."""
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
-
         _write_transcript(
             [
                 _asst(
@@ -886,7 +902,7 @@ class TestIssue148WriteEditNoVisibleTextNotice(_DbHarness):
         assert result.get("decision") == "block"
         reason = result.get("reason", "")
         assert "INTENT" in reason
-        assert THINKING_ONLY_NOTICE in reason, (
+        assert NO_VISIBLE_TEXT_LEAD in reason, (
             f"A pure tool_use turn (no thinking at all) must surface the "
             f"no-visible-text notice; got: {reason!r}"
         )
@@ -894,8 +910,6 @@ class TestIssue148WriteEditNoVisibleTextNotice(_DbHarness):
     def test_empty_thinking_only_turn_blocks_with_notice(self):
         """Shape (b): an EMPTY thinking block plus tool_use -- the issue's
         own repro (a reviewer subagent transcript with `thinking: ""`)."""
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
-
         _write_transcript(
             [
                 _asst("req_A", _thinking_block("", 0)),
@@ -915,7 +929,7 @@ class TestIssue148WriteEditNoVisibleTextNotice(_DbHarness):
         assert result.get("decision") == "block"
         reason = result.get("reason", "")
         assert "INTENT" in reason
-        assert THINKING_ONLY_NOTICE in reason, (
+        assert NO_VISIBLE_TEXT_LEAD in reason, (
             f"An empty-thinking-only turn must surface the no-visible-text "
             f"notice; got: {reason!r}"
         )
@@ -960,8 +974,6 @@ class TestDangerBashThinkingOnlyNotice(_DbHarness):
             return run_pre_tool_hook()
 
     def test_thinking_only_turn_blocks_with_notice(self):
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
-
         _write_transcript(
             [
                 _asst(
@@ -979,14 +991,12 @@ class TestDangerBashThinkingOnlyNotice(_DbHarness):
         assert result.get("decision") == "block"
         reason = result.get("reason", "")
         assert "INTENT" in reason
-        assert THINKING_ONLY_NOTICE in reason, (
+        assert NO_VISIBLE_TEXT_LEAD in reason, (
             f"Thinking-only Bash turn must surface the explanatory notice; "
             f"got: {reason!r}"
         )
 
     def test_visible_text_without_intent_blocks_without_notice(self):
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
-
         _write_transcript(
             [
                 _asst("req_A", _text_block("Cleaning up the scratch dir now.", 0)),
@@ -1001,7 +1011,7 @@ class TestDangerBashThinkingOnlyNotice(_DbHarness):
         assert result.get("decision") == "block"
         reason = result.get("reason", "")
         assert "INTENT" in reason
-        assert THINKING_ONLY_NOTICE not in reason, (
+        assert NO_VISIBLE_TEXT_LEAD not in reason, (
             f"Visible text (even without INTENT) must NOT get the "
             f"thinking-only notice; got: {reason!r}"
         )
@@ -1016,8 +1026,6 @@ class TestDangerBashThinkingOnlyNotice(_DbHarness):
         computed from `_bash_diagnostics` right after `_bash_outcome` is
         read -- before the found/stale/not_found branching -- so it is
         populated identically regardless of which branch is taken."""
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
-
         _write_transcript(
             [
                 _asst(
@@ -1052,7 +1060,7 @@ class TestDangerBashThinkingOnlyNotice(_DbHarness):
         assert result.get("decision") == "block"
         reason = result.get("reason", "")
         assert "INTENT" in reason
-        assert THINKING_ONLY_NOTICE in reason, (
+        assert NO_VISIBLE_TEXT_LEAD in reason, (
             f"Stale thinking-only Bash anchor must still surface the "
             f"notice; got: {reason!r}"
         )
@@ -1159,8 +1167,6 @@ class TestIssue148DangerBashNoVisibleTextNotice(_DbHarness):
             return run_pre_tool_hook()
 
     def test_no_thinking_no_text_turn_blocks_with_notice(self):
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
-
         _write_transcript(
             [
                 _asst(
@@ -1174,7 +1180,7 @@ class TestIssue148DangerBashNoVisibleTextNotice(_DbHarness):
         assert result.get("decision") == "block"
         reason = result.get("reason", "")
         assert "INTENT" in reason
-        assert THINKING_ONLY_NOTICE in reason, (
+        assert NO_VISIBLE_TEXT_LEAD in reason, (
             f"A pure tool_use Bash turn (no thinking at all) must surface "
             f"the no-visible-text notice; got: {reason!r}"
         )
@@ -1187,8 +1193,6 @@ class TestIssue148DangerBashNoVisibleTextNoticeEmptyThinking(
     `thinking: ""` block plus tool_use."""
 
     def test_empty_thinking_only_turn_blocks_with_notice(self):
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
-
         _write_transcript(
             [
                 _asst("req_A", _thinking_block("", 0)),
@@ -1203,7 +1207,7 @@ class TestIssue148DangerBashNoVisibleTextNoticeEmptyThinking(
         assert result.get("decision") == "block"
         reason = result.get("reason", "")
         assert "INTENT" in reason
-        assert THINKING_ONLY_NOTICE in reason, (
+        assert NO_VISIBLE_TEXT_LEAD in reason, (
             f"An empty-thinking-only Bash turn must surface the "
             f"no-visible-text notice; got: {reason!r}"
         )
@@ -1360,7 +1364,6 @@ NO_TDD_INTENT_TEXT = (
 class TestNoTddBranchThinkingOnlyNotice:
     def test_no_tdd_with_thinking_only_appends_notice(self):
         from pacemaker.intent_validator import validate_intent_and_code
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
 
         result = validate_intent_and_code(
             messages=[],
@@ -1374,18 +1377,17 @@ class TestNoTddBranchThinkingOnlyNotice:
         assert (
             result.get("tdd_failure") is True
         ), f"Fixture must actually hit the NO_TDD branch; got: {result}"
-        assert THINKING_ONLY_NOTICE in result.get("feedback", ""), (
+        assert NO_VISIBLE_TEXT_LEAD in result.get("feedback", ""), (
             f"NO_TDD block with no_visible_text=True must surface the "
             f"notice in the tagged feedback; got: {result.get('feedback')!r}"
         )
-        assert THINKING_ONLY_NOTICE in result.get("raw_feedback", ""), (
+        assert NO_VISIBLE_TEXT_LEAD in result.get("raw_feedback", ""), (
             f"NO_TDD block with no_visible_text=True must surface the "
             f"notice in raw_feedback too; got: {result.get('raw_feedback')!r}"
         )
 
     def test_no_tdd_without_thinking_only_omits_notice(self):
         from pacemaker.intent_validator import validate_intent_and_code
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
 
         result = validate_intent_and_code(
             messages=[],
@@ -1397,11 +1399,11 @@ class TestNoTddBranchThinkingOnlyNotice:
         )
         assert result.get("approved") is False
         assert result.get("tdd_failure") is True
-        assert THINKING_ONLY_NOTICE not in result.get("feedback", ""), (
+        assert NO_VISIBLE_TEXT_LEAD not in result.get("feedback", ""), (
             f"NO_TDD block with no_visible_text=False (the default) must "
             f"NOT surface the notice; got: {result.get('feedback')!r}"
         )
-        assert THINKING_ONLY_NOTICE not in result.get("raw_feedback", "")
+        assert NO_VISIBLE_TEXT_LEAD not in result.get("raw_feedback", "")
 
 
 # ---------------------------------------------------------------------------
@@ -1416,7 +1418,6 @@ class TestNoTddBranchThinkingOnlyNotice:
 class TestRawFeedbackNoticeUntagged:
     def test_no_branch_raw_feedback_contains_notice_untagged(self):
         from pacemaker.intent_validator import validate_intent_and_code
-        from pacemaker.transcript_reader import THINKING_ONLY_NOTICE
 
         result = validate_intent_and_code(
             messages=[],
@@ -1429,8 +1430,8 @@ class TestRawFeedbackNoticeUntagged:
         assert result.get("approved") is False
         raw_feedback = result.get("raw_feedback", "")
         feedback = result.get("feedback", "")
-        assert THINKING_ONLY_NOTICE in raw_feedback
-        assert THINKING_ONLY_NOTICE in feedback
+        assert NO_VISIBLE_TEXT_LEAD in raw_feedback
+        assert NO_VISIBLE_TEXT_LEAD in feedback
         assert "[pace-maker" not in raw_feedback, (
             f"raw_feedback must be untagged (governance-feed consumer, "
             f"Story #101 AC5); got: {raw_feedback!r}"

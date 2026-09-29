@@ -1,0 +1,1 @@
+⛔ Your message had NO visible text — only a tool call (plus reasoning, if any). Your reasoning is invisible to the validator; an INTENT written only in your reasoning does not exist. Re-issue the tool call in a response that first contains normal visible text (not reasoning/thinking), for example:

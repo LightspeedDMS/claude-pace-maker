@@ -153,7 +153,11 @@ class TestResolveAndCallWithReviewerAgy:
         captured_hints = []
 
         def capturing_query(
-            prompt, system_prompt="", model_hint="", max_thinking_tokens=4000
+            prompt,
+            system_prompt="",
+            model_hint="",
+            max_thinking_tokens=4000,
+            timeout=None,
         ):
             captured_hints.append(model_hint)
             return "APPROVED"

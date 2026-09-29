@@ -533,7 +533,22 @@ class TestPreToolHook:
             assert mock_validate.call_count == 1
             kwargs = mock_validate.call_args.kwargs
             assert kwargs["messages"] == messages
-            assert kwargs["code"] == "new code"
+            # Issue #153 follow-up (CHANGE 3): for Edit, "code" is now a
+            # REAL unified diff (old_string -> new_string), not an OLD/NEW
+            # block-pair view -- so Stage 2 can verify the DIRECTION of a
+            # change from the diff's -/+ markers. "/path/to/config.py"
+            # doesn't exist on disk, so the diff falls back to diffing
+            # old_string vs new_string directly (the exact same fallback
+            # condition the surrounding-context section already uses).
+            assert kwargs["code"] == (
+                "UNIFIED DIFF (`-` = removed, `+` = added, unmarked = "
+                "unchanged context):\n"
+                "--- old_string\n"
+                "+++ new_string\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new code"
+            )
             assert kwargs["file_path"] == "/path/to/config.py"
             assert kwargs["tool_name"] == "Edit"
             assert kwargs["hook_model"] == "auto"

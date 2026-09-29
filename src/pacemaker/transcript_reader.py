@@ -38,6 +38,14 @@ TAIL_READ_BYTES = 512 * 1024
 # tool-content matching instead of text-only extraction.
 LAST_N_TURNS_FOR_TOOL_MATCH = 2
 
+# Issue #151 live-test follow-up (round 2): number of LOGICAL assistant
+# turns immediately BEFORE the anchor turn surfaced as RECENT CONTEXT for
+# the relaxed Stage 2 prompt (see _build_prior_turns_context below). Kept
+# small and separate from LAST_N_TURNS_FOR_TOOL_MATCH (which scopes tool-use
+# MATCHING, a different concern) -- 3 was the coordinator's own spec value,
+# matching the live repro's single-prior-turn case with headroom.
+RECENT_CONTEXT_MAX_TURNS = 3
+
 # Shared INTENT: marker detector (Messi Rule 4 — three-strike dedup): this
 # exact pattern was independently duplicated at 4 call sites (3 here, 1 in
 # intent_validator.py's _has_intent_marker) before being extracted here.
@@ -48,39 +56,8 @@ LAST_N_TURNS_FOR_TOOL_MATCH = 2
 # need to change it here.
 INTENT_MARKER_PATTERN = re.compile(r"(?i)\bintent\s*:")
 
-# Issue #141 (extended by issue #148): shared notice appended to a
-# Stage-1/Phase-1 "missing declaration" block reason whenever the anchored
-# turn had NO visible text block at all -- regardless of whether it had a
-# `thinking` block with content, an EMPTY `thinking` block, or no
-# `thinking` block whatsoever. Facts (see the GitHub issues): `apiBlockIndex`
-# numbers API response blocks with no gaps, so a turn shaped e.g.
-# `thinking(0), tool_use(1)` or just `tool_use(0)` genuinely never had a
-# text block. In the thinking-present case the model wrote its declaration
-# (INTENT:, and/or a test-coverage line) only inside its own (summarized,
-# non-verbatim, not-shown-to-the-user) reasoning; in the no-thinking case it
-# never wrote a declaration anywhere visible at all. Either way the
-# pre-existing block messages don't say WHY, so the agent believes it
-# already declared and loops. Issue #141 shipped this notice gated on
-# "thinking present AND no visible text", which missed the empty-thinking
-# and no-thinking-at-all shapes (issue #148) -- the gating condition lives
-# in the callers (hook.py's `_bash_no_visible_text`/
-# `_write_edit_no_visible_text`, intent_validator.py's `no_visible_text`
-# parameter), not here; this constant is a single source of truth for the
-# TEXT shared by all three block paths that can hit any of these shapes:
-# the Write/Edit Stage 1 NO and NO_TDD blocks
-# (intent_validator.validate_intent_and_code) and the danger-bash Phase 1
-# block (hook.py) -- worded generically ("declarations ... INTENT:, test
-# coverage") rather than naming only INTENT:, since NO_TDD blocks on a
-# missing test-coverage line, not a missing INTENT. Thinking is NEVER
-# accepted as a declaration source -- this notice only explains an
-# existing block, it never changes whether one occurs.
-THINKING_ONLY_NOTICE = (
-    "Your message contained NO visible text before this tool call — "
-    "declarations (INTENT:, test coverage) must be written as visible "
-    "response text, in the same message before the tool call, not only "
-    "in reasoning/thinking (if any was present) and not omitted "
-    "entirely. Retry with a visible declaration."
-)
+# NOTE (issue #150): THINKING_ONLY_NOTICE (#141/#148) was removed here
+# (zero callers left) -- see intent_validator.build_no_visible_text_notice().
 
 
 def get_all_user_messages(transcript_path: str) -> List[str]:
@@ -209,7 +186,10 @@ def _extract_message_parts(content: Union[list, str]) -> dict:
     elif isinstance(content, str):
         text_parts.append(content)
 
-    return {"text": "\n".join(text_parts) if text_parts else "", "tools": tools}
+    return {
+        "text": "\n".join(text_parts) if text_parts else "",
+        "tools": tools,
+    }
 
 
 def _format_message_with_tools(msg: dict) -> str:
@@ -231,10 +211,16 @@ def get_last_n_messages_for_validation(
 ) -> List[str]: ...
 @overload
 def get_last_n_messages_for_validation(
-    transcript_path: str, n: int = ..., *, _with_prose: Literal[True]
+    transcript_path: str,
+    n: int = ...,
+    *,
+    _with_prose: Literal[True],
 ) -> Tuple[List[str], List[str]]: ...
 def get_last_n_messages_for_validation(
-    transcript_path: str, n: int = 5, *, _with_prose: bool = False
+    transcript_path: str,
+    n: int = 5,
+    *,
+    _with_prose: bool = False,
 ) -> Union[List[str], Tuple[List[str], List[str]]]:
     """
     Extract last N assistant messages for pre-tool validation context.
@@ -491,6 +477,77 @@ def _tool_input_matches(tool: dict, tool_name: str, tool_input: dict) -> bool:
     return inp == tool_input
 
 
+def _build_sibling_edits_data(tools: List[dict], anchor_tool_id: Optional[str]) -> dict:
+    """Issue #153: describe the OTHER Write/Edit tool calls in the SAME
+    anchored turn as the one being reviewed -- the OIDC split-multi-edit
+    live evidence showed a middle Edit fragment blocked for "not showing
+    the enabled case" when a SIBLING Edit in the same message adds exactly
+    that case; on-disk file context alone cannot help there, since the
+    file hasn't been touched by the sibling yet at validation time.
+
+    Returns ``{"position": k, "total": n, "siblings": [...]}``:
+      - ``n`` (total) is the count of ALL Write/Edit tool_use calls in
+        ``tools`` (a single anchored turn's merged tool list) -- non-
+        Write/Edit calls (e.g. Read) are never counted and never appear
+        as siblings; they don't mutate anything.
+      - ``k`` (position) is the reviewed call's 1-based position among
+        those Write/Edit calls, in the order they appear in the turn.
+      - ``siblings`` is every Write/Edit call in the turn EXCEPT the
+        reviewed one, in original relative order, each with its OWN
+        absolute 1-based ``"position"`` key added (e.g. ``#1``, ``#3``
+        when the reviewed call is ``#2`` of 3) so the reviewer can be
+        told "sibling #3 completes this fragment" rather than a
+        meaningless relative index. The reviewed call itself is NEVER
+        included in its own sibling list, by construction.
+
+    Issue #153 code review MUST-FIX 3: the reviewed call is identified by
+    the ANCHOR'S OWN ``tool_use.id`` (``anchor_tool_id``, already resolved
+    by the anchor-scan loop above via the SAME byte-exact
+    ``_tool_input_matches`` this turn's tool_use was originally located
+    with), never by re-matching content here -- two Write/Edit calls in
+    the same turn with byte-identical ``file_path``/``old_string``/
+    ``new_string`` are indistinguishable by content, so re-matching
+    content would always resolve to the FIRST one, silently mislabeling
+    which call is actually under review whenever the SECOND (or later) of
+    two identical calls is the one being reviewed.
+
+    ``tools`` is exactly ``_merge_anchor_turn(...)["tools"]`` -- no
+    additional transcript read; this operates purely on data the caller
+    (``_find_turn_matching_tool_input``) already has in memory from the
+    fixed-cost tail window.
+    """
+    write_edit_tools = [t for t in tools if t.get("name") in ("Write", "Edit")]
+    position = None
+    siblings: List[dict] = []
+    for i, t in enumerate(write_edit_tools):
+        abs_position = i + 1
+        if (
+            position is None
+            and anchor_tool_id is not None
+            and t.get("id") == anchor_tool_id
+        ):
+            position = abs_position
+            continue
+        sibling = dict(t)
+        sibling["position"] = abs_position
+        siblings.append(sibling)
+    if position is None:
+        # Defensive fallback only -- this function is called after the
+        # anchor tool_use has ALREADY matched, so the reviewed call's id
+        # is always present among write_edit_tools in practice (or
+        # anchor_tool_id is None for an entry with no resolvable id, an
+        # edge case the caller already tolerates elsewhere). Treat as
+        # position 1 rather than raising or producing an inconsistent
+        # (None) position -- nothing is excluded from siblings in this
+        # fallback case, since we cannot identify which one to exclude.
+        position = 1
+    return {
+        "position": position,
+        "total": len(write_edit_tools),
+        "siblings": siblings,
+    }
+
+
 def _read_tail_raw_entries(transcript_path: str, window_bytes: int) -> List[dict]:
     """Read a FIXED-size window of bytes from the END of the transcript,
     ONCE (never grown), and parse it into the normalized entry dicts
@@ -550,6 +607,12 @@ def _read_tail_raw_entries(transcript_path: str, window_bytes: int) -> List[dict
                 "request_id": entry.get("requestId"),
                 "parts": msg_parts,
                 "content": message.get("content", []),
+                # Issue #151: the assistant record's own model id (e.g.
+                # "claude-opus-5-5"), used downstream to gate the
+                # reasoning-summary intent exception to a configurable
+                # model list. None for non-assistant entries and for
+                # assistant entries that omit "model" (older transcripts).
+                "model": message.get("model") if role == "assistant" else None,
             }
         )
     return entries
@@ -651,6 +714,147 @@ def _turn_has_thinking(
         if _content_has_thinking(e["content"]):
             return True
     return False
+
+
+def _extract_thinking_texts(content: Any) -> List[str]:
+    """Return the non-empty (post-strip) ``thinking`` block texts in
+    ``content``, in block order.
+
+    Issue #151: reasoning-summary intent exception. A turn's ``thinking``
+    blocks are frequently shaped ``thinking("", signature-only),
+    thinking(<summary>)`` -- this collects only the blocks that actually
+    carry readable text, skipping signature-only (empty-text) blocks
+    entirely. Non-list/non-dict content is defensively treated as "no
+    thinking text" rather than raising, matching ``_content_has_thinking``.
+    """
+    if not isinstance(content, list):
+        return []
+    texts = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "thinking":
+            continue
+        thinking_text = block.get("thinking")
+        if isinstance(thinking_text, str) and thinking_text.strip():
+            texts.append(thinking_text.strip())
+    return texts
+
+
+def _merge_anchor_reasoning_summary(
+    raw_entries: List[dict], anchor_index: int, anchor_request_id: Optional[str]
+) -> str:
+    """Concatenate every non-empty ``thinking`` block text across the
+    anchor turn (all entries sharing ``anchor_request_id``, or just the
+    anchor entry when ``request_id`` is None), in encounter order, joined
+    by a blank line.
+
+    Issue #151: this is the "reasoning summary" fed to the reasoning-
+    summary intent exception -- scoped to the EXACT SAME turn grouping
+    ``_merge_anchor_turn``/``_turn_has_thinking`` already use, so a
+    reasoning summary from a DIFFERENT turn can never leak in.
+    """
+    if anchor_request_id is None:
+        return "\n\n".join(
+            _extract_thinking_texts(raw_entries[anchor_index]["content"])
+        )
+    texts: List[str] = []
+    for e in raw_entries:
+        if e["role"] != "assistant" or e["request_id"] != anchor_request_id:
+            continue
+        texts.extend(_extract_thinking_texts(e["content"]))
+    return "\n\n".join(texts)
+
+
+def _ordered_assistant_turn_keys(
+    raw_entries: List[dict],
+) -> List[Tuple[Any, int, Optional[str]]]:
+    """Return ``(key, first_index, request_id)`` triples for every LOGICAL
+    assistant turn in ``raw_entries``, in chronological (encounter) order.
+
+    Unlike ``_last_n_assistant_turn_keys`` (an UNORDERED set capped to the
+    last ``n`` turns, used to scope tool-use MATCHING), this preserves the
+    full order of every turn so a caller can locate a specific turn's
+    position and walk backward from it -- issue #151 live-test follow-up
+    (round 2): needed to find the turns immediately BEFORE the anchor.
+    """
+    order: List[Tuple[Any, int, Optional[str]]] = []
+    seen = set()
+    for i, e in enumerate(raw_entries):
+        if e["role"] != "assistant":
+            continue
+        rid = e["request_id"]
+        key = rid if rid is not None else ("__standalone__", i)
+        if key not in seen:
+            seen.add(key)
+            order.append((key, i, rid))
+    return order
+
+
+def _build_prior_turns_context(
+    raw_entries: List[dict],
+    anchor_index: int,
+    anchor_request_id: Optional[str],
+    max_turns: int = RECENT_CONTEXT_MAX_TURNS,
+) -> List[Tuple[str, str]]:
+    """Return up to ``max_turns`` LOGICAL assistant turns immediately
+    BEFORE the anchor turn, oldest to newest, as ``(visible_text,
+    thinking_text)`` pairs.
+
+    Issue #151 live-test follow-up (round 2): replaces the previous design,
+    which had ``hook.py`` re-parse the ENTIRE transcript a SECOND time via
+    ``get_last_n_messages_for_validation(n=4, ...)`` (measured 0.824s on
+    top of the pre-existing 1.216s n=2 call, on a real 99.7MB transcript --
+    eating the shared gate deadline before Stage 2 could even run, and
+    contradicting the "never re-parse a second time" design this module
+    otherwise follows). This function instead operates on the SAME
+    ``raw_entries`` the caller already read from the fixed-cost tail window
+    (``_read_tail_raw_entries`` / ``TAIL_READ_BYTES``) -- zero additional
+    file I/O, using the exact same generic per-turn helpers
+    (``_merge_anchor_turn`` / ``_merge_anchor_reasoning_summary``) the
+    anchor's own text/reasoning-summary fields already use, called with
+    each PRIOR turn's own ``(index, request_id)`` instead of the anchor's.
+
+    Text is prose-only (#140's structural guarantee) -- ``_merge_anchor_turn``
+    never renders tool parameters, so this function inherits that contract
+    for free rather than re-implementing it.
+
+    The anchor's OWN key is never included: this is computed relative to
+    whichever turn is CURRENTLY anchored (the caller passes either the
+    "found" anchor or a "stale" re-issue's anchor), so on the stale path
+    the anchor's own (possibly now-flushed) text can never leak into its
+    own "recent context" -- fixing, by construction, the previous design's
+    stale-path bug where a positional ``prose[:-1]`` slice (relative to the
+    whole transcript, not the anchor) could surface the anchor's own
+    summary once a stale re-issue's thinking was flushed.
+
+    If fewer than ``max_turns`` turns precede the anchor within the current
+    tail window (including zero), a shorter (possibly empty) list is
+    returned -- this is expected and documented, not an error: the anchor
+    is always near EOF, and the fixed-size tail window this function's
+    caller already read is deliberately never grown to search further back
+    (see ``_find_turn_matching_tool_input``'s own docstring on why growing
+    the window was previously proven counter-productive).
+    """
+    ordered = _ordered_assistant_turn_keys(raw_entries)
+    anchor_key = (
+        anchor_request_id
+        if anchor_request_id is not None
+        else ("__standalone__", anchor_index)
+    )
+    anchor_pos = None
+    for pos, (key, _idx, _rid) in enumerate(ordered):
+        if key == anchor_key:
+            anchor_pos = pos
+            break
+    if anchor_pos is None or anchor_pos == 0:
+        return []
+
+    start = max(0, anchor_pos - max_turns)
+    context: List[Tuple[str, str]] = []
+    for _key, idx, rid in ordered[start:anchor_pos]:
+        merged = _merge_anchor_turn(raw_entries, idx, rid)
+        thinking_text = _merge_anchor_reasoning_summary(raw_entries, idx, rid)
+        context.append((merged["text"], thinking_text))
+    return context
 
 
 def _find_turn_matching_tool_input(
@@ -840,12 +1044,77 @@ def _find_turn_matching_tool_input(
                             # stale path. This line's success must not
                             # depend on _turn_has_thinking()'s.
                             _outcome["anchor_prose_text"] = merged["text"]
+                            # Issue #151: anchor_model, like anchor_prose_text
+                            # above, is a plain dict read with zero exception
+                            # risk -- set BEFORE the try below so a raise from
+                            # _turn_has_thinking()/_merge_anchor_reasoning_
+                            # summary() can never leave it unset.
+                            _outcome["anchor_model"] = raw_entries[anchor_index].get(
+                                "model"
+                            )
+                            # Issue #151 live-test follow-up (round 2):
+                            # anchor_recent_context, like anchor_prose_text/
+                            # anchor_model above, is set in its OWN
+                            # try/except BEFORE the has_visible_text/
+                            # has_thinking/reasoning_summary try below -- a
+                            # raise in THAT try must never leave this field
+                            # unset (the #140 finding-1 lesson: a caller-
+                            # visible field's presence must not depend on an
+                            # unrelated computation's success). A failure
+                            # here defaults to an empty list (no context),
+                            # never crashes the retry loop or corrupts the
+                            # already-set "stale" outcome.
+                            try:
+                                _outcome["anchor_recent_context"] = (
+                                    _build_prior_turns_context(
+                                        raw_entries, anchor_index, anchor_request_id
+                                    )
+                                )
+                            except Exception as _ctx_exc:
+                                log_warning(
+                                    "transcript_reader",
+                                    "recent-context computation failed on "
+                                    "stale path (non-fatal, outcome "
+                                    "unaffected)",
+                                    _ctx_exc,
+                                )
+                                _outcome["anchor_recent_context"] = []
+                            # Issue #153: anchor_sibling_edits, same own-try
+                            # placement rationale as anchor_recent_context
+                            # immediately above -- must never depend on the
+                            # has_visible_text/has_thinking try below.
+                            try:
+                                _outcome["anchor_sibling_edits"] = (
+                                    _build_sibling_edits_data(
+                                        merged["tools"], anchor_tool_id
+                                    )
+                                )
+                            except Exception as _sib_exc:
+                                log_warning(
+                                    "transcript_reader",
+                                    "sibling-edits computation failed on "
+                                    "stale path (non-fatal, outcome "
+                                    "unaffected)",
+                                    _sib_exc,
+                                )
+                                _outcome["anchor_sibling_edits"] = None
                             try:
                                 _outcome["anchor_has_visible_text"] = bool(
                                     merged["text"].strip()
                                 )
                                 _outcome["anchor_has_thinking"] = _turn_has_thinking(
                                     raw_entries, anchor_index, anchor_request_id
+                                )
+                                # Issue #151: reasoning-summary intent
+                                # exception -- same fail-safe wrapping as
+                                # anchor_has_thinking above (a raise here
+                                # leaves the key absent, never crashes the
+                                # retry loop or corrupts the "stale" outcome
+                                # already set).
+                                _outcome["anchor_reasoning_summary"] = (
+                                    _merge_anchor_reasoning_summary(
+                                        raw_entries, anchor_index, anchor_request_id
+                                    )
                                 )
                             except Exception as _shape_exc:
                                 log_warning(
@@ -897,9 +1166,46 @@ def _find_turn_matching_tool_input(
             # the stale branch above. This line's success must not depend
             # on _turn_has_thinking()'s.
             _outcome["anchor_prose_text"] = merged["text"]
+            # Issue #151: same plain, zero-exception-risk read as the stale
+            # branch above -- set BEFORE the try so a raise inside it can
+            # never leave anchor_model unset.
+            _outcome["anchor_model"] = raw_entries[anchor_index].get("model")
+            # Issue #151 live-test follow-up (round 2): same own-try
+            # placement as the stale branch above -- see that branch's
+            # comment for the full rationale.
+            try:
+                _outcome["anchor_recent_context"] = _build_prior_turns_context(
+                    raw_entries, anchor_index, anchor_request_id
+                )
+            except Exception as _ctx_exc:
+                log_warning(
+                    "transcript_reader",
+                    "recent-context computation failed on found path "
+                    "(non-fatal, outcome unaffected)",
+                    _ctx_exc,
+                )
+                _outcome["anchor_recent_context"] = []
+            # Issue #153: same own-try placement as the stale branch above.
+            try:
+                _outcome["anchor_sibling_edits"] = _build_sibling_edits_data(
+                    merged["tools"], anchor_tool_id
+                )
+            except Exception as _sib_exc:
+                log_warning(
+                    "transcript_reader",
+                    "sibling-edits computation failed on found path "
+                    "(non-fatal, outcome unaffected)",
+                    _sib_exc,
+                )
+                _outcome["anchor_sibling_edits"] = None
             try:
                 _outcome["anchor_has_visible_text"] = bool(merged["text"].strip())
                 _outcome["anchor_has_thinking"] = _turn_has_thinking(
+                    raw_entries, anchor_index, anchor_request_id
+                )
+                # Issue #151: reasoning-summary intent exception -- same
+                # fail-safe wrapping as anchor_has_thinking above.
+                _outcome["anchor_reasoning_summary"] = _merge_anchor_reasoning_summary(
                     raw_entries, anchor_index, anchor_request_id
                 )
             except Exception as _shape_exc:
@@ -954,6 +1260,22 @@ def _copy_anchor_shape_flags(diagnostics: dict, attempt_outcome: dict) -> None:
     )
     diagnostics["anchor_has_thinking"] = attempt_outcome.get("anchor_has_thinking")
     diagnostics["anchor_prose_text"] = attempt_outcome.get("anchor_prose_text")
+    # Issue #151: reasoning-summary intent exception -- additive, same
+    # .get() semantics (a genuine not_found never populates these, so they
+    # correctly copy as None).
+    diagnostics["anchor_model"] = attempt_outcome.get("anchor_model")
+    diagnostics["anchor_reasoning_summary"] = attempt_outcome.get(
+        "anchor_reasoning_summary"
+    )
+    # Issue #151 live-test follow-up (round 2): additive, same .get()
+    # semantics (a genuine not_found never populates this, so it correctly
+    # copies as None -- hook.py distinguishes "None" (no anchor at all)
+    # from "[]" (anchor found/stale, but no prior turns within the window)
+    # via an isinstance(list) check before use).
+    diagnostics["anchor_recent_context"] = attempt_outcome.get("anchor_recent_context")
+    # Issue #153: additive, same .get() semantics -- a genuine not_found
+    # never populates this, so it correctly copies as None.
+    diagnostics["anchor_sibling_edits"] = attempt_outcome.get("anchor_sibling_edits")
 
 
 def get_current_turn_message_for_validation(

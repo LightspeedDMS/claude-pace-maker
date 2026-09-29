@@ -1,6 +1,7 @@
 """Gemini CLI provider for Google Gemini models (gemini-flash, gemini-pro)."""
 
 import subprocess
+from typing import Optional
 
 from .provider import InferenceProvider, ProviderError
 from ..logger import log_debug
@@ -26,9 +27,23 @@ class GeminiProvider(InferenceProvider):
         system_prompt: str = "",
         model_hint: str = "",
         max_thinking_tokens: int = _DEFAULT_MAX_THINKING_TOKENS,
+        timeout: Optional[float] = None,
     ) -> str:
-        """Query Gemini model via Gemini CLI subprocess."""
+        """Query Gemini model via Gemini CLI subprocess.
+
+        Issue #152: `timeout`, when supplied, clamps the subprocess
+        timeout to ``max(0.0, min(_CLI_TIMEOUT_SEC, timeout))`` -- never
+        raises it above the provider's own known-safe ceiling, only ever
+        shrinks it toward the caller's remaining deadline budget, and
+        never lets a negative value reach ``subprocess.run``. ``None``
+        (the default) preserves the pre-#152 hardcoded 120s timeout.
+        """
         model = _MODEL_MAP.get(model_hint, model_hint) or _DEFAULT_MODEL
+        effective_timeout = (
+            _CLI_TIMEOUT_SEC
+            if timeout is None
+            else max(0.0, min(_CLI_TIMEOUT_SEC, timeout))
+        )
 
         # Embed system prompt in the prompt text (gemini CLI uses -p flag for prompt)
         if system_prompt:
@@ -49,10 +64,10 @@ class GeminiProvider(InferenceProvider):
                 input=full_prompt,
                 capture_output=True,
                 text=True,
-                timeout=_CLI_TIMEOUT_SEC,
+                timeout=effective_timeout,
             )
         except subprocess.TimeoutExpired:
-            raise ProviderError(f"Gemini CLI timed out after {_CLI_TIMEOUT_SEC}s")
+            raise ProviderError(f"Gemini CLI timed out after {effective_timeout}s")
         except FileNotFoundError:
             raise ProviderError("Gemini CLI not found (not installed)")
         except OSError as e:

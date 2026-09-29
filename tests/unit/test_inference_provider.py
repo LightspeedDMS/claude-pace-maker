@@ -638,7 +638,14 @@ class TestCodexUsageRefreshOnFallback:
             def __init__(self):
                 pass  # skip parent __init__
 
-            def query(self, prompt, system_prompt, model_hint, max_thinking_tokens):
+            def query(
+                self,
+                prompt,
+                system_prompt,
+                model_hint,
+                max_thinking_tokens,
+                timeout=None,
+            ):
                 raise ProviderError("codex exit 1")
 
         # Test double for fallback
@@ -677,7 +684,14 @@ class TestCodexUsageRefreshOnFallback:
             def __init__(self):
                 pass  # skip parent __init__
 
-            def query(self, prompt, system_prompt, model_hint, max_thinking_tokens):
+            def query(
+                self,
+                prompt,
+                system_prompt,
+                model_hint,
+                max_thinking_tokens,
+                timeout=None,
+            ):
                 raise ProviderError("codex empty response")
 
         # Test double for fallback

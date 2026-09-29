@@ -1,5 +1,6 @@
 """Provider registry and orchestrator with cross-vendor fallback."""
 
+import time
 from typing import Optional
 
 from .provider import ProviderError
@@ -10,6 +11,44 @@ from ..codex_usage import (
     migrate_codex_usage_schema,
 )
 from ..constants import DEFAULT_DB_PATH
+
+# Issue #152: named constants for the single-model path's deadline-aware
+# clamp -- mirrors competitive.py's own budget derivation, but for the
+# NON-competitive (single hook_model) path, which previously ignored the
+# gate's _deadline entirely. A live replay against real codex-beast
+# traffic showed the 120s hardcoded codex subprocess timeout, plus an
+# unbounded Anthropic SDK fallback on top of it, regularly exceeding the
+# PreToolUse hook's own timeout -- and a killed PreToolUse hook is a
+# SILENTLY UNVALIDATED tool call (see CLAUDE.md, "Competitive Review
+# Pipeline -> Timeouts").
+#
+# Reserved off the remaining budget before it's handed to a provider as
+# its subprocess/SDK timeout -- leaves slack for the provider's own
+# process-teardown overhead and this function's own bookkeeping.
+PROVIDER_TIMEOUT_SAFETY_MARGIN_SECONDS = 5.0
+
+# Minimum remaining budget (after the safety margin above) required to
+# even ATTEMPT the Anthropic SDK fallback after the primary provider
+# fails. Below this floor, the fallback is skipped entirely and the gate
+# fails CLOSED via the existing #142 zero-survivor / reviewer-unavailable
+# path -- an unbounded fallback call is exactly the failure mode this
+# issue exists to close.
+MIN_SDK_FALLBACK_BUDGET_SECONDS = 15.0
+
+
+def _remaining_budget(_deadline: Optional[float], margin: float) -> Optional[float]:
+    """Issue #152: wall-clock seconds left before `_deadline`, minus
+    `margin`, floored at 0.0 -- or None when there's no deadline at all.
+
+    None is a DELIBERATE no-op, not a bug: the Stop hook's own
+    resolve_and_call() never supplies a _deadline (that path's semantics
+    are explicitly unchanged by this issue -- it must keep failing OPEN,
+    never closed), so every provider call it makes still gets
+    `timeout=None` and behaves exactly as it did before #152.
+    """
+    if _deadline is None:
+        return None
+    return max(0.0, _deadline - time.monotonic() - margin)
 
 
 # Call context → default model hint when hook_model is "auto"
@@ -218,9 +257,16 @@ def resolve_and_call_with_reviewer(
     is_gemini_provider = isinstance(provider, GeminiProvider)
     is_agy_provider = isinstance(provider, AgyProvider)
 
+    _provider_timeout = _remaining_budget(
+        _deadline, PROVIDER_TIMEOUT_SAFETY_MARGIN_SECONDS
+    )
     try:
         response = provider.query(
-            prompt, system_prompt, model_hint, max_thinking_tokens
+            prompt,
+            system_prompt,
+            model_hint,
+            max_thinking_tokens,
+            timeout=_provider_timeout,
         )
         if is_codex_provider:
             # codex-<profile> tokens return the verbatim hook_model as reviewer
@@ -256,9 +302,42 @@ def resolve_and_call_with_reviewer(
 
             fallback_provider = AnthropicProvider()
             fallback_hint = resolve_model_for_call("auto", call_context)
+
+            _fallback_remaining = _remaining_budget(
+                _deadline, PROVIDER_TIMEOUT_SAFETY_MARGIN_SECONDS
+            )
+            if (
+                _fallback_remaining is not None
+                and _fallback_remaining < MIN_SDK_FALLBACK_BUDGET_SECONDS
+            ):
+                # Issue #152: not enough budget left to even attempt the
+                # Anthropic SDK fallback -- an unbounded fallback call after
+                # a primary-provider timeout is exactly the failure mode
+                # this issue exists to close (a live replay showed a
+                # codex-beast timeout + fallback taking 133.6s against a
+                # 120s hook budget). Fail CLOSED via the existing #142
+                # zero-survivors / reviewer-unavailable path instead of
+                # attempting a call that can't finish in time.
+                log_warning(
+                    "registry",
+                    f"Insufficient remaining budget ({_fallback_remaining:.1f}s) "
+                    f"to attempt Anthropic SDK fallback after hook_model="
+                    f"'{hook_model}' failed ({e}); failing closed",
+                )
+                if _degradation is not None:
+                    _degradation["degraded"] = True
+                    _degradation["zero_survivors"] = True
+                    _degradation["failed_providers"] = {hook_model: str(e)}
+                    _degradation["context"] = "single_model_fallback"
+                return "", _REVIEWER_UNKNOWN
+
             try:
                 response = fallback_provider.query(
-                    prompt, system_prompt, fallback_hint, max_thinking_tokens
+                    prompt,
+                    system_prompt,
+                    fallback_hint,
+                    max_thinking_tokens,
+                    timeout=_fallback_remaining,
                 )
                 # Issue #131: the fallback succeeded, so the request WAS
                 # served — but by anthropic-sdk instead of the configured

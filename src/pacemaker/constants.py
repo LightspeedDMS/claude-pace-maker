@@ -34,7 +34,34 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "preferred_subagent_model": "auto",  # Model preference: "opus", "sonnet", "haiku", "auto"
     "hook_model": "auto",  # Hook inference model: "auto", "sonnet", "opus", "gpt-5.4", "gpt-5.5" (legacy alias: "gpt-5"), "gemini-flash", "gemini-pro"
     "min_claude_version": "2.1.39",  # Minimum supported Claude Code version (Story #66 / issue #96)
+    "reasoning_summary_intent_models": [
+        "claude-opus-5-5"
+    ],  # Issue #151: models whose anchored turn's reasoning summary (plus any visible text) is accepted as intent, bypassing the INTENT:/TDD/version-bump regex. Empty list restores strict behavior for every model.
 }
+
+# Issue #151 live-replay follow-up (round 3, CHANGE 1): RECENT CONTEXT is
+# shown in the relaxed Stage 2 prompt ONLY when the current turn's own
+# combined intent text is "terse" -- see
+# intent_validator._should_include_recent_context(). Three live false
+# blocks showed a DETAILED, file-naming current intent being judged
+# against an EARLIER turn's stale plan surfaced via RECENT CONTEXT
+# ("Reverting A" judged against "create variant A", "Restoring B, then
+# variant C" judged against "remove ... variant B", a detailed
+# docstring-update intent judged against "delete get_audit_logs").
+RECENT_CONTEXT_TERSE_MAX_CHARS = 150
+
+# Issue #154 live-replay follow-up: an earlier revision of this feature
+# ALSO withheld RECENT CONTEXT whenever the current intent contained an
+# explicit direction word (remove/revert/restore/etc.), on the theory that
+# such an intent already states its own self-contained goal. Live replay
+# showed the opposite: terse restore intents like "Reverting A..." and
+# "Restoring B, then variant C" only make sense with the EARLIER turns
+# that define what "A"/"B" even refer to -- dropping RECENT CONTEXT for
+# them made a weak reviewer (haiku) block both at CHECK 0 as "too vague".
+# The direction-MISJUDGMENT risk that clause existed to prevent is now
+# handled by CHANGE 3's unified diff (explicit `-`/`+` markers), so the
+# clause and its `RECENT_CONTEXT_DIRECTION_WORD_STEMS` constant were
+# removed (Messi Anti-Orphan-Code) rather than kept as dead weight.
 
 # Default file paths
 DEFAULT_DB_PATH = str(Path.home() / ".claude-pace-maker" / "usage.db")
@@ -82,9 +109,18 @@ MAX_DELAY_SECONDS = 350  # 360s timeout - 10s safety margin
 # them. They drifted until the worst case (60s reviewer wait + 30s synthesis,
 # plus a 30s transcript-anchor wait) was double the allowance.
 #
-# install.sh reads this when registering the hook, and a test asserts the
-# internal budgets still fit inside it.
-PRE_TOOL_HOOK_TIMEOUT_SECONDS = 120
+# install.sh and hooks/hooks.json both read this when registering the hook,
+# and tests assert the internal budgets still fit inside it and that both
+# registration paths match it (issue #152: a live replay against real
+# codex-beast traffic showed the single-model review path -- 120s codex
+# subprocess timeout, then the Anthropic SDK fallback on top of it, with no
+# deadline awareness -- regularly exceeding the previous 120s allowance,
+# producing silently unvalidated tool calls when the harness killed the
+# hook). Raised 120 -> 180 so REVIEWER_WAIT_TIMEOUT_SEC/SYNTHESIS_TIMEOUT_SEC
+# (competitive.py) and the new deadline-aware single-model clamp
+# (inference/registry.py) all have real room, without changing Stop's own
+# 120s timeout (a separate registration, unaffected by this constant).
+PRE_TOOL_HOOK_TIMEOUT_SECONDS = 180
 
 # Reserved for telemetry writes and emitting the block response.
 PRE_TOOL_SAFETY_MARGIN_SECONDS = 10

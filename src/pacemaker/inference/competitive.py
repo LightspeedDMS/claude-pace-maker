@@ -36,7 +36,7 @@ _REVIEWER_SDK = "anthropic-sdk"
 # non-responder, which run_mechanical already handles as a degraded approval
 # (issue #131) rather than as a negative verdict — so overrunning costs
 # review depth, never correctness.
-REVIEWER_WAIT_TIMEOUT_SEC = int(PRE_TOOL_REVIEW_BUDGET_SECONDS * 0.7)  # 35s
+REVIEWER_WAIT_TIMEOUT_SEC = int(PRE_TOOL_REVIEW_BUDGET_SECONDS * 0.7)
 SYNTHESIS_TIMEOUT_SEC = PRE_TOOL_REVIEW_BUDGET_SECONDS - REVIEWER_WAIT_TIMEOUT_SEC
 DEFAULT_MAX_THINKING_TOKENS = 4000
 MIN_REVIEWERS = 2

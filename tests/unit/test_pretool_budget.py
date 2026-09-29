@@ -12,6 +12,7 @@ a reviewer cut off is a non-responder, which #131 records as a degraded
 approval.
 """
 
+import json
 import pathlib
 import re
 import time
@@ -77,6 +78,17 @@ class TestInstallerAgrees:
         )
         assert match, "could not locate the PreToolUse timeout in install.sh"
         assert int(match.group(1)) == PRE_TOOL_HOOK_TIMEOUT_SECONDS
+
+    def test_hooks_json_timeout_matches_constant(self):
+        """Issue #152: hooks/hooks.json (the plugin registration path) is the
+        FOURTH place that must agree with the constant, alongside install.sh
+        and the live ~/.claude/settings.json (deployed separately, out of
+        this test's reach)."""
+        manifest = json.loads((REPO / "hooks" / "hooks.json").read_text())
+        entries = manifest["hooks"]["PreToolUse"]
+        assert len(entries) == 1
+        timeouts = [h["timeout"] for h in entries[0]["hooks"]]
+        assert timeouts == [PRE_TOOL_HOOK_TIMEOUT_SECONDS]
 
 
 def _capture_wait(deadline):

@@ -95,6 +95,9 @@ class TestNoRegressionToProcessCwd:
     def test_all_label_sites_use_the_resolver(self):
         # Issue #142 added a 6th call site: the danger-bash Phase 2
         # zero-survivor governance-event block, which correctly uses the
-        # resolver like every other site (issue #134).
+        # resolver like every other site (issue #134). Issue #151 added a
+        # 7th: _record_reasoning_summary_telemetry()'s governance-event
+        # block (an approval via the reasoning-summary intent exception),
+        # which correctly uses the resolver too.
         src = pathlib.Path(__file__).resolve().parents[2] / "src/pacemaker/hook.py"
-        assert src.read_text().count("_project_name = _resolve_project_name()") == 6
+        assert src.read_text().count("_project_name = _resolve_project_name()") == 7

@@ -3,6 +3,7 @@
 import os
 import asyncio
 import contextlib
+from typing import Optional
 
 from .provider import InferenceProvider, ProviderError
 from ..logger import log_debug
@@ -113,15 +114,28 @@ class AnthropicProvider(InferenceProvider):
         system_prompt: str = "",
         model_hint: str = "",
         max_thinking_tokens: int = 4000,
+        timeout: Optional[float] = None,
     ) -> str:
-        """Query Anthropic model via Claude Agent SDK."""
+        """Query Anthropic model via Claude Agent SDK.
+
+        Issue #152: `timeout`, when supplied, wraps the WHOLE async call
+        (including any internal limit-error fallback-model retry -- see
+        _query_async) in ``asyncio.wait_for``, so the caller's remaining
+        deadline budget bounds the SDK path the same way it bounds the
+        CLI providers' subprocess timeout. ``None`` (the default)
+        preserves the pre-#152 unbounded-wait behavior exactly.
+        """
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(
-                self._query_async(
-                    prompt, system_prompt, model_hint, max_thinking_tokens
-                )
+            coro = self._query_async(
+                prompt, system_prompt, model_hint, max_thinking_tokens
             )
+            if timeout is not None:
+                coro = asyncio.wait_for(coro, timeout=timeout)
+            try:
+                return loop.run_until_complete(coro)
+            except asyncio.TimeoutError:
+                raise ProviderError(f"Anthropic SDK query timed out after {timeout}s")
         finally:
             loop.close()
 

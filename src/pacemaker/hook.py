@@ -13,7 +13,7 @@ import traceback
 from pathlib import Path
 from datetime import datetime, timezone
 import json
-from typing import Optional, Dict, Any
+from typing import List, Optional, Dict, Any
 
 from . import pacing_engine, database, user_commands
 from .database import (
@@ -38,7 +38,6 @@ from .constants import (
 from .transcript_reader import (
     get_last_n_messages_for_validation,
     get_current_turn_message_for_validation,
-    THINKING_ONLY_NOTICE,
 )
 from .logger import log_warning, log_debug, log_info, log_error
 from .prompt_provenance import format_tag, format_reviewer_relay
@@ -2496,6 +2495,88 @@ def _merge_csa_reminder(
     return result
 
 
+def _normalize_reasoning_summary_intent_models(raw: Any) -> List[str]:
+    """Issue #151 code review H1: ``reasoning_summary_intent_models`` comes
+    from a hand-editable config.json and can be ANYTHING -- ``null``,
+    ``false``, a bare string, or a list containing non-string entries.
+
+    Without this guard, ``model in cfg_value`` (the exception-gating
+    membership check) has two failure modes:
+      1. ``cfg_value`` is ``None``/``False`` -> ``model in None`` raises
+         ``TypeError: argument of type 'NoneType' is not iterable``,
+         which the pre-tool gate's outer exception handler turns into a
+         fail-closed error for EVERY model (not just Opus), and the error
+         message tells the agent to ask the user to disable intent
+         validation entirely -- the worst possible failure mode for a
+         malformed config value.
+      2. ``cfg_value`` is a bare STRING -> Python's ``in`` operator does
+         SUBSTRING matching on a string, not list membership, so
+         ``"claude-opus-5-5" in "claude-opus-5-5-and-more"`` is ``True``
+         even though no list ever contained that entry.
+
+    Returns a list of strings only -- never raises. Logs a WARNING and
+    returns ``[]`` (exception disabled for every model, the safe default)
+    for anything that isn't a list, and silently drops any non-string
+    list entries (also logged).
+    """
+    if not isinstance(raw, list):
+        log_warning(
+            "hook",
+            "reasoning_summary_intent_models must be a list, got "
+            f"{type(raw).__name__}: {raw!r} -- treating as an empty list "
+            "(exception disabled for every model)",
+        )
+        return []
+    result = [item for item in raw if isinstance(item, str)]
+    invalid = [item for item in raw if not isinstance(item, str)]
+    if invalid:
+        log_warning(
+            "hook",
+            f"reasoning_summary_intent_models contains non-string entries, "
+            f"ignoring them: {invalid!r}",
+        )
+    return result
+
+
+def _build_bash_command_preview(command: str, max_chars: int = 60) -> str:
+    """Issue #150 code-review follow-up (item 2, extended by the second
+    review's item 2): render a single-line, length-capped preview of a
+    Bash command for the no-visible-text notice's INTENT: example.
+
+    A raw ``command[:max_chars]`` slice can include embedded newlines
+    (e.g. a heredoc), which breaks the rendered example across multiple
+    lines -- and a later line in a long/adversarial command could even
+    happen to start with a "[pace-maker · ...]"-shaped substring,
+    confusable with a real provenance tag. This takes the FIRST
+    NON-BLANK line (not just ``lines[0]``, which could itself be blank or
+    whitespace-only -- e.g. ``"\\nrm -rf x"`` or a command a Bash
+    formatter padded with a leading blank line -- producing an empty, or
+    "..."-only, preview), collapses internal whitespace runs to single
+    spaces, then truncates to ``max_chars`` -- appending "..." whenever
+    OTHER lines exist besides the chosen one (dropped by either the
+    line-selection or the length cut), so the agent always knows the
+    preview is partial.
+    """
+    lines = command.splitlines()
+    non_blank_index = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if non_blank_index is None:
+        # No non-blank line at all (empty command, or all-whitespace) --
+        # nothing meaningful to show; fall back to the raw command so an
+        # empty/whitespace-only command still renders as itself rather
+        # than silently vanishing.
+        chosen_line = command
+        other_lines_exist = False
+    else:
+        chosen_line = lines[non_blank_index]
+        other_lines_exist = len(lines) > 1
+    collapsed = " ".join(chosen_line.split())
+    truncated = other_lines_exist or len(collapsed) > max_chars
+    preview = collapsed[:max_chars]
+    if truncated:
+        preview += "..."
+    return preview
+
+
 def _fail_closed_message(error: BaseException) -> str:
     """Build the fail-closed block reason for an unexpected pre-tool gate
     exception.
@@ -2579,6 +2660,65 @@ def _record_degraded_review_telemetry(
             feedback_text=(
                 f"[{reviewer}] Degraded approval — verifier(s) unavailable: "
                 f"{_failed_desc}"
+            ),
+        )
+    except Exception:
+        pass
+
+
+def _record_reasoning_summary_telemetry(
+    intent_source: Optional[str], reviewer: str, session_id: str
+) -> None:
+    """Record RS activity + governance events for an approval reached via
+    the issue #151 reasoning-summary intent exception (configured models
+    only) -- the story's own telemetry requirement: "Approvals via summary
+    are recorded as an activity/governance event, so the rate is
+    observable." Shared by the Write/Edit and Danger-Bash gates (Messi
+    Anti-Duplication, mirrors _record_degraded_review_telemetry's shape).
+
+    No-op unless intent_source is "reasoning_summary" or "visible_text"
+    (issue #151 code review H2) -- an exception-model turn tagged
+    "declaration" already complied with the normal strict contract and
+    must NOT be recorded as a relaxed/RS approval, and None means a
+    non-exception-model approval. Never raises — telemetry recording must
+    never break the pre-tool hook.
+    """
+    if intent_source not in (
+        "reasoning_summary",
+        "visible_text",
+        "prior_reasoning_summary",
+    ):
+        return
+    try:
+        record_activity_event(DEFAULT_DB_PATH, "RS", "green", session_id)
+        _project_name = _resolve_project_name()
+        # Live-test follow-up: the wording used to be a single generic
+        # "Approved via reasoning-summary intent" phrase for BOTH sources --
+        # misleading for `visible_text`, where no reasoning summary was
+        # involved at all (the claude-usage monitor showed exactly this for
+        # a visible-text-only approval). Name the ACTUAL source. The
+        # `[reviewer]` bracket prefix and the `intent_source=` token are
+        # unchanged (the monitor may parse them); feedback_text stays
+        # untagged (issue #101 B2 -- this is governance/telemetry text, not
+        # the Claude-facing block reason).
+        if intent_source == "reasoning_summary":
+            _rs_description = "reasoning summary"
+        elif intent_source == "visible_text":
+            _rs_description = "visible text without INTENT: marker"
+        else:
+            # Issue #151 live-replay follow-up (round 3, CHANGE 2): the
+            # anchor itself was empty -- the intent came from the
+            # IMMEDIATELY PRECEDING turn's own reasoning summary/visible
+            # text instead.
+            _rs_description = "previous message's reasoning summary"
+        record_governance_event(
+            db_path=DEFAULT_DB_PATH,
+            event_type="RS",
+            project_name=_project_name,
+            session_id=session_id,
+            feedback_text=(
+                f"[{reviewer}] Approved via relaxed intent: {_rs_description} "
+                f"(intent_source={intent_source})"
             ),
         )
     except Exception:
@@ -2932,12 +3072,122 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 ),
                             }
 
-                        # Phase 1: Check for INTENT: marker (fast reject, no LLM)
-                        from .intent_validator import _has_intent_marker
+                        # Issue #151: reasoning-summary intent exception,
+                        # configured models only. Mirrors the Write/Edit
+                        # gate's gating exactly -- gated on the anchored
+                        # turn's own assistant message.model (populated by
+                        # transcript_reader on both the found and stale
+                        # branches). resolve_reasoning_summary_intent_source
+                        # (H2/M1, shared with the Write/Edit gate) decides
+                        # whether this turn takes the STRICT path (real
+                        # declaration already present in the anchor's own
+                        # visible text, or nothing to relax against) or the
+                        # RELAXED path -- ONLY in the relaxed case is
+                        # current_message overwritten with the combined
+                        # (visible text + reasoning summary) intent_text;
+                        # otherwise current_message stays exactly as the
+                        # found/stale gate above set it.
+                        from .intent_validator import (
+                            build_danger_bash_reasoning_summary_label,
+                            build_danger_bash_relaxed_intent_wording,
+                            build_danger_bash_visible_text_label,
+                            resolve_reasoning_summary_intent_source,
+                        )
 
-                        if not _has_intent_marker(current_message):
+                        _bash_anchor_model = _bash_diagnostics.get("anchor_model")
+                        _bash_anchor_visible_text = (
+                            _bash_diagnostics.get("anchor_prose_text") or ""
+                        )
+                        _bash_anchor_reasoning_summary = (
+                            _bash_diagnostics.get("anchor_reasoning_summary") or ""
+                        )
+                        # Issue #151 code review H1: never trust the raw
+                        # config value's shape.
+                        _reasoning_summary_models = (
+                            _normalize_reasoning_summary_intent_models(
+                                bash_config.get(
+                                    "reasoning_summary_intent_models",
+                                    DEFAULT_CONFIG.get(
+                                        "reasoning_summary_intent_models", []
+                                    ),
+                                )
+                            )
+                        )
+                        _bash_reasoning_summary_intent = (
+                            bool(_bash_anchor_model)
+                            and _bash_anchor_model in _reasoning_summary_models
+                        )
+
+                        # Issue #154 item 2 (decided): the CHANGE 2
+                        # prior-turn fallback is restricted to Write/Edit
+                        # only -- the user's approval for it was based on
+                        # Edit evidence, and letting an empty anchored
+                        # Bash turn pass Phase 1 on the PREVIOUS turn's
+                        # text would relax #93's deliberate "Bash is
+                        # anchor-only" tightening and #139's stale-path
+                        # anchor-only rule. `allow_prior_turn_fallback` is
+                        # an EXPLICIT parameter on the shared resolver
+                        # (never an implicit tool-name check buried inside
+                        # it) -- danger-bash passes False, keeping its
+                        # pre-CHANGE-2 behavior for an empty anchor (block
+                        # with the no-visible-text notice) unchanged.
+                        _bash_intent_source, _bash_relaxed_text = (
+                            resolve_reasoning_summary_intent_source(
+                                _bash_reasoning_summary_intent,
+                                _bash_anchor_visible_text,
+                                _bash_anchor_reasoning_summary,
+                                recent_context=_bash_diagnostics.get(
+                                    "anchor_recent_context"
+                                ),
+                                allow_prior_turn_fallback=False,
+                            )
+                        )
+                        if _bash_relaxed_text is not None:
+                            current_message = _bash_relaxed_text
+
+                        # Phase 1: Check for INTENT: marker (fast reject, no
+                        # LLM) -- OR, for the RELAXED sources only, just
+                        # require the combined intent_text to be non-empty
+                        # (no INTENT:/TDD/version-bump regex at all). The
+                        # STRICT sources ("declaration" or None) use the
+                        # exact same marker check a non-exception model
+                        # gets.
+                        from .intent_validator import (
+                            _has_intent_marker,
+                            build_no_visible_text_notice,
+                        )
+
+                        _RELAXED_BASH_INTENT_SOURCES = (
+                            "reasoning_summary",
+                            "visible_text",
+                        )
+                        _bash_phase1_passed = (
+                            bool(current_message.strip())
+                            if _bash_intent_source in _RELAXED_BASH_INTENT_SOURCES
+                            else bool(_has_intent_marker(current_message))
+                        )
+                        if not _bash_phase1_passed:
                             # Phase 1 BLOCKED — no intent declared
                             _sid = session_id or "unknown"
+                            _bash_phase1_details = {
+                                "tool": "Bash",
+                                "command": command[:500],
+                                "matched_rules": matched_ids,
+                                "reviewer": "unknown",
+                                # Issue #141 code-review follow-up
+                                # (item 3), key renamed by issue #148:
+                                # lets usage.db / the claude-usage
+                                # monitor distinguish a no-visible-text
+                                # block from an ordinary missing-INTENT
+                                # block.
+                                "no_visible_text": _bash_no_visible_text,
+                            }
+                            if _bash_reasoning_summary_intent:
+                                # Issue #151 code review L1: added ONLY for
+                                # exception-model turns.
+                                _bash_phase1_details["intent_source"] = (
+                                    _bash_intent_source
+                                )
                             record_blockage(
                                 db_path=DEFAULT_DB_PATH,
                                 category="intent_validation",
@@ -2948,19 +3198,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 ),
                                 hook_type="pre_tool_use",
                                 session_id=_sid,
-                                details={
-                                    "tool": "Bash",
-                                    "command": command[:500],
-                                    "matched_rules": matched_ids,
-                                    "reviewer": "unknown",
-                                    # Issue #141 code-review follow-up
-                                    # (item 3), key renamed by issue #148:
-                                    # lets usage.db / the claude-usage
-                                    # monitor distinguish a no-visible-text
-                                    # block from an ordinary missing-INTENT
-                                    # block.
-                                    "no_visible_text": _bash_no_visible_text,
-                                },
+                                details=_bash_phase1_details,
                             )
                             try:
                                 record_activity_event(
@@ -2990,13 +3228,22 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 f"will do before executing dangerous Bash operations."
                             )
                             if _bash_no_visible_text:
-                                # Issue #141, broadened by issue #148: the
-                                # anchored turn had NO visible text -- with
-                                # or without thinking -- explain why this
-                                # block occurred instead of leaving the
-                                # agent believing it already declared
-                                # INTENT (in its reasoning, if any).
-                                _bash_no_intent_reason += "\n\n" + THINKING_ONLY_NOTICE
+                                # Issue #150: lead the block reason with
+                                # the pilot-validated notice (a
+                                # ready-to-copy INTENT: example naming the
+                                # ACTUAL command, since a generic notice
+                                # appended at the end of the template
+                                # (issue #141/#148's THINKING_ONLY_NOTICE)
+                                # measured far worse recovery for Opus 5.5
+                                # at xhigh reasoning effort -- see
+                                # CLAUDE.md's "Issue #150" section.
+                                _cmd_preview = _build_bash_command_preview(command)
+                                _bash_example = f"INTENT: Run {_cmd_preview} to <goal>."
+                                _bash_no_intent_reason = (
+                                    build_no_visible_text_notice(_bash_example)
+                                    + "\n\n"
+                                    + _bash_no_intent_reason
+                                )
                             return {
                                 "decision": "block",
                                 "reason": format_tag(
@@ -3021,22 +3268,73 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                         matched_descriptions = ", ".join(
                             f"{m['id']}: {m['description']}" for m in matched
                         )
+                        # Issue #151 code review M2: the ENTIRE prompt must
+                        # be consistent when the intent source is RELAXED
+                        # (visible_text/reasoning_summary) -- the intro
+                        # line, the assistant-message label, VALIDATE item
+                        # 1, and the mismatch line all reframe to "the
+                        # stated intent" together (externalized, Messi Rule
+                        # 11), never mixing "declared intent"/"INTENT:
+                        # declaration" wording with a marker-less turn. The
+                        # STRICT wording (declaration present, or non-
+                        # exception model) stays inline here, UNCHANGED --
+                        # byte-identical to the pre-#151 prompt.
+                        if _bash_intent_source in _RELAXED_BASH_INTENT_SOURCES:
+                            _bash_intro, _bash_validate_item1, _bash_mismatch_line = (
+                                build_danger_bash_relaxed_intent_wording()
+                            )
+                            if _bash_intent_source == "reasoning_summary":
+                                _bash_assistant_label = (
+                                    build_danger_bash_reasoning_summary_label()
+                                )
+                            else:
+                                _bash_assistant_label = (
+                                    build_danger_bash_visible_text_label()
+                                )
+                        else:
+                            _bash_intro = (
+                                "You are validating if the declared intent matches "
+                                "what a Bash command will actually do."
+                            )
+                            _bash_validate_item1 = (
+                                "Does the INTENT: declaration SPECIFICALLY describe "
+                                "what this command does?"
+                            )
+                            _bash_mismatch_line = (
+                                "If the intent declaration appears to be for a "
+                                "DIFFERENT tool call earlier in the message, treat "
+                                "as mismatch."
+                            )
+                            _bash_assistant_label = (
+                                "ASSISTANT MESSAGE (contains intent declaration)"
+                            )
+                        # Issue #151 live-replay follow-up (round 3,
+                        # CHANGE 4): shared by BOTH the strict and relaxed
+                        # wording variants (this is the common f-string
+                        # both fall through to) -- see
+                        # build_danger_bash_destructive_scope_note's own
+                        # docstring for the live evidence.
+                        from .intent_validator import (
+                            build_danger_bash_destructive_scope_note,
+                        )
+
+                        _bash_destructive_scope_note = (
+                            build_danger_bash_destructive_scope_note()
+                        )
                         bash_prompt = (
-                            f"You are validating if the declared intent matches "
-                            f"what a Bash command will actually do.\n\n"
-                            f"ASSISTANT MESSAGE (contains intent declaration):\n"
+                            f"{_bash_intro}\n\n"
+                            f"{_bash_assistant_label}:\n"
                             f"{current_message[:3000]}\n\n"
                             f"BASH COMMAND:\n{command}\n\n"
                             f"BASH DESCRIPTION FIELD:\n{description}\n\n"
                             f"MATCHED DANGER RULES:\n{matched_descriptions}\n\n"
+                            f"{_bash_destructive_scope_note}\n\n"
                             f"VALIDATE:\n"
-                            f"1. Does the INTENT: declaration SPECIFICALLY describe "
-                            f"what this command does?\n"
+                            f"1. {_bash_validate_item1}\n"
                             f"2. Does the command scope match the intent scope?\n"
                             f"3. Is the description field honest about the effect?\n"
                             f"4. Are there undeclared side effects?\n\n"
-                            f"If the intent declaration appears to be for a DIFFERENT "
-                            f"tool call earlier in the message, treat as mismatch.\n\n"
+                            f"{_bash_mismatch_line}\n\n"
                             f"RESPONSE FORMAT - Choose EXACTLY one:\n"
                             f"- If intent matches command: respond with ONLY the word "
                             f"'APPROVED' and nothing else.\n"
@@ -3051,6 +3349,17 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                         if _danger_warning:
                             bash_prompt = bash_prompt + f"\n\n{_danger_warning}"
 
+                        # Issue #153 code review MUST-FIX 1(a): this gate
+                        # never routes through _call_stage2_validation (the
+                        # Write/Edit Stage 2 choke point), so it masks its
+                        # own prompt here, at its own call site, using the
+                        # SAME shared helper.
+                        from .intent_validator import _mask_reviewer_prompt
+
+                        bash_prompt = _mask_reviewer_prompt(
+                            bash_prompt, db_path=DEFAULT_DB_PATH
+                        )
+
                         _bash_degradation: Dict[str, Any] = {}
                         response, reviewer = resolve_and_call_with_reviewer(
                             hook_model=bash_config.get("hook_model", "auto"),
@@ -3064,6 +3373,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             call_context="intent_validation",
                             max_thinking_tokens=2000,
                             _degradation=_bash_degradation,
+                            _deadline=_gate_deadline,
                         )
 
                         if verdict_passes(response):
@@ -3079,6 +3389,14 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             # APPROVED — record it as degraded, not silent.
                             _record_degraded_review_telemetry(
                                 _bash_degradation, reviewer, _sid
+                            )
+                            # Issue #151: same observability requirement as
+                            # the Write/Edit gate -- an approval via the
+                            # reasoning-summary intent exception must be
+                            # recorded, not silent. No-op for every
+                            # non-exception-model approval.
+                            _record_reasoning_summary_telemetry(
+                                _bash_intent_source, reviewer, _sid
                             )
                             log_debug("hook", "Danger bash Phase 2: APPROVED")
                         elif not response:
@@ -3152,18 +3470,25 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             _reviewer = reviewer
                             if _reviewer:
                                 _feedback = f"[{_reviewer}] {_feedback}"
+                            _bash_phase2_details = {
+                                "tool": "Bash",
+                                "command": command[:500],
+                                "matched_rules": matched_ids,
+                                "reviewer": reviewer,
+                            }
+                            if _bash_reasoning_summary_intent:
+                                # Issue #151 code review L1: added ONLY for
+                                # exception-model turns.
+                                _bash_phase2_details["intent_source"] = (
+                                    _bash_intent_source
+                                )
                             record_blockage(
                                 db_path=DEFAULT_DB_PATH,
                                 category="intent_validation_dangerbash",
                                 reason=response[:500],
                                 hook_type="pre_tool_use",
                                 session_id=_sid,
-                                details={
-                                    "tool": "Bash",
-                                    "command": command[:500],
-                                    "matched_rules": matched_ids,
-                                    "reviewer": reviewer,
-                                },
+                                details=_bash_phase2_details,
                             )
                             try:
                                 record_activity_event(
@@ -3273,11 +3598,73 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             )  # Bypass non-source files
 
         # 5. Extract proposed code from tool_input
+        #
+        # Issue #153 follow-up (CHANGE 3): the target file, when it exists,
+        # is now read EXACTLY ONCE per Edit review -- `_edit_file_read`
+        # (an Edit-only local) is reused below by the surrounding-context
+        # section builder, never re-read.
+        _edit_file_read = None
+        # Issue #154 item 1: which Write case actually occurred, feeding
+        # the NEW FILE WARNING template section's conditional wording --
+        # "new_file" (default, genuinely new), "existing_diff" (Write
+        # over an existing file, diff fits), or "existing_full_content"
+        # (Write over an existing file, diff exceeded the cap).
+        _write_case = "new_file"
         if tool_name == "Write":
-            proposed_code = tool_input.get("content", "")
+            _write_new_content = tool_input.get("content", "")
+            if os.path.isfile(file_path):
+                # Issue #153 follow-up (CHANGE 3): Write OVER an EXISTING
+                # file now shows a unified diff of current-on-disk vs. the
+                # new content, mirroring the Edit diff's own reasoning --
+                # a genuinely NEW file (nothing on disk yet) is unaffected
+                # (keeps showing `content` in full, exactly as before).
+                from .intent_validator import _build_write_diff_section
+
+                proposed_code, _write_diff_mode = _build_write_diff_section(
+                    file_path,
+                    _write_new_content,
+                    _deadline=_gate_deadline,
+                    _db_path=DEFAULT_DB_PATH,
+                )
+                _write_case = (
+                    "existing_diff"
+                    if _write_diff_mode == "diff"
+                    else "existing_full_content"
+                )
+            else:
+                proposed_code = _write_new_content
         elif tool_name == "Edit":
-            # For Edit, use new_string as the proposed code
-            proposed_code = tool_input.get("new_string", "")
+            # Issue #153 follow-up (CHANGE 3): render a REAL unified diff
+            # of the file's full content BEFORE/AFTER the edit, replacing
+            # the old OLD/NEW block-pair view -- a live false block
+            # (deleting get_audit_logs) was misread by haiku as "replaced
+            # by unrelated code" because the block-pair view hid that the
+            # edit's first line was unchanged; a real diff shows that line
+            # once, unmarked, as context.
+            from .intent_validator import (
+                _build_edit_diff_section,
+                _read_edit_target_file,
+            )
+
+            _edit_old_string = tool_input.get("old_string", "")
+            _edit_new_string = tool_input.get("new_string", "")
+            _edit_replace_all = bool(tool_input.get("replace_all"))
+            _edit_file_read = _read_edit_target_file(
+                file_path,
+                _edit_old_string,
+                _edit_replace_all,
+                _deadline=_gate_deadline,
+                _db_path=DEFAULT_DB_PATH,
+            )
+            proposed_code = _build_edit_diff_section(
+                file_path,
+                _edit_old_string,
+                _edit_new_string,
+                _edit_replace_all,
+                _deadline=_gate_deadline,
+                _db_path=DEFAULT_DB_PATH,
+                _precomputed=_edit_file_read,
+            )
         else:
             return {"continue": True}
 
@@ -3538,6 +3925,160 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             _write_edit_diagnostics.get("anchor_has_visible_text") is False
         )
 
+        # Issue #151: reasoning-summary intent exception, configured models
+        # only. Gated on the anchored turn's own assistant message.model
+        # (populated by transcript_reader on both the found and stale
+        # branches) being present in config's reasoning_summary_intent_models
+        # list (default ["claude-opus-5-5"]). anchor_visible_text is read
+        # UNCONDITIONALLY from anchor_prose_text (never gated on an INTENT:
+        # marker, unlike current_message_override above) -- the exception
+        # path needs the turn's raw text regardless of marker presence.
+        _write_edit_anchor_model = _write_edit_diagnostics.get("anchor_model")
+        _write_edit_anchor_visible_text = (
+            _write_edit_diagnostics.get("anchor_prose_text") or ""
+        )
+        _write_edit_anchor_reasoning_summary = (
+            _write_edit_diagnostics.get("anchor_reasoning_summary") or ""
+        )
+        # Issue #151 code review H1: never trust the raw config value's
+        # shape -- normalize it first (see the function's docstring for
+        # the TypeError/substring-match failure modes this closes).
+        _reasoning_summary_models = _normalize_reasoning_summary_intent_models(
+            config.get(
+                "reasoning_summary_intent_models",
+                DEFAULT_CONFIG.get("reasoning_summary_intent_models", []),
+            )
+        )
+        _write_edit_reasoning_summary_intent = (
+            bool(_write_edit_anchor_model)
+            and _write_edit_anchor_model in _reasoning_summary_models
+        )
+
+        # Issue #151 code review H2/M1: the SHARED decision function (also
+        # used by the danger-bash gate below) resolves whether this turn
+        # takes the STRICT path (declaration already present, or nothing
+        # to relax against) or the RELAXED path.
+        from .intent_validator import resolve_reasoning_summary_intent_source
+
+        # Issue #151 live-replay follow-up (round 3, CHANGE 2): read the
+        # raw anchor-relative prior-turns data out BEFORE resolving intent
+        # source, so the resolver can fall back to the immediately
+        # preceding turn's own reasoning summary when the anchor itself
+        # has neither visible text nor a summary.
+        _write_edit_raw_recent_context = _write_edit_diagnostics.get(
+            "anchor_recent_context"
+        )
+        if not isinstance(_write_edit_raw_recent_context, list):
+            _write_edit_raw_recent_context = []
+
+        _write_edit_intent_source, _write_edit_relaxed_text = (
+            resolve_reasoning_summary_intent_source(
+                _write_edit_reasoning_summary_intent,
+                _write_edit_anchor_visible_text,
+                _write_edit_anchor_reasoning_summary,
+                recent_context=_write_edit_raw_recent_context,
+                # Issue #154 item 2 (decided): the CHANGE 2 prior-turn
+                # fallback is Write/Edit-ONLY -- explicit here, not an
+                # implicit tool-name check inside the shared resolver
+                # (the danger-bash gate passes False explicitly instead).
+                allow_prior_turn_fallback=True,
+            )
+        )
+
+        # Issue #151 live-test follow-up: the relaxed path is anchor-only
+        # by design (#93/#139) -- it never saw the PRIOR turns' reasoning,
+        # so a terse current-turn intent (e.g. "Now the SSH ... test
+        # expectations.") that continues an earlier stated plan was
+        # false-rejected by a weak verifier at CHECK 0.
+        #
+        # Issue #151 live-test follow-up, round 2 (performance fix): the
+        # FIRST fix above re-parsed the ENTIRE transcript a SECOND time via
+        # get_last_n_messages_for_validation(n=4, ...) -- measured 0.824s on
+        # top of the pre-existing 1.216s n=2 call above, on a real 99.7MB
+        # transcript, eating the shared _gate_deadline before Stage 2 could
+        # even run. transcript_reader now computes this ANCHOR-RELATIVE,
+        # inside get_current_turn_message_for_validation's call above
+        # (_find_turn_matching_tool_input -> _build_prior_turns_context),
+        # reusing the SAME fixed-cost tail window already read for anchor
+        # resolution -- zero additional file I/O. Just read it out of the
+        # diagnostics dict already populated above; no second transcript
+        # read at all. Measured on an equivalent ~30MB synthetic transcript:
+        # ~5ms total (vs. the ~2s the removed second call cost on a 99.7MB
+        # transcript). This also fixes the stale-path bug the first design
+        # had: context is now always relative to whichever turn is
+        # CURRENTLY anchored (found or stale), so the anchor's own text can
+        # never leak into its own "recent context" -- the old design's
+        # positional `prose[:-1]` slice (relative to the whole transcript)
+        # could surface the anchor's own summary once a stale re-issue's
+        # thinking was flushed.
+        # Issue #151 live-replay follow-up (round 3, CHANGE 1): three live
+        # false blocks showed a DETAILED, file-naming current intent being
+        # judged against an EARLIER turn's stale plan surfaced via RECENT
+        # CONTEXT -- the prompt's own wording guards were not enough.
+        # RECENT CONTEXT is now shown ONLY when the CURRENT (or, for
+        # CHANGE 2, the prior-turn-sourced) intent text is "terse" (see
+        # _should_include_recent_context) -- a CODE decision, not left to
+        # a weak reviewer's own judgment.
+        _write_edit_recent_context: Optional[List["tuple[str, str]"]] = None
+        _write_edit_recent_context_included = False
+        if _write_edit_relaxed_text is not None:
+            from .intent_validator import _should_include_recent_context
+
+            _write_edit_candidate_context = _write_edit_raw_recent_context
+            if (
+                _write_edit_intent_source == "prior_reasoning_summary"
+                and _write_edit_candidate_context
+            ):
+                # CHANGE 2: the LAST prior turn was already consumed AS the
+                # intent itself (resolve_reasoning_summary_intent_source's
+                # "prior_reasoning_summary" case) -- never show it a SECOND
+                # time inside its own RECENT CONTEXT section.
+                _write_edit_candidate_context = _write_edit_candidate_context[:-1]
+            if _write_edit_candidate_context and _should_include_recent_context(
+                _write_edit_relaxed_text, file_path
+            ):
+                _write_edit_recent_context = _write_edit_candidate_context
+                _write_edit_recent_context_included = True
+
+        # Issue #153: for Edit reviews ONLY (both the normal/strict and the
+        # #151 relaxed Stage 2 paths) -- surface the CURRENT on-disk file
+        # content around old_string, and the OTHER Write/Edit calls in the
+        # same anchored turn, so Stage 2 can tell "this Edit changes part
+        # of a longer function" from "this function is incomplete" (the
+        # mock_remove_with_transaction false-BLOCK), and see a sibling
+        # edit that completes a fragment the current edit leaves seemingly
+        # unfinished (the OIDC split-multi-edit false-BLOCK, where the
+        # file on disk still has the OLD tail at validation time -- only
+        # the sibling turn record, not on-disk context, can help there).
+        # Write/Bash get neither section (both default to "").
+        _write_edit_surrounding_context_section = ""
+        _write_edit_sibling_edits_section = ""
+        if tool_name == "Edit":
+            from .intent_validator import (
+                _build_edit_surrounding_context_section,
+                _build_sibling_edits_section,
+            )
+
+            # Issue #153 code review MUST-FIX 1(b): pass hook.py's OWN
+            # (already patchable-for-tests) DEFAULT_DB_PATH explicitly, so
+            # the secret-like-content skip check can consult the stored
+            # SECRET_FILE values. This is the SAME attribute the
+            # `_guard_production_db` autouse test fixture already guards.
+            _write_edit_surrounding_context_section = _build_edit_surrounding_context_section(
+                file_path,
+                tool_input.get("old_string", ""),
+                bool(tool_input.get("replace_all")),
+                _deadline=_gate_deadline,
+                _db_path=DEFAULT_DB_PATH,
+                # Issue #153 follow-up (CHANGE 3): reuse the SAME
+                # single file read step 5 already performed for the
+                # diff -- never read the target file twice.
+                _precomputed=_edit_file_read,
+            )
+            _write_edit_sibling_edits_section = _build_sibling_edits_section(
+                _write_edit_diagnostics.get("anchor_sibling_edits")
+            )
+
         result = intent_validator.validate_intent_and_code(
             messages=messages,
             code=proposed_code,
@@ -3548,6 +4089,23 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             _deadline=_gate_deadline,
             no_visible_text=_write_edit_no_visible_text,
             stage1_fallback_messages=_write_edit_prose_messages,
+            reasoning_summary_relaxed_text=_write_edit_relaxed_text,
+            reasoning_summary_intent_source=_write_edit_intent_source,
+            reasoning_summary_recent_context=_write_edit_recent_context,
+            edit_surrounding_context_section=_write_edit_surrounding_context_section,
+            edit_sibling_edits_section=_write_edit_sibling_edits_section,
+            # Issue #153 code review MUST-FIX 1(a): masks ALL stored
+            # secrets in the WHOLE Stage 2 prompt right before it reaches
+            # the reviewer provider -- see _mask_reviewer_prompt's
+            # docstring for the full rationale and the test-isolation
+            # contract (None would silently skip masking; hook.py always
+            # supplies its own real, patchable DEFAULT_DB_PATH here).
+            stage2_db_path=DEFAULT_DB_PATH,
+            # Issue #154 item 1: picks the NEW FILE WARNING section's
+            # matching wording variant ("new_file" for Edit and every
+            # genuinely-new Write; "existing_diff"/"existing_full_content"
+            # for a Write over an existing file -- see step 5 above).
+            write_case=_write_case,
         )
 
         # 8. Return result
@@ -3566,6 +4124,16 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             # degraded, not silent.
             _record_degraded_review_telemetry(
                 result.get("degradation"),
+                result.get("reviewer", "unknown"),
+                session_id or "unknown",
+            )
+            # Issue #151: an approval via the reasoning-summary intent
+            # exception must be observable, not silent (the story's own
+            # telemetry requirement) -- records an RS activity + governance
+            # event. No-op (via the intent_source guard inside the helper)
+            # for every non-exception-model approval.
+            _record_reasoning_summary_telemetry(
+                result.get("intent_source"),
                 result.get("reviewer", "unknown"),
                 session_id or "unknown",
             )
@@ -3589,33 +4157,49 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             else:
                 category = "intent_validation"
 
+            _write_edit_details = {
+                "tool": tool_name,
+                "file_path": file_path,
+                "reviewer": result.get("reviewer", "unknown"),
+                # Issue #141 code-review follow-up (item 3), key
+                # renamed by issue #148: lets usage.db / the
+                # claude-usage monitor distinguish a no-visible-text
+                # block from an ordinary block.
+                "no_visible_text": _write_edit_no_visible_text,
+                # Issue #142 code-review follow-up (item 4): persist WHY
+                # nobody responded on a reviewer_unavailable_failure
+                # block instead of leaving it write-only on the
+                # in-memory degradation dict. A no-op for every other
+                # category (empty dict/False).
+                "failed_providers": result.get("degradation", {}).get(
+                    "failed_providers", {}
+                ),
+                "zero_survivors": result.get("degradation", {}).get(
+                    "zero_survivors", False
+                ),
+            }
+            if _write_edit_reasoning_summary_intent:
+                # Issue #151 code review L1: "intent_source" is added ONLY
+                # for exception-model turns ("declaration" |
+                # "reasoning_summary" | "visible_text" |
+                # "prior_reasoning_summary") -- a non-exception model's
+                # blockage details must stay byte-identical (no
+                # "intent_source": null key at all).
+                _write_edit_details["intent_source"] = result.get("intent_source")
+                # Issue #151 live-replay follow-up (round 3, CHANGE 1):
+                # record whether RECENT CONTEXT was actually shown to the
+                # reviewer, so the terse-gating decision is observable in
+                # telemetry (not just inferred from prompt contents).
+                _write_edit_details["recent_context_included"] = (
+                    _write_edit_recent_context_included
+                )
             record_blockage(
                 db_path=DEFAULT_DB_PATH,
                 category=category,
                 reason=result.get("feedback", "Validation failed"),
                 hook_type="pre_tool_use",
                 session_id=session_id or "unknown",
-                details={
-                    "tool": tool_name,
-                    "file_path": file_path,
-                    "reviewer": result.get("reviewer", "unknown"),
-                    # Issue #141 code-review follow-up (item 3), key
-                    # renamed by issue #148: lets usage.db / the
-                    # claude-usage monitor distinguish a no-visible-text
-                    # block from an ordinary block.
-                    "no_visible_text": _write_edit_no_visible_text,
-                    # Issue #142 code-review follow-up (item 4): persist WHY
-                    # nobody responded on a reviewer_unavailable_failure
-                    # block instead of leaving it write-only on the
-                    # in-memory degradation dict. A no-op for every other
-                    # category (empty dict/False).
-                    "failed_providers": result.get("degradation", {}).get(
-                        "failed_providers", {}
-                    ),
-                    "zero_survivors": result.get("degradation", {}).get(
-                        "zero_survivors", False
-                    ),
-                },
+                details=_write_edit_details,
             )
 
             # Record governance event for live event feed

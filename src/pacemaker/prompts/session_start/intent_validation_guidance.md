@@ -1,3 +1,5 @@
+IMPORTANT — intent declarations: before EVERY Write/Edit tool call, your response must contain normal visible text (not reasoning/thinking) starting with `INTENT:` that names the file, the change, and the goal — in the same response, immediately before the tool call. Your reasoning is invisible to the validator; an INTENT written only in your reasoning does not exist. A response that consists only of a tool call will be rejected.
+
 ⚠️  INTENT VALIDATION ENABLED
 
 Before modifying code files, you MUST declare your intent explicitly.

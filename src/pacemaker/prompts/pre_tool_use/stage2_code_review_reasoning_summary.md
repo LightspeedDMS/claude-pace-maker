@@ -1,12 +1,27 @@
-STAGE 2: COMPREHENSIVE CODE REVIEW
+STAGE 2: COMPREHENSIVE CODE REVIEW (REASONING-SUMMARY INTENT)
 
-You are validating the proposed code against the declared intent and clean code rules.
+You are validating the proposed code against the assistant's intent and clean code rules.
+
+INTENT SOURCE NOTICE — READ BEFORE JUDGING
+════════════════════════════════════════════════════════════════
+This assistant turn contained no formal "INTENT:" declaration. The text
+shown below as INTENT is an auto-summarized excerpt: any normal visible
+response text the assistant wrote, plus a summary of its internal
+reasoning, when present. It is not a verbatim transcript of the
+assistant's reasoning and not a formal declaration written for this
+purpose.
+
+Judge it exactly as you would judge a formal INTENT declaration: does it
+clearly identify the change being made and the goal, and does the
+PROPOSED CODE below match it? A vague or unclear excerpt must still be
+REJECTED under CHECK 0, exactly as a vague formal declaration would be.
+════════════════════════════════════════════════════════════════
 
 FILE BEING MODIFIED: {file_path}
 
-RECENT CONTEXT (last 2 messages):
-{messages}
-
+INTENT (auto-summarized reasoning summary / visible text — see notice above):
+{prior_turn_note}{intent_text}
+{recent_context_section}
 PROPOSED CODE:
 {code}
 {surrounding_context_section}{sibling_edits_section}
@@ -60,18 +75,19 @@ REMOVED (`-`), not lines that are newly ADDED (`+`).
 YOUR TASK - FOUR VALIDATION CHECKS:
 
 ════════════════════════════════════════════════════════════════
-CHECK 0: INTENT SPECIFICITY (CRITICAL — prevents vague declarations from passing)
+CHECK 0: INTENT SPECIFICITY (CRITICAL — prevents vague excerpts from passing)
 ════════════════════════════════════════════════════════════════
 
-Before checking code quality, validate that the INTENT declaration itself is meaningful:
+Before checking code quality, validate that the intent excerpt above is meaningful:
 - Does it specify WHAT specific changes are being made? (not just "fix the thing" or "update the code")
 - Does it specify WHY/GOAL of the changes? (not just "because it needs fixing")
 - Is it specific enough that you could verify the code against it?
+- If a RECENT CONTEXT section is present above, judge the specificity of the current intent AS CLARIFIED by that context — a terse current intent that continues a plan already stated in RECENT CONTEXT is NOT vague. RECENT CONTEXT may only fill in what a terse or vague current intent refers to; it must NEVER override, reinterpret, or replace a current intent that is EXPLICIT (remove/revert/delete/undo/rename/replace all count as explicit), even if an earlier turn planned the opposite.
 
-If the intent declaration is too vague to verify against the code, REJECT with feedback:
-"Intent declaration is too vague. Specify: (1) what specific changes you're making, (2) why/goal."
+If the intent excerpt is too vague to verify against the code, REJECT with feedback:
+"Intent excerpt is too vague. It should specify: (1) what specific changes are being made, (2) why/goal."
 
-A vague intent like "fix the thing", "update the code", "doing stuff because reasons" MUST be rejected.
+A vague excerpt like "fix the thing", "update the code", "doing stuff because reasons" MUST be rejected.
 
 ════════════════════════════════════════════════════════════════
 CHECK 1: CODE MATCHES INTENT
@@ -105,6 +121,8 @@ surrounding context shows the edited function ends right after the fragment
 and no sibling edit completes it, treat a missing return or branch as
 incomplete. This check is always evaluated against the CURRENT turn's own
 words, never against RECENT CONTEXT or any earlier-turn text.
+
+{core_path_note}
 
 ════════════════════════════════════════════════════════════════
 CHECK 2: CLEAN CODE VIOLATIONS
@@ -163,7 +181,7 @@ If ALL checks passed (no violations):
 If violations found:
   Return detailed feedback listing each violation, then add a CLASSIFICATION line:
 
-  ⛔ Code Review Violations Found
+  Code Review Violations Found
 
   [List each violation with specifics]
   - What was violated
@@ -191,14 +209,21 @@ APPROVED
 
 OR
 
-⛔ Code Review Violations Found
+Code Review Violations Found
 [detailed feedback]
 
 CLASSIFICATION: CLEAN_CODE
 
 OR
 
-⛔ Code Review Violations Found
+Code Review Violations Found
 [detailed feedback]
 
 CLASSIFICATION: BUG
+
+OR
+
+Code Review Violations Found
+[detailed feedback]
+
+CLASSIFICATION: TDD

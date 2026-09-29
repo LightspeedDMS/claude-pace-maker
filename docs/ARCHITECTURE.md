@@ -1180,6 +1180,7 @@ The activity indicator system records hook events to the `activity_events` table
 | `SA` | Subagent start/stop | SubagentStart / SubagentStop |
 | `UP` | User prompt submitted | UserPromptSubmit |
 | `DG` | Degraded review (APPROVED, but one or more verifiers failed to respond — issue #131) | PreToolUse |
+| `RS` | Reasoning-summary intent (APPROVED via the reasoning-summary intent exception, configured models only — issue #151) | PreToolUse |
 
 ### Status Values
 

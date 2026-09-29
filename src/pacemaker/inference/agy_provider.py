@@ -4,6 +4,7 @@ Supports Gemini Flash/Pro thinking modes, GPT-OSS, and Claude via agy CLI.
 """
 
 import subprocess
+from typing import Optional
 
 from .provider import InferenceProvider, ProviderError
 from ..logger import log_debug
@@ -38,6 +39,7 @@ class AgyProvider(InferenceProvider):
         system_prompt: str = "",
         model_hint: str = "",
         max_thinking_tokens: int = 4000,
+        timeout: Optional[float] = None,
     ) -> str:
         """Query agy CLI with the given prompt and model hint.
 
@@ -47,6 +49,12 @@ class AgyProvider(InferenceProvider):
             model_hint: pace-maker alias (e.g. "agy-flash-high"). Falls back
                         to _DEFAULT_MODEL_ARG for unknown hints.
             max_thinking_tokens: Unused by agy CLI (kept for interface parity).
+            timeout: Issue #152. When supplied, clamps the subprocess
+                timeout to ``max(0.0, min(_CLI_TIMEOUT_SEC, timeout))`` --
+                never raises it above the provider's own known-safe
+                ceiling, only ever shrinks it toward the caller's
+                remaining deadline budget. ``None`` (the default)
+                preserves the pre-#152 hardcoded 120s timeout exactly.
 
         Returns:
             Stripped response text from agy CLI stdout.
@@ -60,6 +68,11 @@ class AgyProvider(InferenceProvider):
             model_arg = _MODEL_MAP[model_hint]
         else:
             model_arg = _DEFAULT_MODEL_ARG
+        effective_timeout = (
+            _CLI_TIMEOUT_SEC
+            if timeout is None
+            else max(0.0, min(_CLI_TIMEOUT_SEC, timeout))
+        )
 
         # Embed system prompt in the prompt text (agy uses --print flag for prompt)
         if system_prompt:
@@ -85,10 +98,10 @@ class AgyProvider(InferenceProvider):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=_CLI_TIMEOUT_SEC,
+                timeout=effective_timeout,
             )
         except subprocess.TimeoutExpired:
-            raise ProviderError(f"agy CLI timed out after {_CLI_TIMEOUT_SEC}s")
+            raise ProviderError(f"agy CLI timed out after {effective_timeout}s")
         except FileNotFoundError:
             raise ProviderError("agy CLI not found (not installed)")
         except OSError as e:
