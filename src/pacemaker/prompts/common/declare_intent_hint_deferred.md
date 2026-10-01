@@ -1,0 +1,1 @@
+Faster alternative that avoids this timing race entirely: call the `declare_intent` tool for <file_path> (file_path, change, goal, and for source files test_coverage as `<test file> - <test name>`), then re-issue the same call.

@@ -1,1 +1,1 @@
-Preferred: call the `declare_intent` tool for <file_path> (file_path, change, goal, and for source files test_coverage as `<test file> - <test name>`), then re-issue this call. Or put the `INTENT:` line described below in your visible response text, then re-issue.
+Preferred: call the `declare_intent` tool for <file_path> (file_path, change, goal, and for source files test_coverage as `<test file> - <test name>`), then re-issue this call. Or put an `INTENT:` line (naming the file, the change and the goal) in your visible response text, then re-issue.

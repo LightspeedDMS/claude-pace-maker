@@ -4072,24 +4072,35 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                     )
                 except Exception:
                     pass
+                _deferred_body = (
+                    "⛔ Intent validation deferred — transcript timing race "
+                    "(not a rejection)\n\n"
+                    f"The current {tool_name} tool call has not yet been "
+                    "flushed to the conversation transcript. This is a "
+                    "TRANSIENT TIMING ISSUE, not a rejection of your intent "
+                    "or code.\n\n"
+                    f"RE-ISSUE THE IDENTICAL {tool_name} TOOL CALL with the "
+                    "SAME INTENT: declaration in the same message. The "
+                    "re-issue will find the now-flushed turn and validate "
+                    "normally.\n\n"
+                    "IMPORTANT: the file_path and content must be IDENTICAL "
+                    "to this attempt — the validator binds to the exact "
+                    "tool call content, and a different edit will not match."
+                )
+                if declaration_gate.intent_declaration_tool_enabled(config):
+                    # Bug #159: this block only happens when no tool
+                    # declaration existed (the gate reads those BEFORE the
+                    # transcript), and a declaration removes the transcript
+                    # wait altogether -- so point at it here too. Inside the
+                    # one pace-maker tag (the whole message is ours).
+                    from .intent_validator import build_declare_intent_deferred_hint
+
+                    _deferred_body += "\n\n" + build_declare_intent_deferred_hint(
+                        file_path
+                    )
                 return {
                     "decision": "block",
-                    "reason": format_tag(
-                        "⛔ Intent validation deferred — transcript timing race "
-                        "(not a rejection)\n\n"
-                        f"The current {tool_name} tool call has not yet been "
-                        "flushed to the conversation transcript. This is a "
-                        "TRANSIENT TIMING ISSUE, not a rejection of your intent "
-                        "or code.\n\n"
-                        f"RE-ISSUE THE IDENTICAL {tool_name} TOOL CALL with the "
-                        "SAME INTENT: declaration in the same message. The "
-                        "re-issue will find the now-flushed turn and validate "
-                        "normally.\n\n"
-                        "IMPORTANT: the file_path and content must be IDENTICAL "
-                        "to this attempt — the validator binds to the exact "
-                        "tool call content, and a different edit will not match.",
-                        "intent_validation_deferred",
-                    ),
+                    "reason": format_tag(_deferred_body, "intent_validation_deferred"),
                 }
 
         # Story #155 AC8: the transcript fallback additionally accepts a
@@ -4346,6 +4357,11 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 if _declared_intent is not None
                 else None
             ),
+            # Bug #159: a Stage 2 rejection of a tool/chain-declared intent
+            # gets only the "declaration consumed, declare again" note (the
+            # agent already used the tool); every other Stage 2 rejection
+            # gets the review hint, while the tool path is on.
+            intent_from_tool=_declared_intent is not None,
         )
 
         # Story #155: apply the verdict to the agent's chain (approved

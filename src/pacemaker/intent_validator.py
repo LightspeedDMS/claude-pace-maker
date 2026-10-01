@@ -938,10 +938,78 @@ def build_declare_intent_hint(file_path: str) -> str:
     a real path/command that itself contains one (the #150 code-review
     item-1 hazard).
     """
+    return _load_static_hint("declare_intent_hint.md", file_path)
+
+
+def _load_static_hint(template_name: str, file_path: str = "") -> str:
+    """Load a static ``prompts/common`` hint template and replace its literal
+    ``<file_path>`` token with ``str.replace`` -- never PromptLoader's
+    ``variables=`` (the #150 item-1 ``{{word}}`` rescan hazard)."""
     from .prompt_loader import PromptLoader
 
-    template = PromptLoader().load_prompt("declare_intent_hint.md", subfolder="common")
+    template = PromptLoader().load_prompt(template_name, subfolder="common")
     return template.strip().replace("<file_path>", file_path)
+
+
+def build_declare_intent_review_hint(file_path: str) -> str:
+    """Bug #159 (review M1): the hint for a STAGE 2 rejection. The CODE was
+    rejected, so unlike the Stage-1 hint ("...then re-issue this call") this
+    one starts with "Address the review above" -- a weak model must never read
+    it as "declare, then re-issue the identical call"."""
+    return _load_static_hint("declare_intent_hint_review.md", file_path)
+
+
+def build_declare_intent_deferred_hint(file_path: str) -> str:
+    """Bug #159 (review L1): the hint for the transcript-timing-race
+    "deferred" block, worded as a faster alternative to that block's own
+    "re-issue the identical call" instruction, not a competing one."""
+    return _load_static_hint("declare_intent_hint_deferred.md", file_path)
+
+
+def build_declare_intent_consumed_note() -> str:
+    """Bug #159 (review L2): the note for a Stage 2 rejection of a
+    tool-declared/chain intent. #155's rules consumed that declaration (and
+    ended the chain) with this rejection, so the retry needs a fresh one."""
+    return _load_static_hint("declare_intent_consumed_note.md")
+
+
+def build_declare_intent_unavailable_consumed_note() -> str:
+    """Bug #159 (re-review): the variant of the consumed note for a
+    reviewer-UNAVAILABLE block of a tool/chain intent. The declaration was
+    consumed and the chain ended just the same, but nothing was reviewed, so
+    there is no review to address -- only "declare again"."""
+    return _load_static_hint("declare_intent_consumed_note_unavailable.md")
+
+
+def _append_declare_intent_hint(
+    feedback: str, file_path: str, enabled: bool, intent_from_tool: bool = False
+) -> str:
+    """Bug #159: append pace-maker guidance to a Claude-facing Stage 2
+    rejection, OUTSIDE the reviewer-relay segment.
+
+    ``feedback`` is the already-wrapped ``format_reviewer_relay`` text; the
+    reviewer's words are never altered. The addition is pace-maker-authored,
+    so it follows as its own ``intent_validation_block``-tagged block (the
+    channel the Stage-1 hint already travels in). Which text is appended
+    depends on where the intent came from:
+
+    * transcript-sourced (default): the review hint -- "address the review,
+      declare when you retry" (``build_declare_intent_review_hint``);
+    * ``intent_from_tool``: the agent already used the tool, but the
+      rejection consumed its declaration/chain, so only the "declare again"
+      note (``build_declare_intent_consumed_note``).
+
+    Nothing when the tool path is off (``enabled`` False -- byte-identical to
+    before). The governance ``raw_feedback`` is never passed through here.
+    """
+    if not enabled:
+        return feedback
+    addition = (
+        build_declare_intent_consumed_note()
+        if intent_from_tool
+        else build_declare_intent_review_hint(file_path)
+    )
+    return feedback + "\n\n" + format_tag(addition, "intent_validation_block")
 
 
 def _sdk_unavailable_message() -> str:
@@ -2039,6 +2107,7 @@ def _validate_reasoning_summary_path(
     edit_sibling_edits_section: str = "",
     _db_path: Optional[str] = None,
     write_case: Optional[str] = None,
+    declare_intent_hint: bool = False,
 ) -> dict:
     """Issue #151: the RELAXED reasoning-summary/visible-text intent path.
 
@@ -2120,7 +2189,15 @@ def _validate_reasoning_summary_path(
         _classification = _parse_stage2_classification(stage2_feedback)
         return {
             "approved": False,
-            "feedback": format_reviewer_relay(stage2_feedback, reviewer),
+            # Bug #159: this path never carries a tool-declared intent
+            # (those take the strict path), so the hint always applies
+            # when the tool path is enabled -- appended after the relay
+            # segment, reviewer text untouched.
+            "feedback": _append_declare_intent_hint(
+                format_reviewer_relay(stage2_feedback, reviewer),
+                file_path,
+                declare_intent_hint,
+            ),
             "raw_feedback": stage2_feedback,
             "clean_code_failure": _classification == "clean_code",
             "bug_failure": _classification == "bug",
@@ -2520,6 +2597,7 @@ def _validate_normal_path(
     write_case: Optional[str] = None,
     declare_intent_hint: bool = False,
     tool_declared_tdd: Optional[bool] = None,
+    intent_from_tool: bool = False,
 ) -> dict:
     """The STRICT (declaration-required) Stage 1/2 pipeline -- extracted
     verbatim from validate_intent_and_code (issue #151 code review H2/M1)
@@ -2753,10 +2831,19 @@ CRITICAL: Quote must reference actual user words from recent context."""
         # under its own blockage category.
         log_debug("intent_validator", "=== STAGE 2 REVIEWER UNAVAILABLE (empty) ===")
         _raw = build_reviewer_unavailable_message(_stage2_degradation)
+        _unavailable_feedback = format_tag(_raw, "fail_closed_error")
+        if declare_intent_hint and intent_from_tool:
+            # Bug #159 (re-review): the declaration was consumed and the
+            # chain ended even though nothing was reviewed -- say so. The
+            # unavailable text above and raw_feedback are untouched.
+            _unavailable_feedback += "\n\n" + format_tag(
+                build_declare_intent_unavailable_consumed_note(),
+                "intent_validation_block",
+            )
         return {
             "approved": False,
             "reviewer_unavailable_failure": True,
-            "feedback": format_tag(_raw, "fail_closed_error"),
+            "feedback": _unavailable_feedback,
             "raw_feedback": _raw,
             "reviewer": reviewer,
             # Issue #142 code-review follow-up (item 4): carries
@@ -2783,7 +2870,14 @@ CRITICAL: Quote must reference actual user words from recent context."""
             # never the plain pace-maker tag. "raw_feedback" is the
             # untagged reviewer text for governance/telemetry
             # consumers (Story #101 B2).
-            "feedback": format_reviewer_relay(stage2_feedback, reviewer),
+            # Bug #159: the declare_intent hint follows the relay segment
+            # (never inside it) unless the intent came from the tool.
+            "feedback": _append_declare_intent_hint(
+                format_reviewer_relay(stage2_feedback, reviewer),
+                file_path,
+                declare_intent_hint,
+                intent_from_tool,
+            ),
             "raw_feedback": stage2_feedback,
             "clean_code_failure": _classification == "clean_code",
             "bug_failure": _classification == "bug",
@@ -2810,6 +2904,7 @@ def validate_intent_and_code(
     write_case: Optional[str] = None,
     declare_intent_hint: bool = False,
     tool_declared_tdd: Optional[bool] = None,
+    intent_from_tool: bool = False,
 ) -> dict:
     """
     Two-stage pre-tool validation with short-circuit logic.
@@ -2929,7 +3024,18 @@ def validate_intent_and_code(
             carry one extra sentence pointing at the tool (preferred) with
             the visible ``INTENT:`` line kept as the fallback. ``False``
             (the default) leaves every block message byte-identical to
-            pre-#155.
+            pre-#155. Bug #159: Stage 2 (reviewer) rejections of a
+            non-tool intent -- relaxed #151 path and strict path alike --
+            carry the same hint, appended OUTSIDE the reviewer-relay
+            segment as its own pace-maker-tagged block. Reviewer-
+            unavailable / SDK-unavailable / internal-error blocks never do
+            (infrastructure failures, not declaration problems).
+        intent_from_tool: Bug #159. True when the intent being judged came
+            from a declare_intent declaration or chain: a Stage 2 rejection
+            then gets the "declaration consumed -- declare again" note
+            instead of the review hint (the agent already used the tool, but
+            the rejection used its declaration up). Stage-1 hints are
+            unchanged. ``False`` by default.
 
     ``tool_declared_tdd`` (Story #155 / review M2): ``None`` for a text
     declaration (unchanged regex scan). For a tool-sourced intent, True iff
@@ -2996,6 +3102,7 @@ def validate_intent_and_code(
                 edit_sibling_edits_section=edit_sibling_edits_section,
                 _db_path=stage2_db_path,
                 write_case=write_case,
+                declare_intent_hint=declare_intent_hint,
             )
 
         # STRICT path -- either a non-exception model, an exception-model
@@ -3023,6 +3130,7 @@ def validate_intent_and_code(
             write_case=write_case,
             declare_intent_hint=declare_intent_hint,
             tool_declared_tdd=tool_declared_tdd,
+            intent_from_tool=intent_from_tool,
         )
         if reasoning_summary_intent_source is not None:
             # Issue #151 code review H2/M1/L1: an exception-model turn
