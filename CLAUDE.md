@@ -408,7 +408,14 @@ Read the current code (the line citations above, and the module docstrings) befo
 - `maybe_cleanup_stale_files()` runs it at most once per `CLEANUP_MIN_INTERVAL_SECONDS` (24 h), throttled by the mtime of `langfuse_state/.last_cleanup` (no `.json` suffix, never matched by the glob); otherwise one `stat()`. Never raises. SessionStart calls this version.
 - Bug #158 interplay: a subagent whose state file was expired and then resumes gets its spans skipped (never misattributed).
 
-**Item 2 (short secrets mask ordinary words in Langfuse traces)** — pending a product decision (minimum length / word boundaries for Langfuse masking; `_MIN_REVIEWER_MASK_SECRET_LENGTH` applies to reviewer prompts only).
+**Item 2 — short secrets masked ordinary words in Langfuse traces** (`"raises_value_error"` → `"raises_*** MASKED ***_error"` for a stored `value`). User decision: **token-boundary match for short secrets**.
+- `masking._build_secrets_pattern()` (the single builder behind `mask_text`, `mask_structure`, `build_prefiltered_pattern`, `sanitize_trace`): a stored secret shorter than `SHORT_SECRET_TOKEN_BOUNDARY_BELOW` (8) is wrapped in `(?<![A-Za-z0-9_])…(?![A-Za-z0-9_])` — masked only as a standalone token (string start/end, spaces, `=`, `:`, `.`, quotes, non-ASCII neighbours all count as boundaries). Secrets of 8+ chars keep match-anywhere.
+- Alternatives are sorted longest-first by the secret's own (raw) length; when a short alternative's boundary fails, the alternation falls through to the next alternative, so longest-first semantics hold.
+- Short secrets are still ACCEPTED for storage (`create_secret` only refuses degenerate values).
+- The #157 prefilter is unchanged: `secret in text` is still a valid superset check (a short secret occurring only inside a word is kept in the subset, compiled, and simply never matches), so output stays identical to full-store masking from the same builder. `intent_validator._mask_reviewer_prompt` keeps its own min-length-8 skip (`_MIN_REVIEWER_MASK_SECRET_LENGTH`), unchanged — it only ever feeds ≥8-char secrets to the builder.
+- Tests: `tests/test_issue_160_short_secret_boundaries.py` (includes a regex-free reference oracle + fuzz), `tests/test_issue_157_secret_prefilter.py` (mixed short/long fuzz).
+
+**Prune predicate for data cleanup (one-off, owner-run)**: `pacemaker.secrets.masking.is_degenerate_secret(value: str) -> bool`; table `secrets(id INTEGER PRIMARY KEY, type TEXT, value TEXT, created_at INTEGER)` in the secrets DB (`usage.db`, `~/.claude-pace-maker/`). Select rows with `SELECT id, type, value FROM secrets`, apply the predicate in Python, `DELETE FROM secrets WHERE id = ?` for matches (or `pace-maker secrets remove <id>`). Code never prunes automatically.
 
 ## Reviewer Identity Tracking
 

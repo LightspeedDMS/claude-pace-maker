@@ -11,6 +11,14 @@ from typing import Any, Iterable, List, Tuple, Optional
 # The placeholder that replaces every masked secret.
 MASK_MARKER = "*** MASKED ***"
 
+# Bug #160 item 2: stored secrets SHORTER than this are masked only as
+# standalone tokens (not directly preceded/followed by [A-Za-z0-9_]), so a short
+# secret like "value" no longer mangles "raises_value_error". Secrets of this
+# length or more keep match-anywhere behaviour.
+SHORT_SECRET_TOKEN_BOUNDARY_BELOW = 8
+_WORD_BEFORE_NOT = r"(?<![A-Za-z0-9_])"
+_WORD_AFTER_NOT = r"(?![A-Za-z0-9_])"
+
 
 def is_degenerate_secret(value: str) -> bool:
     """Bug #160: True for values that must never be stored or used as secrets.
@@ -45,15 +53,27 @@ def _build_secrets_pattern(secrets: List[str]) -> Optional[re.Pattern]:
     if not secrets:
         return None
 
-    # Escape special regex chars, filter empty strings, sort longest first
-    # Longest-first ordering ensures longer secrets match before their substrings
-    escaped = sorted([re.escape(s) for s in secrets if s], key=len, reverse=True)
-    if not escaped:
+    # Longest first (by the secret's own length): longer secrets match before
+    # their substrings. sorted() is stable, so equal lengths keep store order.
+    ordered = sorted((s for s in secrets if s), key=len, reverse=True)
+    if not ordered:
         return None
 
+    # Escape special regex chars. Bug #160: a secret shorter than
+    # SHORT_SECRET_TOKEN_BOUNDARY_BELOW only matches as a standalone token (not
+    # adjacent to [A-Za-z0-9_]); when its boundary fails the alternation falls
+    # through to the next (shorter) alternative, so longest-first still holds.
+    alternatives = [
+        (
+            f"{_WORD_BEFORE_NOT}{re.escape(s)}{_WORD_AFTER_NOT}"
+            if len(s) < SHORT_SECRET_TOKEN_BOUNDARY_BELOW
+            else re.escape(s)
+        )
+        for s in ordered
+    ]
+
     # Join with | (OR) operator for single-pass matching
-    pattern_str = "|".join(escaped)
-    return re.compile(pattern_str)
+    return re.compile("|".join(alternatives))
 
 
 def collect_strings(data: Any) -> List[str]:

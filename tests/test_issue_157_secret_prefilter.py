@@ -220,9 +220,36 @@ class TestIdenticalOutputToTheOldFullStoreMasking:
             }
             assert sanitize_trace(trace, db) == old_full_store_masking(trace, secrets)
 
+    def test_fuzz_mixed_short_and_long_secrets_with_word_boundaries(self, db):
+        """Bug #160 item 2: short (<8) secrets are token-boundary matched, long
+        ones match anywhere. The prefiltered subset must still give exactly
+        the full-store output when both kinds, word characters and separators
+        are mixed (the oracle is the full-store pattern from the same builder;
+        tests/test_issue_160_short_secret_boundaries.py pins that builder to an
+        independent regex-free reference)."""
+        rng = random.Random(1602)
+        alphabet = "ab_.-"
+        values = {
+            "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 12)))
+            for _ in range(80)
+        }
+        secrets = _store(db, sorted(values))
+        assert any(len(s) < 8 for s in secrets) and any(len(s) >= 8 for s in secrets)
+        for _ in range(200):
+            trace = {
+                "x": [
+                    "".join(
+                        rng.choice(alphabet + "  :") for _ in range(rng.randint(0, 50))
+                    )
+                    for _ in range(rng.randint(1, 4))
+                ]
+            }
+            assert sanitize_trace(trace, db) == old_full_store_masking(trace, secrets)
+
     def test_langfuse_masking_has_no_minimum_secret_length(self, db):
         """Unlike reviewer-prompt masking (min 8, issue #153), Langfuse
-        masking keeps masking short secrets, exactly as before."""
+        masking still masks short secrets (accepted for storage) - as
+        standalone tokens, see bug #160 item 2."""
         masked, count = self._check(db, ["abc"], {"a": "xx abc yy"})
         assert count == 1
 
