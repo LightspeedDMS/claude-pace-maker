@@ -240,6 +240,85 @@ class TestSpansFollowPayloadIdentityNotGlobalState:
         assert traces == []
 
 
+class TestUnregisteredSubagentStillRunsSessionLevelSteps:
+    """Review finding L2: only the span + state update are skipped for a subagent
+    without a registered trace; 🔐 declaration collection and the parent's
+    pending_trace flush are session-level work and must still run."""
+
+    SECRET = "l2-declared-secret-value-123"
+
+    def _call(self, tmp_path, config, state_dir):
+        from pacemaker.secrets.database import get_all_secrets
+
+        transcript = tmp_path / "t2.jsonl"
+        transcript.write_text(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": f"🔐 SECRET_TEXT: {self.SECRET}"}
+                        ],
+                    },
+                }
+            )
+            + "\n"
+        )
+        pending = [
+            {
+                "id": "pending-1",
+                "timestamp": "2026-10-01T00:00:00+00:00",
+                "type": "trace-create",
+                "body": {"id": TRACE_MAIN_1, "name": "pending-turn"},
+            }
+        ]
+        sm = StateManager(state_dir)
+        sm.create_or_update(
+            session_id=SESSION_1,
+            trace_id=TRACE_MAIN_1,
+            last_pushed_line=0,
+            metadata={"current_trace_id": TRACE_MAIN_1, "trace_start_line": 0},
+            pending_trace=pending,
+        )
+        with patch("pacemaker.langfuse.orchestrator.push") as mock_push:
+            mock_push.push_batch_events = MagicMock(return_value=(True, 1))
+            result = orchestrator.handle_post_tool_use(
+                config=config,
+                session_id=SESSION_1,
+                transcript_path=str(transcript),
+                state_dir=state_dir,
+                tool_response={"ok": True},
+                tool_name="Bash",
+                tool_input={"command": "x"},
+                agent_id="neverregistered",
+            )
+        pushed = [
+            e for c in mock_push.push_batch_events.call_args_list for e in c[0][3]
+        ]
+        return result, pushed, sm, get_all_secrets(config["db_path"])
+
+    def test_secret_declarations_are_still_collected(self, tmp_path, config, state_dir):
+        result, _pushed, _sm, stored = self._call(tmp_path, config, state_dir)
+
+        assert result is False  # the span itself was skipped
+        assert self.SECRET in stored
+
+    def test_parent_pending_trace_is_still_flushed(self, tmp_path, config, state_dir):
+        _result, pushed, sm, _stored = self._call(tmp_path, config, state_dir)
+
+        assert any(e["id"] == "pending-1" for e in pushed)
+        assert not sm.read(SESSION_1).get("pending_trace")
+
+    def test_no_span_or_intel_event_is_pushed_for_the_unregistered_agent(
+        self, tmp_path, config, state_dir
+    ):
+        _result, pushed, _sm, _stored = self._call(tmp_path, config, state_dir)
+
+        assert [e for e in pushed if e["type"] == "span-create"] == []
+        assert not any(str(e["id"]).startswith("intel-") for e in pushed)
+
+
 class TestInterleavedSessionsAndSubagents:
     def test_interleaved_calls_each_land_in_their_own_trace(
         self, tmp_path, config, state_dir, transcript

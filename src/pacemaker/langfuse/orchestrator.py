@@ -1054,38 +1054,44 @@ def handle_post_tool_use(
         # session on the machine and must never decide which trace a span
         # belongs to. agent_id present -> that subagent's own state file;
         # agent_id absent -> the session's main trace.
+        subagent_unregistered = False
         if agent_id:
             effective_session_id = f"subagent-{agent_id}"
             subagent_state = state_manager.read(effective_session_id)
             subagent_trace_id = (subagent_state or {}).get("trace_id")
             if not subagent_trace_id:
                 # Never fall back to the parent's (or any other) trace: a span
-                # in the wrong trace is worse than a missing span.
+                # in the wrong trace is worse than a missing span. Only the
+                # trace-bound work (intel push, span, state update) is skipped;
+                # the session-level steps (secret declarations, the parent's
+                # pending_trace flush) below still run.
                 log_warning(
                     "orchestrator",
                     f"No registered trace for subagent {effective_session_id} "
                     f"(session {session_id}); skipping span",
                     None,
                 )
-                return False
-            current_trace_id = subagent_trace_id
-            last_pushed_line = subagent_state.get("last_pushed_line", 0)
-            metadata = subagent_state.get("metadata", {})
-            existing_state = subagent_state
-            log_debug(
-                "orchestrator",
-                f"Using subagent state: session_id={effective_session_id}, "
-                f"trace_id={subagent_trace_id}, last_pushed_line={last_pushed_line}",
-            )
+                subagent_unregistered = True
+            else:
+                current_trace_id = subagent_trace_id
+                last_pushed_line = subagent_state.get("last_pushed_line", 0)
+                metadata = subagent_state.get("metadata", {})
+                existing_state = subagent_state
+                log_debug(
+                    "orchestrator",
+                    f"Using subagent state: session_id={effective_session_id}, "
+                    f"trace_id={subagent_trace_id}, last_pushed_line={last_pushed_line}",
+                )
 
         # NOW check current_trace_id after subagent override
-        if not current_trace_id:
+        if not current_trace_id and not subagent_unregistered:
             log_warning("orchestrator", f"No current_trace_id for {session_id}", None)
             return False
 
         # STEP 0.5: Push intel to CURRENT trace immediately (if parsed)
         # NEW ARCHITECTURE: Intel describes current prompt, so attach to current trace NOW
-        if parsed_intel:
+        # (never for an unregistered subagent: current_trace_id is then the parent's)
+        if parsed_intel and not subagent_unregistered:
             intel_metadata = {}
             if "frustration" in parsed_intel:
                 intel_metadata["intel_frustration"] = parsed_intel["frustration"]
@@ -1168,6 +1174,9 @@ def handle_post_tool_use(
             )
             # Re-read parent state to get updated version without pending_trace
             parent_state = state_manager.read(session_id)
+
+        if subagent_unregistered:
+            return False  # nothing trace-bound to push (warning logged above)
 
         # STEP 3: Create span for current tool if tool_response provided
         # This handles the case where PostToolUse hook fires BEFORE the tool
