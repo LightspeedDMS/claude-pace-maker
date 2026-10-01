@@ -14,7 +14,6 @@ value that is a substring of the marker itself. Every masked value then
 - the CLI can still show them (flagged) so they can be removed by id.
 """
 
-import logging
 import sqlite3
 from unittest.mock import patch
 
@@ -89,14 +88,21 @@ class TestIsDegenerateSecret:
 
 
 class TestStoreRefusesDegenerateValues:
-    def test_create_secret_refuses_marker_fragment(self, db_path, caplog):
-        with caplog.at_level(logging.WARNING):
+    def test_create_secret_refuses_marker_fragment(self, db_path):
+        # the sink under test is pace-maker's own logger (stdlib logging has no
+        # handler in hook processes, so a stdlib warning would be lost)
+        with patch("pacemaker.secrets.database.log_warning") as warn:
             result = create_secret(db_path, "text", MARKER_FRAGMENT)
 
         assert result is None
         assert list_secrets(db_path) == []
-        # warning mentions refusal but never echoes the value
-        assert any("degenerate" in r.getMessage().lower() for r in caplog.records)
+        warn.assert_called_once()
+        component, message = warn.call_args[0][:2]
+        assert component == "secrets"
+        assert "degenerate" in message.lower()
+        # the refusal is reported, the value never is
+        assert MARKER_FRAGMENT.strip() not in message
+        assert "MASKED" not in message
 
     def test_create_secret_refuses_empty_and_whitespace(self, db_path):
         assert create_secret(db_path, "text", "") is None

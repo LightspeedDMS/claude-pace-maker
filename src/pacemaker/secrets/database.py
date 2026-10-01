@@ -6,14 +6,12 @@ Database location: configured via db_path parameter (typically ~/.claude-pace-ma
 File permissions: 0600 (owner read/write only)
 """
 
-import logging
 import os
 import sqlite3
 from typing import List, Dict, Any, Optional
 
+from ..logger import log_warning
 from .masking import is_degenerate_secret
-
-logger = logging.getLogger(__name__)
 
 _initialized_dbs: set = set()
 
@@ -111,10 +109,10 @@ def create_secret(db_path: str, secret_type: str, value: str) -> Optional[int]:
         existing. Never raises for a refused value; the value is never logged.
     """
     if is_degenerate_secret(value):
-        logger.warning(
-            "Refused to store a degenerate %s secret (empty or a fragment of "
-            "the mask marker); value not logged",
-            secret_type,
+        log_warning(
+            "secrets",
+            f"Refused to store a degenerate {secret_type} secret (empty or a "
+            "fragment of the mask marker); value not logged",
         )
         return None
 

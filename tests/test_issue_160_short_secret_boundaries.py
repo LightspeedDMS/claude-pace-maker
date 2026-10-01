@@ -33,27 +33,55 @@ WORD = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
 
 
 def reference_mask(text, secrets):
-    """Regex-free statement of the contract (longest-first, first match wins)."""
+    """Regex-free statement of the contract.
+
+    Phase 1 masks the 8+ char secrets anywhere (leftmost, longest first). Phase 2
+    masks the <8 char secrets only inside the text BETWEEN phase-1 matches (a
+    phase-1 match is an impenetrable, non-word separator), as standalone tokens:
+    the lookbehind applies only if the secret's first char is a word char, the
+    lookahead only if its last char is one (so punctuation edges need none).
+    """
     ordered = sorted((s for s in secrets if s), key=len, reverse=True)
-    out, i, count = [], 0, 0
+    long_secrets = [s for s in ordered if len(s) >= 8]
+    short_secrets = [s for s in ordered if len(s) < 8]
+
+    segments, current, i, count = [], [], 0, 0
     while i < len(text):
-        for secret in ordered:
-            if not text.startswith(secret, i):
-                continue
-            if len(secret) < 8:
-                before = text[i - 1] if i > 0 else ""
-                end = i + len(secret)
-                after = text[end] if end < len(text) else ""
-                if before in WORD or after in WORD:
-                    continue
-            out.append(MASK_MARKER)
-            i += len(secret)
-            count += 1
-            break
+        for secret in long_secrets:
+            if text.startswith(secret, i):
+                segments.append("".join(current))
+                current = []
+                i += len(secret)
+                count += 1
+                break
         else:
-            out.append(text[i])
+            current.append(text[i])
             i += 1
-    return "".join(out), count
+    segments.append("".join(current))
+
+    masked_segments = []
+    for seg in segments:
+        out, i = [], 0
+        while i < len(seg):
+            for secret in short_secrets:
+                if not seg.startswith(secret, i):
+                    continue
+                end = i + len(secret)
+                before = seg[i - 1] if i > 0 else ""
+                after = seg[end] if end < len(seg) else ""
+                if secret[0] in WORD and before in WORD:
+                    continue
+                if secret[-1] in WORD and after in WORD:
+                    continue
+                out.append(MASK_MARKER)
+                i = end
+                count += 1
+                break
+            else:
+                out.append(seg[i])
+                i += 1
+        masked_segments.append("".join(out))
+    return MASK_MARKER.join(masked_segments), count
 
 
 @pytest.fixture
@@ -215,3 +243,114 @@ class TestEquivalenceWithIndependentOracle:
             assert sanitized["x"] == [m for m, _ in expected_x]
             assert sanitized["y"]["z"] == expected_z[0]
             assert count == sum(c for _, c in expected_x) + expected_z[1]
+
+
+class TestLongSecretsAreNeverUnderMasked:
+    """Review finding M1: a short alternative that fails its boundary must never
+    let another short secret match across the start of an 8+ char secret."""
+
+    SECRETS = ["z.a", "a-k", "k.LONGSECRETVALUE"]
+    TEXT = "wz.a-k.LONGSECRETVALUE end"
+
+    def test_reviewer_repro_does_not_expose_the_long_secret(self):
+        masked, count = mask_text(self.TEXT, self.SECRETS)
+
+        assert "LONGSECRETVALUE" not in masked
+        assert masked == f"wz.a-{MASK_MARKER} end"
+        assert count == 1
+
+    def test_repro_through_sanitize_trace(self, db):
+        _store(db, self.SECRETS)
+
+        sanitized, count = sanitize_trace({"o": self.TEXT}, db)
+
+        assert "LONGSECRETVALUE" not in sanitized["o"]
+        assert (sanitized["o"], count) == reference_mask(self.TEXT, self.SECRETS)
+
+    def test_short_secret_can_not_span_into_a_masked_long_secret(self):
+        # "d***" would match "d" + the marker the first pass inserted
+        masked, _ = mask_text("dLONGSECRETVALUE", ["d***", "LONGSECRETVALUE"])
+        assert masked == f"d{MASK_MARKER}"
+
+    def test_short_secret_next_to_a_long_one_is_still_masked_standalone(self):
+        masked, count = mask_text("tok=LONGSECRETVALUE;", ["tok", "LONGSECRETVALUE"])
+        assert masked == f"{MASK_MARKER}={MASK_MARKER};"
+        assert count == 2
+
+    def test_mask_structure_uses_the_same_two_pass_semantics(self):
+        from pacemaker.secrets.masking import mask_structure
+
+        masked, count = mask_structure({"a": [self.TEXT]}, self.SECRETS)
+
+        assert "LONGSECRETVALUE" not in masked["a"][0]
+        assert (masked["a"][0], count) == reference_mask(self.TEXT, self.SECRETS)
+
+
+class TestPunctuationEdgesNeedNoBoundary:
+    """Review finding L1: the lookbehind applies only when the secret's first
+    char is a word char, the lookahead only when its last char is one."""
+
+    def test_leading_punctuation_secret_matches_after_a_word_char(self):
+        assert mask_text("x-abc", ["-abc"]) == (f"x{MASK_MARKER}", 1)
+
+    def test_trailing_punctuation_secret_matches_before_a_word_char(self):
+        assert mask_text("abc-x", ["abc-"]) == (f"{MASK_MARKER}x", 1)
+
+    def test_word_edge_of_the_same_secret_is_still_protected(self):
+        # "-abc" ends in a word char: followed by "d" it is part of a longer token
+        assert mask_text("x-abcd", ["-abc"]) == ("x-abcd", 0)
+        # "abc-" starts with a word char: preceded by "x" it is not standalone
+        assert mask_text("xabc-", ["abc-"]) == ("xabc-", 0)
+
+    def test_fully_punctuation_secret_is_masked_anywhere(self):
+        assert mask_text("a.=.b", [".=."]) == (f"a{MASK_MARKER}b", 1)
+
+
+class TestPunctuationAndAdjacencyFuzz:
+    def test_fuzz_matches_reference_and_never_leaves_a_long_secret(self, db):
+        rng = random.Random(1603)
+        alphabet = "ab_-.="
+        values = {
+            "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 12)))
+            for _ in range(70)
+        }
+        secrets = _store(db, sorted(values))
+        long_secrets = [s for s in secrets if len(s) >= 8]
+        assert long_secrets and any(len(s) < 8 for s in secrets)
+
+        def occurrences(text):
+            spans = []
+            for secret in long_secrets:
+                start = text.find(secret)
+                while start != -1:
+                    spans.append((start, start + len(secret)))
+                    start = text.find(secret, start + 1)
+            return spans
+
+        def long_occurrences_overlap(text):
+            spans = sorted(occurrences(text))
+            return any(a[1] > b[0] for a, b in zip(spans, spans[1:]))
+
+        def adjacent_text():
+            # secrets glued to each other, to filler and to random characters
+            pieces = []
+            for _ in range(rng.randint(1, 6)):
+                pieces.append(
+                    rng.choice(secrets)
+                    if rng.random() < 0.6
+                    else "".join(rng.choice(alphabet + " :") for _ in range(2))
+                )
+            return "".join(pieces)
+
+        checked_invariant = 0
+        for _ in range(600):
+            text = adjacent_text()
+
+            sanitized, count = sanitize_trace({"t": text}, db)
+
+            assert (sanitized["t"], count) == reference_mask(text, secrets)
+            if occurrences(text) and not long_occurrences_overlap(text):
+                checked_invariant += 1
+                for secret in long_secrets:
+                    assert secret not in sanitized["t"], (text, secret)
+        assert checked_invariant > 50  # the invariant was really exercised
