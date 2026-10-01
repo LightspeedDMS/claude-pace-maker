@@ -61,7 +61,21 @@ class TestChange1GuidanceOpensWithPilotText:
     paragraph, immediately after the provenance tag header."""
 
     def test_guidance_body_starts_with_exact_pilot_block(self):
-        guidance = display_intent_validation_guidance()
+        """DELIBERATELY UPDATED by Story #155 (declare_intent tool-first
+        declaration, pilot 2: 0 blocks in 16/16 runs when the guidance leads
+        with "prefer declare_intent").
+
+        The C text is still character-exact and is still the opener of the
+        guidance whenever the declare_intent tool path is OFF
+        (``intent_declaration_tool_enabled: false`` -- byte-identical to
+        pre-#155). With the tool path ON (the shipped default) the guidance
+        leads with the tool paragraph and the C text follows immediately as
+        the fallback -- see
+        tests/test_issue_155_guidance_and_hints.py::TestGuidanceLeadsWithTheTool.
+        """
+        guidance = display_intent_validation_guidance(
+            {"intent_declaration_tool_enabled": False}
+        )
         tag_header = "[pace-maker · intent_validation_guidance]\n"
         assert guidance.startswith(
             tag_header
@@ -71,6 +85,17 @@ class TestChange1GuidanceOpensWithPilotText:
             "Guidance body must open with the pilot-validated C text, "
             f"character-exact; got: {body[: len(PILOT_C_TEXT) + 40]!r}"
         )
+
+    def test_c_text_follows_the_declare_tool_paragraph_by_default(self):
+        """Story #155: with the tool path enabled (default) the C text is
+        NOT reworded -- it simply follows the tool paragraph, as the
+        fallback."""
+        guidance = display_intent_validation_guidance()
+        tag_header = "[pace-maker · intent_validation_guidance]\n"
+        body = guidance[len(tag_header) :]
+        assert body.startswith("Before each Write or Edit, call the `declare_intent`")
+        assert "\n\n" + PILOT_C_TEXT in body
+        assert body.index(PILOT_C_TEXT) < body.index("INTENT VALIDATION ENABLED")
 
     def test_pilot_block_precedes_existing_guidance(self):
         guidance = display_intent_validation_guidance()

@@ -695,8 +695,20 @@ def _regex_stage1_check(
     exclusions: list,
     core_path_segments: Optional[List[str]] = None,
     extensions: Optional[List[str]] = None,
+    tool_declared_tdd: Optional[bool] = None,
 ) -> str:
     """Regex-based Stage 1 structural check. Returns YES, NO, or NO_TDD.
+
+    ``tool_declared_tdd`` (Story #155 / review M2): ``None`` (default) is a
+    TEXT declaration -- TDD satisfaction and the version-bump exemption are
+    found by scanning the text after ``INTENT:``, exactly as before. A bool
+    marks a TOOL-sourced (declare_intent) intent, whose message is
+    synthesized from structured fields: free-form change/goal wording (e.g.
+    "covered by existing tests", "fix failing test: x") and the injected
+    absolute path (a bump verb + a version-ish path) must NOT satisfy TDD,
+    so on a core path the answer is decided ONLY by this flag -- True iff a
+    non-blank structured ``test_coverage`` was declared -- and no
+    version-bump exemption applies.
 
     Args:
         current_message: Current assistant message text
@@ -753,6 +765,9 @@ def _regex_stage1_check(
 
     if not _is_core_path(file_path, core_path_segments, exclusions, extensions):
         return "YES"
+
+    if tool_declared_tdd is not None:
+        return "YES" if tool_declared_tdd else "NO_TDD"
 
     intent_text = current_message[intent_match.end() :]
     if _is_version_bump(intent_text) or _has_tdd_declaration(intent_text):
@@ -908,6 +923,25 @@ def _write_edit_no_visible_text_example(
     if is_core_path:
         example += "\nTest coverage: <test file> - <test name>"
     return example
+
+
+def build_declare_intent_hint(file_path: str) -> str:
+    """Story #155 AC11: the one-sentence pointer that Stage-1 block messages
+    (NO / NO_TDD, including the no-visible-text notice's) carry when the
+    declare_intent tool path is enabled -- "call `declare_intent` for <file>
+    (preferred), or write the INTENT: line, then re-issue".
+
+    The wording lives in prompts/common/declare_intent_hint.md (Messi Rule
+    11) as STATIC text with a literal ``<file_path>`` token that is replaced
+    here with ``str.replace`` -- never PromptLoader's ``variables=``
+    substitution, whose rescan for ``{{word}}`` placeholders would crash on
+    a real path/command that itself contains one (the #150 code-review
+    item-1 hazard).
+    """
+    from .prompt_loader import PromptLoader
+
+    template = PromptLoader().load_prompt("declare_intent_hint.md", subfolder="common")
+    return template.strip().replace("<file_path>", file_path)
 
 
 def _sdk_unavailable_message() -> str:
@@ -2167,15 +2201,18 @@ def _mask_reviewer_prompt(prompt: str, db_path: Optional[str] = None) -> str:
     if db_path is None:
         return prompt
     try:
+        from .secrets import masking
         from .secrets.database import get_all_secrets
-        from .secrets.masking import mask_text
 
         secrets = get_all_secrets(db_path)
         if not secrets:
             return prompt
 
-        prompt_len = len(prompt)
-        relevant: List[str] = []
+        # Only the min-length rule lives here (reviewer prompts only): values
+        # too short to mask safely are skipped and counted. The occurs-in-the-
+        # payload prefilter + pattern compile is the SHARED helper (bug #157,
+        # also used by Langfuse's sanitize_trace) -- never a second copy.
+        eligible: List[str] = []
         skipped_short = 0
         for secret in secrets:
             if not secret:
@@ -2183,13 +2220,8 @@ def _mask_reviewer_prompt(prompt: str, db_path: Optional[str] = None) -> str:
             if len(secret) < _MIN_REVIEWER_MASK_SECRET_LENGTH:
                 skipped_short += 1
                 continue
-            # Pre-filter BEFORE any pattern is built: a cheap `in` check
-            # per secret is what keeps this function fast regardless of
-            # how large or how numerous the stored secrets are -- the
-            # expensive part (re.escape + regex compile) only ever runs
-            # over the tiny relevant subset below.
-            if len(secret) <= prompt_len and secret in prompt:
-                relevant.append(secret)
+            eligible.append(secret)
+        relevant, pattern = masking.build_prefiltered_pattern(eligible, [prompt])
 
         if skipped_short:
             log_warning(
@@ -2202,7 +2234,7 @@ def _mask_reviewer_prompt(prompt: str, db_path: Optional[str] = None) -> str:
 
         if not relevant:
             return prompt
-        masked, _count = mask_text(prompt, relevant)
+        masked, _count = masking.mask_text(prompt, relevant, pattern)
         return masked
     except Exception as e:
         log_warning(
@@ -2486,6 +2518,8 @@ def _validate_normal_path(
     edit_sibling_edits_section: str = "",
     _db_path: Optional[str] = None,
     write_case: Optional[str] = None,
+    declare_intent_hint: bool = False,
+    tool_declared_tdd: Optional[bool] = None,
 ) -> dict:
     """The STRICT (declaration-required) Stage 1/2 pipeline -- extracted
     verbatim from validate_intent_and_code (issue #151 code review H2/M1)
@@ -2526,6 +2560,7 @@ def _validate_normal_path(
         exclusions,
         core_path_segments,
         extensions,
+        tool_declared_tdd=tool_declared_tdd,
     )
     log_debug("intent_validator", f"Stage 1 regex response: '{stage1_response_upper}'")
 
@@ -2555,6 +2590,11 @@ Example (all in same message as Write/Edit):
    that checks user input for XSS attacks, to improve security."
 
 Then use your Write/Edit tool in the same message."""
+        if declare_intent_hint:
+            # Story #155 AC11: prefer the tool, keep the INTENT: fallback
+            # (the generic template below). Added BEFORE the no-visible-
+            # text notice is prepended, so that notice still LEADS (#150).
+            _raw = build_declare_intent_hint(file_path) + "\n\n" + _raw
         if no_visible_text:
             # Issue #150: lead the block reason with the
             # pilot-validated notice (a ready-to-copy INTENT: example
@@ -2615,6 +2655,9 @@ Example citing user permission (in same message as Write/Edit):
    User permission to skip TDD: User said 'skip tests for this' in message 3."
 
 CRITICAL: Quote must reference actual user words from recent context."""
+        if declare_intent_hint:
+            # Story #155 AC11: same hint as the NO branch above.
+            _raw = build_declare_intent_hint(file_path) + "\n\n" + _raw
         if no_visible_text:
             # Issue #150: same lead-with-the-fix notice as the NO
             # branch above -- reachable via the n-back rescue (a
@@ -2765,6 +2808,8 @@ def validate_intent_and_code(
     edit_sibling_edits_section: str = "",
     stage2_db_path: Optional[str] = None,
     write_case: Optional[str] = None,
+    declare_intent_hint: bool = False,
+    tool_declared_tdd: Optional[bool] = None,
 ) -> dict:
     """
     Two-stage pre-tool validation with short-circuit logic.
@@ -2879,6 +2924,24 @@ def validate_intent_and_code(
             entirely) -- test-isolation safety, see
             ``_mask_reviewer_prompt``'s docstring. The real Write/Edit
             gate always supplies hook.py's own ``DEFAULT_DB_PATH``.
+        declare_intent_hint: Story #155 AC11. True when the declare_intent
+            tool path is enabled: Stage-1 NO / NO_TDD block messages then
+            carry one extra sentence pointing at the tool (preferred) with
+            the visible ``INTENT:`` line kept as the fallback. ``False``
+            (the default) leaves every block message byte-identical to
+            pre-#155.
+
+    ``tool_declared_tdd`` (Story #155 / review M2): ``None`` for a text
+    declaration (unchanged regex scan). For a tool-sourced intent, True iff
+    a non-blank structured ``test_coverage`` was declared -- Stage 1 then
+    decides TDD ONLY from it (see ``_regex_stage1_check``).
+
+    Note (Story #155): ``reasoning_summary_intent_source`` may also be
+    ``"declare_intent"`` / ``"declare_intent_chain"`` -- the caller then
+    supplies the synthesized declaration message as
+    ``current_message_override`` and ``reasoning_summary_relaxed_text`` is
+    ``None``, so the declaration takes the STRICT path (Stage-1 regex incl.
+    TDD, then Stage 2) and the result is tagged with that source.
 
     Returns:
         {"approved": True} if all checks pass
@@ -2958,6 +3021,8 @@ def validate_intent_and_code(
             edit_sibling_edits_section=edit_sibling_edits_section,
             _db_path=stage2_db_path,
             write_case=write_case,
+            declare_intent_hint=declare_intent_hint,
+            tool_declared_tdd=tool_declared_tdd,
         )
         if reasoning_summary_intent_source is not None:
             # Issue #151 code review H2/M1/L1: an exception-model turn

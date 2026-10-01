@@ -1,8 +1,18 @@
 {
   "name": "claude-pace-maker",
   "description": "Usage observability, adaptive pacing, and Langfuse telemetry for Claude Code",
-  "version": "2.36.3",
+  "version": "2.37.1",
   "author": {
     "name": "LightspeedDMS"
+  },
+  "mcpServers": {
+    "pace-maker": {
+      "command": "python3",
+      "args": ["-m", "pacemaker.intent_mcp"],
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/src",
+        "PYTHONSAFEPATH": "1"
+      }
+    }
   }
 }

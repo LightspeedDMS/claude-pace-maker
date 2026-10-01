@@ -290,6 +290,7 @@ Handles `pace-maker status/on/off` commands.
 
 **Flow**:
 1. Check if pace-maker is enabled
+1b. If the tool is a `declare_intent` MCP tool call (Story #155), store the declaration (session + agent + normalized path) in `intent_declarations.db` — first, before any slow work
 2. Increment global tool execution counter
 3. Record activity event (event code `PA` = pacing, or `LF` = Langfuse push)
 4. Check global_poll_state for API poll coordination
@@ -452,6 +453,35 @@ that checks password strength, to improve security.
 [then use Write/Edit tool in same message]
 ```
 
+#### Tool-first declaration: the `declare_intent` MCP tool (Story #155)
+
+Declaring through response text is fragile on newer models (a note before a tool call can become an empty `thinking` block, especially in subagents) and races the transcript flush. The preferred declaration path is therefore a real tool, **recorded by hooks and checked before the transcript**:
+
+```
+ agent                       PostToolUse hook                 declaration store
+   │  declare_intent(file,        │                         ~/.claude-pace-maker/
+   │   change, goal, test_cov) ──►│ record_declare_intent ─►  intent_declarations.db
+   │  (MCP server: pure ack)      │  keyed session+agent+path   declarations / chains
+   │                              │                             (60-minute TTL, purged
+   │  Write/Edit ──► PreToolUse ──┼─ resolve_declared_intent ─► on every access)
+   │                              │
+   │        1 declaration (consume) → 2 chain (same file) → 3 other-file chain deleted
+   │        └─ hit: intent = synthesized "INTENT: <change> in <file> — goal: <goal>"
+   │                (+ "Test coverage: …"); NO transcript read, NO anchor wait
+   │        4 miss: existing transcript path, unchanged (+ same-message declare_intent)
+   │
+   │        Stage 1 (regex incl. TDD) → Stage 2 (reviewer) → verdict
+   │        approved (tool-sourced) → chain upserted · rejected → chain deleted
+```
+
+- **Server**: `src/pacemaker/intent_mcp/` — stdlib-only JSON-RPC 2.0 over stdio, named `pace-maker` (tool `mcp__pace-maker__declare_intent`; as a plugin `mcp__plugin_claude-pace-maker_pace-maker__declare_intent`). It stores nothing; hooks do (they know `session_id` and `agent_id`).
+- **Store**: `src/pacemaker/intent_declarations/store.py` (WAL SQLite, `PACEMAKER_INTENT_DECLARATIONS_PATH` override). Tables `declarations` and `chains`, both keyed by `session_id` + `agent_key` (`agent_id`, or `main`).
+- **Install**: `install.sh` registers the server at user scope from the installed snapshot (`claude mcp add --scope user …`, idempotent, non-fatal); the plugin declares it inline in `.claude-plugin/plugin.json`.
+- **Permission**: `install.sh` also adds `mcp__pace-maker__declare_intent` to `permissions.allow` in the settings file it registers the hooks in (idempotent merge, `intent_mcp/permissions.py`); a plugin cannot ship the permission, so plugin users add `mcp__plugin_claude-pace-maker_pace-maker__declare_intent` themselves.
+- **TDD on this path**: only a non-blank structured `test_coverage` satisfies it (free-text wording never does).
+- **Kill switch**: `intent_declaration_tool_enabled` (default `true`); `false` restores the pre-#155 behaviour exactly, and the MCP server itself then answers "declare_intent is disabled — write the INTENT: line in your response instead".
+- Full rules, edges and test map: CLAUDE.md, "Story #155".
+
 ### Light-TDD Enforcement
 
 Files in core code paths require either a test declaration or explicit user permission to skip TDD.
@@ -523,6 +553,16 @@ Write/Edit Tool Attempted
 │ Source code file?     │──── NO ──────► ALLOW (non-source file)
 └───────────────────────┘
         │ YES
+        ▼
+┌────────────────────────────────────────────────────────┐
+│ TOOL-FIRST LOOKUP (Story #155)                          │
+│  - declare_intent declaration for this agent+file?      │
+│    → consume it; else the agent's chain for this file   │
+│  - HIT: intent = the declaration; skip the transcript   │
+│    read and the anchor wait entirely (go to Stage 1)    │
+│  - MISS (or kill switch off): continue below            │
+└────────────────────────────────────────────────────────┘
+        │
         ▼
 ┌────────────────────────────────────────────────────────┐
 │ STAGE 1: Fast Declaration Check (Sonnet, ~2-4 seconds) │
@@ -1324,6 +1364,7 @@ This ensures at most one API call per 60 seconds across all concurrent hook invo
 | `tempo_enabled` | boolean | `true` | Enable stop-hook completion validation |
 | `tdd_enabled` | boolean | `true` | Enable TDD enforcement in pre-tool validation |
 | `intent_validation_enabled` | boolean | `true` | Enable pre-tool validation (intent, TDD, clean code) |
+| `intent_declaration_tool_enabled` | boolean | `true` | Story #155: record `declare_intent` MCP tool calls and validate Write/Edit from them before the transcript. `false` = pre-#155 behaviour exactly (nothing stored, no lookup, guidance/block messages unchanged) |
 | `log_level` | integer | `2` | Log verbosity: 0=off, 1=error, 2=warning, 3=info, 4=debug |
 | `subagent_reminder_enabled` | boolean | `true` | Enable/disable subagent delegation reminders |
 | `subagent_reminder_frequency` | integer | `5` | Tool executions between reminders |

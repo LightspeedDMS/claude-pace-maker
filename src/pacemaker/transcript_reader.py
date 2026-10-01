@@ -11,6 +11,7 @@ import re
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union, overload
 
+from .intent_declarations.fields import declare_inputs_from_tools
 from .logger import log_warning, log_debug
 
 MAX_MESSAGE_LENGTH = 10000
@@ -1098,6 +1099,22 @@ def _find_turn_matching_tool_input(
                                     _sib_exc,
                                 )
                                 _outcome["anchor_sibling_edits"] = None
+                            # Story #155: declare_intent tool_use inputs in
+                            # this turn (the same-message declaration
+                            # fallback) -- same own-try placement.
+                            try:
+                                _outcome["anchor_declare_intents"] = (
+                                    declare_inputs_from_tools(merged["tools"])
+                                )
+                            except Exception as _decl_exc:
+                                log_warning(
+                                    "transcript_reader",
+                                    "declare-intent extraction failed on "
+                                    "stale path (non-fatal, outcome "
+                                    "unaffected)",
+                                    _decl_exc,
+                                )
+                                _outcome["anchor_declare_intents"] = []
                             try:
                                 _outcome["anchor_has_visible_text"] = bool(
                                     merged["text"].strip()
@@ -1198,6 +1215,19 @@ def _find_turn_matching_tool_input(
                     _sib_exc,
                 )
                 _outcome["anchor_sibling_edits"] = None
+            # Story #155: same own-try placement as the stale branch above.
+            try:
+                _outcome["anchor_declare_intents"] = declare_inputs_from_tools(
+                    merged["tools"]
+                )
+            except Exception as _decl_exc:
+                log_warning(
+                    "transcript_reader",
+                    "declare-intent extraction failed on found path "
+                    "(non-fatal, outcome unaffected)",
+                    _decl_exc,
+                )
+                _outcome["anchor_declare_intents"] = []
             try:
                 _outcome["anchor_has_visible_text"] = bool(merged["text"].strip())
                 _outcome["anchor_has_thinking"] = _turn_has_thinking(
@@ -1276,6 +1306,11 @@ def _copy_anchor_shape_flags(diagnostics: dict, attempt_outcome: dict) -> None:
     # Issue #153: additive, same .get() semantics -- a genuine not_found
     # never populates this, so it correctly copies as None.
     diagnostics["anchor_sibling_edits"] = attempt_outcome.get("anchor_sibling_edits")
+    # Story #155: additive, same .get() semantics -- a genuine not_found
+    # never populates this, so it correctly copies as None.
+    diagnostics["anchor_declare_intents"] = attempt_outcome.get(
+        "anchor_declare_intents"
+    )
 
 
 def get_current_turn_message_for_validation(

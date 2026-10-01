@@ -103,9 +103,46 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 3: Remove ~/.claude/hooks/pacemaker/ directory
+# Step 2b: Remove the user-scope declare_intent MCP registration (Story #155)
+#
+# install.sh registered it at user scope; in plugin mode the plugin manifest
+# declares the same server itself, so the legacy registration would only
+# duplicate it. Must run BEFORE step 3: the helper lives in the installed
+# snapshot that step 3 deletes. Non-fatal -- a failure only leaves a stale
+# (harmless) registration behind.
 # ---------------------------------------------------------------------------
 PACEMAKER_HOOKS_DIR="$HOOKS_DIR/pacemaker"
+if [ -f "$PACEMAKER_HOOKS_DIR/intent_mcp/registration.py" ] && command -v claude >/dev/null 2>&1; then
+    echo "Removing the user-scope declare_intent MCP registration..."
+    MIGRATE_PYTHON="$(command -v python3.11 || command -v python3.10 || command -v python3 || true)"
+    if [ -n "$MIGRATE_PYTHON" ] && PYTHONPATH="$HOOKS_DIR" PYTHONSAFEPATH=1 "$MIGRATE_PYTHON" \
+            -m pacemaker.intent_mcp.registration remove; then
+        echo -e "${GREEN}✓ declare_intent MCP registration removed${NC}"
+    else
+        echo -e "${YELLOW}⚠ Could not remove the declare_intent MCP registration; run: claude mcp remove --scope user pace-maker${NC}"
+    fi
+else
+    echo -e "${YELLOW}No installed snapshot or claude CLI found, skipping MCP registration removal${NC}"
+fi
+
+# The permission install.sh added for that tool (Story #155 review M3) goes
+# with it. Same ordering constraint (helper lives in the snapshot) and the same
+# non-fatal policy. NOTE: a plugin cannot ship this permission itself -- users
+# of the plugin add mcp__plugin_claude-pace-maker_pace-maker__declare_intent to
+# their own permissions.allow (see CLAUDE.md, "Story #155").
+if [ -f "$PACEMAKER_HOOKS_DIR/intent_mcp/permissions.py" ] && [ -f "$SETTINGS_FILE" ]; then
+    MIGRATE_PYTHON="${MIGRATE_PYTHON:-$(command -v python3.11 || command -v python3.10 || command -v python3 || true)}"
+    if [ -n "$MIGRATE_PYTHON" ] && PYTHONPATH="$HOOKS_DIR" PYTHONSAFEPATH=1 "$MIGRATE_PYTHON" \
+            -m pacemaker.intent_mcp.permissions remove --settings-file "$SETTINGS_FILE"; then
+        echo -e "${GREEN}✓ declare_intent permission removed from settings.json${NC}"
+    else
+        echo -e "${YELLOW}⚠ Could not remove the declare_intent permission from $SETTINGS_FILE; remove \"mcp__pace-maker__declare_intent\" from permissions.allow yourself${NC}"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 3: Remove ~/.claude/hooks/pacemaker/ directory
+# ---------------------------------------------------------------------------
 if [ -d "$PACEMAKER_HOOKS_DIR" ]; then
     echo "Removing $PACEMAKER_HOOKS_DIR..."
     rm -rf "$PACEMAKER_HOOKS_DIR"

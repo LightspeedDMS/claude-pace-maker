@@ -6,7 +6,7 @@ Provides functions to mask secret values in text and nested data structures.
 
 import copy
 import re
-from typing import Any, List, Tuple, Optional
+from typing import Any, Iterable, List, Tuple, Optional
 
 
 def _build_secrets_pattern(secrets: List[str]) -> Optional[re.Pattern]:
@@ -33,6 +33,69 @@ def _build_secrets_pattern(secrets: List[str]) -> Optional[re.Pattern]:
     # Join with | (OR) operator for single-pass matching
     pattern_str = "|".join(escaped)
     return re.compile(pattern_str)
+
+
+def collect_strings(data: Any) -> List[str]:
+    """Every string ``mask_structure`` would mask in ``data``: string VALUES
+    reached through dicts, lists and tuples (dict KEYS are never masked, so
+    they are never collected; other container/scalar types are copied
+    unmasked, so they hold nothing to collect). Iterative -- no recursion
+    limit on deep payloads."""
+    found: List[str] = []
+    stack = [data]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            found.append(item)
+        elif isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+    return found
+
+
+def build_prefiltered_pattern(
+    secrets: Iterable[str], texts: Iterable[str]
+) -> Tuple[List[str], Optional[re.Pattern]]:
+    """Bug #157: keep only the stored secrets that actually OCCUR in the
+    payload, then build and compile the pattern from that subset.
+
+    Compiling one regex from the whole store (hundreds of secrets, MBs of
+    ``SECRET_FILE`` content) cost ~8 s of CPU per hook process -- more than
+    SubagentStart's 10 s budget -- while at most a handful of secrets ever
+    occur in a given payload. A secret that occurs in no payload string can
+    never match, and deleting an alternative that can never match changes
+    neither WHICH alternative wins at any position (the survivors keep their
+    relative longest-first order) nor any count -- so the masked output is
+    byte-identical to full-store masking, by construction.
+
+    Shared by ``secrets.sanitizer.sanitize_trace`` (every Langfuse push) and
+    ``intent_validator._mask_reviewer_prompt``. Applies NO minimum secret
+    length: that is the reviewer-prompt caller's own rule, applied before it
+    calls this.
+
+    Args:
+        secrets: stored secret values (empty values are ignored).
+        texts: the payload strings (see ``collect_strings``).
+
+    Returns:
+        ``(relevant, pattern)`` -- the occurring secrets in their original
+        order, and the compiled pattern (``None`` when none occur).
+    """
+    payload = [text for text in texts if text]
+    if not payload:
+        return [], None
+    longest = max(len(text) for text in payload)
+    relevant: List[str] = []
+    for secret in secrets:
+        # A secret longer than every payload string cannot occur in any.
+        if not secret or len(secret) > longest:
+            continue
+        if any(secret in text for text in payload):
+            relevant.append(secret)
+    if not relevant:
+        return [], None
+    return relevant, _build_secrets_pattern(relevant)
 
 
 def mask_text(

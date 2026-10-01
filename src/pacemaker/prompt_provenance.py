@@ -72,6 +72,7 @@ CHANNELS = frozenset(
         "session_start_manifest",
         "subagent_start_manifest",
         "version_block_notice",
+        "declare_intent_result",
         REVIEWER_RELAY_CHANNEL,
     }
 )

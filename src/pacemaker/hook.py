@@ -39,6 +39,9 @@ from .transcript_reader import (
     get_last_n_messages_for_validation,
     get_current_turn_message_for_validation,
 )
+from .bounded_call import run_with_deadline
+from .intent_declarations import gate as declaration_gate
+from .intent_declarations import subagent_guidance
 from .logger import log_warning, log_debug, log_info, log_error
 from .prompt_provenance import format_tag, format_reviewer_relay
 
@@ -83,6 +86,27 @@ _DANGER_BASH_MAX_WAIT_SECONDS = 3.0
 # _DANGER_BASH_MAX_WAIT_SECONDS shortens the not_found path above, but
 # scoped to "stale" only (does NOT lower the not_found ceiling itself).
 _WRITE_EDIT_STALE_GRACE_SECONDS = 3.0
+
+# Bug #157 (fix 4, defence in depth): how long SubagentStart / SubagentStop may
+# spend on their Langfuse step, measured from the start of the hook function.
+# Both hooks run under a 10 s harness timeout, and a cancelled SubagentStart
+# delivers NOTHING to the subagent. The Langfuse step does network I/O whose own
+# timeouts (10 s trace push, 3 s OAuth profile) exceed the budget by themselves,
+# so it runs through bounded_call.run_with_deadline. 5 s leaves ~5 s for what the
+# budget does not cover: the shell wrapper's find_python (~0.7 s, imports
+# claude_agent_sdk), interpreter + module imports (~0.5 s), state/CSA work and
+# the output itself. After the fix the whole hook measures ~1 s without load.
+SUBAGENT_HOOK_LANGFUSE_BUDGET_SECONDS = 5.0
+# Floor so a slow earlier step never reduces the Langfuse wait to "none at all".
+_SUBAGENT_HOOK_LANGFUSE_MIN_WAIT_SECONDS = 0.25
+
+
+def _langfuse_wait_budget(hook_started: float) -> float:
+    """Seconds left for the bounded Langfuse step of a subagent hook."""
+    remaining = SUBAGENT_HOOK_LANGFUSE_BUDGET_SECONDS - (
+        time.monotonic() - hook_started
+    )
+    return max(_SUBAGENT_HOOK_LANGFUSE_MIN_WAIT_SECONDS, remaining)
 
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
@@ -196,22 +220,40 @@ def inject_prompt_delay(prompt: str):
     safe_print(prompt, file=sys.stdout, flush=True)
 
 
-def display_intent_validation_guidance() -> str:
+def display_intent_validation_guidance(config: Optional[dict] = None) -> str:
     """
     Load intent validation guidance from external file.
 
     Shared helper used by both SessionStart and SubagentStart hooks.
     Shows requirements for intent declaration and TDD enforcement.
 
+    Story #155: when the declare_intent tool path is enabled, the guidance
+    LEADS with the pilot-validated "call the declare_intent tool first"
+    paragraph (prompts/session_start/declare_intent_guidance.md); the #150
+    "C text" and every visible-INTENT: instruction follow immediately as the
+    fallback, unchanged. With the kill switch off the output is
+    byte-identical to pre-#155.
+
+    Args:
+        config: the caller's already-loaded config. ``None`` means the
+            shipped defaults (tool path enabled) -- deliberately NOT a
+            hidden read of the user's real config file.
+
     Returns:
         String containing the guidance text loaded from external file
     """
+    from .intent_declarations.gate import intent_declaration_tool_enabled
     from .prompt_loader import PromptLoader
 
     loader = PromptLoader()
     guidance = loader.load_prompt(
         "intent_validation_guidance.md", subfolder="session_start"
     )
+    if intent_declaration_tool_enabled(config or {}):
+        declare_paragraph = loader.load_prompt(
+            "declare_intent_guidance.md", subfolder="session_start"
+        )
+        guidance = f"{declare_paragraph.strip()}\n\n{guidance}"
     # format_tag is imported at module top: `from .prompt_provenance import
     # format_tag, format_reviewer_relay` (already used elsewhere in this
     # file, e.g. _fail_closed_message() above).
@@ -548,7 +590,7 @@ def run_session_start_hook():
     # Display intent validation mandate if enabled
     try:
         if config.get("intent_validation_enabled", False):
-            guidance = display_intent_validation_guidance()
+            guidance = display_intent_validation_guidance(config)
             safe_print(guidance, file=sys.stdout)
     except Exception as e:
         # Log error but don't break session start
@@ -616,6 +658,9 @@ def run_subagent_start_hook():
 
     Also displays intent validation mandate if feature is enabled.
     """
+    # Bug #157: the hook's own clock, for the bounded Langfuse step below.
+    hook_started = time.monotonic()
+
     # Load config
     config = load_config(DEFAULT_CONFIG_PATH)
 
@@ -684,7 +729,21 @@ def run_subagent_start_hook():
     if hook_data:
         log_debug("hook", f"SubagentStart hook_data keys: {list(hook_data.keys())}")
         log_debug("hook", f"SubagentStart hook_data: {hook_data}")
-        subagent_trace_id = _handle_langfuse_subagent_start(hook_data, config)
+        # Bug #157: bounded -- a slow/unreachable Langfuse must never cost the
+        # subagent its guidance (the output below does not depend on this step).
+        _lf_finished, subagent_trace_id = run_with_deadline(
+            _handle_langfuse_subagent_start,
+            _langfuse_wait_budget(hook_started),
+            hook_data,
+            config,
+        )
+        if not _lf_finished:
+            log_warning(
+                "hook",
+                "SubagentStart: Langfuse step exceeded its "
+                f"{SUBAGENT_HOOK_LANGFUSE_BUDGET_SECONDS}s budget -- continuing "
+                "without a subagent trace (guidance is still delivered)",
+            )
 
         # Store subagent trace info in pacemaker state for:
         # 1. PostToolUse to link spans to subagent trace
@@ -733,29 +792,9 @@ def run_subagent_start_hook():
         safe_print(json.dumps(output), file=sys.stdout)
 
     # Collect context parts from intent validation and CSA, then emit exactly once.
-    _additional_context_parts: list = []
-
-    # Story #101: SubagentStart abbreviated provenance manifest. Subagents
-    # have ZERO session history (no SessionStart banner ever reaches them),
-    # so this is always appended, independent of intent_validation_enabled.
-    try:
-        from .prompt_provenance import subagent_start_manifest
-
-        _additional_context_parts.append(subagent_start_manifest())
-    except Exception as e:
-        log_warning("hook", f"Failed to build subagent_start_manifest: {e}")
-
-    # Display intent validation mandate if enabled
-    try:
-        if config.get("intent_validation_enabled", False):
-            guidance = display_intent_validation_guidance()
-            _additional_context_parts.append(guidance)
-    except Exception as e:
-        # Log error but don't break subagent start
-        print(
-            f"[PACE-MAKER WARNING] Failed to display intent guidance: {e}",
-            file=sys.stderr,
-        )
+    # The manifest + intent guidance come from the SAME builder PostToolUse's
+    # late delivery uses (bug #157), so both channels deliver identical text.
+    _additional_context_parts: list = _subagent_guidance_parts(config)
 
     # Cross-Session Awareness: inject sibling banner for new subagent if siblings present.
     # State is reloaded here to get workspace_root cached by SessionStart.
@@ -787,6 +826,65 @@ def run_subagent_start_hook():
     if _additional_context_parts:
         _emit_subagent_additional_context("\n\n".join(_additional_context_parts))
 
+    # Bug #157 -- VERY LAST step, after the output above was written: record
+    # that SubagentStart completed for (session_id, agent_id). A subagent whose
+    # SubagentStart was cancelled never reaches this line, so its first
+    # PostToolUse delivers the guidance late (see run_hook). Never raises.
+    try:
+        if hook_data:
+            subagent_guidance.record_start_completed(hook_data)
+    except Exception as e:
+        log_warning("hook", f"Could not record SubagentStart completion: {e}")
+
+
+def _subagent_guidance_parts(config: dict) -> list:
+    """The pace-maker context a subagent must receive: the abbreviated
+    provenance manifest (ALWAYS -- subagents have zero session history, so
+    independent of intent_validation_enabled; Story #101) and, when
+    ``intent_validation_enabled``, the intent-validation guidance. Shared by
+    SubagentStart and PostToolUse's late delivery (bug #157) so both deliver
+    identical text. Each part fails independently and never raises."""
+    parts: list = []
+    try:
+        from .prompt_provenance import subagent_start_manifest
+
+        parts.append(subagent_start_manifest())
+    except Exception as e:
+        log_warning("hook", f"Failed to build subagent_start_manifest: {e}")
+
+    # Display intent validation mandate if enabled
+    try:
+        if config.get("intent_validation_enabled", False):
+            parts.append(display_intent_validation_guidance(config))
+    except Exception as e:
+        # Log error but don't break subagent start
+        print(
+            f"[PACE-MAKER WARNING] Failed to display intent guidance: {e}",
+            file=sys.stderr,
+        )
+    return parts
+
+
+def _prepare_late_subagent_guidance(hook_data: dict, config: dict) -> Optional[str]:
+    """Bug #157: the guidance text a subagent's PostToolUse MAY have to inject,
+    or None. Cheap on the common path (every subagent tool call after the
+    first): ``agent_id`` is checked first, then a read-only "already completed
+    or delivered?" check, and only when delivery is actually still needed is
+    the text built. Nothing is claimed here -- the atomic claim happens
+    IMMEDIATELY BEFORE the output is printed (see ``run_hook``), so a pacing
+    delay or a slow Langfuse push between the two can never spend the one
+    delivery without the output going out."""
+    if not hook_data.get("agent_id"):
+        return None
+    try:
+        if not subagent_guidance.needs_late_guidance(hook_data):
+            return None
+        parts = _subagent_guidance_parts(config)
+        return "\n\n".join(parts) if parts else None
+    except Exception as e:
+        log_warning("hook", f"Late subagent guidance preparation failed: {e}")
+        return None
+
 
 def run_subagent_stop_hook():
     """
@@ -796,6 +894,9 @@ def run_subagent_stop_hook():
     Decrements subagent_counter and sets in_subagent flag based on counter.
     Does NOT reset tool_execution_count (global counter persists).
     """
+    # Bug #157: the hook's own clock, for the bounded Langfuse step below.
+    hook_started = time.monotonic()
+
     # Load config
     config = load_config(DEFAULT_CONFIG_PATH)
 
@@ -883,7 +984,11 @@ def run_subagent_stop_hook():
         subagent_trace_id = trace_info.get("trace_id")
         parent_transcript_path = trace_info.get("parent_transcript_path")
 
-        try:
+        def _finalize_langfuse_trace() -> None:
+            # Bug #157: this whole Langfuse step (trace finalize + parent
+            # pending-trace flush) is network I/O; it runs through
+            # run_with_deadline below so the hook always returns in time.
+            nonlocal parent_transcript_path
             from .langfuse import orchestrator
 
             # Get parent transcript path for extracting subagent output
@@ -952,6 +1057,18 @@ def run_subagent_stop_hook():
                     "hook",
                     "SubagentStop: Failed to flush parent pending trace",
                     e,
+                )
+
+        try:
+            _lf_finished, _ = run_with_deadline(
+                _finalize_langfuse_trace, _langfuse_wait_budget(hook_started)
+            )
+            if not _lf_finished:
+                log_warning(
+                    "hook",
+                    f"SubagentStop: Langfuse finalize of {subagent_trace_id} "
+                    f"exceeded its {SUBAGENT_HOOK_LANGFUSE_BUDGET_SECONDS}s "
+                    "budget -- continuing (trace left unfinalized)",
                 )
         except Exception as e:
             # Graceful failure - log but don't break hook
@@ -1116,6 +1233,27 @@ def run_hook():
             transcript_path = hook_data.get("transcript_path")
     except (json.JSONDecodeError, Exception) as e:
         log_warning("hook", "Failed to parse hook data from stdin", e)
+
+    # Story #155: record a declare_intent MCP tool call (main thread or
+    # subagent) so the Write/Edit gate can validate the next edit from it
+    # without waiting on the transcript. Done FIRST, before the slow
+    # pacing/Langfuse work below, so the declaration is in the store well
+    # before the model's next tool call. Never raises for a store failure
+    # (the only consequence is the transcript fallback later); a no-op for
+    # every other tool and when the kill switch is off.
+    if isinstance(hook_data, dict):
+        declaration_gate.record_declare_intent(hook_data, config)
+
+    # Bug #157: a subagent's FIRST tool call with no SubagentStart completion
+    # record gets the guidance SubagentStart should have delivered (once per
+    # agent). The text is PREPARED here (cheap read-only check first) and held
+    # aside; it is CLAIMED atomically only at the very end, right before the
+    # single output is printed.
+    _late_subagent_guidance: Optional[str] = (
+        _prepare_late_subagent_guidance(hook_data, config)
+        if isinstance(hook_data, dict)
+        else None
+    )
 
     # Load state
     state = load_state(DEFAULT_STATE_PATH)
@@ -1363,6 +1501,22 @@ def run_hook():
             log_warning("hook", "Langfuse span creation failed on PostToolUse", e)
 
     # Print final message if any (code review takes priority over subagent nudge)
+    # Bug #157 (code-review L1): the late-guidance claim is made HERE, just
+    # before printing -- never earlier. Losing the race to another PostToolUse of
+    # the same agent means that one delivers it; we print no duplicate. A hook
+    # killed between the claim and the print could still lose the delivery for
+    # a few milliseconds' window (documented, accepted).
+    if _late_subagent_guidance and subagent_guidance.claim_late_guidance(hook_data):
+        log_info(
+            "hook",
+            "PostToolUse: delivering subagent guidance late (SubagentStart did "
+            f"not complete) agent_id={hook_data.get('agent_id')}",
+        )
+        pending_message = (
+            f"{_late_subagent_guidance}\n\n{pending_message}"
+            if pending_message
+            else _late_subagent_guidance
+        )
     if pending_message:
         output = {
             "hookSpecificOutput": {
@@ -2753,6 +2907,13 @@ def run_pre_tool_hook() -> Dict[str, Any]:
     # silently fell back to {"continue": True}, defeating the gate.
     _gate_committed = False
 
+    # Story #155 (review L2): the tool/chain intent in use for this edit, and
+    # what is needed to end its chain, declared before `try:` so the
+    # fail-closed handler below can always read them (None until the Write/
+    # Edit gate has resolved one).
+    _declared_intent: Optional[declaration_gate.DeclaredIntent] = None
+    _declared_ctx: Optional[tuple] = None
+
     # Single wall clock for the whole gate (issue #108). Claude Code kills
     # this hook at PRE_TOOL_HOOK_TIMEOUT_SECONDS, and a KILLED PreToolUse hook
     # is an UNVALIDATED TOOL CALL — the harness simply proceeds. The phases
@@ -3668,6 +3829,26 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         else:
             return {"continue": True}
 
+        # 5b. Story #155 -- tool first, transcript fallback. BEFORE any
+        # transcript work: a stored declare_intent declaration for this
+        # agent+file (consumed here), else the agent's chain when it is for
+        # this same file; a chain for a DIFFERENT file is deleted. None =
+        # nothing declared (or the kill switch is off / the store failed):
+        # the existing transcript path below runs unchanged.
+        _declared_intent = declaration_gate.resolve_declared_intent(
+            hook_data, file_path, config
+        )
+        _declared_ctx = (hook_data, file_path, config)
+        # The synthesized "INTENT: <change> in <file> -- goal: <goal>"
+        # (+ "Test coverage: ...") IS the Stage 1/Stage 2 intent, so TDD
+        # enforcement, Stage 2 review and telemetry run exactly as for a
+        # text declaration.
+        _declared_message = (
+            declaration_gate.render_intent_message(_declared_intent.intent, file_path)
+            if _declared_intent is not None
+            else ""
+        )
+
         # 6. Read last 2 messages for validation (text + tool_use are separate entries).
         # Issue #140 code-review findings 1-3 (structural PROSE-ONLY list)
         # and re-review finding 2 (single-parse performance): ONE call with
@@ -3683,9 +3864,15 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # string embedded only in a Write's `content` or an Edit's
         # `old_string`/`new_string` is simply never present in the prose
         # list to begin with.
-        messages, _write_edit_prose_messages = get_last_n_messages_for_validation(
-            transcript_path, n=2, _with_prose=True
-        )
+        if _declared_intent is not None:
+            # Story #155: the declaration IS the intent -- no transcript
+            # read at all. Stage 2's "recent context" is the declaration.
+            messages = [_declared_message]
+            _write_edit_prose_messages = [_declared_message]
+        else:
+            messages, _write_edit_prose_messages = get_last_n_messages_for_validation(
+                transcript_path, n=2, _with_prose=True
+            )
 
         # 6b. Fix 3: anchor the Stage-1 current-turn message on the requestId
         # group of the Write/Edit tool_use being validated. This reliably
@@ -3696,25 +3883,33 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # telemetry on give-up (issue #91 second pass observability
         # requirement) -- mirrors the danger-bash gate above.
         _write_edit_diagnostics: dict = {}
-        current_message_override = get_current_turn_message_for_validation(
-            transcript_path,
-            tool_input=tool_input,
-            tool_name=tool_name,
-            _diagnostics=_write_edit_diagnostics,
-            # Clamp to the gate's remaining time (issue #108). This wait is
-            # SEQUENTIAL with the review that follows, so its full 30s cap
-            # plus the review budget overran the harness timeout.
-            _max_wait_seconds=max(
-                0.0,
-                min(
-                    PRE_TOOL_ANCHOR_CAP_SECONDS,
-                    _gate_deadline - time.monotonic(),
+        current_message_override: Optional[str]
+        if _declared_intent is not None:
+            # Story #155 AC4: validated from the declaration, WITHOUT waiting
+            # on the transcript anchor. No diagnostics are populated, so every
+            # anchor-derived flag below reads as absent (the same state as a
+            # genuine not_found, minus the block).
+            current_message_override = _declared_message
+        else:
+            current_message_override = get_current_turn_message_for_validation(
+                transcript_path,
+                tool_input=tool_input,
+                tool_name=tool_name,
+                _diagnostics=_write_edit_diagnostics,
+                # Clamp to the gate's remaining time (issue #108). This wait
+                # is SEQUENTIAL with the review that follows, so its full 30s
+                # cap plus the review budget overran the harness timeout.
+                _max_wait_seconds=max(
+                    0.0,
+                    min(
+                        PRE_TOOL_ANCHOR_CAP_SECONDS,
+                        _gate_deadline - time.monotonic(),
+                    ),
                 ),
-            ),
-            # Issue #139 finding #4: shortens ONLY the "stale" path's
-            # latency -- does not lower the not_found ceiling above.
-            _stale_grace_seconds=_WRITE_EDIT_STALE_GRACE_SECONDS,
-        )
+                # Issue #139 finding #4: shortens ONLY the "stale" path's
+                # latency -- does not lower the not_found ceiling above.
+                _stale_grace_seconds=_WRITE_EDIT_STALE_GRACE_SECONDS,
+            )
 
         # Issue #140 code-review findings 1-3: when the anchor was FOUND
         # with a real intent in its own text, current_message_override was
@@ -3897,6 +4092,31 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                     ),
                 }
 
+        # Story #155 AC8: the transcript fallback additionally accepts a
+        # declare_intent tool_use for THIS file inside the anchored turn (the
+        # declaration and the edit sent in the same message, with no stored
+        # declaration/chain). Only when the anchored turn has no INTENT: text
+        # of its own (override empty) and the kill switch is on.
+        if _declared_intent is None:
+            _declared_intent = declaration_gate.same_message_fallback(
+                current_message_override,
+                _write_edit_diagnostics,
+                file_path,
+                hook_data,
+                config,
+            )
+            if _declared_intent is not None:
+                _declared_message = declaration_gate.render_intent_message(
+                    _declared_intent.intent, file_path
+                )
+                current_message_override = _declared_message
+                # Stage 2 must see the declared change/goal too (the tool
+                # call itself renders only its file_path in `messages`).
+                messages = list(messages) + [_declared_message]
+                # A declaration WAS made -- never tell the agent its message
+                # "had NO visible text" on a Stage-1 block below.
+                _write_edit_diagnostics["anchor_has_visible_text"] = True
+
         # Activity events: IV/TD/CC blue (validation in-progress) — settings-aware
         try:
             _sid = session_id or "unknown"
@@ -3984,6 +4204,14 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 allow_prior_turn_fallback=True,
             )
         )
+        if _declared_intent is not None:
+            # Story #155: a tool-sourced declaration always takes the STRICT
+            # path (Stage-1 regex incl. TDD, then Stage 2), even for an
+            # exception-listed model whose anchored turn would otherwise
+            # have been relaxed -- tagged so telemetry can tell which path
+            # validated the edit.
+            _write_edit_relaxed_text = None
+            _write_edit_intent_source = _declared_intent.source
 
         # Issue #151 live-test follow-up: the relaxed path is anchor-only
         # by design (#93/#139) -- it never saw the PRIOR turns' reasoning,
@@ -4106,6 +4334,36 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             # genuinely-new Write; "existing_diff"/"existing_full_content"
             # for a Write over an existing file -- see step 5 above).
             write_case=_write_case,
+            # Story #155 AC11: Stage-1 block messages prefer the tool (and
+            # keep the INTENT: fallback) only while the tool path is on.
+            declare_intent_hint=declaration_gate.intent_declaration_tool_enabled(
+                config
+            ),
+            # Review M2: a tool-sourced intent satisfies TDD ONLY through its
+            # structured test_coverage (None = text declaration, regex scan).
+            tool_declared_tdd=(
+                bool(_declared_intent.intent.test_coverage.strip())
+                if _declared_intent is not None
+                else None
+            ),
+        )
+
+        # Story #155: apply the verdict to the agent's chain (approved
+        # tool-sourced intent -> chain; any rejection -> chain deleted) and
+        # record which path validated this edit.
+        declaration_gate.record_outcome(
+            hook_data,
+            file_path,
+            _declared_intent,
+            bool(result.get("approved", False)),
+            config,
+        )
+        log_info(
+            "hook",
+            "Intent validation: "
+            f"{'approved' if result.get('approved', False) else 'rejected'} "
+            f"{tool_name} on {file_path} via "
+            f"{_declared_intent.source if _declared_intent else 'transcript'}",
         )
 
         # 8. Return result
@@ -4193,6 +4451,12 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 _write_edit_details["recent_context_included"] = (
                     _write_edit_recent_context_included
                 )
+            if _declared_intent is not None:
+                # Story #155: which tool path validated this edit
+                # ("declare_intent" | "declare_intent_chain"). Absent for a
+                # transcript-sourced block, so those details stay
+                # byte-identical to pre-#155.
+                _write_edit_details["intent_source"] = _declared_intent.source
             record_blockage(
                 db_path=DEFAULT_DB_PATH,
                 category=category,
@@ -4294,6 +4558,26 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 f"[PACE-MAKER ERROR] Pre-tool hook (fail-closed): {e}",
                 file=sys.stderr,
             )
+            # Story #155 (review L2): like any rejection, an internal-error
+            # block ends the agent's chain when a tool/chain intent was in
+            # use, so the retry needs a fresh declaration. Guarded: this
+            # handler must always get to return its block.
+            if _declared_intent is not None and _declared_ctx is not None:
+                try:
+                    declaration_gate.record_outcome(
+                        _declared_ctx[0],
+                        _declared_ctx[1],
+                        _declared_intent,
+                        False,
+                        _declared_ctx[2],
+                    )
+                except Exception as outcome_exc:
+                    log_warning(
+                        "hook",
+                        "could not end the declaration chain after an "
+                        "internal error (block unaffected)",
+                        outcome_exc,
+                    )
             # Merge CSA reminder for consistency with every other Write/Edit
             # return path in this function (see the "not approved" branch
             # above) — a fail-closed block is still a reachable return path

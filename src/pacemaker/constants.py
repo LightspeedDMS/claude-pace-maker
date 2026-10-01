@@ -37,7 +37,52 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "reasoning_summary_intent_models": [
         "claude-opus-5-5"
     ],  # Issue #151: models whose anchored turn's reasoning summary (plus any visible text) is accepted as intent, bypassing the INTENT:/TDD/version-bump regex. Empty list restores strict behavior for every model.
+    "intent_declaration_tool_enabled": True,  # Story #155: kill switch for the declare_intent MCP tool path. False = the PostToolUse recorder stores nothing, the Write/Edit gate skips the declaration/chain lookup, and guidance/block messages are byte-identical to pre-#155.
 }
+
+# Story #155 -- tool-first intent declaration (declare_intent MCP tool).
+#
+# The MCP server is named "pace-maker", so a user-scope registration
+# (install.sh) yields the tool name mcp__pace-maker__declare_intent. When
+# pace-maker is installed as a Claude Code PLUGIN, Claude Code prefixes the
+# server with the plugin name: mcp__plugin_<plugin>_<server>__<tool>
+# (precedent: mcp__plugin_atlassian_atlassian__authenticate for the
+# "atlassian" plugin's "atlassian" server). BOTH names are recognized, from
+# this ONE constant set -- never re-spelled at a call site.
+INTENT_MCP_SERVER_NAME = "pace-maker"
+INTENT_MCP_PLUGIN_NAME = "claude-pace-maker"
+DECLARE_INTENT_TOOL = "declare_intent"
+DECLARE_INTENT_TOOL_NAMES = frozenset(
+    {
+        f"mcp__{INTENT_MCP_SERVER_NAME}__{DECLARE_INTENT_TOOL}",
+        f"mcp__plugin_{INTENT_MCP_PLUGIN_NAME}_{INTENT_MCP_SERVER_NAME}__"
+        f"{DECLARE_INTENT_TOOL}",
+    }
+)
+
+# Declarations and chains older than this are deleted on EVERY store access
+# (record and gate). 60 minutes also comfortably covers a review that runs up
+# to PRE_TOOL_HOOK_TIMEOUT_SECONDS (~3 minutes).
+INTENT_DECLARATION_TTL_SECONDS = 60 * 60
+
+# Caps on declared text (review L4). The transcript path bounds the assistant
+# message it reads to transcript_reader.MAX_MESSAGE_LENGTH (10000 chars); the
+# synthesized declaration message gets the SAME ceiling (a test pins the two
+# equal), and each free-text field (change / goal / test_coverage) is
+# truncated to DECLARATION_MAX_FIELD_CHARS at record time so the store and
+# the message stay bounded. Over-long text is TRUNCATED (ending in "…"), not
+# rejected.
+DECLARATION_MAX_MESSAGE_LENGTH = 10000
+DECLARATION_MAX_FIELD_CHARS = 3000
+
+# Bug #157 -- guaranteed subagent guidance delivery. The per-(session, agent)
+# "SubagentStart completed / guidance delivered" record is purged after this
+# long (on every store access), so the table stays bounded. Deliberately much
+# longer than INTENT_DECLARATION_TTL_SECONDS: the record is consulted on a
+# subagent's FIRST tool call, but a subagent can live for hours -- a purged
+# record would make its later tool calls look like "never started" and repeat
+# the late delivery.
+SUBAGENT_GUIDANCE_TTL_SECONDS = 24 * 60 * 60
 
 # Issue #151 live-replay follow-up (round 3, CHANGE 1): RECENT CONTEXT is
 # shown in the relaxed Stage 2 prompt ONLY when the current turn's own

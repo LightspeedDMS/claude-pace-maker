@@ -4,44 +4,11 @@ Trace sanitizer module.
 Sanitizes Langfuse traces by masking all stored secrets before upload.
 """
 
-import re
-from typing import Any, List, Optional
+from typing import Any
 
 from .database import get_all_secrets
-from .masking import mask_structure, _build_secrets_pattern
+from .masking import build_prefiltered_pattern, collect_strings, mask_structure
 from .metrics import increment_secrets_masked
-
-# Global cache for compiled regex pattern
-_cached_pattern: Optional[re.Pattern] = None
-_cached_secrets_hash: Optional[int] = None
-
-
-def _get_cached_pattern(secrets: List[str]) -> Optional[re.Pattern]:
-    """
-    Get cached compiled pattern or build new one if secrets changed.
-
-    Uses hash of sorted secrets list to detect changes. This optimization
-    avoids recompiling regex on every sanitize_trace() call when secrets
-    haven't changed (common case during a session).
-
-    Args:
-        secrets: List of secret values
-
-    Returns:
-        Compiled regex pattern, or None if no secrets
-    """
-    global _cached_pattern, _cached_secrets_hash
-
-    # Compute hash of current secrets
-    secrets_hash = hash(tuple(sorted(secrets))) if secrets else None
-
-    # Check if cache is valid
-    if _cached_secrets_hash != secrets_hash:
-        # Cache miss - rebuild pattern
-        _cached_pattern = _build_secrets_pattern(secrets)
-        _cached_secrets_hash = secrets_hash
-
-    return _cached_pattern
 
 
 def sanitize_trace(trace: Any, db_path: str) -> tuple:
@@ -51,8 +18,12 @@ def sanitize_trace(trace: Any, db_path: str) -> tuple:
     Creates a deep copy of the trace and masks all occurrences of secrets
     stored in the database. Records metrics for each secret masked.
 
-    Uses pattern caching to optimize performance for repeated calls with
-    the same set of secrets.
+    Bug #157: only the stored secrets that actually OCCUR in the trace are
+    compiled into the pattern (``masking.build_prefiltered_pattern``). The
+    previous design compiled ONE regex from the WHOLE store -- ~8 s of CPU on
+    a 765-secret / 5 MB store -- in every hook process (the module-level
+    cache that tried to amortize it never survived from one hook process to
+    the next). The masked output is byte-identical to full-store masking.
 
     Args:
         trace: The trace structure to sanitize (dict, list, or any nested structure)
@@ -66,11 +37,11 @@ def sanitize_trace(trace: Any, db_path: str) -> tuple:
     # Get all secrets from database
     secrets = get_all_secrets(db_path)
 
-    # Get cached pattern (or build new one if secrets changed)
-    pattern = _get_cached_pattern(secrets)
+    # Keep only the secrets present in this trace, then compile just those
+    relevant, pattern = build_prefiltered_pattern(secrets, collect_strings(trace))
 
-    # Apply masking to entire trace structure with cached pattern
-    sanitized, mask_count = mask_structure(trace, secrets, pattern)
+    # Apply masking to entire trace structure with the prefiltered pattern
+    sanitized, mask_count = mask_structure(trace, relevant, pattern)
 
     # Restore protected fields that must never be masked
     # userId is essential for Langfuse trace identity (contains user email)

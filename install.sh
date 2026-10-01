@@ -41,6 +41,8 @@ Notes:
   - Hook scripts are always installed in ~/.claude/hooks/ (shared)
   - State directory is always ~/.claude-pace-maker/ (global)
   - Local mode merges with existing project settings if present
+  - Registers the declare_intent MCP server at user scope when the claude
+    CLI is available (set PACEMAKER_SKIP_MCP_REGISTRATION=1 to skip)
 EOF
   exit 0
 }
@@ -628,6 +630,8 @@ install_hook_modules() {
   _copy_subdir "inference" "inference"
   _copy_subdir "session_registry" "session_registry"
   _copy_subdir "memory_localization" "memory_localization"
+  _copy_subdir "intent_mcp" "intent_mcp"
+  _copy_subdir "intent_declarations" "intent_declarations"
 
   if [ ! -d "$PACEMAKER_SOURCE_DIR/prompts" ]; then
     echo -e "${YELLOW}⚠ Warning: prompts directory not found, skipping${NC}"
@@ -1096,6 +1100,100 @@ register_hooks() {
   echo -e "${GREEN}✓ Hooks registered${NC}"
 }
 
+# Resolve the interpreter the deployed hook scripts use: the same preference
+# order as their find_python() -- python3.11/3.10/python3, preferring one where
+# claude_agent_sdk imports (issue #89) -- printed as an ABSOLUTE path so the
+# MCP registration does not depend on PATH at launch time.
+find_hook_python() {
+  local py
+  for py in python3.11 python3.10 python3; do
+    if command -v "$py" >/dev/null 2>&1 && "$py" -c "import claude_agent_sdk" >/dev/null 2>&1; then
+      command -v "$py"
+      return 0
+    fi
+  done
+  for py in python3.11 python3.10 python3; do
+    if command -v "$py" >/dev/null 2>&1; then
+      command -v "$py"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Register the declare_intent MCP server at user scope (Story #155).
+#
+# Runs the registration helper FROM THE INSTALLED SNAPSHOT ($HOOKS_DIR holds
+# pacemaker/, deployed by install_hook_modules): PYTHONPATH = the snapshot
+# dir and PYTHONSAFEPATH=1 (issue #146 rules) -- never the Dev tree. The
+# registered server command uses the same interpreter and the same snapshot.
+#
+# Idempotent (remove-then-add inside the helper). NON-FATAL by design: the
+# tool is the preferred way to declare intent, but without it the transcript
+# path still validates every Write/Edit, so a missing `claude` CLI or a
+# failing registration only prints a warning.
+# PACEMAKER_SKIP_MCP_REGISTRATION=1 skips it (CI / sandboxed installs).
+register_intent_mcp_server() {
+  echo "Registering declare_intent MCP server..."
+
+  if [ "${PACEMAKER_SKIP_MCP_REGISTRATION:-}" = "1" ]; then
+    echo -e "${YELLOW}⚠ Skipped (PACEMAKER_SKIP_MCP_REGISTRATION=1)${NC}"
+    return 0
+  fi
+  if ! command -v claude >/dev/null 2>&1; then
+    echo -e "${YELLOW}⚠ claude CLI not found on PATH - skipping declare_intent MCP registration (intent validation falls back to the transcript path)${NC}"
+    return 0
+  fi
+
+  local hook_python
+  if ! hook_python="$(find_hook_python)"; then
+    echo -e "${YELLOW}⚠ No Python interpreter found - skipping declare_intent MCP registration${NC}"
+    return 0
+  fi
+
+  if PYTHONPATH="$HOOKS_DIR" PYTHONSAFEPATH=1 "$hook_python" \
+      -m pacemaker.intent_mcp.registration add \
+      --python "$hook_python" --snapshot-dir "$HOOKS_DIR"; then
+    echo -e "${GREEN}✓ declare_intent MCP server registered (user scope)${NC}"
+  else
+    echo -e "${YELLOW}⚠ declare_intent MCP registration failed (see above) - intent validation falls back to the transcript path${NC}"
+  fi
+  return 0
+}
+
+# Allow-list the declare_intent tool in the settings file the hooks were just
+# registered in (Story #155 review M3).
+#
+# Without a permissions.allow rule, an interactive / `-p` session that is not
+# in bypass mode gets a permission PROMPT for mcp__pace-maker__declare_intent
+# (a subagent gets a denial), and every edit silently falls back to the
+# transcript path. The merge is idempotent (no duplicate entries), preserves
+# every existing setting, and runs the helper from the installed snapshot
+# (issue #146 rules), like register_intent_mcp_server. NON-FATAL, and skipped
+# with the registration (PACEMAKER_SKIP_MCP_REGISTRATION=1).
+allow_intent_mcp_tool() {
+  echo "Allow-listing the declare_intent MCP tool in $SETTINGS_FILE..."
+
+  if [ "${PACEMAKER_SKIP_MCP_REGISTRATION:-}" = "1" ]; then
+    echo -e "${YELLOW}⚠ Skipped (PACEMAKER_SKIP_MCP_REGISTRATION=1)${NC}"
+    return 0
+  fi
+
+  local hook_python
+  if ! hook_python="$(find_hook_python)"; then
+    echo -e "${YELLOW}⚠ No Python interpreter found - skipping the declare_intent permission${NC}"
+    return 0
+  fi
+
+  if PYTHONPATH="$HOOKS_DIR" PYTHONSAFEPATH=1 "$hook_python" \
+      -m pacemaker.intent_mcp.permissions add --settings-file "$SETTINGS_FILE"; then
+    echo -e "${GREEN}✓ declare_intent tool allow-listed${NC}"
+  else
+    echo -e "${YELLOW}⚠ Could not allow-list the declare_intent tool (see above) - add \"mcp__pace-maker__declare_intent\" to permissions.allow yourself, or approve it when prompted${NC}"
+  fi
+  return 0
+}
+
 # Verify installation
 verify_installation() {
   echo ""
@@ -1196,6 +1294,8 @@ main() {
   create_config
   init_database
   register_hooks
+  register_intent_mcp_server
+  allow_intent_mcp_tool
 
   if verify_installation; then
     echo ""

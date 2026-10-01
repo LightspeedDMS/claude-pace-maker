@@ -22,6 +22,7 @@ from . import state, incremental, push
 from .trace import create_trace_for_turn, finalize_trace_with_output
 from .span import create_span, create_text_span
 from .project_context import get_project_context
+from .subagent_context import read_subagent_start_context
 from ..telemetry import jsonl_parser
 from .metrics import increment_metric
 from ..constants import DEFAULT_DB_PATH, DEFAULT_STATE_PATH
@@ -1776,10 +1777,12 @@ def handle_subagent_start(
         # Initialize state manager
         state_manager = state.StateManager(state_dir)
 
-        # Extract Task tool prompt from parent transcript (most recent Task call)
-        subagent_prompt = extract_task_tool_prompt(
-            transcript_path=parent_transcript_path
-        )
+        # Bug #157: ONE bounded head+tail read of the parent transcript gives
+        # the spawning Task/Agent prompt, the model and the transcript's user
+        # email (these used to be three full-file parses -- 1.45 s on a 52 MB
+        # parent, on a 10 s hook). See langfuse/subagent_context.py.
+        start_context = read_subagent_start_context(parent_transcript_path)
+        subagent_prompt = start_context.prompt
 
         # Use empty string if prompt not found (graceful failure)
         if subagent_prompt is None:
@@ -1793,9 +1796,10 @@ def handle_subagent_start(
         subagent_prompt = _truncate_field(subagent_prompt)
 
         # Extract userId, model, and project context (bug #48: these were missing)
-        user_id = jsonl_parser.extract_user_id(parent_transcript_path)
-        session_metadata = jsonl_parser.parse_session_metadata(parent_transcript_path)
-        model = session_metadata.get("model")
+        # Same fallback chain as jsonl_parser.extract_user_id: the transcript's
+        # own email, else the (cached) OAuth profile API.
+        user_id = start_context.user_id or jsonl_parser.get_user_email()
+        model = start_context.model
         project_context = get_project_context()
 
         # Generate unique trace_id for subagent

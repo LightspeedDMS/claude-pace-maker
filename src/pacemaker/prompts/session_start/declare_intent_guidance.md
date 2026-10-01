@@ -1,0 +1,1 @@
+Before each Write or Edit, call the `declare_intent` tool first (file_path, change, goal, and for source files test_coverage as `<test file> - <test name>`). This is the preferred way to declare. Call it on its own, then make the Write or Edit. One declaration covers consecutive Write/Edit calls to the same file; a different file needs its own declaration.
