@@ -380,6 +380,20 @@ Read the current code (the line citations above, and the module docstrings) befo
 
 ---
 
+## Langfuse Trace Attribution — Bug #158
+
+**Symptom**: with several concurrent Claude Code sessions, subagent tool spans landed in another session's (even another project's) subagent trace, and a subagent's own spans landed in its parent's main trace. Surfaced once #157 (v2.37.1) made SubagentStart register subagent traces.
+
+**Root cause (reproduced at unit level, `tests/test_issue_158_langfuse_attribution.py`)**: `orchestrator.handle_post_tool_use()` chose the trace from the GLOBAL `~/.claude-pace-maker/state.json` fields `in_subagent` / `current_subagent_trace_id` / `current_subagent_agent_id`. That file is one shared slot for every session on the machine ("most recently registered subagent wins"; any SubagentStop pops it). So any session's PostToolUse — main thread or subagent — was redirected to whichever subagent registered last anywhere, and a subagent whose slot was overwritten/cleared wrote to its parent's main trace. A second instance: `run_subagent_stop_hook()` fell back to that same slot when its own `agent_id` was not in `subagent_traces`, finalizing another agent's trace.
+
+**Rule — attribution comes ONLY from the hook payload identity**:
+- `hook.run_hook()` passes the payload's `agent_id` (None for the main thread) to `handle_post_tool_use(..., agent_id=...)`.
+- `agent_id` present → that agent's own state file `langfuse_state/subagent-<agent_id>.json` (trace_id + last_pushed_line). No such state/trace → the span is SKIPPED (returns False) — never redirected to the parent or any other trace.
+- `agent_id` absent → the session's main trace. The global `state.json` is never read for attribution (`DEFAULT_STATE_PATH` is no longer imported by the orchestrator).
+- SubagentStop's legacy single-slot fallback is used only when the payload has no `agent_id` or the slot's agent matches it.
+- **Compatibility note**: a Claude Code that does not send `agent_id` on PostToolUse for subagent calls cannot be told apart from the main thread, so such calls land in the SAME session's main trace (safe, never cross-session). Do not re-add a global-state heuristic to "recover" them — that is the bug.
+- `state.json` `in_subagent` / `current_subagent_*` are still written (counter, reminder gating, SubagentStop backward-compat) but are NOT an attribution source.
+
 ## Reviewer Identity Tracking
 
 When intent validation runs Stage 2 (LLM code review), the reviewer identity is tracked end-to-end:

@@ -25,7 +25,7 @@ from .project_context import get_project_context
 from .subagent_context import read_subagent_start_context
 from ..telemetry import jsonl_parser
 from .metrics import increment_metric
-from ..constants import DEFAULT_DB_PATH, DEFAULT_STATE_PATH
+from ..constants import DEFAULT_DB_PATH
 from ..secrets.sanitizer import sanitize_trace
 from ..database import record_activity_event
 
@@ -954,6 +954,7 @@ def handle_post_tool_use(
     tool_response: Optional[str] = None,
     tool_name: Optional[str] = None,
     tool_input: Optional[Dict[str, Any]] = None,
+    agent_id: Optional[str] = None,
 ) -> bool:
     """
     Handle PostToolUse hook - sanitize and push pending trace, then create spans.
@@ -967,10 +968,13 @@ def handle_post_tool_use(
 
     This captures the full conversation flow in Langfuse, not just tool calls.
 
-    SUBAGENT CONTEXT DETECTION:
-    Checks pacemaker state to detect if running in subagent context.
-    If in_subagent=True and current_subagent_trace_id exists, uses subagent's
-    trace_id for spans instead of parent's trace_id.
+    SUBAGENT CONTEXT (Bug #158):
+    The trace is chosen from the hook payload identity only. If agent_id is
+    given, spans go to that subagent's own trace (state file
+    subagent-<agent_id>.json); if it has no registered trace the span is
+    skipped (returns False), never redirected. If agent_id is None (main
+    thread, or a Claude Code that omits it) spans go to the session's main
+    trace. The global pacemaker state.json is never consulted.
 
     TOOL OUTPUT CAPTURE:
     If tool_response is provided (from PostToolUse hook), creates a span for
@@ -985,6 +989,8 @@ def handle_post_tool_use(
         tool_response: Optional tool output from PostToolUse hook
         tool_name: Optional tool name from PostToolUse hook
         tool_input: Optional tool input parameters from PostToolUse hook
+        agent_id: Optional subagent identifier from the PostToolUse payload
+            (absent for main-thread calls)
 
     Returns:
         True if successful or disabled, False if failed
@@ -1041,50 +1047,35 @@ def handle_post_tool_use(
         # This ensures subagent spans are created even when parent has no current_trace_id
         # The subagent context detection will override current_trace_id with subagent's trace_id
         effective_session_id = session_id  # Default to parent's session_id
-        try:
-            with open(DEFAULT_STATE_PATH, "r") as f:
-                pacemaker_state = json.load(f)
 
-                in_subagent = pacemaker_state.get("in_subagent", False)
-                subagent_trace_id = pacemaker_state.get("current_subagent_trace_id")
-                subagent_agent_id = pacemaker_state.get("current_subagent_agent_id")
-
-                # If in subagent and we have subagent trace_id, use it instead of parent's
-                if in_subagent and subagent_trace_id and subagent_agent_id:
-                    current_trace_id = subagent_trace_id
-
-                    # CRITICAL FIX: Derive subagent_session_id and re-read state
-                    effective_session_id = f"subagent-{subagent_agent_id}"
-
-                    # Re-read state for subagent's session_id to get correct last_pushed_line
-                    subagent_state = state_manager.read(effective_session_id)
-                    if subagent_state:
-                        last_pushed_line = subagent_state.get("last_pushed_line", 0)
-                        metadata = subagent_state.get("metadata", metadata)
-                        existing_state = (
-                            subagent_state  # Use subagent's state for trace_id
-                        )
-                        log_debug(
-                            "orchestrator",
-                            f"Using subagent state: session_id={effective_session_id}, "
-                            f"last_pushed_line={last_pushed_line}",
-                        )
-                    else:
-                        log_debug(
-                            "orchestrator",
-                            f"No existing state for subagent {effective_session_id}, "
-                            f"starting from line 0",
-                        )
-                        last_pushed_line = 0
-
-                    log_debug(
-                        "orchestrator", f"Using subagent trace_id: {subagent_trace_id}"
-                    )
-        except (FileNotFoundError, json.JSONDecodeError, IOError) as e:
-            # Graceful fallback: use parent trace_id if can't read pacemaker state
+        # BUG #158: attribution comes ONLY from the hook payload identity
+        # (session_id + agent_id). The global state.json (in_subagent /
+        # current_subagent_*) is a single slot shared by every concurrent
+        # session on the machine and must never decide which trace a span
+        # belongs to. agent_id present -> that subagent's own state file;
+        # agent_id absent -> the session's main trace.
+        if agent_id:
+            effective_session_id = f"subagent-{agent_id}"
+            subagent_state = state_manager.read(effective_session_id)
+            subagent_trace_id = (subagent_state or {}).get("trace_id")
+            if not subagent_trace_id:
+                # Never fall back to the parent's (or any other) trace: a span
+                # in the wrong trace is worse than a missing span.
+                log_warning(
+                    "orchestrator",
+                    f"No registered trace for subagent {effective_session_id} "
+                    f"(session {session_id}); skipping span",
+                    None,
+                )
+                return False
+            current_trace_id = subagent_trace_id
+            last_pushed_line = subagent_state.get("last_pushed_line", 0)
+            metadata = subagent_state.get("metadata", {})
+            existing_state = subagent_state
             log_debug(
                 "orchestrator",
-                f"Could not read pacemaker state, using parent trace_id: {e}",
+                f"Using subagent state: session_id={effective_session_id}, "
+                f"trace_id={subagent_trace_id}, last_pushed_line={last_pushed_line}",
             )
 
         # NOW check current_trace_id after subagent override

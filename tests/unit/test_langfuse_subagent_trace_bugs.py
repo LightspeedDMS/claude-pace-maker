@@ -166,49 +166,47 @@ class TestSubagentSpanCreationBugFix:
                 f,
             )
 
-        # Patch DEFAULT_STATE_PATH to use our temp file
+        # Mock push_batch_events to capture span creation
         with patch(
-            "pacemaker.langfuse.orchestrator.DEFAULT_STATE_PATH", pacemaker_state_file
-        ):
-            # Mock push_batch_events to capture span creation
-            with patch(
-                "pacemaker.langfuse.orchestrator.push.push_batch_events"
-            ) as mock_push:
-                mock_push.return_value = (True, 2)
+            "pacemaker.langfuse.orchestrator.push.push_batch_events"
+        ) as mock_push:
+            mock_push.return_value = (True, 2)
 
-                # Call handle_post_tool_use with PARENT session_id
-                # (This is what the hook provides - parent's session_id)
-                success = orchestrator.handle_post_tool_use(
-                    config=config,
-                    session_id=parent_session_id,  # Parent session ID
-                    transcript_path=subagent_transcript,
-                    state_dir=state_dir,
-                )
+            # Call handle_post_tool_use with the PARENT session_id plus the
+            # payload's agent_id (bug #158: attribution comes from the payload,
+            # not from the global pacemaker state file).
+            success = orchestrator.handle_post_tool_use(
+                config=config,
+                session_id=parent_session_id,  # Parent session ID
+                transcript_path=subagent_transcript,
+                state_dir=state_dir,
+                agent_id="abc-123",
+            )
 
-                # ASSERTION: Should succeed (not return False due to early return)
-                assert success is True, (
-                    "handle_post_tool_use should succeed when in subagent context, "
-                    "even if parent has no current_trace_id"
-                )
+            # ASSERTION: Should succeed (not return False due to early return)
+            assert success is True, (
+                "handle_post_tool_use should succeed when in subagent context, "
+                "even if parent has no current_trace_id"
+            )
 
-                # ASSERTION: push_batch_events should be called (spans were created)
-                assert mock_push.called, "Spans should be created for subagent"
+            # ASSERTION: push_batch_events should be called (spans were created)
+            assert mock_push.called, "Spans should be created for subagent"
 
-                # Extract the batch that was pushed
-                call_args = mock_push.call_args
-                batch = call_args[0][3]  # 4th positional arg
+            # Extract the batch that was pushed
+            call_args = mock_push.call_args
+            batch = call_args[0][3]  # 4th positional arg
 
-                # ASSERTION: Should have spans (text + tool_use)
-                assert len(batch) >= 1, "At least one span should be created"
+            # ASSERTION: Should have spans (text + tool_use)
+            assert len(batch) >= 1, "At least one span should be created"
 
-                # ASSERTION: Spans should use subagent's trace_id, not parent's
-                for event in batch:
-                    if event["type"] == "span-create":
-                        span = event["body"]
-                        assert span["traceId"] == subagent_trace_id, (
-                            f"Span should use subagent trace_id {subagent_trace_id}, "
-                            f"not parent's missing trace_id"
-                        )
+            # ASSERTION: Spans should use subagent's trace_id, not parent's
+            for event in batch:
+                if event["type"] == "span-create":
+                    span = event["body"]
+                    assert span["traceId"] == subagent_trace_id, (
+                        f"Span should use subagent trace_id {subagent_trace_id}, "
+                        f"not parent's missing trace_id"
+                    )
 
     def test_non_subagent_flow_still_requires_current_trace_id(
         self, config, state_dir, pacemaker_state_file, subagent_transcript
@@ -243,40 +241,36 @@ class TestSubagentSpanCreationBugFix:
                 f,
             )
 
-        # Patch DEFAULT_STATE_PATH to use our temp file
+        # Mock push_batch_events
         with patch(
-            "pacemaker.langfuse.orchestrator.DEFAULT_STATE_PATH", pacemaker_state_file
-        ):
-            # Mock push_batch_events
-            with patch(
-                "pacemaker.langfuse.orchestrator.push.push_batch_events"
-            ) as mock_push:
-                mock_push.return_value = (True, 1)
+            "pacemaker.langfuse.orchestrator.push.push_batch_events"
+        ) as mock_push:
+            mock_push.return_value = (True, 1)
 
-                # Call handle_post_tool_use
-                success = orchestrator.handle_post_tool_use(
-                    config=config,
-                    session_id=parent_session_id,
-                    transcript_path=subagent_transcript,
-                    state_dir=state_dir,
-                )
+            # Call handle_post_tool_use (main-thread payload: no agent_id)
+            success = orchestrator.handle_post_tool_use(
+                config=config,
+                session_id=parent_session_id,
+                transcript_path=subagent_transcript,
+                state_dir=state_dir,
+            )
 
-                # ASSERTION: Should return False (no current_trace_id in non-subagent context)
+            # ASSERTION: Should return False (no current_trace_id in non-subagent context)
+            assert (
+                success is False
+            ), "Non-subagent sessions should return False if no current_trace_id"
+
+            # ASSERTION: push_batch_events should NOT be called for spans
+            # (Only pending_trace push might happen, which is checked separately)
+            # We care that span creation didn't happen
+            if mock_push.called:
+                call_args = mock_push.call_args
+                batch = call_args[0][3]
+                # If called, should only be for pending_trace, not span-create
+                span_creates = [e for e in batch if e["type"] == "span-create"]
                 assert (
-                    success is False
-                ), "Non-subagent sessions should return False if no current_trace_id"
-
-                # ASSERTION: push_batch_events should NOT be called for spans
-                # (Only pending_trace push might happen, which is checked separately)
-                # We care that span creation didn't happen
-                if mock_push.called:
-                    call_args = mock_push.call_args
-                    batch = call_args[0][3]
-                    # If called, should only be for pending_trace, not span-create
-                    span_creates = [e for e in batch if e["type"] == "span-create"]
-                    assert (
-                        len(span_creates) == 0
-                    ), "No spans should be created without current_trace_id"
+                    len(span_creates) == 0
+                ), "No spans should be created without current_trace_id"
 
 
 class TestSubagentTraceTimestampsBugFix:
