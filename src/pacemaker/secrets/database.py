@@ -10,6 +10,9 @@ import os
 import sqlite3
 from typing import List, Dict, Any, Optional
 
+from ..logger import log_warning
+from .masking import is_degenerate_secret
+
 _initialized_dbs: set = set()
 
 
@@ -101,8 +104,18 @@ def create_secret(db_path: str, secret_type: str, value: str) -> Optional[int]:
 
     Returns:
         The ID of the newly created secret, or None if the secret already existed
-        (duplicate). Callers must check for None to distinguish new vs existing.
+        (duplicate) OR was refused as degenerate (bug #160: empty, or a fragment
+        of the mask marker). Callers must check for None to distinguish new vs
+        existing. Never raises for a refused value; the value is never logged.
     """
+    if is_degenerate_secret(value):
+        log_warning(
+            "secrets",
+            f"Refused to store a degenerate {secret_type} secret (empty or a "
+            "fragment of the mask marker); value not logged",
+        )
+        return None
+
     _init_database(db_path)
 
     conn = sqlite3.connect(db_path, timeout=5.0)
@@ -150,13 +163,18 @@ def list_secrets(db_path: str) -> List[Dict[str, Any]]:
 
 def get_all_secrets(db_path: str) -> List[str]:
     """
-    Get all secret values (without metadata).
+    Get all secret values (without metadata) for MASKING.
+
+    Degenerate stored values (bug #160: empty, or a fragment of the mask
+    marker) are excluded so they can never mask ordinary text or re-mask
+    already-masked values. The rows themselves are untouched and still appear
+    in ``list_secrets`` so the owner can remove them.
 
     Args:
         db_path: Path to the SQLite database file
 
     Returns:
-        List of secret values as strings
+        List of usable secret values as strings
     """
     # Initialize database if needed
     _init_database(db_path)
@@ -166,8 +184,8 @@ def get_all_secrets(db_path: str) -> List[str]:
         cursor = conn.cursor()
         cursor.execute("SELECT value FROM secrets")
         rows = cursor.fetchall()
-        # Extract just the values
-        return [row[0] for row in rows]
+        # Extract just the values, skipping degenerate ones
+        return [row[0] for row in rows if not is_degenerate_secret(row[0])]
     finally:
         conn.close()
 

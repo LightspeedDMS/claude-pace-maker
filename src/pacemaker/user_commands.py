@@ -3102,6 +3102,12 @@ def _parse_rule_args(args_str: str, require_all: bool = True) -> Dict[str, str]:
     return result
 
 
+_DEGENERATE_SECRET_ERROR = (
+    "Error: refusing a degenerate secret (empty, or a fragment of the "
+    "'*** MASKED ***' marker); it would mask ordinary text"
+)
+
+
 def _execute_secrets(
     db_path: Optional[str], subcommand: Optional[str]
 ) -> Dict[str, Any]:
@@ -3123,6 +3129,7 @@ def _execute_secrets(
         remove_secret,
         clear_all_secrets,
     )
+    from .secrets.masking import is_degenerate_secret
 
     # Default database path if not provided
     if not db_path:
@@ -3147,6 +3154,9 @@ def _execute_secrets(
                     "success": False,
                     "message": "Error: Secret value cannot be empty",
                 }
+
+            if is_degenerate_secret(secret_value):
+                return {"success": False, "message": _DEGENERATE_SECRET_ERROR}
 
             secret_id = create_secret(db_path, "text", secret_value)
 
@@ -3183,6 +3193,9 @@ def _execute_secrets(
 
             with open(file_path, "r") as f:
                 file_content = f.read()
+
+            if is_degenerate_secret(file_content):
+                return {"success": False, "message": _DEGENERATE_SECRET_ERROR}
 
             secret_id = create_secret(db_path, "file", file_content)
 
@@ -3221,7 +3234,13 @@ def _execute_secrets(
                 else:
                     masked_value = f"{secret_value[:4]}...{secret_value[-4:]}"
 
-                lines.append(f"  ID {secret_id}: [{secret_type}] {masked_value}")
+                flag = (
+                    "  (degenerate: ignored by masking; remove with "
+                    f"'pace-maker secrets remove {secret_id}')"
+                    if is_degenerate_secret(secret_value)
+                    else ""
+                )
+                lines.append(f"  ID {secret_id}: [{secret_type}] {masked_value}{flag}")
 
             return {"success": True, "message": "\n".join(lines)}
         except Exception as e:

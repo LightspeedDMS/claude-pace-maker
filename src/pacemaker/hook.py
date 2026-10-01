@@ -582,7 +582,8 @@ def run_session_start_hook():
 
         langfuse_state_dir = os.path.expanduser("~/.claude-pace-maker/langfuse_state")
         state_manager = langfuse_state.StateManager(langfuse_state_dir)
-        state_manager.cleanup_stale_files(max_age_days=7)
+        # Bug #160: throttled to once a day; subagent-*.json get a short TTL
+        state_manager.maybe_cleanup_stale_files(max_age_days=7)
     except Exception as e:
         # Log error but don't break session start
         log_warning("hook", "Failed to cleanup stale Langfuse state files", e)
@@ -973,7 +974,9 @@ def run_subagent_stop_hook():
         old_trace_id = state.get("current_subagent_trace_id")
         old_agent_id = state.get("current_subagent_agent_id")
         old_parent_path = state.get("current_subagent_parent_transcript_path")
-        if old_trace_id:
+        # Bug #158: the single slot is global across sessions, so it may only
+        # stand in for THIS agent (or when the payload names no agent at all).
+        if old_trace_id and (not hook_agent_id or old_agent_id == hook_agent_id):
             trace_info = {
                 "trace_id": old_trace_id,
                 "parent_transcript_path": old_parent_path,
@@ -1480,6 +1483,8 @@ def run_hook():
                 tool_response=tool_response,
                 tool_name=tool_name,
                 tool_input=tool_input,
+                # Bug #158: trace selection uses the payload's own identity
+                agent_id=hook_data.get("agent_id") or None,
             )
 
             log_debug(

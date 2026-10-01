@@ -278,10 +278,8 @@ class TestSubagentStateIsolation(unittest.TestCase):
     @patch("pacemaker.langfuse.orchestrator._create_spans_from_blocks")
     @patch("pacemaker.langfuse.orchestrator.incremental.extract_content_blocks")
     @patch("pacemaker.langfuse.orchestrator.state.StateManager")
-    @patch("builtins.open")
     def test_subagent_context_reads_subagent_state(
         self,
-        mock_open,
         mock_state_manager_class,
         mock_extract,
         mock_create_spans,
@@ -297,21 +295,12 @@ class TestSubagentStateIsolation(unittest.TestCase):
         FIX: Should derive subagent_session_id and read that state instead.
         """
         from pacemaker.langfuse.orchestrator import handle_post_tool_use
-        import json
-        from unittest.mock import MagicMock, mock_open as mock_open_func
+        from unittest.mock import MagicMock
 
-        # Setup: Pacemaker state shows we're in subagent context
-        pacemaker_state = {
-            "in_subagent": True,
-            "current_subagent_agent_id": "agent-abc123",
-            "current_subagent_trace_id": "trace-subagent-456",
-        }
+        # Bug #158: subagent context comes from the payload's agent_id, not
+        # from the global pacemaker state file.
 
-        # Mock file operations for pacemaker state
-        mock_file = mock_open_func(read_data=json.dumps(pacemaker_state))
-        mock_open.return_value = mock_file.return_value
-
-        # Setup: Parent state (should NOT be read)
+        # Setup: Parent state (should NOT be used for the subagent's span)
         parent_state = {
             "session_id": "parent-session",
             "trace_id": "trace-parent-123",
@@ -370,6 +359,7 @@ class TestSubagentStateIsolation(unittest.TestCase):
             session_id="parent-session",  # Hook data has parent's session_id
             transcript_path="/tmp/transcript.jsonl",
             state_dir="/tmp/langfuse_state",
+            agent_id="agent-abc123",
         )
 
         # ASSERT: Should have read SUBAGENT state, not parent state
@@ -393,10 +383,8 @@ class TestSubagentStateIsolation(unittest.TestCase):
     @patch("pacemaker.langfuse.orchestrator._create_spans_from_blocks")
     @patch("pacemaker.langfuse.orchestrator.incremental.extract_content_blocks")
     @patch("pacemaker.langfuse.orchestrator.state.StateManager")
-    @patch("builtins.open")
     def test_subagent_context_updates_subagent_state(
         self,
-        mock_open,
         mock_state_manager_class,
         mock_extract,
         mock_create_spans,
@@ -413,18 +401,7 @@ class TestSubagentStateIsolation(unittest.TestCase):
         FIX: Should update subagent_session_id state instead.
         """
         from pacemaker.langfuse.orchestrator import handle_post_tool_use
-        import json
-        from unittest.mock import MagicMock, mock_open as mock_open_func
-
-        # Setup: Pacemaker state shows we're in subagent context
-        pacemaker_state = {
-            "in_subagent": True,
-            "current_subagent_agent_id": "agent-xyz789",
-            "current_subagent_trace_id": "trace-subagent-999",
-        }
-
-        mock_file = mock_open_func(read_data=json.dumps(pacemaker_state))
-        mock_open.return_value = mock_file.return_value
+        from unittest.mock import MagicMock
 
         # Parent state (read first)
         parent_state = {
@@ -485,6 +462,7 @@ class TestSubagentStateIsolation(unittest.TestCase):
             session_id="parent-session",  # Hook data has parent session_id
             transcript_path="/tmp/transcript.jsonl",
             state_dir="/tmp/langfuse_state",
+            agent_id="agent-xyz789",
         )
 
         # ASSERT: Should have updated SUBAGENT state, not parent

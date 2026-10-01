@@ -21,10 +21,12 @@ import pytest
 
 from pacemaker.secrets.database import create_secret
 from pacemaker.secrets.masking import (
+    MASK_MARKER,
     _build_secrets_pattern,
     build_prefiltered_pattern,
     collect_strings,
     mask_structure,
+    mask_text,
 )
 from pacemaker.secrets.sanitizer import sanitize_trace
 
@@ -65,8 +67,8 @@ class TestBuildPrefilteredPattern:
             ["xx beta-secret yy"],
         )
         assert relevant == ["beta-secret"]
-        assert pattern.search("beta-secret")
-        assert not pattern.search("alpha-secret")
+        assert mask_text("beta-secret", relevant, pattern)[1] == 1
+        assert mask_text("alpha-secret", relevant, pattern)[1] == 0
 
     def test_no_relevant_secret_means_no_pattern(self):
         assert build_prefiltered_pattern(["abc"], ["zzz"]) == ([], None)
@@ -84,7 +86,7 @@ class TestBuildPrefilteredPattern:
 
     def test_duplicates_in_store_do_not_break_it(self):
         relevant, pattern = build_prefiltered_pattern(["abc", "abc"], ["abc"])
-        assert pattern.sub("*", "abc") == "*"
+        assert mask_text("abc", relevant, pattern) == (MASK_MARKER, 1)
 
     def test_secret_longer_than_every_text_is_skipped_cheaply(self):
         assert build_prefiltered_pattern(["x" * 100000], ["short"]) == ([], None)
@@ -220,9 +222,36 @@ class TestIdenticalOutputToTheOldFullStoreMasking:
             }
             assert sanitize_trace(trace, db) == old_full_store_masking(trace, secrets)
 
+    def test_fuzz_mixed_short_and_long_secrets_with_word_boundaries(self, db):
+        """Bug #160 item 2: short (<8) secrets are token-boundary matched, long
+        ones match anywhere. The prefiltered subset must still give exactly
+        the full-store output when both kinds, word characters and separators
+        are mixed (the oracle is the full-store pattern from the same builder;
+        tests/test_issue_160_short_secret_boundaries.py pins that builder to an
+        independent regex-free reference)."""
+        rng = random.Random(1602)
+        alphabet = "ab_.-"
+        values = {
+            "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 12)))
+            for _ in range(80)
+        }
+        secrets = _store(db, sorted(values))
+        assert any(len(s) < 8 for s in secrets) and any(len(s) >= 8 for s in secrets)
+        for _ in range(200):
+            trace = {
+                "x": [
+                    "".join(
+                        rng.choice(alphabet + "  :") for _ in range(rng.randint(0, 50))
+                    )
+                    for _ in range(rng.randint(1, 4))
+                ]
+            }
+            assert sanitize_trace(trace, db) == old_full_store_masking(trace, secrets)
+
     def test_langfuse_masking_has_no_minimum_secret_length(self, db):
         """Unlike reviewer-prompt masking (min 8, issue #153), Langfuse
-        masking keeps masking short secrets, exactly as before."""
+        masking still masks short secrets (accepted for storage) - as
+        standalone tokens, see bug #160 item 2."""
         masked, count = self._check(db, ["abc"], {"a": "xx abc yy"})
         assert count == 1
 
