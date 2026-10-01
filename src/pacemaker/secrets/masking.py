@@ -8,6 +8,27 @@ import copy
 import re
 from typing import Any, Iterable, List, Tuple, Optional
 
+# The placeholder that replaces every masked secret.
+MASK_MARKER = "*** MASKED ***"
+
+
+def is_degenerate_secret(value: str) -> bool:
+    """Bug #160: True for values that must never be stored or used as secrets.
+
+    A masked string pasted into a SECRET_TEXT declaration stores a fragment of
+    ``MASK_MARKER`` as a "secret"; every masked value then contains a secret
+    and each stored fragment keeps re-masking ordinary text. Degenerate means:
+    empty/whitespace-only, a substring of the marker (case-sensitive), or text
+    made only of marker repetitions and whitespace. Real content that merely
+    surrounds a marker is NOT degenerate.
+    """
+    stripped = value.strip()
+    if not stripped:
+        return True
+    if stripped in MASK_MARKER:
+        return True
+    return not stripped.replace(MASK_MARKER, "").strip()
+
 
 def _build_secrets_pattern(secrets: List[str]) -> Optional[re.Pattern]:
     """
@@ -123,7 +144,7 @@ def mask_text(
         return content, 0
 
     # Replace all matches and count in single pass
-    masked, mask_count = pattern.subn("*** MASKED ***", content)
+    masked, mask_count = pattern.subn(MASK_MARKER, content)
 
     return masked, mask_count
 

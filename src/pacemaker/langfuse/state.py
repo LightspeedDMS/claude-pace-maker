@@ -18,6 +18,16 @@ from typing import Dict, Any, Optional, List
 
 from ..logger import log_warning, log_debug
 
+# Bug #160: a subagent's state file is dead once the subagent stops, so it gets
+# a short TTL (2 days is generous: mtime refreshes on every tool call). Session
+# state keeps the 7-day TTL.
+SUBAGENT_STATE_PREFIX = "subagent-"
+SUBAGENT_STATE_MAX_AGE_DAYS = 2
+# Cleanup runs at most once per interval; the stamp's mtime records the last run
+# (no ".json" suffix, so the cleanup glob never matches it).
+CLEANUP_STAMP_FILENAME = ".last_cleanup"
+CLEANUP_MIN_INTERVAL_SECONDS = 24 * 60 * 60
+
 
 class StateManager:
     """
@@ -137,7 +147,11 @@ class StateManager:
 
             return False
 
-    def cleanup_stale_files(self, max_age_days: int = 7):
+    def cleanup_stale_files(
+        self,
+        max_age_days: float = 7,
+        subagent_max_age_days: Optional[float] = None,
+    ):
         """
         Delete state files older than max_age_days.
 
@@ -145,8 +159,17 @@ class StateManager:
 
         Args:
             max_age_days: Maximum age in days (default: 7)
+            subagent_max_age_days: Optional shorter TTL for ``subagent-*.json``
+                files (bug #160: a subagent's state is dead once it stops).
+                None (default) applies max_age_days to every file.
         """
-        cutoff_time = time.time() - (max_age_days * 24 * 60 * 60)
+        now = time.time()
+        cutoff_time = now - (max_age_days * 24 * 60 * 60)
+        subagent_cutoff_time = (
+            cutoff_time
+            if subagent_max_age_days is None
+            else now - (subagent_max_age_days * 24 * 60 * 60)
+        )
 
         try:
             state_path = Path(self.state_dir)
@@ -155,8 +178,13 @@ class StateManager:
             for state_file in state_path.glob("*.json"):
                 try:
                     mtime = state_file.stat().st_mtime
+                    file_cutoff = (
+                        subagent_cutoff_time
+                        if state_file.name.startswith(SUBAGENT_STATE_PREFIX)
+                        else cutoff_time
+                    )
 
-                    if mtime < cutoff_time:
+                    if mtime < file_cutoff:
                         state_file.unlink()
                         log_debug(
                             "state", f"Deleted stale state file: {state_file.name}"
@@ -167,3 +195,40 @@ class StateManager:
 
         except Exception as e:
             log_warning("state", "State cleanup failed", e)
+
+    def maybe_cleanup_stale_files(
+        self,
+        max_age_days: float = 7,
+        subagent_max_age_days: float = SUBAGENT_STATE_MAX_AGE_DAYS,
+        min_interval_seconds: float = CLEANUP_MIN_INTERVAL_SECONDS,
+    ) -> bool:
+        """
+        Run cleanup_stale_files at most once per min_interval_seconds.
+
+        Bug #160: cheap enough to call from every SessionStart - when the stamp
+        file (CLEANUP_STAMP_FILENAME, mtime = last run) is younger than the
+        interval this is one stat() and nothing else. Never raises.
+
+        Returns:
+            True if cleanup ran (and the stamp was refreshed), False if it was
+            throttled or could not complete.
+        """
+        stamp = Path(self.state_dir) / CLEANUP_STAMP_FILENAME
+        try:
+            if time.time() - stamp.stat().st_mtime < min_interval_seconds:
+                return False
+        except FileNotFoundError:
+            pass  # never ran: fall through
+        except OSError as e:
+            log_warning("state", "Could not stat cleanup stamp", e)
+            return False
+
+        self.cleanup_stale_files(
+            max_age_days=max_age_days, subagent_max_age_days=subagent_max_age_days
+        )
+        try:
+            stamp.touch()
+        except OSError as e:
+            log_warning("state", "Could not write cleanup stamp", e)
+            return False
+        return True

@@ -394,6 +394,22 @@ Read the current code (the line citations above, and the module docstrings) befo
 - **Compatibility note**: a Claude Code that does not send `agent_id` on PostToolUse for subagent calls cannot be told apart from the main thread, so such calls land in the SAME session's main trace (safe, never cross-session). Do not re-add a global-state heuristic to "recover" them — that is the bug.
 - `state.json` `in_subagent` / `current_subagent_*` are still written (counter, reminder gating, SubagentStop backward-compat) but are NOT an attribution source.
 
+## Secrets Store Hygiene and Langfuse State Cleanup — Bug #160
+
+**Item 1 — mask-marker fragment stored as a secret.** A masked string (`... *** MASKED ***`) pasted into a `🔐 SECRET_TEXT:` line stores a fragment of the marker as a "secret"; every masked value then "contains a secret" (84 false hits in one leak audit) and the fragment keeps re-masking ordinary text. Rules:
+- `secrets/masking.py::is_degenerate_secret()` (with the shared `MASK_MARKER` constant) is the one definition: empty/whitespace-only, a case-sensitive substring of `*** MASKED ***`, or text made only of marker repetitions. Real content that merely surrounds a marker is NOT degenerate.
+- **Store**: `database.create_secret()` refuses degenerate values — logs a warning (never the value), returns `None`, never raises into the hook. `parse_assistant_response()` therefore stores nothing for them; `pace-maker secrets add/addfile` give an explicit error.
+- **Masking**: `database.get_all_secrets()` (the read path used by `sanitize_trace` and reviewer-prompt masking) EXCLUDES degenerate rows, so already-stored ones stop polluting traces/audits immediately.
+- **Existing data is never modified by code.** `list_secrets()` still returns degenerate rows and `pace-maker secrets list` flags them ("degenerate: ignored by masking; remove with 'pace-maker secrets remove <id>'"). Removing the real offender (id 97 on the dev machine) is the user's decision.
+- Leak-audit scripts that read the `secrets` table directly should use `list_secrets()`/`get_all_secrets()` semantics (skip degenerate rows) or they will keep reporting false hits.
+
+**Item 3 — subagent state files "never cleaned up".** Verified facts: a 7-day cleanup already existed (`StateManager.cleanup_stale_files`, called from `run_session_start_hook()`) and works; the 242 `langfuse_state/subagent-*.json` files were ALL younger than 7 days (oldest 6.94 d) — TTL not yet elapsed, not a missed cleanup. The real gap: a subagent's state is dead once it stops, but kept for 7 days (~35 files/day). Now:
+- `cleanup_stale_files(max_age_days, subagent_max_age_days=None)` — `subagent-*.json` use `SUBAGENT_STATE_MAX_AGE_DAYS` (2; generous because mtime refreshes on every tool call); session files keep 7 days.
+- `maybe_cleanup_stale_files()` runs it at most once per `CLEANUP_MIN_INTERVAL_SECONDS` (24 h), throttled by the mtime of `langfuse_state/.last_cleanup` (no `.json` suffix, never matched by the glob); otherwise one `stat()`. Never raises. SessionStart calls this version.
+- Bug #158 interplay: a subagent whose state file was expired and then resumes gets its spans skipped (never misattributed).
+
+**Item 2 (short secrets mask ordinary words in Langfuse traces)** — pending a product decision (minimum length / word boundaries for Langfuse masking; `_MIN_REVIEWER_MASK_SECRET_LENGTH` applies to reviewer prompts only).
+
 ## Reviewer Identity Tracking
 
 When intent validation runs Stage 2 (LLM code review), the reviewer identity is tracked end-to-end:

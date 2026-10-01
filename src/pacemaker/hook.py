@@ -582,7 +582,8 @@ def run_session_start_hook():
 
         langfuse_state_dir = os.path.expanduser("~/.claude-pace-maker/langfuse_state")
         state_manager = langfuse_state.StateManager(langfuse_state_dir)
-        state_manager.cleanup_stale_files(max_age_days=7)
+        # Bug #160: throttled to once a day; subagent-*.json get a short TTL
+        state_manager.maybe_cleanup_stale_files(max_age_days=7)
     except Exception as e:
         # Log error but don't break session start
         log_warning("hook", "Failed to cleanup stale Langfuse state files", e)
