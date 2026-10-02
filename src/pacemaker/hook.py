@@ -3311,6 +3311,16 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                         _bash_no_visible_text = (
                             _bash_diagnostics.get("anchor_has_visible_text") is False
                         )
+                        # Issue #149: the current Bash turn is written to the
+                        # transcript only AFTER this hook returns, so the
+                        # newest READABLE turn issuing this command is often
+                        # an earlier attempt (stale: it already has its
+                        # tool_result). The anchor search already prefers the
+                        # newest match, so a flushed re-issue always wins; this
+                        # flag marks the case where it was not readable.
+                        _bash_stale_anchor = (
+                            _bash_anchor is None and _bash_outcome == "stale"
+                        )
 
                         if _bash_anchor is not None:
                             current_message = _bash_anchor
@@ -3468,6 +3478,10 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 # block from an ordinary missing-INTENT
                                 # block.
                                 "no_visible_text": _bash_no_visible_text,
+                                # Issue #149: True when the judged text came
+                                # from a stale earlier attempt, not from the
+                                # current turn (which was not readable yet).
+                                "stale_anchor": _bash_stale_anchor,
                             }
                             if _bash_reasoning_summary_intent:
                                 # Issue #151 code review L1: added ONLY for
@@ -3530,6 +3544,19 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                     build_no_visible_text_notice(_bash_example)
                                     + "\n\n"
                                     + _bash_no_intent_reason
+                                )
+                            if _bash_stale_anchor:
+                                # Issue #149: the verdict above describes an
+                                # EARLIER attempt (the current turn was not
+                                # readable) -- say so, and how to recover.
+                                from .intent_validator import (
+                                    build_danger_bash_stale_anchor_note,
+                                )
+
+                                _bash_no_intent_reason = (
+                                    _bash_no_intent_reason
+                                    + "\n\n"
+                                    + build_danger_bash_stale_anchor_note()
                                 )
                             return {
                                 "decision": "block",
