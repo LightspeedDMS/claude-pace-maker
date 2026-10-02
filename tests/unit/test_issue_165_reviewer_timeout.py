@@ -173,3 +173,115 @@ class TestDeadlineCutIsLabelledAsTimeout:
             AnthropicProvider().query("p", "s", "opus", timeout=0.2)
         assert "timed out after 0.2s" in str(exc.value)
         assert "Empty response" not in str(exc.value)
+
+
+class TestSdkErrorIsVisible:
+    """Finding 3: _query_async used to swallow every SDK exception (debug log
+    only) and raise a bare 'Empty response from <model>', hiding the cause."""
+
+    @staticmethod
+    def _query_raising(exc):
+        async def boom(prompt, options):
+            raise exc
+            yield  # pragma: no cover - makes this an async generator
+
+        return boom
+
+    @staticmethod
+    def _call():
+        from pacemaker.inference.anthropic_provider import AnthropicProvider
+
+        return AnthropicProvider().query("p", "s", "opus")
+
+    def test_exception_is_named_in_the_reason(self, monkeypatch):
+        from pacemaker.inference.provider import ProviderError
+
+        TestDeadlineCutIsLabelledAsTimeout._install_fake_sdk(
+            monkeypatch, self._query_raising(RuntimeError("cli exited 1"))
+        )
+        with pytest.raises(ProviderError) as exc:
+            self._call()
+        assert (
+            str(exc.value)
+            == "Empty response from opus (SDK error: RuntimeError: cli exited 1)"
+        )
+
+    def test_exception_is_logged_as_a_warning(self, monkeypatch):
+        from unittest.mock import patch
+
+        from pacemaker.inference.provider import ProviderError
+
+        TestDeadlineCutIsLabelledAsTimeout._install_fake_sdk(
+            monkeypatch, self._query_raising(RuntimeError("cli exited 1"))
+        )
+        with patch("pacemaker.inference.anthropic_provider.log_warning") as warn:
+            with pytest.raises(ProviderError):
+                self._call()
+        logged = " ".join(str(a) for call in warn.call_args_list for a in call.args)
+        assert "RuntimeError" in logged and "cli exited 1" in logged
+
+    def test_reason_is_capped_and_single_line(self, monkeypatch):
+        from pacemaker.inference.provider import ProviderError
+
+        long_text = "line one\nline two " + ("x " * 400)
+        TestDeadlineCutIsLabelledAsTimeout._install_fake_sdk(
+            monkeypatch, self._query_raising(ValueError(long_text))
+        )
+        with pytest.raises(ProviderError) as exc:
+            self._call()
+        message = str(exc.value)
+        detail = message.split("(SDK error: ", 1)[1].rstrip(")")
+        assert len(detail) <= len("ValueError: ") + 300
+        assert "\n" not in message
+
+    def test_key_and_token_looking_strings_are_redacted(self, monkeypatch):
+        from pacemaker.inference.provider import ProviderError
+
+        err = RuntimeError(
+            "401 for key sk-ant-api03-AbCdEf0123456789AbCdEf0123456789 "
+            "Authorization: Bearer abc123def456 api_key=hunter2hunter2"
+        )
+        TestDeadlineCutIsLabelledAsTimeout._install_fake_sdk(
+            monkeypatch, self._query_raising(err)
+        )
+        with pytest.raises(ProviderError) as exc:
+            self._call()
+        message = str(exc.value)
+        assert "sk-ant" not in message
+        assert "abc123def456" not in message
+        assert "hunter2" not in message
+        assert "[redacted]" in message
+
+    def test_truly_empty_result_keeps_the_plain_message(self, monkeypatch):
+        from pacemaker.inference.provider import ProviderError
+
+        async def nothing(prompt, options):
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+        TestDeadlineCutIsLabelledAsTimeout._install_fake_sdk(monkeypatch, nothing)
+        with pytest.raises(ProviderError) as exc:
+            self._call()
+        assert str(exc.value) == "Empty response from opus"
+
+    def test_exception_in_the_limit_fallback_branch_is_named_too(self, monkeypatch):
+        from pacemaker.inference.provider import ProviderError
+
+        calls = {"n": 0}
+
+        async def first_limit_then_boom(prompt, options):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                result = sys.modules["claude_agent_sdk.types"].ResultMessage()
+                result.result = "Claude usage limit reached"
+                yield result
+                return
+            raise RuntimeError("fallback model unreachable")
+
+        TestDeadlineCutIsLabelledAsTimeout._install_fake_sdk(
+            monkeypatch, first_limit_then_boom
+        )
+        with pytest.raises(ProviderError) as exc:
+            self._call()
+        assert "SDK error: RuntimeError: fallback model unreachable" in str(exc.value)
+        assert calls["n"] == 2

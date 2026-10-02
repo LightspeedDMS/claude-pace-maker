@@ -45,7 +45,7 @@ Stop and PreToolUse were doubled/raised together with the reviewer CLI ceiling i
 - Derived budgets (PreToolUse): review budget = timeout − 10 = 290 s, reviewer wait = `int(budget * 0.7)` = 203 s, synthesis gets the rest (87 s). The gate's `_gate_deadline` caps both the anchor wait and the review.
 - Single-model arithmetic: codex gets its full 240 s (the clamp is deadline − 5 s = 285 s), which leaves 290 − 240 − 5 = 45 s for the Anthropic fallback, above `MIN_SDK_FALLBACK_BUDGET_SECONDS` (15 s). A transcript-anchor lag eats into that: at the full 30 s anchor cap, the fallback is exactly at its 15 s floor.
 - Competitive reviewers wait 203 s, which is less than the 240 s CLI ceiling, so a competitive reviewer that needs 203–240 s is abandoned as a non-responder (degraded approval, #131).
-- Stop has no deadline clamp. Competitive Stop fits (203 + 87 + 10 ≤ 300). A single-model Stop that times out at 240 s and then falls back to the SDK has no cap on the fallback; if the 300 s Stop hook is killed, Stop fails open.
+- Stop has a deadline too (#165): `run_stop_hook` starts its clock at entry and the review gets `STOP_REVIEW_BUDGET_SECONDS` = 300 − 10 = 290 s, the same #152 clamp as PreToolUse. A single-model Stop clamps codex to deadline − 5 s and skips an SDK fallback with under 15 s left; the competitive phases are clamped to what remains. The Langfuse finalize that runs first counts against the budget. An empty result still fails open; if the 300 s hook is killed anyway, Stop fails open and the verdict is lost.
 
 ## Claude Code compatibility
 

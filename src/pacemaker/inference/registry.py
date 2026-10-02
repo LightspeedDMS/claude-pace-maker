@@ -40,11 +40,13 @@ def _remaining_budget(_deadline: Optional[float], margin: float) -> Optional[flo
     """Issue #152: wall-clock seconds left before `_deadline`, minus
     `margin`, floored at 0.0 -- or None when there's no deadline at all.
 
-    None is a DELIBERATE no-op, not a bug: the Stop hook's own
-    resolve_and_call() never supplies a _deadline (that path's semantics
-    are explicitly unchanged by this issue -- it must keep failing OPEN,
-    never closed), so every provider call it makes still gets
-    `timeout=None` and behaves exactly as it did before #152.
+    None is a DELIBERATE no-op, not a bug: callers that have no hook
+    deadline (code_reviewer, the intent-declaration check) get
+    `timeout=None` and behave exactly as they did before #152. Since #165
+    the Stop hook DOES supply a deadline (STOP_REVIEW_BUDGET_SECONDS from
+    hook entry), so its provider calls are clamped and an SDK fallback with
+    too little time left is skipped. Stop still fails OPEN: an empty result
+    from this path never blocks.
     """
     if _deadline is None:
         return None
@@ -388,6 +390,7 @@ def resolve_and_call(
     system_prompt: str,
     call_context: str,
     max_thinking_tokens: int = 4000,
+    _deadline: Optional[float] = None,
 ) -> str:
     """Top-level orchestrator: call provider with cross-vendor fallback.
 
@@ -399,11 +402,22 @@ def resolve_and_call(
         system_prompt: System instructions for the model
         call_context: Call site identifier for model resolution
         max_thinking_tokens: Max thinking tokens for the model
+        _deadline: Issue #165. Absolute ``time.monotonic()`` deadline. The Stop
+            hook supplies one (its review must finish before the harness kills
+            the hook); it clamps the provider calls and skips an SDK fallback
+            with too little time left, exactly as for the PreToolUse gate.
+            An empty result is still a fail-open for the caller. ``None`` (the
+            other callers) means no deadline.
 
     Returns:
         Model response text, or empty string on complete failure (fail-open)
     """
     response, _ = resolve_and_call_with_reviewer(
-        hook_model, prompt, system_prompt, call_context, max_thinking_tokens
+        hook_model,
+        prompt,
+        system_prompt,
+        call_context,
+        max_thinking_tokens,
+        _deadline=_deadline,
     )
     return response

@@ -426,14 +426,17 @@ class TestStopPathUnchanged:
         mock_fallback.query.assert_called_once()
         assert response == "FALLBACK_YES"
 
-    def test_resolve_and_call_has_no_deadline_parameter(self):
-        """Locks the Stop hook's own contract: resolve_and_call() must
-        never grow a _deadline param -- that would change its fail-open
-        semantics, which issue #152 explicitly must not touch."""
+    def test_resolve_and_call_takes_an_optional_deadline(self):
+        """Issue #165 reversed the original #152 contract: the Stop hook now
+        supplies a deadline (so a 240s reviewer cannot push the hook past its
+        timeout), as an OPTIONAL parameter. Its fail-open semantics are
+        unchanged -- see the neighbouring fail-open test; callers without a
+        deadline (code_reviewer, the declaration check) pass nothing."""
         import inspect
         from pacemaker.inference.registry import resolve_and_call
 
-        assert "_deadline" not in inspect.signature(resolve_and_call).parameters
+        param = inspect.signature(resolve_and_call).parameters["_deadline"]
+        assert param.default is None
 
 
 # ===========================================================================

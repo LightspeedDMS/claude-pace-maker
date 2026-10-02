@@ -190,9 +190,10 @@ PRE_TOOL_HOOK_TIMEOUT_SECONDS = 300
 REVIEWER_CLI_TIMEOUT_SECONDS = 240
 
 # Issue #165: Stop hook timeout, registered by install.sh and
-# hooks/hooks.json (parity-tested). Raised 120 -> 300 because the Stop path
-# has no deadline clamp: a 240s reviewer under a 120s Stop hook would be
-# killed by the harness before it answered.
+# hooks/hooks.json (parity-tested). Raised 120 -> 300 so a 240s reviewer is
+# not killed by the harness before it answers. The Stop review is bounded by
+# STOP_REVIEW_BUDGET_SECONDS (below), threaded as a deadline from the very
+# start of run_stop_hook down to the providers.
 STOP_HOOK_TIMEOUT_SECONDS = 300
 
 # Reserved for telemetry writes and emitting the block response.
@@ -210,6 +211,14 @@ PRE_TOOL_ANCHOR_CAP_SECONDS = 30.0
 PRE_TOOL_REVIEW_BUDGET_SECONDS = (
     PRE_TOOL_HOOK_TIMEOUT_SECONDS - PRE_TOOL_SAFETY_MARGIN_SECONDS
 )
+
+# Issue #165: the Stop review deadline. run_stop_hook takes its clock at entry
+# (so the unbounded Langfuse finalize that runs first counts) and the review
+# must finish STOP_HOOK_SAFETY_MARGIN_SECONDS before the harness kills the
+# hook: a killed Stop hook fails open but throws the verdict away. Mirrors the
+# PreToolUse margin (telemetry writes and emitting the response).
+STOP_HOOK_SAFETY_MARGIN_SECONDS = PRE_TOOL_SAFETY_MARGIN_SECONDS
+STOP_REVIEW_BUDGET_SECONDS = STOP_HOOK_TIMEOUT_SECONDS - STOP_HOOK_SAFETY_MARGIN_SECONDS
 
 # Blockage telemetry categories (Story #21)
 # Used for tracking and categorizing hook blockages

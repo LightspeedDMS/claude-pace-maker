@@ -1,12 +1,13 @@
 """Anthropic provider using Claude Agent SDK."""
 
 import os
+import re
 import asyncio
 import contextlib
 from typing import Optional
 
 from .provider import InferenceProvider, ProviderError
-from ..logger import log_debug
+from ..logger import log_debug, log_warning
 
 
 # Known short aliases — passed straight through to the SDK so it resolves each
@@ -45,6 +46,30 @@ def _is_limit_error(response: str) -> bool:
         return False
     lower = response.lower()
     return "usage limit" in lower or "limit reached" in lower or "resets" in lower
+
+
+# Issue #165: the SDK error detail that goes into a ProviderError reason is
+# capped, and credential-looking text is redacted first, because the reason
+# flows into blockage details (usage.db) and governance feedback shown to
+# Claude. It cannot know the user's stored secrets (that machinery needs a DB
+# path); it only removes what looks like a credential. An SDK error is a
+# CLI/process/API message and does not carry the prompt.
+_SDK_ERROR_DETAIL_MAX_CHARS = 300
+_CREDENTIAL_PAIR_RE = re.compile(
+    r"\b(?:api[_-]?key|token|secret|password|passwd|authorization|bearer)\b"
+    r"\s*[:=]?\s*(?:bearer\s+)?[^\s,;]+",
+    re.IGNORECASE,
+)
+_KEY_LIKE_TOKEN_RE = re.compile(r"\b(?=[A-Za-z_\-]*\d)[A-Za-z0-9_\-]{24,}\b")
+
+
+def _describe_sdk_error(exc: Exception) -> str:
+    """'TypeName: message' for an SDK exception: credential-looking text
+    redacted, whitespace collapsed to one line, message capped."""
+    text = _CREDENTIAL_PAIR_RE.sub("[redacted]", str(exc))
+    text = _KEY_LIKE_TOKEN_RE.sub("[redacted]", text)
+    text = " ".join(text.split())[:_SDK_ERROR_DETAIL_MAX_CHARS]
+    return f"{type(exc).__name__}: {text}"
 
 
 def _build_options(
@@ -162,6 +187,7 @@ class AnthropicProvider(InferenceProvider):
         )
 
         response_text = ""
+        last_error: Optional[Exception] = None
         try:
             with _clean_sdk_env():
                 async for message in fresh_query(prompt=prompt, options=options):
@@ -169,7 +195,11 @@ class AnthropicProvider(InferenceProvider):
                         if hasattr(message, "result") and message.result:
                             response_text = message.result.strip()
         except Exception as e:
-            log_debug("anthropic_provider", f"SDK call exception: {e}")
+            last_error = e
+            log_warning(
+                "anthropic_provider",
+                f"SDK call exception (model={model}): {_describe_sdk_error(e)}",
+            )
 
         # Check for limit error and try fallback
         if _is_limit_error(response_text):
@@ -183,6 +213,7 @@ class AnthropicProvider(InferenceProvider):
                     FreshOptions, fallback_model, system_prompt, max_thinking_tokens
                 )
                 response_text = ""
+                last_error = None
                 try:
                     with _clean_sdk_env():
                         async for message in fresh_query(
@@ -192,7 +223,12 @@ class AnthropicProvider(InferenceProvider):
                                 if hasattr(message, "result") and message.result:
                                     response_text = message.result.strip()
                 except Exception as e:
-                    log_debug("anthropic_provider", f"Fallback SDK call exception: {e}")
+                    last_error = e
+                    log_warning(
+                        "anthropic_provider",
+                        f"Fallback SDK call exception (model={fallback_model}): "
+                        f"{_describe_sdk_error(e)}",
+                    )
 
                 if _is_limit_error(response_text):
                     raise ProviderError(
@@ -200,6 +236,11 @@ class AnthropicProvider(InferenceProvider):
                     )
 
         if not response_text:
+            if last_error is not None:
+                raise ProviderError(
+                    f"Empty response from {model} "
+                    f"(SDK error: {_describe_sdk_error(last_error)})"
+                )
             raise ProviderError(f"Empty response from {model}")
 
         return response_text
