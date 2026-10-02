@@ -9,9 +9,19 @@ from pathlib import Path
 
 import pytest
 
+from prebaked_home_support import clone_home, freeze_venv, remove_tree, run_bounded
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BOOTSTRAP_SH = REPO_ROOT / "scripts" / "bootstrap-plugin.sh"
 REQUIREMENTS_TXT = REPO_ROOT / "requirements.txt"
+
+# Issue #168: every subprocess here has a deadline just under the
+# @pytest.mark.timeout of the tests that run it (30s / 60s / 90s), so a stall
+# fails with the script's label and partial output instead of a bare pytest
+# kill. The prebake and the fresh-venv test run a real venv + pip, hence 85.
+BOOTSTRAP_TIMEOUT_SEC = 50
+CHECK_TIMEOUT_SEC = 25
+PREBAKE_TIMEOUT_SEC = 85
 
 
 def _requirements_sha256():
@@ -20,18 +30,18 @@ def _requirements_sha256():
     return hashlib.sha256(REQUIREMENTS_TXT.read_bytes()).hexdigest()
 
 
-def run_bootstrap(home, mode="--light", extra_env=None):
+def run_bootstrap(home, mode="--light", extra_env=None, timeout=BOOTSTRAP_TIMEOUT_SEC):
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["PLUGIN_ROOT"] = str(REPO_ROOT)
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(
+    return run_bounded(
         ["bash", str(BOOTSTRAP_SH), mode],
-        capture_output=True,
-        text=True,
+        timeout=timeout,
         env=env,
         cwd=str(REPO_ROOT),
+        label=f"bootstrap-plugin.sh {mode}",
     )
 
 
@@ -40,11 +50,11 @@ def _run_bootstrap_check(home, check_script: str) -> subprocess.CompletedProcess
     Consolidates the HOME/PLUGIN_ROOT env-building repeated across every
     test that sources the script to call one of its internal functions
     directly, instead of going through run_bootstrap()."""
-    return subprocess.run(
+    return run_bounded(
         ["bash", "-c", check_script],
+        timeout=CHECK_TIMEOUT_SEC,
         env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},
-        capture_output=True,
-        text=True,
+        label="bootstrap-plugin.sh check snippet",
     )
 
 
@@ -72,9 +82,14 @@ def prebaked_full_home(tmp_path_factory):
     `@pytest.mark.timeout` on those tests for why.
     """
     home = tmp_path_factory.mktemp("prebaked_home")
-    result = run_bootstrap(home, "--full")
+    result = run_bootstrap(home, "--full", timeout=PREBAKE_TIMEOUT_SEC)
     assert result.returncode == 0, result.stderr
-    return home
+    # Clones hard-link this venv (issue #168); read-only files turn an
+    # accidental in-place write through a clone into an error instead of
+    # silent corruption of every later clone.
+    freeze_venv(home)
+    yield home
+    remove_tree(home)
 
 
 def _clone_home(prebaked_home: Path, tmp_path: Path) -> Path:
@@ -84,10 +99,22 @@ def _clone_home(prebaked_home: Path, tmp_path: Path) -> Path:
     install. Safe to mutate: every bootstrap-plugin.sh code path invokes
     the venv interpreter via `python -m pip`/`python -c`, never the venv's
     own `bin/pip` script directly, so the stale absolute shebang left
-    behind by the copy is never exercised."""
-    dest = tmp_path / "home"
-    shutil.copytree(prebaked_home, dest, symlinks=True)
-    return dest
+    behind by the copy is never exercised.
+
+    Issue #168: the venv (hundreds of MB) is hard-linked, not copied; every
+    other file is a real copy (see prebaked_home_support.clone_home). The
+    mutations below replace venv files by unlink + write, which only touches
+    the clone's own link."""
+    return clone_home(prebaked_home, tmp_path / "home")
+
+
+@pytest.fixture(autouse=True)
+def _remove_test_home(tmp_path):
+    """Issue #168: delete this test's home (a clone, or a small throwaway one)
+    as soon as the test finishes instead of leaving it for pytest's
+    retention of the last three runs."""
+    yield
+    remove_tree(tmp_path / "home")
 
 
 class TestBootstrapLight:

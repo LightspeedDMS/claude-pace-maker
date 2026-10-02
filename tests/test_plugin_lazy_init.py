@@ -12,31 +12,45 @@ All tests use subprocess to run actual shell scripts.
 
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
-from typing import NamedTuple
+from typing import Iterator, NamedTuple
 
 import pytest
+
+from prebaked_home_support import clone_home, freeze_venv, remove_tree, run_bounded
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HOOK_SH = REPO_ROOT / "scripts" / "hook.sh"
 
+# Issue #168: every subprocess here has a deadline just under the
+# @pytest.mark.timeout of the tests that run it (30s; 90s for the class that
+# triggers the prebake), so a stall fails with the hook's label and partial
+# output instead of a bare pytest kill.
+HOOK_TIMEOUT_SEC = 25
+PREBAKE_TIMEOUT_SEC = 85
 
-def run_hook(home, hook_type="session_start", extra_env=None, input_data="{}"):
+
+def run_hook(
+    home,
+    hook_type="session_start",
+    extra_env=None,
+    input_data="{}",
+    timeout=HOOK_TIMEOUT_SEC,
+):
     """Run hook.sh with the given home directory and hook type."""
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(
+    return run_bounded(
         ["bash", str(HOOK_SH), hook_type],
-        capture_output=True,
-        text=True,
+        timeout=timeout,
         env=env,
-        input=input_data,
+        input_data=input_data,
         cwd=str(REPO_ROOT),
+        label=f"hook.sh {hook_type}",
     )
 
 
@@ -49,7 +63,7 @@ class PrebakedHome(NamedTuple):
 
 
 @pytest.fixture(scope="module")
-def prebaked_session_start_home(tmp_path_factory) -> PrebakedHome:
+def prebaked_session_start_home(tmp_path_factory) -> Iterator[PrebakedHome]:
     """One real `hook.sh session_start` run (which internally calls
     bootstrap_full -- real venv creation + real `pip install`, no mocking)
     shared, read-only, across every test in this module that just needs
@@ -75,23 +89,39 @@ def prebaked_session_start_home(tmp_path_factory) -> PrebakedHome:
     behavior under test.
     """
     home = tmp_path_factory.mktemp("prebaked_home")
-    result = run_hook(home, "session_start")
+    result = run_hook(home, "session_start", timeout=PREBAKE_TIMEOUT_SEC)
     assert result.returncode == 0, f"stdout={result.stdout} stderr={result.stderr}"
     assert (home / ".claude-pace-maker" / ".bootstrap_ok").exists(), (
         f"prebaked session_start must complete a full bootstrap. "
         f"stdout={result.stdout} stderr={result.stderr}"
     )
-    return PrebakedHome(home, result)
+    # Clones hard-link this venv (issue #168); read-only files turn an
+    # accidental in-place write through a clone into an error instead of
+    # silent corruption of every later clone.
+    freeze_venv(home)
+    yield PrebakedHome(home, result)
+    remove_tree(home)
 
 
 def _clone_home(prebaked_home: Path, tmp_path: Path) -> Path:
-    """Copy a prebaked, fully-bootstrapped HOME tree into this test's own
+    """Clone a prebaked, fully-bootstrapped HOME tree into this test's own
     tmp_path so it can be mutated (overlay a custom config, replace the
     CLI symlink) without paying for a fresh venv creation + pip install on
-    the next `run_hook` call."""
-    dest = tmp_path / "home"
-    shutil.copytree(prebaked_home, dest, symlinks=True)
-    return dest
+    the next `run_hook` call.
+
+    Issue #168: the venv (hundreds of MB) is hard-linked, not copied; every
+    other file is a real copy, so rewriting config.json etc. in place stays
+    private to the clone (see prebaked_home_support.clone_home)."""
+    return clone_home(prebaked_home, tmp_path / "home")
+
+
+@pytest.fixture(autouse=True)
+def _remove_test_home(tmp_path):
+    """Issue #168: delete this test's home (a clone, or a small throwaway one)
+    as soon as the test finishes instead of leaving it for pytest's
+    retention of the last three runs."""
+    yield
+    remove_tree(tmp_path / "home")
 
 
 # ---------------------------------------------------------------------------
@@ -539,12 +569,12 @@ class TestHookLogsFallbackToSystemPython:
         assert marker.exists()
 
         # Run real bootstrap_full (fast path here; clears marker on success).
-        result = subprocess.run(
+        result = run_bounded(
             ["bash", str(REPO_ROOT / "scripts" / "bootstrap-plugin.sh"), "--full"],
+            timeout=HOOK_TIMEOUT_SEC,
             env={**os.environ, "HOME": str(home), "PLUGIN_ROOT": str(REPO_ROOT)},
-            capture_output=True,
-            text=True,
             cwd=str(REPO_ROOT),
+            label="bootstrap-plugin.sh --full",
         )
         assert result.returncode == 0, result.stderr
         assert not marker.exists(), (
