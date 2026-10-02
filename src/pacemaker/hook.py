@@ -535,40 +535,38 @@ def run_session_start_hook():
         # Graceful degradation - log warning and continue with defaults
         log_warning("hook", "Failed to parse SessionStart stdin data", e)
 
-    # Load state
-    state = load_state(DEFAULT_STATE_PATH)
+    def _apply_session_start(state: dict) -> None:
+        # Reset subagent tracking (always reset regardless of source)
+        state["subagent_counter"] = 0
+        state["in_subagent"] = False
 
-    # Reset subagent tracking (always reset regardless of source)
-    state["subagent_counter"] = 0
-    state["in_subagent"] = False
+        # Conditional reset based on source
+        if source == "startup":
+            # NEW SESSION - Full reset
+            if session_id:
+                state["session_id"] = session_id
+            state["last_user_interaction_time"] = None
+            state.setdefault("last_user_interaction_time_by_session", {}).pop(
+                session_id or "", None
+            )
+            state["tool_execution_count"] = 0
+        elif source == "resume":
+            # RESUME existing session - Update session_id but preserve counters
+            if session_id:
+                state["session_id"] = session_id
+            # Keep: last_user_interaction_time, tool_execution_count
+        elif source in ("clear", "compact"):
+            # CLEAR/COMPACT - Reset counters but keep session_id
+            # (session_id from stdin should match existing session_id)
+            state["last_user_interaction_time"] = None
+            state.setdefault("last_user_interaction_time_by_session", {}).pop(
+                session_id or "", None
+            )
+            state["tool_execution_count"] = 0
+            # Keep: session_id (same session continues)
 
-    # Conditional reset based on source
-    if source == "startup":
-        # NEW SESSION - Full reset
-        if session_id:
-            state["session_id"] = session_id
-        state["last_user_interaction_time"] = None
-        state.setdefault("last_user_interaction_time_by_session", {}).pop(
-            session_id or "", None
-        )
-        state["tool_execution_count"] = 0
-    elif source == "resume":
-        # RESUME existing session - Update session_id but preserve counters
-        if session_id:
-            state["session_id"] = session_id
-        # Keep: last_user_interaction_time, tool_execution_count
-    elif source in ("clear", "compact"):
-        # CLEAR/COMPACT - Reset counters but keep session_id
-        # (session_id from stdin should match existing session_id)
-        state["last_user_interaction_time"] = None
-        state.setdefault("last_user_interaction_time_by_session", {}).pop(
-            session_id or "", None
-        )
-        state["tool_execution_count"] = 0
-        # Keep: session_id (same session continues)
-
-    # Save state
-    save_state(state, DEFAULT_STATE_PATH)
+    # Bug #162: load -> reset -> save under the state lock (quick, in-memory).
+    state = update_state(_apply_session_start, DEFAULT_STATE_PATH)
 
     # Minimum Claude Code version check (Story #66 / issue #96). Must run
     # after the first save_state (session_id/counter resets already on
@@ -828,17 +826,15 @@ def run_subagent_start_hook():
     except (json.JSONDecodeError, Exception) as e:
         log_warning("hook", "Failed to parse SubagentStart stdin data", e)
 
-    # Load state
-    state = load_state(DEFAULT_STATE_PATH)
+    def _enter_subagent(state: dict) -> None:
+        # Increment counter
+        state["subagent_counter"] = state.get("subagent_counter", 0) + 1
+        # Set flag based on counter
+        state["in_subagent"] = state["subagent_counter"] > 0
 
-    # Increment counter
-    state["subagent_counter"] = state.get("subagent_counter", 0) + 1
-
-    # Set flag based on counter
-    state["in_subagent"] = state["subagent_counter"] > 0
-
-    # Save state
-    save_state(state, DEFAULT_STATE_PATH)
+    # Bug #162: read-increment-save under the state lock, so parallel
+    # subagent starts never lose an increment.
+    update_state(_enter_subagent, DEFAULT_STATE_PATH)
 
     # Early CSA agent registration — must run BEFORE Langfuse (which can timeout).
     # Issue #99: the gate is enforced INSIDE on_subagent_start_register() via
@@ -899,19 +895,20 @@ def run_subagent_start_hook():
             agent_id = hook_data.get("agent_id")
             parent_transcript_path = hook_data.get("transcript_path", "")
 
-            # `state` was loaded before the (up to several seconds) Langfuse
-            # step: re-load it so changes other hooks made meanwhile survive.
-            state = load_state(DEFAULT_STATE_PATH)
-
             # Legacy single slot: a SubagentStop fallback for an agent with no
             # state file of its own. It is global across sessions, so SubagentStop
             # only claims it for a payload whose session owns the trace.
             # (in_subagent is derived from subagent_counter, not from this slot.)
-            state["current_subagent_trace_id"] = subagent_trace_id
-            state["current_subagent_agent_id"] = agent_id
-            state["current_subagent_parent_transcript_path"] = parent_transcript_path
+            def _store_legacy_slot(state: dict) -> None:
+                state["current_subagent_trace_id"] = subagent_trace_id
+                state["current_subagent_agent_id"] = agent_id
+                state["current_subagent_parent_transcript_path"] = (
+                    parent_transcript_path
+                )
 
-            save_state(state, DEFAULT_STATE_PATH)
+            # Bug #161/#162: the Langfuse step above took up to several
+            # seconds, so apply onto the LATEST state, under the state lock.
+            update_state(_store_legacy_slot, DEFAULT_STATE_PATH)
             log_debug(
                 "hook",
                 f"SubagentStart: Stored subagent trace_id={subagent_trace_id} for "
@@ -1058,17 +1055,15 @@ def run_subagent_stop_hook():
     except (json.JSONDecodeError, Exception) as e:
         log_warning("hook", "Failed to parse SubagentStop stdin data", e)
 
-    # Load state
-    state = load_state(DEFAULT_STATE_PATH)
+    def _leave_subagent(state: dict) -> None:
+        # Decrement counter (never go below 0)
+        state["subagent_counter"] = max(0, state.get("subagent_counter", 0) - 1)
+        # Set flag based on counter
+        state["in_subagent"] = state["subagent_counter"] > 0
 
-    # Decrement counter (never go below 0)
-    state["subagent_counter"] = max(0, state.get("subagent_counter", 0) - 1)
-
-    # Set flag based on counter
-    state["in_subagent"] = state["subagent_counter"] > 0
-
-    # Save state
-    save_state(state, DEFAULT_STATE_PATH)
+    # Bug #162: read-decrement-save under the state lock, so parallel
+    # subagent stops never lose a decrement.
+    state = update_state(_leave_subagent, DEFAULT_STATE_PATH)
 
     # Cross-Session Awareness: heartbeat on subagent stop to keep session visible to siblings.
     # Called unconditionally inside try/except; CSA validates inputs and fails-open.
@@ -1243,18 +1238,18 @@ def run_subagent_stop_hook():
                 "hook", f"SubagentStop: Failed to finalize trace {subagent_trace_id}", e
             )
 
-        # Bug #161: `state` was loaded before the (multi-second) Langfuse step
-        # above. Re-load it so another hook's changes made in the meantime are
-        # not overwritten by that stale copy. `subagent_traces` is the retired
-        # pre-#161 map (finalization no longer reads it); drop any leftover.
-        state = load_state(DEFAULT_STATE_PATH)
-        state.pop("subagent_traces", None)
+        def _clear_subagent_slots(state: dict) -> None:
+            # `subagent_traces` is the retired pre-#161 map (finalization no
+            # longer reads it); drop any leftover.
+            state.pop("subagent_traces", None)
+            # Clear old backward-compat keys
+            state.pop("current_subagent_trace_id", None)
+            state.pop("current_subagent_agent_id", None)
+            state.pop("current_subagent_parent_transcript_path", None)
 
-        # Clear old backward-compat keys
-        state.pop("current_subagent_trace_id", None)
-        state.pop("current_subagent_agent_id", None)
-        state.pop("current_subagent_parent_transcript_path", None)
-        save_state(state, DEFAULT_STATE_PATH)
+        # Bug #161/#162: the Langfuse step above took multiple seconds, so
+        # apply onto the LATEST state, under the state lock.
+        update_state(_clear_subagent_slots, DEFAULT_STATE_PATH)
     elif not trace_info:
         log_debug("hook", "SubagentStop: No subagent trace_id to finalize")
 
@@ -1829,21 +1824,24 @@ def run_user_prompt_submit():
         )
 
         # Update state - but only track interaction time for non-pace-maker commands
-        state = load_state(DEFAULT_STATE_PATH)
-        state["subagent_counter"] = 0
-        state["in_subagent"] = False
-        state["silent_tool_nudge_count"] = 0
+        now = datetime.now(timezone.utc)
 
-        # Only update last_user_interaction_time for actual prompts to Claude
-        # NOT for pace-maker commands (which are just checking status/settings)
-        if not result["intercepted"]:
-            now = datetime.now(timezone.utc)
-            state["last_user_interaction_time"] = now
-            state.setdefault("last_user_interaction_time_by_session", {})[
-                session_id or ""
-            ] = now.isoformat()
+        def _apply_prompt(state: dict) -> None:
+            state["subagent_counter"] = 0
+            state["in_subagent"] = False
+            state["silent_tool_nudge_count"] = 0
 
-        save_state(state, DEFAULT_STATE_PATH)
+            # Only update last_user_interaction_time for actual prompts to
+            # Claude, NOT for pace-maker commands (which are just checking
+            # status/settings)
+            if not result["intercepted"]:
+                state["last_user_interaction_time"] = now
+                state.setdefault("last_user_interaction_time_by_session", {})[
+                    session_id or ""
+                ] = now.isoformat()
+
+        # Bug #162: load -> edit -> save under the state lock.
+        state = update_state(_apply_prompt, DEFAULT_STATE_PATH)
 
         # Cross-Session Awareness: heartbeat on UserPromptSubmit to keep session visible.
         try:
@@ -2683,8 +2681,20 @@ def run_stop_hook():
         from .transcript_reader import detect_silent_tool_stop
 
         if detect_silent_tool_stop(transcript_path):
-            nudge_count = state.get("silent_tool_nudge_count", 0)
             max_nudges = config.get("max_silent_tool_nudges", 3)
+            _nudge_seen: Dict[str, int] = {}
+
+            def _count_silent_nudge(s: dict) -> None:
+                # Read, cap-check and increment (or reset at the cap) as ONE
+                # step on the latest state; remember the count we acted on.
+                seen = s.get("silent_tool_nudge_count", 0)
+                _nudge_seen["count"] = seen
+                s["silent_tool_nudge_count"] = seen + 1 if seen < max_nudges else 0
+
+            # Bug #162: under the state lock, so concurrent stops never lose
+            # an increment. (The nudge prompt is loaded after, outside it.)
+            update_state(_count_silent_nudge, DEFAULT_STATE_PATH)
+            nudge_count = _nudge_seen["count"]
             log_debug(
                 "hook",
                 f"Silent tool stop detected. nudge_count={nudge_count}, max_nudges={max_nudges}",
@@ -2706,10 +2716,7 @@ def run_stop_hook():
                         "Please continue your work."
                     )
 
-                # Increment counter and save state
-                state["silent_tool_nudge_count"] = nudge_count + 1
-                save_state(state, DEFAULT_STATE_PATH)
-
+                # (counter already incremented and saved by _count_silent_nudge)
                 log_debug(
                     "hook",
                     f"Blocking silent stop (nudge {nudge_count + 1}/{max_nudges})",
@@ -2719,9 +2726,8 @@ def run_stop_hook():
                     "reason": format_tag(nudge_message, "stop_continuation_nudge"),
                 }
             else:
-                # Max nudges reached — reset counter and allow exit
-                state["silent_tool_nudge_count"] = 0
-                save_state(state, DEFAULT_STATE_PATH)
+                # Max nudges reached — counter already reset by
+                # _count_silent_nudge; allow exit
                 log_debug("hook", "Max silent tool nudges reached - allowing exit")
                 return {"continue": True}
 
@@ -2769,11 +2775,24 @@ def run_stop_hook():
         # After 5 consecutive blocks without intervening tool use, allow exit to avoid deadlock.
         _EXIT_VALVE_THRESHOLD = STOP_EXIT_VALVE_THRESHOLD
         if result.get("decision") == "block":
-            _consec = state.get("consecutive_stop_blocks", 0)
+            _valve_seen: Dict[str, int] = {}
+
+            def _count_stop_block(s: dict) -> None:
+                # Read, valve-check and increment (or reset when the valve
+                # fires) as ONE step on the latest state.
+                seen = s.get("consecutive_stop_blocks", 0)
+                _valve_seen["count"] = seen
+                s["consecutive_stop_blocks"] = (
+                    0 if seen >= _EXIT_VALVE_THRESHOLD else seen + 1
+                )
+
+            # Bug #162: under the state lock, so concurrent stops never lose
+            # an increment.
+            update_state(_count_stop_block, DEFAULT_STATE_PATH)
+            _consec = _valve_seen["count"]
             if _consec >= _EXIT_VALVE_THRESHOLD:
-                # 5th consecutive block without tool use — activate exit valve
-                state["consecutive_stop_blocks"] = 0
-                save_state(state, DEFAULT_STATE_PATH)
+                # 5th consecutive block without tool use — exit valve (counter
+                # already reset by _count_stop_block)
                 log_warning(
                     "hook",
                     f"Stop hook exit valve activated after {_consec + 1} consecutive blocks "
@@ -2789,16 +2808,17 @@ def run_stop_hook():
                     )
                 return {"continue": True}
             else:
-                state["consecutive_stop_blocks"] = _consec + 1
-                save_state(state, DEFAULT_STATE_PATH)
                 log_debug(
                     "hook", f"Stop hook blocked: consecutive_stop_blocks={_consec + 1}"
                 )
         else:
             # APPROVED or COMPLETE: reset exit valve counter
             if state.get("consecutive_stop_blocks", 0) > 0:
-                state["consecutive_stop_blocks"] = 0
-                save_state(state, DEFAULT_STATE_PATH)
+                # Bug #162: setting 0 needs no read, so no stale copy is saved.
+                update_state(
+                    lambda s: s.__setitem__("consecutive_stop_blocks", 0),
+                    DEFAULT_STATE_PATH,
+                )
                 log_debug(
                     "hook", "Stop hook approved: reset consecutive_stop_blocks counter"
                 )

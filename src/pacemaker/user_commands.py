@@ -1951,7 +1951,7 @@ def _execute_hook_model(config_path: str, subcommand: Optional[str]) -> Dict[str
 def _execute_tempo(config_path: str, subcommand: Optional[str]) -> Dict[str, Any]:
     """Enable or disable tempo (session lifecycle) tracking."""
     from .constants import DEFAULT_STATE_PATH
-    from .hook import load_state, save_state
+    from .hook import update_state
 
     # Handle session-level commands
     if subcommand and subcommand.startswith("session "):
@@ -1959,9 +1959,11 @@ def _execute_tempo(config_path: str, subcommand: Optional[str]) -> Dict[str, Any
 
         if session_cmd == "on":
             try:
-                state = load_state(DEFAULT_STATE_PATH)
-                state["tempo_session_enabled"] = True
-                save_state(state, DEFAULT_STATE_PATH)
+                # Bug #162: under the shared state.json lock
+                update_state(
+                    lambda s: s.__setitem__("tempo_session_enabled", True),
+                    DEFAULT_STATE_PATH,
+                )
                 message = MESSAGES.get("tempo", {}).get(
                     "session_enabled",
                     "✓ Tempo tracking ENABLED for this session\nSession lifecycle tracking will prevent premature exits in this session only.",
@@ -1981,9 +1983,11 @@ def _execute_tempo(config_path: str, subcommand: Optional[str]) -> Dict[str, Any
                 }
         elif session_cmd == "off":
             try:
-                state = load_state(DEFAULT_STATE_PATH)
-                state["tempo_session_enabled"] = False
-                save_state(state, DEFAULT_STATE_PATH)
+                # Bug #162: under the shared state.json lock
+                update_state(
+                    lambda s: s.__setitem__("tempo_session_enabled", False),
+                    DEFAULT_STATE_PATH,
+                )
                 message = MESSAGES.get("tempo", {}).get(
                     "session_disabled",
                     "✓ Tempo tracking DISABLED for this session\nSession lifecycle tracking will not prevent exits in this session.",
