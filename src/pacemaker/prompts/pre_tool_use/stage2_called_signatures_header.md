@@ -1,1 +1,1 @@
-SIGNATURES OF CALLED FUNCTIONS (definitions of project functions the proposed code calls, read from the on-disk source; trust these for argument names and order):
+SIGNATURES OF CALLED FUNCTIONS (best-effort: project definitions the proposed code calls, matched by name from the on-disk source; an entry may not be the exact callee when the receiver's type is not visible):

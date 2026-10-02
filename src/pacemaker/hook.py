@@ -4361,11 +4361,18 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # _call_stage2_validation covers it.
         from .stage2_signatures import build_called_signatures_section
 
+        # The edited file's content is already in hand, so it is never read
+        # twice: the Edit's own read from step 5 (None when that read failed;
+        # the builder then reads the file itself) or the Write's new content.
+        _signatures_target_content = (
+            _edit_file_read[0] if tool_name == "Edit" else tool_input.get("content")
+        )
         _write_edit_called_signatures_section = build_called_signatures_section(
             file_path,
             tool_input.get("new_string" if tool_name == "Edit" else "content", ""),
             _deadline=_gate_deadline,
             _db_path=DEFAULT_DB_PATH,
+            _target_content=_signatures_target_content,
         )
 
         result = intent_validator.validate_intent_and_code(

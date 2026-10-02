@@ -12,12 +12,19 @@ os.environ.setdefault("PACEMAKER_TEST_MODE", "1")
 
 import time  # noqa: E402
 from pathlib import Path  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 import pytest  # noqa: E402
 
+from pacemaker.intent_validator import (  # noqa: E402
+    _read_target_file_for_review as real_read_target_file,
+)
 from pacemaker.stage2_signatures import (  # noqa: E402
     STAGE2_SIGNATURES_MAX_CHARS,
     STAGE2_SIGNATURES_MAX_ENTRIES,
+    STAGE2_SIGNATURES_MAX_MODULE_BYTES,
+    Candidate,
+    _extract_candidates,
     build_called_signatures_section,
 )
 
@@ -68,7 +75,8 @@ class TestLogWarningRepro:
             str(root / "tests" / "test_x.py"), 'log_warning("c", "m")\n'
         )
         assert "def log_warning(component, message, exc=None)" in section
-        assert "Log warning message." in section
+        # Docstrings of OTHER modules are not copied (review L1).
+        assert "Log warning message." not in section
 
 
 class TestResolution:
@@ -102,7 +110,7 @@ class TestResolution:
         assert "def helper(a)" in section
         assert long_doc not in section
 
-    def test_async_function_and_method_by_attribute_name(self, tmp_path):
+    def test_async_method_called_on_self(self, tmp_path):
         root = _project(
             tmp_path,
             {
@@ -114,9 +122,84 @@ class TestResolution:
             },
         )
         section = build_called_signatures_section(
-            str(root / "src" / "pkg" / "mod.py"), "await svc.fetch('u')\n"
+            str(root / "src" / "pkg" / "mod.py"), "await self.fetch('u')\n"
         )
         assert "async def fetch(self, url, timeout=5)" in section
+        assert "method of Svc" in section
+
+    def test_classmethod_style_call_on_cls(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/mod.py": (
+                    "class Svc:\n    def build(cls, spec):\n        pass\n"
+                )
+            },
+        )
+        section = build_called_signatures_section(
+            str(root / "src" / "pkg" / "mod.py"), "cls.build(1)\n"
+        )
+        assert "def build(cls, spec)" in section
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            "d.get('k')",  # dict.get
+            "', '.join(parts)",  # str.join (constant receiver)
+            "cfg.update(other)",  # dict.update
+            "svc.fetch('u')",  # unknown receiver
+            "self.helper.get('k')",  # attribute of self: type unknown
+            "make().get('k')",  # call result receiver
+            "items[0].join(x)",  # subscript receiver
+        ],
+    )
+    def test_method_is_not_matched_by_bare_name_for_other_receivers(
+        self, tmp_path, call
+    ):
+        """A project class that happens to define get/join/update/fetch must
+        not be shown as the callee of dict.get, str.join, ... (#166 review
+        M1): the section would claim "trust these" for the wrong function."""
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/mod.py": (
+                    "class Store:\n"
+                    "    def get(self, key, default, strict):\n        pass\n"
+                    "    def join(self, left, right, how):\n        pass\n"
+                    "    def update(self, a, b, c):\n        pass\n"
+                    "    async def fetch(self, url, timeout=5):\n        pass\n"
+                )
+            },
+        )
+        section = build_called_signatures_section(
+            str(root / "src" / "pkg" / "mod.py"), f"x = {call}\n"
+        )
+        assert section == ""
+
+    def test_self_call_prefers_the_method_over_a_same_named_function(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/mod.py": (
+                    "def run(a):\n    pass\n\n"
+                    "class Job:\n    def run(self, a, b):\n        pass\n"
+                )
+            },
+        )
+        section = build_called_signatures_section(
+            str(root / "src" / "pkg" / "mod.py"), "self.run(1, 2)\n"
+        )
+        assert "def run(self, a, b)" in section
+        assert "def run(a)" not in section
+
+    def test_header_is_best_effort_not_an_unconditional_promise(self, tmp_path):
+        root = _project(tmp_path, {"src/pkg/mod.py": "def helper(a):\n    pass\n"})
+        section = build_called_signatures_section(
+            str(root / "src/pkg/mod.py"), "helper(1)\n"
+        )
+        assert "best-effort" in section
+        assert "matched by name" in section
+        assert "may not be the exact callee" in section
 
     def test_class_shows_bases_and_init_signature(self, tmp_path):
         root = _project(
@@ -475,3 +558,330 @@ class TestParseFailureFallbacks:
             str(root / "src/pkg/mod.py"), "x = 1\n" * 500_000 + "helper(1)\n"
         )
         assert time.monotonic() - started < 5
+
+
+class TestLinearTimeFallbacks:
+    """Review H1: the regex fallbacks run on code that does NOT parse (a
+    typical Edit fragment), up to 100k chars, inside the PreToolUse
+    deadline. A quadratic scan took 5 s at 20k chars and over 30 s at 50k,
+    so the gate could be killed and the edit go through unreviewed."""
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "x = " + "a" * 50_000 + " , (1,",  # identifier run, not a call
+            "x = " + "a." * 25_000 + " , (1,",  # dotted run, not a call
+            "f(" * 25_000,  # unclosed, deeply nested calls
+            "def " * 25_000 + "(",  # keyword spam
+            "from " + "." * 50_000 + "\n(",  # relative-import dots
+            "a" + " " * 50_000 + "b ,(",  # long whitespace run
+        ],
+        ids=["ident-run", "dotted-run", "nested-calls", "def-spam", "dots", "spaces"],
+    )
+    def test_non_parsing_fragment_finishes_fast(self, tmp_path, code):
+        root = _project(tmp_path, {"src/pkg/mod.py": "def helper(a):\n    pass\n"})
+        started = time.monotonic()
+        build_called_signatures_section(str(root / "src/pkg/mod.py"), code)
+        assert time.monotonic() - started < 1.0
+
+    def test_non_parsing_module_on_disk_is_handled_fast(self, tmp_path):
+        broken = "def helper(a, b):\n    pass\n\nthis is not python (\n" + "z" * 250_000
+        root = _project(tmp_path, {"src/pkg/mod.py": broken})
+        started = time.monotonic()
+        section = build_called_signatures_section(
+            str(root / "src/pkg/mod.py"), "helper(1, 2)\n"
+        )
+        assert time.monotonic() - started < 1.0
+        assert "def helper(a, b)" in section
+
+    def test_regex_fallback_still_finds_dotted_module_calls(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/__init__.py": "",
+                "src/pkg/util.py": "def compute(x, y):\n    return x\n",
+                "src/pkg/main.py": "import pkg.util\n",
+            },
+        )
+        section = build_called_signatures_section(
+            str(root / "src/pkg/main.py"), "total = (pkg.util.compute(1,\n"
+        )
+        assert "def compute(x, y)" in section
+
+    def test_regex_fallback_ignores_a_name_glued_to_a_number_or_dot(self, tmp_path):
+        """`1e5(`, `.5(`: not calls of a project function named e5."""
+        root = _project(tmp_path, {"src/pkg/mod.py": "def e5(a):\n    pass\n"})
+        section = build_called_signatures_section(
+            str(root / "src/pkg/mod.py"), "x = (1e5(2,\n"
+        )
+        assert section == ""
+
+
+class TestHardcodedValuesAreNotCopied:
+    """Review L1: stored-secret masking only covers values registered in the
+    secrets store, so a hardcoded credential in a default argument or a
+    docstring of an imported module must never be copied verbatim."""
+
+    CLIENT = (
+        "def connect(host, api_key='sk-live-abcdef123456', blob=b'xyzsecretbytes',"
+        ' retries=3, mode=None, *, token="tok-kwonly-998877",'
+        " opts=('sk-nested-111222', 2)):\n"
+        '    """Open a connection with key sk-docstring-secret-5566."""\n'
+    )
+
+    def _section(self, tmp_path, call="connect('h')\n"):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/__init__.py": "",
+                "src/pkg/client.py": self.CLIENT,
+                "src/pkg/main.py": "from pkg.client import connect\n",
+            },
+        )
+        return build_called_signatures_section(str(root / "src/pkg/main.py"), call)
+
+    def test_string_and_bytes_defaults_render_as_a_placeholder(self, tmp_path):
+        section = self._section(tmp_path)
+        assert (
+            "def connect(host, api_key='...', blob='...', retries=3, mode=None, "
+            "*, token='...', opts=('...', 2))"
+        ) in section
+
+    def test_no_secret_looking_value_reaches_the_section(self, tmp_path):
+        section = self._section(tmp_path)
+        for leaked in (
+            "sk-live-abcdef123456",
+            "xyzsecretbytes",
+            "tok-kwonly-998877",
+            "sk-nested-111222",
+            "sk-docstring-secret-5566",
+        ):
+            assert leaked not in section
+
+    def test_imported_module_docstring_is_omitted(self, tmp_path):
+        assert "Open a connection" not in self._section(tmp_path)
+
+    def test_class_init_defaults_are_redacted_too(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/__init__.py": "",
+                "src/pkg/client.py": (
+                    "class Client:\n"
+                    "    def __init__(self, url, password='hunter2-hunter2'):\n"
+                    "        pass\n"
+                ),
+                "src/pkg/main.py": "from pkg.client import Client\n",
+            },
+        )
+        section = build_called_signatures_section(
+            str(root / "src/pkg/main.py"), "Client('u')\n"
+        )
+        assert "def __init__(self, url, password='...')" in section
+        assert "hunter2-hunter2" not in section
+
+    def test_edited_files_own_defaults_are_redacted_but_its_docstring_is_kept(
+        self, tmp_path
+    ):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/mod.py": (
+                    "def helper(a, key='sk-own-file-424242'):\n"
+                    '    """Do the helping."""\n'
+                )
+            },
+        )
+        section = build_called_signatures_section(
+            str(root / "src/pkg/mod.py"), "helper(1)\n"
+        )
+        assert "def helper(a, key='...')" in section
+        assert "sk-own-file-424242" not in section
+        assert "Do the helping." in section
+
+    def test_non_string_defaults_are_untouched(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/mod.py": "def f(a=1, b=2.5, c=None, d=True, e=(1, 2)):\n    pass\n"
+            },
+        )
+        section = build_called_signatures_section(str(root / "src/pkg/mod.py"), "f()\n")
+        assert "def f(a=1, b=2.5, c=None, d=True, e=(1, 2))" in section
+
+    def test_regex_fallback_def_lines_are_redacted_too(self, tmp_path):
+        broken = (
+            "def helper(a, key='sk-fallback-777', other=\"tok-fallback-888\"):\n"
+            "    pass\n\nthis is not python (\n"
+        )
+        root = _project(tmp_path, {"src/pkg/mod.py": broken})
+        section = build_called_signatures_section(
+            str(root / "src/pkg/mod.py"), "helper(1)\n"
+        )
+        assert "def helper(a, key='...', other='...')" in section
+        assert "sk-fallback-777" not in section
+        assert "tok-fallback-888" not in section
+
+    def test_unclosed_quotes_on_a_huge_def_line_stay_fast(self, tmp_path):
+        broken = "def helper(a, k=" + "'" * 200_000 + "):\n    pass\n(\n"
+        root = _project(tmp_path, {"src/pkg/mod.py": broken})
+        started = time.monotonic()
+        build_called_signatures_section(str(root / "src/pkg/mod.py"), "helper(1)\n")
+        assert time.monotonic() - started < 1.0
+
+
+class TestTargetContent:
+    """Review L2: the hook already read the target file for the diff and the
+    surrounding context; the builder must reuse that read, never read the
+    edited file a second time."""
+
+    def _spy(self):
+        return patch(
+            "pacemaker.stage2_signatures._read_target_file_for_review",
+            wraps=real_read_target_file,
+        )
+
+    def test_given_content_replaces_the_disk_read(self, tmp_path):
+        root = _project(tmp_path, {"src/pkg/mod.py": "x = 1\n"})
+        section = build_called_signatures_section(
+            str(root / "src/pkg/mod.py"),
+            "helper(1)\n",
+            _target_content="def helper(a, b):\n    pass\n",
+        )
+        assert "def helper(a, b)" in section
+
+    def test_the_edited_file_is_not_read_when_content_is_given(self, tmp_path):
+        root = _project(tmp_path, {"src/pkg/mod.py": "def helper(a):\n    pass\n"})
+        target = str(root / "src/pkg/mod.py")
+        with self._spy() as spy:
+            section = build_called_signatures_section(
+                target, "helper(1)\n", _target_content="def helper(a):\n    pass\n"
+            )
+        assert "def helper(a)" in section
+        assert [c for c in spy.call_args_list if c.args[0] == target] == []
+
+    def test_without_content_the_edited_file_is_read_exactly_once(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {"src/pkg/mod.py": "def helper(a):\n    pass\n\ndef other(a):\n    pass\n"},
+        )
+        target = str(root / "src/pkg/mod.py")
+        with self._spy() as spy:
+            build_called_signatures_section(target, "helper(1)\nother(2)\n")
+        assert len([c for c in spy.call_args_list if c.args[0] == target]) == 1
+
+    def test_empty_content_is_content_not_a_missing_file(self, tmp_path):
+        root = _project(tmp_path, {"src/pkg/mod.py": "def helper(a):\n    pass\n"})
+        target = str(root / "src/pkg/mod.py")
+        with self._spy() as spy:
+            section = build_called_signatures_section(
+                target, "helper(1)\n", _target_content=""
+            )
+        assert section == ""
+        assert [c for c in spy.call_args_list if c.args[0] == target] == []
+
+    def test_other_modules_are_still_read_once_each(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/__init__.py": "",
+                "src/pkg/util.py": "def a1(x):\n    pass\n\ndef a2(x):\n    pass\n",
+                "src/pkg/main.py": "from pkg.util import a1, a2\n",
+            },
+        )
+        target = str(root / "src/pkg/main.py")
+        util = str(root / "src/pkg/util.py")
+        with self._spy() as spy:
+            section = build_called_signatures_section(
+                target,
+                "a1(1)\na2(2)\n",
+                _target_content="from pkg.util import a1, a2\n",
+            )
+        assert "def a1(x)" in section and "def a2(x)" in section
+        assert len([c for c in spy.call_args_list if c.args[0] == util]) == 1
+
+    def test_imports_from_content_and_new_code_both_count(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/__init__.py": "",
+                "src/pkg/one.py": "def first(x):\n    pass\n",
+                "src/pkg/two.py": "def second(x):\n    pass\n",
+                "src/pkg/main.py": "",
+            },
+        )
+        section = build_called_signatures_section(
+            str(root / "src/pkg/main.py"),
+            "from pkg.two import second\nfirst(1)\nsecond(2)\n",
+            _target_content="from pkg.one import first\n",
+        )
+        assert "def first(x)" in section and "def second(x)" in section
+
+
+class TestModuleSizeCap:
+    """Review L3: a 2 MB module must not cost seconds to parse."""
+
+    FILLER = "#" * (STAGE2_SIGNATURES_MAX_MODULE_BYTES + 10)
+
+    def test_the_cap_is_about_300_kb(self):
+        assert 200_000 <= STAGE2_SIGNATURES_MAX_MODULE_BYTES <= 400_000
+
+    def test_module_over_the_cap_is_not_used(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/__init__.py": "",
+                "src/pkg/big.py": "def helper(a):\n    pass\n" + self.FILLER,
+                "src/pkg/main.py": "from pkg.big import helper\n",
+            },
+        )
+        section = build_called_signatures_section(
+            str(root / "src/pkg/main.py"), "helper(1)\n"
+        )
+        assert section == ""
+
+    def test_module_just_under_the_cap_is_used(self, tmp_path):
+        filler = "#" * (STAGE2_SIGNATURES_MAX_MODULE_BYTES - 1000)
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/__init__.py": "",
+                "src/pkg/big.py": "def helper(a):\n    pass\n" + filler,
+                "src/pkg/main.py": "from pkg.big import helper\n",
+            },
+        )
+        section = build_called_signatures_section(
+            str(root / "src/pkg/main.py"), "helper(1)\n"
+        )
+        assert "def helper(a)" in section
+
+    def test_oversized_edited_file_on_disk_is_not_used(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {"src/pkg/mod.py": "def helper(a):\n    pass\n" + self.FILLER},
+        )
+        target = str(root / "src/pkg/mod.py")
+        assert build_called_signatures_section(target, "helper(1)\n") == ""
+
+    def test_oversized_given_content_is_ignored(self, tmp_path):
+        root = _project(tmp_path, {"src/pkg/mod.py": "x = 1\n"})
+        section = build_called_signatures_section(
+            str(root / "src/pkg/mod.py"),
+            "helper(1)\n",
+            _target_content="def helper(a):\n    pass\n" + self.FILLER,
+        )
+        assert section == ""
+
+
+class TestExtractCandidates:
+    """Review L4: the set of names the code defines is used inside the
+    extraction only; callers get just the candidate list."""
+
+    def test_returns_the_ordered_candidate_list_only(self):
+        result = _extract_candidates("a(1)\nb.c(2)\nprint(3)\n")
+        assert result == [Candidate(None, "a"), Candidate("b", "c")]
+
+    def test_names_the_code_defines_are_dropped_inside(self):
+        assert _extract_candidates("def a(x):\n    pass\n\na(1)\nz(2)\n") == [
+            Candidate(None, "z")
+        ]

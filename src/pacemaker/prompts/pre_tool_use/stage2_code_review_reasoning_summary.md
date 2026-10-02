@@ -143,10 +143,13 @@ itself. Apply the same partial-context discipline as CHECK 1: only flag an issue
 if the bug is CLEARLY present within the shown fragment — not speculative, not
 "might be missing elsewhere."
 
-Claims that depend on code not shown here (for example the signature or
-behavior of a function the fragment calls that is not listed under
-SIGNATURES OF CALLED FUNCTIONS) are uncertain, so
-do not reject on such a claim alone.
+A claim that rests only on how unseen PROJECT code behaves — the parameter
+names or order, return shape, or output format of a project function the
+fragment calls that is neither shown nor listed under SIGNATURES OF CALLED
+FUNCTIONS — is uncertain; do not reject on such a claim alone. This does not
+relax anything else: bugs visible in the shown lines, and misuse of
+standard-library or language behavior (for example an ignored failure from a
+call that can fail), are still rejected.
 
 Bugs to catch:
 

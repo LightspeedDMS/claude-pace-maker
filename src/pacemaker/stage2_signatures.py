@@ -20,6 +20,7 @@ Stage 2 prompt, so the whole-prompt secret masking at
 
 import ast
 import builtins
+import copy
 import keyword
 import os
 import re
@@ -32,6 +33,9 @@ from .logger import log_warning
 
 STAGE2_SIGNATURES_MAX_CHARS = 1500
 STAGE2_SIGNATURES_MAX_ENTRIES = 12
+# A module (or the edited file) larger than this is not read for signatures:
+# parsing a 2 MB file would cost seconds inside the PreToolUse deadline.
+STAGE2_SIGNATURES_MAX_MODULE_BYTES = 300_000
 _MAX_CANDIDATES = 40
 _MAX_MODULES_READ = 8
 _MAX_SCANNED_CODE_CHARS = 100_000
@@ -41,6 +45,7 @@ _OMITTED_NOTE_RESERVE = 40
 _MAX_ROOT_WALK = 12
 _PROJECT_MARKERS = (".git", "pyproject.toml", "setup.py", "setup.cfg")
 _PATCH_FUNC_NAMES = frozenset({"patch", "object", "setattr"})
+_SELF_RECEIVERS = frozenset({"self", "cls"})
 _IGNORED_NAMES = frozenset(dir(builtins)) | frozenset(keyword.kwlist)
 _HEADER_FILE = os.path.join(
     os.path.dirname(__file__),
@@ -50,7 +55,13 @@ _HEADER_FILE = os.path.join(
 )
 
 _IDENT_PATH = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*$")
-_CALL_RE = re.compile(r"((?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*)\s*\(")
+# Call scan for code that does not parse, kept LINEAR on purpose (#166 review
+# H1): a maximal identifier/dotted run that does not start mid-token, then one
+# O(1)-per-token check for "(". The earlier single pattern with nested
+# quantifiers backtracked quadratically (30 s on 50k chars). Possessive
+# quantifiers would also fix it but need Python 3.11; the hooks support 3.9.
+_CHAIN_RE = re.compile(r"(?<![\w.])[A-Za-z_][\w.]*")
+_OPEN_PAREN_RE = re.compile(r"\s*\(")
 _DEFINED_RE = re.compile(r"\b(?:def|class)\s+([A-Za-z_]\w*)")
 _PATCH_STRING_RE = re.compile(
     r"""\b(?:patch|setattr)(?:\.\w+)?\(\s*(?:[A-Za-z_][\w.]*\s*,\s*)?"""
@@ -126,17 +137,22 @@ def _candidates_from_tree(tree: ast.AST) -> "tuple[list, set]":
 def _candidates_from_regex(code: str) -> "tuple[list, set]":
     defined = set(_DEFINED_RE.findall(code))
     found = []
-    for match in _CALL_RE.finditer(code):
-        base, _, name = match.group(1).rpartition(".")
+    for match in _CHAIN_RE.finditer(code):
+        chain = match.group(0)
+        if not _OPEN_PAREN_RE.match(code, match.end()):
+            continue
+        if not _IDENT_PATH.match(chain):
+            continue
+        base, _, name = chain.rpartition(".")
         found.append(Candidate(base if base else None, name))
     for target in _PATCH_STRING_RE.findall(code):
         found.append(Candidate(None, target, "." in target))
     return found, defined
 
 
-def _extract_candidates(code: str) -> "tuple[list, set]":
+def _extract_candidates(code: str) -> List[Candidate]:
     """Called names in ``code`` (source order, de-duplicated, ignoring
-    builtins and names the code itself defines), plus the defined names."""
+    builtins and names the code itself defines)."""
     tree = _parse(code)
     raw, defined = (
         _candidates_from_tree(tree)
@@ -151,21 +167,19 @@ def _extract_candidates(code: str) -> "tuple[list, set]":
         kept.append(cand)
         if len(kept) >= _MAX_CANDIDATES:
             break
-    return kept, defined
+    return kept
 
 
 class _Imports(NamedTuple):
     """Names an import statement binds: ``from_names`` maps a bound name to
     ``(module, level, original name)``; ``module_aliases`` maps a bound
-    alias (or a dotted ``import a.b`` path) to the dotted module; ``bound``
-    is every name any import binds, project module or not."""
+    alias (or a dotted ``import a.b`` path) to the dotted module."""
 
     from_names: Dict[str, Tuple[str, int, str]]
     module_aliases: Dict[str, str]
-    bound: frozenset
 
 
-_NO_IMPORTS = _Imports({}, {}, frozenset())
+_NO_IMPORTS = _Imports({}, {})
 _FROM_RE = re.compile(
     r"^[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+([^\n#(]+)", re.M
 )
@@ -173,6 +187,9 @@ _IMPORT_RE = re.compile(r"^[ \t]*import[ \t]+([^\n#]+)", re.M)
 _DEF_LINE_RE = re.compile(
     r"^([ \t]*)((?:async[ \t]+)?def|class)[ \t]+([A-Za-z_]\w*)[^\n]*", re.M
 )
+# A quoted literal (an unterminated one runs to the end). Only ever applied to
+# a def line already cut to _MAX_ENTRY_CHARS, so its cost is bounded.
+_QUOTED_RE = re.compile(r"""'(?:\\.|[^'\\])*(?:'|$)|"(?:\\.|[^"\\])*(?:"|$)""")
 
 
 def _alias_pairs(text: str) -> "list[tuple[str, Optional[str]]]":
@@ -186,9 +203,8 @@ def _alias_pairs(text: str) -> "list[tuple[str, Optional[str]]]":
     return pairs
 
 
-def _bind_module(aliases: dict, bound: set, name: str, asname: Optional[str]) -> None:
+def _bind_module(aliases: dict, name: str, asname: Optional[str]) -> None:
     aliases[asname or name] = name
-    bound.add(asname or name.split(".")[0])
 
 
 def _scan_imports(source: str, tree: Optional[ast.AST]) -> _Imports:
@@ -196,7 +212,6 @@ def _scan_imports(source: str, tree: Optional[ast.AST]) -> _Imports:
     failure) from a single-line regex scan."""
     from_names: Dict[str, Tuple[str, int, str]] = {}
     aliases: Dict[str, str] = {}
-    bound: set = set()
     if tree is not None:
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
@@ -209,22 +224,21 @@ def _scan_imports(source: str, tree: Optional[ast.AST]) -> _Imports:
                         )
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    _bind_module(aliases, bound, alias.name, alias.asname)
+                    _bind_module(aliases, alias.name, alias.asname)
     else:
         for m in _FROM_RE.finditer(source):
             for name, asname in _alias_pairs(m.group(3)):
                 from_names[asname or name] = (m.group(2), len(m.group(1)), name)
         for m in _IMPORT_RE.finditer(source):
             for name, asname in _alias_pairs(m.group(1)):
-                _bind_module(aliases, bound, name, asname)
-    return _Imports(from_names, aliases, frozenset(bound | set(from_names)))
+                _bind_module(aliases, name, asname)
+    return _Imports(from_names, aliases)
 
 
 def _merge_imports(first: _Imports, second: _Imports) -> _Imports:
     return _Imports(
         {**first.from_names, **second.from_names},
         {**first.module_aliases, **second.module_aliases},
-        first.bound | second.bound,
     )
 
 
@@ -293,9 +307,22 @@ def _first_doc_line(
     return line if len(line) <= _MAX_DOC_CHARS else ""
 
 
+def _redacted_args(args: ast.arguments) -> str:
+    """``args`` as source with every string/bytes default value replaced by
+    ``'...'``: stored-secret masking cannot catch a credential hardcoded in
+    a default argument, and the argument names and order are what matters."""
+    args = copy.deepcopy(args)
+    defaults = list(args.defaults) + [d for d in args.kw_defaults if d is not None]
+    for default in defaults:
+        for node in ast.walk(default):
+            if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+                node.value = "..."
+    return ast.unparse(args)
+
+
 def _function_text(node) -> str:
     prefix = "async def " if isinstance(node, ast.AsyncFunctionDef) else "def "
-    text = f"{prefix}{node.name}({ast.unparse(node.args)})"
+    text = f"{prefix}{node.name}({_redacted_args(node.args)})"
     if node.returns is not None:
         text += f" -> {ast.unparse(node.returns)}"
     return text
@@ -333,7 +360,8 @@ def _parse_module(path: str, source: str) -> _Module:
     if tree is None:
         for m in _DEF_LINE_RE.finditer(source):
             target = methods if m.group(1) else defs
-            text = m.group(0).strip().rstrip(":")
+            line = m.group(0).strip().rstrip(":")[:_MAX_ENTRY_CHARS]
+            text = _QUOTED_RE.sub("'...'", line)
             target.setdefault(m.group(3), _Def(path, text, "", ""))
     else:
         for node in tree.body:
@@ -352,19 +380,36 @@ class _Resolver:
     """Maps called names to definitions. Every module is read and parsed at
     most once, through ``_read_target_file_for_review``."""
 
-    def __init__(self, file_path: str, deadline: Optional[float], db_path):
+    def __init__(
+        self,
+        file_path: str,
+        deadline: Optional[float],
+        db_path,
+        target_content: Optional[str] = None,
+    ):
         self.file_path = file_path
         self.deadline = deadline
         self.db_path = db_path
         self.root, self.roots = _project_roots(file_path)
         self.cache: Dict[str, Optional[_Module]] = {}
         self.imports = _NO_IMPORTS
+        if target_content is not None:  # the caller already read the edited file
+            oversized = len(target_content) > STAGE2_SIGNATURES_MAX_MODULE_BYTES
+            self.cache[file_path] = (
+                None if oversized else _parse_module(file_path, target_content)
+            )
 
     def module(self, path: str) -> Optional[_Module]:
         if path in self.cache:
             return self.cache[path]
         if len(self.cache) >= _MAX_MODULES_READ:
             return None
+        try:
+            if os.path.getsize(path) > STAGE2_SIGNATURES_MAX_MODULE_BYTES:
+                self.cache[path] = None
+                return None
+        except OSError:
+            pass  # missing/unreadable: the shared reader below reports it
         content, _note = _read_target_file_for_review(
             path, _deadline=self.deadline, _db_path=self.db_path
         )
@@ -381,7 +426,7 @@ class _Resolver:
         info = self.module(module_path)
         if info is None:
             return None
-        found = info.defs.get(name) or info.methods.get(name)
+        found = info.defs.get(name)
         if found or hops <= 0 or name not in info.imports.from_names:
             return found
         mod, level, original = info.imports.from_names[name]
@@ -390,9 +435,13 @@ class _Resolver:
 
     def same_file(self, name: str) -> Optional[_Def]:
         info = self.module(self.file_path)
-        if info is None:
-            return None
-        return info.defs.get(name) or info.methods.get(name)
+        return info.defs.get(name) if info else None
+
+    def own_method(self, name: str) -> Optional[_Def]:
+        """A method of a class in the edited file, by name: only meaningful
+        for a ``self``/``cls`` receiver, never for an arbitrary object."""
+        info = self.module(self.file_path)
+        return info.methods.get(name) if info else None
 
     def module_for_base(self, base: str) -> Optional[str]:
         """Project file of the module an attribute call's receiver names."""
@@ -427,18 +476,21 @@ class _Resolver:
                 path = self._file(mod, level, self.file_path)
                 return self.lookup(path, original) if path else None
             return self.same_file(cand.name)
+        if cand.base in _SELF_RECEIVERS:
+            return self.own_method(cand.name)
+        # Any other receiver is an object of unknown type (d.get, cfg.update,
+        # ', '.join): only a project MODULE receiver can be resolved.
         path = self.module_for_base(cand.base)
-        if path:
-            return self.lookup(path, cand.name)
-        if cand.base.split(".")[0] in self.imports.bound:
-            return None  # a receiver from a non-project import (os, json, ...)
-        return self.same_file(cand.name)
+        return self.lookup(path, cand.name) if path else None
 
 
-def _entry_text(found: _Def, root: str) -> str:
+def _entry_text(found: _Def, root: str, show_doc: bool) -> str:
+    """One entry line. ``show_doc`` is true only for the edited file itself:
+    its content is already in the prompt, whereas another module's docstring
+    would be extra, unmasked text that adds no argument-order information."""
     rel = os.path.relpath(found.path, root).replace(os.sep, "/")
     notes = [f"method of {found.owner}"] if found.owner else []
-    if found.doc:
+    if found.doc and show_doc:
         notes.append(found.doc)
     entry = f"- {rel}: {found.text}" + (f"  # {'; '.join(notes)}" if notes else "")
     if len(entry) > _MAX_ENTRY_CHARS:
@@ -467,16 +519,16 @@ def _render_section(entries: List[str]) -> str:
     return prefix + "\n".join(shown) + "\n" + note
 
 
-def _build_section(file_path, new_code, deadline, db_path) -> str:
+def _build_section(file_path, new_code, deadline, db_path, target_content) -> str:
     if not isinstance(file_path, str) or not isinstance(new_code, str):
         return ""
     if not file_path.endswith(".py") or not new_code.strip() or _expired(deadline):
         return ""
     code = new_code[:_MAX_SCANNED_CODE_CHARS]
-    candidates, _defined = _extract_candidates(code)
+    candidates = _extract_candidates(code)
     if not candidates:
         return ""
-    resolver = _Resolver(file_path, deadline, db_path)
+    resolver = _Resolver(file_path, deadline, db_path, target_content)
     on_disk = resolver.module(file_path)
     resolver.imports = _merge_imports(
         on_disk.imports if on_disk else _NO_IMPORTS,
@@ -491,7 +543,7 @@ def _build_section(file_path, new_code, deadline, db_path) -> str:
         if found is None or (found.path, found.text) in seen:
             continue
         seen.add((found.path, found.text))
-        entries.append(_entry_text(found, resolver.root))
+        entries.append(_entry_text(found, resolver.root, found.path == file_path))
         if len(entries) > STAGE2_SIGNATURES_MAX_ENTRIES:
             break
     if not entries or _expired(deadline):
@@ -504,14 +556,20 @@ def build_called_signatures_section(
     new_code: str,
     _deadline: Optional[float] = None,
     _db_path: Optional[str] = None,
+    _target_content: Optional[str] = None,
 ) -> str:
     """The Stage 2 "SIGNATURES OF CALLED FUNCTIONS" section for ``new_code``
     (the added/new code of a Write/Edit on ``file_path``), or ``""``: not a
     Python file, nothing resolvable, past ``_deadline`` (a
     ``time.monotonic()`` value) or any error (logged as a warning, never
-    raised, so Stage 2 itself is never blocked by this section)."""
+    raised, so Stage 2 itself is never blocked by this section).
+
+    ``_target_content``: the edited file's content when the caller already
+    has it (the hook's read for the diff and surrounding context; for a
+    Write, the new content). It is used instead of reading the file again;
+    ``None`` means read it from disk."""
     try:
-        return _build_section(file_path, new_code, _deadline, _db_path)
+        return _build_section(file_path, new_code, _deadline, _db_path, _target_content)
     except Exception as exc:  # fail-safe by contract (#166)
         log_warning("stage2_signatures", "Called-signatures section skipped", exc)
         return ""
