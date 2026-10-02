@@ -43,6 +43,7 @@ from .atomic_file import atomic_write_text
 from .bounded_call import run_with_deadline
 from .intent_declarations import gate as declaration_gate
 from .intent_declarations import subagent_guidance
+from .langfuse.state import is_safe_state_id
 from .logger import log_warning, log_debug, log_info, log_error
 from .prompt_provenance import format_tag, format_reviewer_relay
 
@@ -1684,12 +1685,27 @@ def get_transcript_path(session_id: str) -> Optional[str]:
     1. CLAUDE_PROJECT_DIR env var (most reliable, set by Claude Code)
     2. Current working directory (fallback, may be a subdirectory)
 
+    Bug #167: session_id comes from the hook payload and becomes part of a
+    file name, so it must pass the same allowlist as every Langfuse state id
+    (``langfuse.state.is_safe_state_id``); an unsafe id (``../x``, a path
+    separator, too long, not a string) yields None and a warning, never a
+    probe outside ``~/.claude/projects/<dir>/``.
+
     Args:
         session_id: Session UUID from hook data
 
     Returns:
-        Path to transcript file, or None if not found
+        Path to transcript file, or None if not found or the id is unsafe
     """
+    if not is_safe_state_id(session_id):
+        # Only the type is logged: the value is attacker-controlled input.
+        log_warning(
+            "hook",
+            "get_transcript_path: refusing unsafe session_id "
+            f"(type={type(session_id).__name__})",
+        )
+        return None
+
     candidates = []
 
     # Try CLAUDE_PROJECT_DIR first (set by Claude Code, points to project root)
