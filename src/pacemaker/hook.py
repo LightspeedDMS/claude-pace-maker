@@ -4354,6 +4354,20 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 _write_edit_diagnostics.get("anchor_sibling_edits")
             )
 
+        # Bug #166: signatures of the project functions the ADDED code calls
+        # (Python files only). "" on a non-.py file, nothing resolvable, any
+        # error, or past the gate deadline. Like every other section it is
+        # part of the Stage 2 prompt, so the whole-prompt secret masking at
+        # _call_stage2_validation covers it.
+        from .stage2_signatures import build_called_signatures_section
+
+        _write_edit_called_signatures_section = build_called_signatures_section(
+            file_path,
+            tool_input.get("new_string" if tool_name == "Edit" else "content", ""),
+            _deadline=_gate_deadline,
+            _db_path=DEFAULT_DB_PATH,
+        )
+
         result = intent_validator.validate_intent_and_code(
             messages=messages,
             code=proposed_code,
@@ -4398,6 +4412,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             # agent already used the tool); every other Stage 2 rejection
             # gets the review hint, while the tool path is on.
             intent_from_tool=_declared_intent is not None,
+            called_signatures_section=_write_edit_called_signatures_section,
         )
 
         # Story #155: apply the verdict to the agent's chain (approved

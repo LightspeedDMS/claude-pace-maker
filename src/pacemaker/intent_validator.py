@@ -1842,6 +1842,7 @@ def _build_stage2_prompt_reasoning_summary(
     sibling_edits_section: str = "",
     intent_source: Optional[str] = None,
     write_case: Optional[str] = None,
+    called_signatures_section: str = "",
 ) -> str:
     """Issue #151: build the Stage 2 prompt for the reasoning-summary
     intent exception path (configured models only, e.g. Opus 5.5 at high
@@ -1951,6 +1952,7 @@ def _build_stage2_prompt_reasoning_summary(
         recent_context_section=recent_context_section,
         surrounding_context_section=surrounding_context_section,
         sibling_edits_section=sibling_edits_section,
+        called_signatures_section=called_signatures_section,
         prior_turn_note=prior_turn_note,
         write_file_warning_body=_build_write_file_warning_body(write_case),
     )
@@ -2108,6 +2110,7 @@ def _validate_reasoning_summary_path(
     _db_path: Optional[str] = None,
     write_case: Optional[str] = None,
     declare_intent_hint: bool = False,
+    called_signatures_section: str = "",
 ) -> dict:
     """Issue #151: the RELAXED reasoning-summary/visible-text intent path.
 
@@ -2156,6 +2159,7 @@ def _validate_reasoning_summary_path(
         sibling_edits_section=edit_sibling_edits_section,
         intent_source=intent_source,
         write_case=write_case,
+        called_signatures_section=called_signatures_section,
     )
 
     _stage2_degradation: Dict[str, Any] = {}
@@ -2371,6 +2375,7 @@ def _build_stage2_prompt(
     surrounding_context_section: str = "",
     sibling_edits_section: str = "",
     write_case: Optional[str] = None,
+    called_signatures_section: str = "",
 ) -> str:
     """
     Build Stage 2 validation prompt from external template.
@@ -2433,6 +2438,7 @@ def _build_stage2_prompt(
         clean_code_rules=clean_code_rules_text,
         surrounding_context_section=surrounding_context_section,
         sibling_edits_section=sibling_edits_section,
+        called_signatures_section=called_signatures_section,
         write_file_warning_body=_build_write_file_warning_body(write_case),
     )
 
@@ -2598,6 +2604,7 @@ def _validate_normal_path(
     declare_intent_hint: bool = False,
     tool_declared_tdd: Optional[bool] = None,
     intent_from_tool: bool = False,
+    called_signatures_section: str = "",
 ) -> dict:
     """The STRICT (declaration-required) Stage 1/2 pipeline -- extracted
     verbatim from validate_intent_and_code (issue #151 code review H2/M1)
@@ -2785,6 +2792,7 @@ CRITICAL: Quote must reference actual user words from recent context."""
         surrounding_context_section=edit_surrounding_context_section,
         sibling_edits_section=edit_sibling_edits_section,
         write_case=write_case,
+        called_signatures_section=called_signatures_section,
     )
     log_debug("intent_validator", f"Stage 2 prompt length: {len(stage2_prompt)} chars")
 
@@ -2905,6 +2913,7 @@ def validate_intent_and_code(
     declare_intent_hint: bool = False,
     tool_declared_tdd: Optional[bool] = None,
     intent_from_tool: bool = False,
+    called_signatures_section: str = "",
 ) -> dict:
     """
     Two-stage pre-tool validation with short-circuit logic.
@@ -3103,6 +3112,7 @@ def validate_intent_and_code(
                 _db_path=stage2_db_path,
                 write_case=write_case,
                 declare_intent_hint=declare_intent_hint,
+                called_signatures_section=called_signatures_section,
             )
 
         # STRICT path -- either a non-exception model, an exception-model
@@ -3131,6 +3141,7 @@ def validate_intent_and_code(
             declare_intent_hint=declare_intent_hint,
             tool_declared_tdd=tool_declared_tdd,
             intent_from_tool=intent_from_tool,
+            called_signatures_section=called_signatures_section,
         )
         if reasoning_summary_intent_source is not None:
             # Issue #151 code review H2/M1/L1: an exception-model turn

@@ -24,7 +24,7 @@ INTENT (auto-summarized reasoning summary / visible text — see notice above):
 {recent_context_section}
 PROPOSED CODE:
 {code}
-{surrounding_context_section}{sibling_edits_section}
+{surrounding_context_section}{called_signatures_section}{sibling_edits_section}
 ⚠️  PARTIAL CONTEXT WARNING (Edit operations)
 ════════════════════════════════════════════════════════════════
 When the tool is Edit (not Write), PROPOSED CODE above is a UNIFIED DIFF of
@@ -142,6 +142,11 @@ Scan the PROPOSED CODE for bugs that are unambiguously present in the fragment
 itself. Apply the same partial-context discipline as CHECK 1: only flag an issue
 if the bug is CLEARLY present within the shown fragment — not speculative, not
 "might be missing elsewhere."
+
+Claims that depend on code not shown here (for example the signature or
+behavior of a function the fragment calls that is not listed under
+SIGNATURES OF CALLED FUNCTIONS) are uncertain, so
+do not reject on such a claim alone.
 
 Bugs to catch:
 
