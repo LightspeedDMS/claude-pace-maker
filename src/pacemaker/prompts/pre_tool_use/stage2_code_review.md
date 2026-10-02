@@ -9,7 +9,7 @@ RECENT CONTEXT (last 2 messages):
 
 PROPOSED CODE:
 {code}
-{surrounding_context_section}{sibling_edits_section}
+{surrounding_context_section}{called_signatures_section}{sibling_edits_section}
 ⚠️  PARTIAL CONTEXT WARNING (Edit operations)
 ════════════════════════════════════════════════════════════════
 When the tool is Edit (not Write), PROPOSED CODE above is a UNIFIED DIFF of
@@ -124,6 +124,14 @@ Scan the PROPOSED CODE for bugs that are unambiguously present in the fragment
 itself. Apply the same partial-context discipline as CHECK 1: only flag an issue
 if the bug is CLEARLY present within the shown fragment — not speculative, not
 "might be missing elsewhere."
+
+A claim that rests only on how unseen PROJECT code behaves — the parameter
+names or order, return shape, or output format of a project function the
+fragment calls that is neither shown nor listed under SIGNATURES OF CALLED
+FUNCTIONS — is uncertain; do not reject on such a claim alone. This does not
+relax anything else: bugs visible in the shown lines, and misuse of
+standard-library or language behavior (for example an ignored failure from a
+call that can fail), are still rejected.
 
 Bugs to catch:
 

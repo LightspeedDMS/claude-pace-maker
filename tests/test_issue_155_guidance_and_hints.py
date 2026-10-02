@@ -33,6 +33,14 @@ DECLARE_TOOL_PARAGRAPH = (
     "file needs its own declaration."
 )
 
+# Bug #164: one sentence ADDED after the pilot paragraph (never rewording it).
+PER_EDIT_SENTENCE = (
+    "A reused declaration is checked as-is against each later edit, so "
+    "declare only what the next Write/Edit does; when the next edit does "
+    "something different, declare again, or make the whole change in a "
+    "single edit."
+)
+
 # Issue #150's C text -- must stay character-exact, never reworded.
 PILOT_C_TEXT = (
     "IMPORTANT — intent declarations: before EVERY Write/Edit tool call, "
@@ -53,7 +61,9 @@ class TestGuidanceLeadsWithTheTool:
     def test_c_text_follows_immediately_as_the_fallback(self):
         guidance = display_intent_validation_guidance()
         body = guidance[len(TAG_HEADER) :]
-        assert body.startswith(DECLARE_TOOL_PARAGRAPH + "\n\n" + PILOT_C_TEXT)
+        assert body.startswith(
+            DECLARE_TOOL_PARAGRAPH + " " + PER_EDIT_SENTENCE + "\n\n" + PILOT_C_TEXT
+        )
 
     def test_existing_visible_intent_instructions_are_kept(self):
         guidance = display_intent_validation_guidance()
@@ -91,7 +101,10 @@ class TestGuidanceLeadsWithTheTool:
             "declare_intent_guidance.md",
         )
         assert os.path.isfile(path)
-        assert open(path).read().strip() == DECLARE_TOOL_PARAGRAPH
+        assert (
+            open(path).read().strip()
+            == DECLARE_TOOL_PARAGRAPH + " " + PER_EDIT_SENTENCE
+        )
 
 
 class TestBuildDeclareIntentHint:
