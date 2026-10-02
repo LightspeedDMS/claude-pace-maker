@@ -7,6 +7,7 @@ It runs pacing checks and applies adaptive throttling.
 """
 
 import copy
+import fcntl
 import os
 import sys
 import time
@@ -189,6 +190,60 @@ def save_state(state: dict, state_path: str = DEFAULT_STATE_PATH):
         log_warning("hook", "Failed to save state", e)
 
 
+# Bug #162: longest `update_state` waits for the state.json lock before it gives
+# up and proceeds unlocked. Every holder keeps the lock for milliseconds.
+STATE_LOCK_TIMEOUT_SECONDS = 2.0
+_STATE_LOCK_POLL_SECONDS = 0.01
+
+
+def _acquire_state_lock(state_path: str) -> Optional[int]:
+    """Take an exclusive advisory lock on the sidecar `<state_path>.lock`.
+
+    The lock lives on a separate file because `atomic_write_text` swaps the
+    state file's inode with os.replace, so a lock on state.json itself would
+    be lost on every save. The lock file is never deleted.
+
+    Polls `LOCK_EX | LOCK_NB` at most `STATE_LOCK_TIMEOUT_SECONDS /
+    _STATE_LOCK_POLL_SECONDS + 1` times (a counted loop, so the wait is
+    bounded). Returns the open fd holding the lock, or None -- after logging a
+    warning that names the state path -- when the lock could not be taken
+    (timeout, or the lock file cannot be opened/locked at all).
+    """
+    lock_path = f"{state_path}.lock"
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as e:
+        log_warning(
+            "hook",
+            f"Cannot open state lock {lock_path}; updating {state_path} unlocked",
+            e,
+        )
+        return None
+
+    attempts = int(STATE_LOCK_TIMEOUT_SECONDS / _STATE_LOCK_POLL_SECONDS) + 1
+    for attempt in range(attempts):
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if attempt < attempts - 1:
+                time.sleep(_STATE_LOCK_POLL_SECONDS)
+        except OSError as e:
+            os.close(fd)
+            log_warning(
+                "hook", f"Cannot lock {lock_path}; updating {state_path} unlocked", e
+            )
+            return None
+
+    os.close(fd)
+    log_warning(
+        "hook",
+        f"Timed out after {STATE_LOCK_TIMEOUT_SECONDS}s waiting for the lock "
+        f"{lock_path}; updating {state_path} unlocked",
+    )
+    return None
+
+
 def update_state(
     mutate: Callable[[dict], None], state_path: str = DEFAULT_STATE_PATH
 ) -> dict:
@@ -200,12 +255,27 @@ def update_state(
     meanwhile. This re-loads right now, lets `mutate` edit only the fields this
     hook owns, saves, and returns the state that was saved. Callers keep the
     load -> mutate -> save window to a single call (milliseconds), never across
-    a slow step.
+    a slow step: `mutate` must be a quick in-memory edit, because the lock is
+    held while it runs.
+
+    Re-loading alone leaves a window where two processes inside load -> save
+    lose one update, so the load -> mutate -> save is serialized with an
+    advisory `fcntl.flock` on `<state_path>.lock` (see `_acquire_state_lock`).
+    Deliberate choice: if the lock is not acquired within
+    `STATE_LOCK_TIMEOUT_SECONDS`, a warning naming the state path is logged and
+    the update proceeds UNLOCKED -- the pre-lock behavior. A hook must never
+    block or fail because of the lock; a rare lost update is the lesser evil.
+    The lock fd is closed in `finally` (which releases the lock).
     """
-    state = load_state(state_path)
-    mutate(state)
-    save_state(state, state_path)
-    return state
+    lock_fd = _acquire_state_lock(state_path)
+    try:
+        state = load_state(state_path)
+        mutate(state)
+        save_state(state, state_path)
+        return state
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
 
 
 _CSA_STATE_KEY = "cross_session_awareness"
