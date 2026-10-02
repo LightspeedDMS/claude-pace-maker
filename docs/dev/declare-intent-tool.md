@@ -76,3 +76,11 @@ An agent may send several Edits to one file in one message under one declaration
   - the deferred transcript-race block (wrapped in `run_pre_tool_hook`).
 - Never gets it: a tool/chain-declared rejection (it already carries the #159 consumed-declaration note, so never both), reviewer-unavailable blocks (infrastructure failure: no #159 hint either, and the cause is not a missing declaration), SDK-unavailable and internal-error blocks. The `hook.py` condition is `_declared_intent is None`, a `reviewer` in the result, and not `reviewer_unavailable_failure`.
 - It changes only the block message. Which edits are blocked, Stage 2, reviewer text and `raw_feedback` are untouched.
+
+## Declare per edit (#164)
+
+Sonnet 5.5 tends to declare a whole plan and then edit in pieces; Stage 2 rejects each piece as "missing functionality" on purpose (#156, by design). The fix is wording only:
+
+- One sentence is **appended** to the end of `prompts/session_start/declare_intent_guidance.md` and `prompts/mcp/declare_intent_tool_description.md`: "Declare only what that one Write/Edit does; if a change needs several edits, declare each edit separately, or make the whole change in a single edit."
+- A shorter "Declare only what that one edit does." ends `declare_intent_hint_review.md` and `declare_intent_consumed_note.md`, the two blocks that send the agent back to re-declare after a Stage 2 rejection. The Stage-1, deferred and reviewer-unavailable texts are about missing or lost declarations, so they are unchanged.
+- The pilot-validated #155 paragraph and the #150 "C text" stay character-exact; the sentence follows the paragraph, before the C text. No reasoning-extraction phrasing. Pinned by `tests/test_issue_164_declare_per_edit_guidance.py` (plus the #155 and #159 exact-wording tests).
