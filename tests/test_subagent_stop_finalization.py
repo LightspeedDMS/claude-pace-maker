@@ -57,12 +57,12 @@ def test_subagent_stop_finalizes_span(
         # NEW: Dict-based trace storage
         "subagent_traces": {
             "agent-abc123": {
-                "trace_id": "trace-subagent-123",
+                "trace_id": "agent-abc123-subagent-general-purpose-1a2b3c4d",
                 "parent_transcript_path": "/tmp/parent.jsonl",
             }
         },
         # OLD: Backward compat keys (still supported)
-        "current_subagent_trace_id": "trace-subagent-123",
+        "current_subagent_trace_id": "agent-abc123-subagent-general-purpose-1a2b3c4d",
         "current_subagent_agent_id": "agent-abc123",
     }
 
@@ -86,7 +86,10 @@ def test_subagent_stop_finalizes_span(
         call_kwargs = mock_finalize.call_args[1]
 
         # AC5: Verify subagent trace_id is used for finalization
-        assert call_kwargs["subagent_trace_id"] == "trace-subagent-123"
+        assert (
+            call_kwargs["subagent_trace_id"]
+            == "agent-abc123-subagent-general-purpose-1a2b3c4d"
+        )
 
         # AC5: Verify parent transcript path is used (to extract subagent output)
         assert (
@@ -121,12 +124,12 @@ def test_subagent_stop_skips_finalization_when_langfuse_disabled(
         # NEW: Dict-based trace storage
         "subagent_traces": {
             "agent-abc123": {
-                "trace_id": "trace-subagent-123",
+                "trace_id": "agent-abc123-subagent-general-purpose-1a2b3c4d",
                 "parent_transcript_path": "/tmp/parent.jsonl",
             }
         },
         # OLD: Backward compat keys
-        "current_subagent_trace_id": "trace-subagent-123",
+        "current_subagent_trace_id": "agent-abc123-subagent-general-purpose-1a2b3c4d",
     }
 
     with (
@@ -147,6 +150,11 @@ def test_subagent_stop_skips_finalization_when_langfuse_disabled(
 def test_subagent_stop_handles_missing_stdin_data():
     """
     AC5: SubagentStop should handle missing stdin data gracefully.
+
+    Bug #161 (L1): with no stdin there is no payload identity (no agent_id, no
+    session_id), and the global legacy slot is shared by every concurrent
+    session -- so it must NOT be finalized on the hook's say-so. The hook must
+    not crash and must not finalize a trace that may belong to another session.
     """
     config = {"enabled": True, "langfuse_enabled": True}
 
@@ -154,7 +162,7 @@ def test_subagent_stop_handles_missing_stdin_data():
     mock_state = {
         "in_subagent": True,
         "subagent_counter": 1,
-        "current_subagent_trace_id": "trace-subagent-123",
+        "current_subagent_trace_id": "agent-abc123-subagent-general-purpose-1a2b3c4d",
         "current_subagent_agent_id": "agent-xyz",
     }
 
@@ -170,8 +178,4 @@ def test_subagent_stop_handles_missing_stdin_data():
         # Run SubagentStop hook - should not crash
         run_subagent_stop_hook()
 
-        # Verify handle_subagent_stop WAS called (with None transcript path)
-        # The hook still calls finalization but with None parent_transcript_path
-        mock_finalize.assert_called_once()
-        call_kwargs = mock_finalize.call_args[1]
-        assert call_kwargs["parent_transcript_path"] is None
+        mock_finalize.assert_not_called()

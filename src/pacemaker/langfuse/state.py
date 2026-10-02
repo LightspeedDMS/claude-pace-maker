@@ -11,11 +11,11 @@ State files are stored in ~/.claude-pace-maker/langfuse_state/<session_id>.json
 """
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
+from ..atomic_file import atomic_write_text
 from ..logger import log_warning, log_debug
 
 # Bug #160: a subagent's state file is dead once the subagent stops, so it gets
@@ -23,10 +23,42 @@ from ..logger import log_warning, log_debug
 # state keeps the 7-day TTL.
 SUBAGENT_STATE_PREFIX = "subagent-"
 SUBAGENT_STATE_MAX_AGE_DAYS = 2
+# Bug #161: a subagent id from the hook payload becomes part of a file name.
+AGENT_ID_MAX_LENGTH = 128
 # Cleanup runs at most once per interval; the stamp's mtime records the last run
 # (no ".json" suffix, so the cleanup glob never matches it).
 CLEANUP_STAMP_FILENAME = ".last_cleanup"
 CLEANUP_MIN_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+def is_safe_agent_id(agent_id: Any) -> bool:
+    """agent_id arrives in the hook's stdin payload and becomes part of a state
+    file NAME, so only plain identifier characters are accepted (no path
+    separators, no ``..``)."""
+    return (
+        isinstance(agent_id, str)
+        and 0 < len(agent_id) <= AGENT_ID_MAX_LENGTH
+        and all(c.isalnum() or c in "-_" for c in agent_id)
+    )
+
+
+def is_safe_state_id(session_id: Any) -> bool:  # Any: raw payload value
+    """Bug #161 (M1): the one rule for which state ids may touch the disk.
+
+    EVERY id -- a Claude Code session id as much as ``subagent-<agent_id>`` --
+    comes from the hook payload and becomes ``<state_dir>/<id>.json``, so every
+    id must pass the same allowlist (is_safe_agent_id: 1-128 chars of letters,
+    digits, ``-``, ``_``). Otherwise ``"../config"`` would overwrite
+    ``~/.claude-pace-maker/config.json``. A non-string is never safe.
+
+    For ``subagent-<agent_id>`` the allowlist applies to the ``<agent_id>``
+    part, so the agent-id length limit is the same here as in
+    read_subagent_trace_info (start and stop must agree on valid ids)."""
+    if not isinstance(session_id, str):
+        return False
+    if session_id.startswith(SUBAGENT_STATE_PREFIX):
+        return is_safe_agent_id(session_id[len(SUBAGENT_STATE_PREFIX) :])
+    return is_safe_agent_id(session_id)
 
 
 class StateManager:
@@ -64,8 +96,13 @@ class StateManager:
             session_id: Session identifier
 
         Returns:
-            State dict with session_id, trace_id, last_pushed_line, or None if not found
+            State dict with session_id, trace_id, last_pushed_line, or None if
+            not found or if session_id is an unsafe ``subagent-`` id
         """
+        if not is_safe_state_id(session_id):
+            log_warning("state", f"Refusing read of unsafe state id {session_id!r}")
+            return None
+
         state_file = Path(self.state_dir) / f"{session_id}.json"
 
         if not state_file.exists():
@@ -101,10 +138,14 @@ class StateManager:
             pending_intel: Optional prompt intelligence metadata (frustration, specificity, etc)
 
         Returns:
-            True if successful, False if failed
+            True if successful, False if failed (including an unsafe
+            ``subagent-`` id, which writes nothing)
         """
+        if not is_safe_state_id(session_id):
+            log_warning("state", f"Refusing write of unsafe state id {session_id!r}")
+            return False
+
         state_file = Path(self.state_dir) / f"{session_id}.json"
-        temp_file = Path(self.state_dir) / f"{session_id}.json.tmp.{os.getpid()}"
 
         state_data = {
             "session_id": session_id,
@@ -124,27 +165,20 @@ class StateManager:
         if pending_intel is not None:
             state_data["pending_intel"] = pending_intel
 
-        try:
-            # Write to temp file first (atomic operation)
-            with open(temp_file, "w") as f:
-                json.dump(state_data, f)
+        # Serialize BEFORE touching the disk: a non-serializable value raises
+        # here and leaves the previous file (and the directory) untouched.
+        serialized = json.dumps(state_data)
 
-            # Atomic rename (POSIX guarantees atomicity)
-            temp_file.rename(state_file)
+        try:
+            # Bug #161 (L7): the shared atomic writer (unique temp name per
+            # call, os.replace, mode preserved, temp removed on failure).
+            atomic_write_text(str(state_file), serialized)
 
             log_debug("state", f"Saved state for {session_id}: line={last_pushed_line}")
             return True
 
         except (IOError, OSError) as e:
             log_warning("state", f"Failed to save state for {session_id}", e)
-
-            # Clean up temp file if it exists
-            if temp_file.exists():
-                try:
-                    temp_file.unlink()
-                except Exception:
-                    pass
-
             return False
 
     def cleanup_stale_files(
@@ -232,3 +266,73 @@ class StateManager:
             log_warning("state", "Could not write cleanup stamp", e)
             return False
         return True
+
+
+def read_subagent_trace_info(
+    state_dir: str,
+    agent_id: Any,  # Any: raw hook-payload value, validated by is_safe_agent_id
+    session_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Bug #161: the trace SubagentStop must finalize, from the subagent's OWN
+    state file ``<state_dir>/subagent-<agent_id>.json`` (written atomically by
+    SubagentStart, keyed by the payload's agent_id -- the same source bug #158
+    made PostToolUse use for spans).
+
+    The machine-wide state.json is deliberately NOT consulted: it is one file
+    every concurrent hook rewrites, and finalization used to lose any trace
+    whose entry another hook clobbered.
+
+    The trace must also belong to the payload's session: trace ids are
+    ``<parent_session_id>-subagent-<agent_type>-<uuid8>``
+    (``orchestrator.handle_subagent_start``), so a trace not starting with
+    ``<session_id>-subagent-`` is never returned. Without a payload session_id
+    that cannot be verified, so nothing is returned.
+
+    Returns ``{"trace_id", "parent_transcript_path"}`` (the path is None when
+    the file predates it or its metadata is malformed -- the latter is logged),
+    or None when the agent id is unsafe, this agent has no registered trace,
+    the state is unreadable or malformed, or the trace belongs to another
+    session. Never raises into the hook."""
+    if not is_safe_agent_id(agent_id):
+        log_warning("state", f"SubagentStop: ignoring unsafe agent_id {agent_id!r}")
+        return None
+    if not session_id:
+        log_warning(
+            "state",
+            f"SubagentStop: no payload session_id; cannot verify the trace of "
+            f"subagent {agent_id}",
+        )
+        return None
+    try:
+        agent_state = StateManager(state_dir).read(f"{SUBAGENT_STATE_PREFIX}{agent_id}")
+    except Exception as e:
+        log_warning(
+            "state", f"SubagentStop: cannot read state of subagent {agent_id}", e
+        )
+        return None
+
+    if not isinstance(agent_state, dict):
+        return None
+    trace_id = agent_state.get("trace_id")
+    if not trace_id or not isinstance(trace_id, str):
+        return None
+    if not trace_id.startswith(f"{session_id}-subagent-"):
+        log_warning(
+            "state",
+            f"SubagentStop: trace {trace_id} of subagent {agent_id} does not "
+            f"belong to session {session_id}; not finalizing it",
+        )
+        return None
+
+    metadata = agent_state.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        log_warning(
+            "state",
+            f"SubagentStop: malformed metadata in state of subagent {agent_id}; "
+            "finalizing without a stored parent transcript path",
+        )
+        metadata = None
+    return {
+        "trace_id": trace_id,
+        "parent_transcript_path": (metadata or {}).get("parent_transcript_path"),
+    }

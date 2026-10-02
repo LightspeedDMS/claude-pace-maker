@@ -11,6 +11,7 @@ TDD: These tests are written FIRST - production code comes after.
 
 import json
 import os
+import re
 import tempfile
 import threading
 from pathlib import Path
@@ -40,16 +41,16 @@ class TestTempFileIncludesPID:
         session_id = "test-session"
         current_pid = os.getpid()
 
-        # Patch Path.rename to capture what temp file was created
-        # We need to intercept BEFORE the rename happens
-        original_rename = Path.rename
+        # Spy on os.replace (the atomic step of atomic_file.atomic_write_text)
+        # to capture the temp file name; the real replace still runs.
+        original_replace = os.replace
         temp_files_seen = []
 
-        def capture_rename(self_path, target):
-            temp_files_seen.append(str(self_path))
-            return original_rename(self_path, target)
+        def capture_replace(src, dst):
+            temp_files_seen.append(str(src))
+            return original_replace(src, dst)
 
-        with patch.object(Path, "rename", capture_rename):
+        with patch("os.replace", capture_replace):
             manager.create_or_update(
                 session_id=session_id,
                 trace_id="trace-1",
@@ -64,19 +65,22 @@ class TestTempFileIncludesPID:
         ), f"Temp file '{temp_file_name}' should contain PID '{current_pid}'"
 
     def test_temp_file_name_format(self, manager, state_dir):
-        """Temp file should follow format: {session_id}.json.tmp.{pid}"""
+        """Temp file should follow format: {session_id}.json.tmp.{pid}.{8 hex}
+        (atomic_file.atomic_write_text: unique per process AND per call)."""
         session_id = "test-format"
         current_pid = os.getpid()
-        expected_temp_name = f"{session_id}.json.tmp.{current_pid}"
+        expected_pattern = re.compile(
+            rf"^{re.escape(session_id)}\.json\.tmp\.{current_pid}\.[0-9a-f]{{8}}$"
+        )
 
-        original_rename = Path.rename
+        original_replace = os.replace
         temp_files_seen = []
 
-        def capture_rename(self_path, target):
-            temp_files_seen.append(self_path.name)
-            return original_rename(self_path, target)
+        def capture_replace(src, dst):
+            temp_files_seen.append(Path(src).name)
+            return original_replace(src, dst)
 
-        with patch.object(Path, "rename", capture_rename):
+        with patch("os.replace", capture_replace):
             manager.create_or_update(
                 session_id=session_id,
                 trace_id="trace-1",
@@ -84,9 +88,9 @@ class TestTempFileIncludesPID:
             )
 
         assert len(temp_files_seen) > 0
-        assert (
-            temp_files_seen[0] == expected_temp_name
-        ), f"Expected temp file name '{expected_temp_name}', got '{temp_files_seen[0]}'"
+        assert expected_pattern.match(
+            temp_files_seen[0]
+        ), f"Unexpected temp file name '{temp_files_seen[0]}'"
 
     def test_no_temp_files_left_after_successful_write(self, manager, state_dir):
         """After successful write, no temp files should remain."""

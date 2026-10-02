@@ -201,7 +201,11 @@ class TestSubagentStartStaysInsideItsBudget:
             )
             hook_mod.run_subagent_start_hook()
         stored = json.loads(state_path.read_text())
-        assert stored["subagent_traces"]["agent-f"]["trace_id"] == "trace-123"
+        # Bug #161: the shared file keeps only the legacy single slot; the
+        # per-agent trace map was retired (it was clobber-prone).
+        assert stored["current_subagent_trace_id"] == "trace-123"
+        assert stored["current_subagent_agent_id"] == "agent-f"
+        assert "subagent_traces" not in stored
 
     def test_budget_constants_leave_room_inside_the_ten_second_timeout(self):
         from pacemaker import hook
@@ -223,9 +227,12 @@ class TestSubagentStopStaysInsideItsBudget:
                 {
                     "subagent_counter": 1,
                     "subagent_traces": {
-                        "agent-b1": {"trace_id": "t-1", "parent_transcript_path": "/x"}
+                        "agent-b1": {
+                            "trace_id": f"{SESSION}-subagent-general-purpose-1a2b3c4d",
+                            "parent_transcript_path": "/x",
+                        }
                     },
-                    "current_subagent_trace_id": "t-1",
+                    "current_subagent_trace_id": f"{SESSION}-subagent-general-purpose-1a2b3c4d",
                     "current_subagent_agent_id": "agent-b1",
                 }
             )
@@ -266,17 +273,26 @@ class TestSubagentStopStaysInsideItsBudget:
         import pacemaker.hook as hook_mod
         from pacemaker.langfuse import orchestrator
 
+        from pathlib import Path
+
+        from pacemaker.langfuse.state import StateManager
+
         calls = []
         state_path = tmp_path / "state.json"
-        state_path.write_text(
-            json.dumps(
-                {
-                    "subagent_counter": 1,
-                    "subagent_traces": {
-                        "agent-b1": {"trace_id": "t-1", "parent_transcript_path": "/x"}
-                    },
-                }
-            )
+        state_path.write_text(json.dumps({"subagent_counter": 1}))
+        # Bug #161: the trace is resolved from the agent's OWN state file. The
+        # hook locates it via expanduser("~/.claude-pace-maker/langfuse_state"),
+        # so it must live under HOME -- which is hermetic here because
+        # tests/conftest.py's autouse _guard_production_db points HOME at a
+        # per-test temp dir.
+        StateManager(
+            str(Path.home() / ".claude-pace-maker" / "langfuse_state")
+        ).create_or_update(
+            session_id="subagent-agent-b1",
+            # production shape: "<parent_session_id>-subagent-<type>-<uuid8>"
+            trace_id=f"{SESSION}-subagent-general-purpose-1a2b3c4d",
+            last_pushed_line=0,
+            metadata={"parent_transcript_path": "/x"},
         )
         with contextlib.ExitStack() as stack:
             stack.enter_context(
@@ -295,4 +311,7 @@ class TestSubagentStopStaysInsideItsBudget:
             )
             hook_mod.run_subagent_stop_hook()
         assert len(calls) == 1
-        assert calls[0]["subagent_trace_id"] == "t-1"
+        assert (
+            calls[0]["subagent_trace_id"]
+            == f"{SESSION}-subagent-general-purpose-1a2b3c4d"
+        )

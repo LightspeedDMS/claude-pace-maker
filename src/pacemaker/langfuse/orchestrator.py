@@ -1769,6 +1769,20 @@ def handle_subagent_start(
             log_debug("orchestrator", "Subagent trace creation skipped (disabled)")
             return None  # Disabled, not an error
 
+        # Bug #161 (M1): the id is built from an untrusted payload field. An
+        # unsafe one is an "unregistered subagent": no trace is pushed (it
+        # could never be finalized, because SubagentStop and PostToolUse
+        # refuse the same id through the same StateManager rule) and no state
+        # file is written.
+        if not state.is_safe_state_id(subagent_session_id):
+            log_warning(
+                "orchestrator",
+                f"SubagentStart: unsafe subagent id {subagent_session_id!r}; "
+                "not creating a trace for it",
+                None,
+            )
+            return None
+
         # Extract credentials
         base_url = config["langfuse_base_url"]
         public_key = config["langfuse_public_key"]
@@ -1882,6 +1896,9 @@ def handle_subagent_start(
             metadata={
                 "current_trace_id": subagent_trace_id,  # For incremental pushes
                 "trace_start_line": 0,
+                # Bug #161: SubagentStop finalizes from THIS file, so it must
+                # carry what finalization needs besides the trace id.
+                "parent_transcript_path": parent_transcript_path,
             },
         )
 

@@ -41,10 +41,19 @@ def mock_hook_data_subagent_start():
 
 @pytest.fixture
 def mock_hook_data_subagent_stop_no_session():
-    """Hook data for SubagentStop WITHOUT session_id (edge case)."""
+    """Hook data for a SubagentStop whose transcript path cannot be resolved
+    from the session (the tests patch get_transcript_path to None), so the
+    parent path stored by SubagentStart is the only source.
+
+    Bug #161: the global legacy slot is shared by every concurrent session, so
+    a payload may only claim it when it names its own session (the slot's trace
+    must start with "<session_id>-subagent-") and, with an agent_id, the slot's
+    agent. A payload with no session_id can no longer claim it at all.
+    """
     return {
         "hook_event_name": "SubagentStop",
-        # No session_id - this is the problematic scenario
+        "session_id": "main-session-123",
+        "agent_id": "subagent-abc",
     }
 
 
@@ -103,7 +112,7 @@ def test_subagent_stop_uses_stored_transcript_path_when_hook_data_lacks_session(
     mock_state = {
         "in_subagent": True,
         "subagent_counter": 1,
-        "current_subagent_trace_id": "trace-subagent-456",
+        "current_subagent_trace_id": "main-session-123-subagent-general-purpose-1a2b3c4d",
         "current_subagent_agent_id": "subagent-abc",
         "current_subagent_parent_transcript_path": "/tmp/projects/main-session-123.jsonl",  # From SubagentStart
     }
@@ -129,7 +138,10 @@ def test_subagent_stop_uses_stored_transcript_path_when_hook_data_lacks_session(
             call_kwargs["parent_transcript_path"]
             == "/tmp/projects/main-session-123.jsonl"
         )
-        assert call_kwargs["subagent_trace_id"] == "trace-subagent-456"
+        assert (
+            call_kwargs["subagent_trace_id"]
+            == "main-session-123-subagent-general-purpose-1a2b3c4d"
+        )
         assert call_kwargs["agent_id"] == "subagent-abc"
 
 
@@ -146,7 +158,7 @@ def test_subagent_stop_clears_stored_transcript_path(
     mock_state = {
         "in_subagent": True,
         "subagent_counter": 1,
-        "current_subagent_trace_id": "trace-subagent-456",
+        "current_subagent_trace_id": "main-session-123-subagent-general-purpose-1a2b3c4d",
         "current_subagent_agent_id": "subagent-abc",
         "current_subagent_parent_transcript_path": "/tmp/projects/main-session-123.jsonl",
     }
@@ -193,7 +205,8 @@ def test_subagent_stop_prefers_hook_data_session_over_stored_path(
     mock_state = {
         "in_subagent": True,
         "subagent_counter": 1,
-        "current_subagent_trace_id": "trace-subagent-456",
+        # production shape: "<parent_session_id>-subagent-<type>-<uuid8>"
+        "current_subagent_trace_id": "fresh-session-999-subagent-general-purpose-1a2b3c4d",
         "current_subagent_agent_id": "subagent-abc",
         "current_subagent_parent_transcript_path": "/tmp/projects/OLD-PATH.jsonl",  # Should be ignored
     }

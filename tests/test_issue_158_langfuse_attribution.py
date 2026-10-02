@@ -488,13 +488,16 @@ class TestSubagentStopDoesNotFinalizeAForeignTrace:
         stop.assert_not_called()
 
     def test_stop_without_agent_id_still_uses_legacy_single_slot(self, tmp_path):
+        # Bug #161 (L1): without an agent_id the slot is only claimed by a payload
+        # whose session owns the trace ("<session_id>-subagent-<type>-<uuid8>").
+        own_trace = f"{SESSION_2}-subagent-general-purpose-1a2b3c4d"
         state = {
             "subagent_counter": 1,
             "in_subagent": True,
-            "current_subagent_trace_id": TRACE_SUB_2,
+            "current_subagent_trace_id": own_trace,
             "current_subagent_agent_id": AGENT_2,
             "current_subagent_parent_transcript_path": "/tmp/other.jsonl",
         }
         stop = self._run_stop(tmp_path, state, {"session_id": SESSION_2})
         stop.assert_called_once()
-        assert stop.call_args.kwargs["subagent_trace_id"] == TRACE_SUB_2
+        assert stop.call_args.kwargs["subagent_trace_id"] == own_trace

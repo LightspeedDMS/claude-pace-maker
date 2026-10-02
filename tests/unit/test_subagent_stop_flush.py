@@ -244,11 +244,11 @@ class TestRunSubagentStopHookFlush:
             "in_subagent": True,
             "subagent_traces": {
                 "agent-xyz": {
-                    "trace_id": "subagent-trace-id",
+                    "trace_id": "parent-session-id-subagent-general-purpose-1a2b3c4d",
                     "parent_transcript_path": "/path/to/transcript.jsonl",
                 }
             },
-            "current_subagent_trace_id": "subagent-trace-id",
+            "current_subagent_trace_id": "parent-session-id-subagent-general-purpose-1a2b3c4d",
             "current_subagent_agent_id": "agent-xyz",
             "current_subagent_parent_transcript_path": "/path/to/transcript.jsonl",
         }

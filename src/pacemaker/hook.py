@@ -10,7 +10,6 @@ import os
 import sys
 import time
 import traceback
-from pathlib import Path
 from datetime import datetime, timezone
 import json
 from typing import List, Optional, Dict, Any
@@ -39,6 +38,7 @@ from .transcript_reader import (
     get_last_n_messages_for_validation,
     get_current_turn_message_for_validation,
 )
+from .atomic_file import atomic_write_text
 from .bounded_call import run_with_deadline
 from .intent_declarations import gate as declaration_gate
 from .intent_declarations import subagent_guidance
@@ -162,11 +162,14 @@ def load_state(state_path: str = DEFAULT_STATE_PATH) -> dict:
 
 
 def save_state(state: dict, state_path: str = DEFAULT_STATE_PATH):
-    """Save hook state for next invocation."""
-    try:
-        # Ensure directory exists
-        Path(state_path).parent.mkdir(parents=True, exist_ok=True)
+    """Save hook state for next invocation.
 
+    Bug #161: state.json is shared by every concurrent hook process, so the
+    write is atomic (temp file + os.replace) -- a reader never sees an empty or
+    half-written file. The state is serialized BEFORE the disk is touched, so a
+    non-serializable value leaves the previous file intact.
+    """
+    try:
         # Convert datetime to string for JSON serialization
         state_copy = state.copy()
         if isinstance(state_copy.get("last_cleanup_time"), datetime):
@@ -178,8 +181,7 @@ def save_state(state: dict, state_path: str = DEFAULT_STATE_PATH):
                 "last_user_interaction_time"
             ].isoformat()
 
-        with open(state_path, "w") as f:
-            json.dump(state_copy, f)
+        atomic_write_text(state_path, json.dumps(state_copy))
     except Exception as e:
         log_warning("hook", "Failed to save state", e)
 
@@ -746,23 +748,22 @@ def run_subagent_start_hook():
                 "without a subagent trace (guidance is still delivered)",
             )
 
-        # Store subagent trace info in pacemaker state for:
-        # 1. PostToolUse to link spans to subagent trace
-        # 2. SubagentStop to finalize trace with output
-        # Use dict keyed by agent_id to support concurrent subagents
+        # Bug #161: PostToolUse (#158) and SubagentStop both resolve the
+        # subagent's trace from its OWN langfuse_state/subagent-<agent_id>.json,
+        # written by the Langfuse step above. The shared state.json no longer
+        # carries a per-agent trace map (any concurrent hook could clobber it).
         if subagent_trace_id:
             agent_id = hook_data.get("agent_id")
             parent_transcript_path = hook_data.get("transcript_path", "")
 
-            # Store in dict keyed by agent_id (supports concurrent subagents)
-            if "subagent_traces" not in state:
-                state["subagent_traces"] = {}
-            state["subagent_traces"][agent_id] = {
-                "trace_id": subagent_trace_id,
-                "parent_transcript_path": parent_transcript_path,
-            }
+            # `state` was loaded before the (up to several seconds) Langfuse
+            # step: re-load it so changes other hooks made meanwhile survive.
+            state = load_state(DEFAULT_STATE_PATH)
 
-            # Keep old keys for backward compatibility (will be deprecated)
+            # Legacy single slot: a SubagentStop fallback for an agent with no
+            # state file of its own. It is global across sessions, so SubagentStop
+            # only claims it for a payload whose session owns the trace.
+            # (in_subagent is derived from subagent_counter, not from this slot.)
             state["current_subagent_trace_id"] = subagent_trace_id
             state["current_subagent_agent_id"] = agent_id
             state["current_subagent_parent_transcript_path"] = parent_transcript_path
@@ -770,7 +771,9 @@ def run_subagent_start_hook():
             save_state(state, DEFAULT_STATE_PATH)
             log_debug(
                 "hook",
-                f"SubagentStart: Stored subagent trace_id={subagent_trace_id} for agent_id={agent_id} in dict",
+                f"SubagentStart: Stored subagent trace_id={subagent_trace_id} for "
+                f"agent_id={agent_id} in the legacy state.json slot "
+                "(per-agent state file holds the authoritative copy)",
             )
     else:
         log_debug("hook", "SubagentStart: No hook_data received from stdin")
@@ -960,23 +963,41 @@ def run_subagent_stop_hook():
         pass  # Activity recording must never break subagent stop
 
     # AC5: Subagent trace finalization
-    # Get agent_id from hook_data to lookup correct trace in dict
+    # The payload's identity (agent_id + session_id) decides which trace this is
     hook_agent_id = hook_data.get("agent_id") if hook_data else None
+    payload_session_id = hook_data.get("session_id") if hook_data else None
 
-    # Lookup trace info from dict (supports concurrent subagents)
+    # Bug #161: the trace comes from THIS agent's own state file, keyed by the
+    # payload's agent_id -- never from the shared state.json, which any
+    # concurrent hook can clobber. The trace must belong to the payload's session.
     trace_info = None
     if hook_agent_id:
-        subagent_traces = state.get("subagent_traces", {})
-        trace_info = subagent_traces.get(hook_agent_id)
+        from .langfuse import state as langfuse_state
 
-    # Backward compatibility: fallback to old single-value keys if dict lookup fails
+        trace_info = langfuse_state.read_subagent_trace_info(
+            os.path.expanduser("~/.claude-pace-maker/langfuse_state"),
+            hook_agent_id,
+            payload_session_id,
+        )
+
+    # Backward compatibility: the legacy single `current_subagent_*` slot in
+    # state.json, for an agent without a state file of its own
     if not trace_info:
         old_trace_id = state.get("current_subagent_trace_id")
         old_agent_id = state.get("current_subagent_agent_id")
         old_parent_path = state.get("current_subagent_parent_transcript_path")
-        # Bug #158: the single slot is global across sessions, so it may only
-        # stand in for THIS agent (or when the payload names no agent at all).
-        if old_trace_id and (not hook_agent_id or old_agent_id == hook_agent_id):
+        # Bug #158/#161: the single slot is global across sessions, so ONE rule
+        # decides whether it stands in for this payload: its trace must belong
+        # to the payload's OWN session (trace ids start with
+        # "<parent_session_id>-subagent-"), and when the payload names an
+        # agent, it must be the slot's agent too.
+        slot_is_ours = bool(
+            payload_session_id
+            and isinstance(old_trace_id, str)
+            and old_trace_id.startswith(f"{payload_session_id}-subagent-")
+            and (not hook_agent_id or old_agent_id == hook_agent_id)
+        )
+        if slot_is_ours:
             trace_info = {
                 "trace_id": old_trace_id,
                 "parent_transcript_path": old_parent_path,
@@ -1079,9 +1100,12 @@ def run_subagent_stop_hook():
                 "hook", f"SubagentStop: Failed to finalize trace {subagent_trace_id}", e
             )
 
-        # Clear this agent's trace info from dict
-        if hook_agent_id and "subagent_traces" in state:
-            state["subagent_traces"].pop(hook_agent_id, None)
+        # Bug #161: `state` was loaded before the (multi-second) Langfuse step
+        # above. Re-load it so another hook's changes made in the meantime are
+        # not overwritten by that stale copy. `subagent_traces` is the retired
+        # pre-#161 map (finalization no longer reads it); drop any leftover.
+        state = load_state(DEFAULT_STATE_PATH)
+        state.pop("subagent_traces", None)
 
         # Clear old backward-compat keys
         state.pop("current_subagent_trace_id", None)
