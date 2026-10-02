@@ -6,13 +6,14 @@ This module is called by the Claude Code post-tool-use hook.
 It runs pacing checks and applies adaptive throttling.
 """
 
+import copy
 import os
 import sys
 import time
 import traceback
 from datetime import datetime, timezone
 import json
-from typing import List, Optional, Dict, Any
+from typing import Callable, List, Optional, Dict, Any
 
 from . import pacing_engine, database, user_commands
 from .database import (
@@ -42,6 +43,7 @@ from .atomic_file import atomic_write_text
 from .bounded_call import run_with_deadline
 from .intent_declarations import gate as declaration_gate
 from .intent_declarations import subagent_guidance
+from .langfuse.state import is_safe_state_id
 from .logger import log_warning, log_debug, log_info, log_error
 from .prompt_provenance import format_tag, format_reviewer_relay
 
@@ -184,6 +186,62 @@ def save_state(state: dict, state_path: str = DEFAULT_STATE_PATH):
         atomic_write_text(state_path, json.dumps(state_copy))
     except Exception as e:
         log_warning("hook", "Failed to save state", e)
+
+
+def update_state(
+    mutate: Callable[[dict], None], state_path: str = DEFAULT_STATE_PATH
+) -> dict:
+    """Apply ONE hook's own change onto the LATEST state.json (bug #162).
+
+    state.json is shared by every concurrent session, so a hook that loads it,
+    runs a slow step (pacing poll, throttle sleep, LLM review, version probe)
+    and then saves its old copy erases whatever the other sessions wrote
+    meanwhile. This re-loads right now, lets `mutate` edit only the fields this
+    hook owns, saves, and returns the state that was saved. Callers keep the
+    load -> mutate -> save window to a single call (milliseconds), never across
+    a slow step.
+    """
+    state = load_state(state_path)
+    mutate(state)
+    save_state(state, state_path)
+    return state
+
+
+_CSA_STATE_KEY = "cross_session_awareness"
+
+
+def _csa_session_state(state: dict, session_id: str) -> Optional[dict]:
+    """This session's entry of state[cross_session_awareness], or None."""
+    namespace = state.get(_CSA_STATE_KEY)
+    if not isinstance(namespace, dict) or "workspace_root" in namespace:
+        return None  # absent, or the legacy flat shape
+    entry = namespace.get(session_id)
+    return entry if isinstance(entry, dict) else None
+
+
+def _adopt_csa_session_state(
+    latest: dict, session_id: str, entry: Optional[dict]
+) -> None:
+    """Put this session's CSA entry onto `latest`, leaving every other
+    session's entry (and every other field) as other hooks last saved it."""
+    namespace = latest.get(_CSA_STATE_KEY)
+    if not isinstance(namespace, dict) or "workspace_root" in namespace:
+        namespace = latest[_CSA_STATE_KEY] = {}  # new, or migrate the legacy shape
+    if entry is not None:
+        namespace[session_id] = entry
+
+
+def _adopt_csa_agent_counter(
+    latest: dict, session_id: str, agent_id: str, count: int
+) -> None:
+    """Set one agent's tool_use_counter on `latest`. Defensive: if `latest` has
+    no CSA entry for the session (for whatever reason), nothing is written, so
+    this never creates a session entry. (The Stop hook does not remove entries
+    from state.json: its removal only touches an in-memory copy.)"""
+    entry = _csa_session_state(latest, session_id)
+    if entry is None:
+        return
+    entry.setdefault("tool_use_counter", {})[agent_id] = count
 
 
 def execute_delay(delay_seconds: int):
@@ -451,7 +509,13 @@ def run_session_start_hook():
         from .version_check import perform_session_start_version_check
 
         perform_session_start_version_check(state, config, stderr=sys.stderr)
-        save_state(state, DEFAULT_STATE_PATH)
+        # Bug #162: the probe runs a subprocess; persist only the two fields
+        # it owns onto the latest state, never the pre-probe snapshot.
+        _version_fields = {
+            key: state.get(key)
+            for key in ("version_block_active", "version_block_message")
+        }
+        state = update_state(lambda s: s.update(_version_fields), DEFAULT_STATE_PATH)
     except Exception as e:
         log_warning("hook", f"Version check failed: {e}")
 
@@ -502,6 +566,7 @@ def run_session_start_hook():
         if _csa_is_enabled(config):
             csa_db_path = resolve_db_path()
             init_schema(csa_db_path)
+            _csa_before = copy.deepcopy(_csa_session_state(state, session_id or ""))
             csa_banner = csa_on_session_start(
                 session_id=session_id or "",
                 source=source,
@@ -511,8 +576,15 @@ def run_session_start_hook():
                 state=state,
                 config=config,
             )
-            # Persist state mutation from csa.on_session_start (workspace_root cache)
-            save_state(state, DEFAULT_STATE_PATH)
+            # Persist state mutation from csa.on_session_start (workspace_root
+            # cache). Bug #162: only THIS session's CSA entry, onto the latest
+            # state -- the registry work above may have taken a while.
+            _csa_after = _csa_session_state(state, session_id or "")
+            if _csa_after != _csa_before:
+                update_state(
+                    lambda s: _adopt_csa_session_state(s, session_id or "", _csa_after),
+                    DEFAULT_STATE_PATH,
+                )
             if csa_banner:
                 safe_print(csa_banner, file=sys.stdout)
     except Exception as e:
@@ -1282,20 +1354,24 @@ def run_hook():
         else None
     )
 
-    # Load state
-    state = load_state(DEFAULT_STATE_PATH)
+    # Bug #162: this hook's own state changes are applied to the LATEST
+    # state.json and saved right away -- before the slow pacing poll and the
+    # throttle sleep below -- instead of being held in a snapshot that is saved
+    # minutes later over other sessions' updates.
+    def _count_tool_use(s: dict) -> None:
+        # Increment global tool execution counter
+        s["tool_execution_count"] = s.get("tool_execution_count", 0) + 1
 
-    # Increment global tool execution counter
-    state["tool_execution_count"] = state.get("tool_execution_count", 0) + 1
+        # Reset stop-block exit valve counter whenever agent uses a tool
+        # (agent doing real work breaks the text-only arguing loop)
+        if s.get("consecutive_stop_blocks", 0) > 0:
+            s["consecutive_stop_blocks"] = 0
+            log_debug(
+                "hook",
+                "PostToolUse: reset consecutive_stop_blocks counter (tool use detected)",
+            )
 
-    # Reset stop-block exit valve counter whenever agent uses a tool
-    # (agent doing real work breaks the text-only arguing loop)
-    if state.get("consecutive_stop_blocks", 0) > 0:
-        state["consecutive_stop_blocks"] = 0
-        log_debug(
-            "hook",
-            "PostToolUse: reset consecutive_stop_blocks counter (tool use detected)",
-        )
+    state = update_state(_count_tool_use, DEFAULT_STATE_PATH)
 
     # Cross-Session Awareness: heartbeat on PostToolUse to keep session visible to siblings.
     try:
@@ -1358,14 +1434,14 @@ def run_hook():
             five_hour_limit_enabled=config.get("five_hour_limit_enabled", True),
         )
 
-        # Update state if cleaned up
-        state_changed = False
-        if result.get("cleanup_time"):
-            state["last_cleanup_time"] = result.get("cleanup_time")
-            state_changed = True
-
-        if state_changed:
-            save_state(state)
+        # Persist the cleanup time on the latest state (the poll above may have
+        # taken seconds; bug #162).
+        cleanup_time = result.get("cleanup_time")
+        if cleanup_time:
+            update_state(
+                lambda s: s.__setitem__("last_cleanup_time", cleanup_time),
+                DEFAULT_STATE_PATH,
+            )
 
         # Apply throttling if needed
         decision = result.get("decision", {})
@@ -1442,7 +1518,10 @@ def run_hook():
             except Exception:
                 pass  # Activity recording must never break pacing
 
-        # Capture subagent reminder if conditions met (don't print yet)
+        # Capture subagent reminder if conditions met (don't print yet). The
+        # gate reads in_subagent / tool_execution_count, which other sessions
+        # may have changed during the poll and the sleep above: use the latest.
+        state = load_state(DEFAULT_STATE_PATH)
         if should_inject_reminder(state, config, tool_name):
             pending_message = inject_subagent_reminder(config)
 
@@ -1457,10 +1536,9 @@ def run_hook():
         except Exception as e:
             log_warning("hook", "Failed to load secrets nudge for post_tool_use", e)
 
-        # Save state (always save to persist counter)
-        state_changed = True
-        if state_changed:
-            save_state(state, DEFAULT_STATE_PATH)
+        # No final save: the counter was persisted by update_state above, and
+        # writing this hook's snapshot back would erase other sessions' updates
+        # (bug #162).
 
         # Accumulate token cost for fallback mode (no-op when not in fallback)
         _accumulate_fallback_cost(
@@ -1609,12 +1687,27 @@ def get_transcript_path(session_id: str) -> Optional[str]:
     1. CLAUDE_PROJECT_DIR env var (most reliable, set by Claude Code)
     2. Current working directory (fallback, may be a subdirectory)
 
+    Bug #167: session_id comes from the hook payload and becomes part of a
+    file name, so it must pass the same allowlist as every Langfuse state id
+    (``langfuse.state.is_safe_state_id``); an unsafe id (``../x``, a path
+    separator, too long, not a string) yields None and a warning, never a
+    probe outside ``~/.claude/projects/<dir>/``.
+
     Args:
         session_id: Session UUID from hook data
 
     Returns:
-        Path to transcript file, or None if not found
+        Path to transcript file, or None if not found or the id is unsafe
     """
+    if not is_safe_state_id(session_id):
+        # Only the type is logged: the value is attacker-controlled input.
+        log_warning(
+            "hook",
+            "get_transcript_path: refusing unsafe session_id "
+            f"(type={type(session_id).__name__})",
+        )
+        return None
+
     candidates = []
 
     # Try CLAUDE_PROJECT_DIR first (set by Claude Code, points to project root)
@@ -2475,6 +2568,10 @@ def run_stop_hook():
         except Exception as e:
             log_warning("hook", "Failed to finalize Langfuse trace", e)
 
+        # Bug #162: the finalize above is a network step; re-load so the
+        # counters edited and saved below sit on the latest shared state.
+        state = load_state(DEFAULT_STATE_PATH)
+
         # AC4: Legacy generation event push removed
         # NOTE: Trace finalization now handled by handle_stop_finalize above
         # No need for separate run_langfuse_push - span-based architecture handles everything
@@ -2578,6 +2675,10 @@ def run_stop_hook():
         )
 
         log_debug("hook", f"Intent validation result: {result}")
+
+        # Bug #162: the review above can take minutes; re-load so the
+        # exit-valve counter is read and saved on the latest shared state.
+        state = load_state(DEFAULT_STATE_PATH)
 
         # Story #101: tag the tempo-block reason BEFORE it is used for
         # record_blockage or the final return, so both carry the tag.
@@ -3114,9 +3215,10 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             _csa_config = load_config(DEFAULT_CONFIG_PATH)
             _csa_state = load_state(DEFAULT_STATE_PATH)
             _csa_command = tool_input.get("command") if tool_name == "Bash" else None
+            _csa_agent = agent_id or "root"
             _csa_result = csa_on_pre_tool_use(
                 session_id=session_id or "",
-                agent_id=agent_id or "root",
+                agent_id=_csa_agent,
                 pid=os.getpid(),
                 tool_name=tool_name or "",
                 command=_csa_command,
@@ -3124,7 +3226,20 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 state=_csa_state,
                 config=_csa_config,
             )
-            save_state(_csa_state, DEFAULT_STATE_PATH)
+            # Bug #162: on_pre_tool_use only bumps this agent's counter. Save
+            # just that onto the latest state (the registry lookup above ran
+            # on a snapshot), instead of writing the whole snapshot back.
+            _csa_entry = _csa_session_state(_csa_state, session_id or "")
+            _csa_count = ((_csa_entry or {}).get("tool_use_counter") or {}).get(
+                _csa_agent
+            )
+            if _csa_count is not None:
+                update_state(
+                    lambda s: _adopt_csa_agent_counter(
+                        s, session_id or "", _csa_agent, _csa_count
+                    ),
+                    DEFAULT_STATE_PATH,
+                )
         except Exception as e:
             log_warning("hook", f"CSA pre_tool_use failed: {e}")
 
@@ -3213,6 +3328,16 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                         # no-thinking-at-all shapes -- see issue #148.
                         _bash_no_visible_text = (
                             _bash_diagnostics.get("anchor_has_visible_text") is False
+                        )
+                        # Issue #149: the current Bash turn is written to the
+                        # transcript only AFTER this hook returns, so the
+                        # newest READABLE turn issuing this command is often
+                        # an earlier attempt (stale: it already has its
+                        # tool_result). The anchor search already prefers the
+                        # newest match, so a flushed re-issue always wins; this
+                        # flag marks the case where it was not readable.
+                        _bash_stale_anchor = (
+                            _bash_anchor is None and _bash_outcome == "stale"
                         )
 
                         if _bash_anchor is not None:
@@ -3371,6 +3496,10 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 # block from an ordinary missing-INTENT
                                 # block.
                                 "no_visible_text": _bash_no_visible_text,
+                                # Issue #149: True when the judged text came
+                                # from a stale earlier attempt, not from the
+                                # current turn (which was not readable yet).
+                                "stale_anchor": _bash_stale_anchor,
                             }
                             if _bash_reasoning_summary_intent:
                                 # Issue #151 code review L1: added ONLY for
@@ -3433,6 +3562,19 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                     build_no_visible_text_notice(_bash_example)
                                     + "\n\n"
                                     + _bash_no_intent_reason
+                                )
+                            if _bash_stale_anchor:
+                                # Issue #149: the verdict above describes an
+                                # EARLIER attempt (the current turn was not
+                                # readable) -- say so, and how to recover.
+                                from .intent_validator import (
+                                    build_danger_bash_stale_anchor_note,
+                                )
+
+                                _bash_no_intent_reason = (
+                                    _bash_no_intent_reason
+                                    + "\n\n"
+                                    + build_danger_bash_stale_anchor_note()
                                 )
                             return {
                                 "decision": "block",

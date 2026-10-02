@@ -1061,6 +1061,23 @@ def build_danger_bash_visible_text_label() -> str:
     ).strip()
 
 
+def build_danger_bash_stale_anchor_note() -> str:
+    """Issue #149: note appended to a danger-bash Phase 1 "no INTENT" block
+    when the only readable turn issuing the identical command was a STALE
+    earlier attempt (it already has its tool_result), because the current
+    turn is written to the transcript only after PreToolUse returns. The
+    verdict then describes that earlier attempt, not necessarily the
+    current message; the note says so and tells the agent to re-issue the
+    identical command once more (which then binds to the turn that carried
+    the INTENT). Static text, loaded from prompts/common (Messi Rule 11)."""
+    from .prompt_loader import PromptLoader
+
+    loader = PromptLoader()
+    return loader.load_prompt(
+        "danger_bash_stale_anchor_note.md", subfolder="common"
+    ).strip()
+
+
 def build_danger_bash_destructive_scope_note() -> str:
     """Issue #151 live-replay follow-up (round 3, CHANGE 4): a live false
     block on `cp X backup && rm X && grep -rn refs src/ docs/ tests/` with
