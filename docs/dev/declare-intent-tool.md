@@ -64,3 +64,11 @@ The monitor does not read this DB, so there is no cross-process contract.
 - Edits to non-source files neither consume declarations nor touch the chain.
 - A same-message declare_intent counts even if that call itself errored.
 - A chain reuses the old intent. If Stage 2 rejects a different change against it, the agent must declare again.
+
+## Sibling edits after a rejection (#163)
+
+An agent may send several Edits to one file in one message under one declaration. If Edit 1 is rejected, the rejection deletes the declaration and chain (unchanged), so Edits 2..n fall back to the transcript path and used to get only the generic "NO visible text" block, which misled the agent.
+
+- `IntentDeclarationStore.reject(..., rejected_file_path)` also writes a marker `(session, agent_key, normalized file)` into the additive table `rejected_declarations`. `gate.record_outcome` passes the file only when a tool/chain declaration was in use. TTL: `constants.REJECTED_DECLARATION_MARKER_TTL_SECONDS` (2 min), purged in `_transaction` like the other tables. A fresh `declare_intent` for that file clears the marker.
+- `gate.lead_with_rejected_sibling_note` prepends `prompts/common/declare_intent_rejected_sibling_note.md` (tagged `intent_validation_block`) to the block reason of a no-declaration block: the Stage-1 `RegEx` block and the deferred transcript-race block. Only with the kill switch on and an unexpired marker for the same agent and file.
+- It changes only the block message. Which edits are blocked, Stage 2, reviewer text and `raw_feedback` are untouched.

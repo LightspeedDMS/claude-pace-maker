@@ -65,6 +65,13 @@ DECLARE_INTENT_TOOL_NAMES = frozenset(
 # to PRE_TOOL_HOOK_TIMEOUT_SECONDS (~3 minutes).
 INTENT_DECLARATION_TTL_SECONDS = 60 * 60
 
+# Bug #163: when a rejection deletes an agent's declaration/chain for a file,
+# a marker (session, agent, file) is kept this long so sibling edits of the
+# same batch that are then blocked for having no declaration can be told to
+# re-declare. Deliberately short: a batch of parallel edits arrives within
+# seconds, and a stale marker would mislabel an unrelated later block.
+REJECTED_DECLARATION_MARKER_TTL_SECONDS = 2 * 60
+
 # Caps on declared text (review L4). The transcript path bounds the assistant
 # message it reads to transcript_reader.MAX_MESSAGE_LENGTH (10000 chars); the
 # synthesized declaration message gets the SAME ceiling (a test pins the two

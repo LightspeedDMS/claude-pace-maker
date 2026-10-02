@@ -4129,7 +4129,14 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                     )
                 return {
                     "decision": "block",
-                    "reason": format_tag(_deferred_body, "intent_validation_deferred"),
+                    # Bug #163: leads with the re-declare note when a rejected
+                    # sibling just consumed this agent's declaration.
+                    "reason": declaration_gate.lead_with_rejected_sibling_note(
+                        format_tag(_deferred_body, "intent_validation_deferred"),
+                        hook_data,
+                        file_path,
+                        config,
+                    ),
                 }
 
         # Story #155 AC8: the transcript fallback additionally accepts a
@@ -4403,6 +4410,20 @@ def run_pre_tool_hook() -> Dict[str, Any]:
             bool(result.get("approved", False)),
             config,
         )
+        if (
+            _declared_intent is None
+            and not result.get("approved", False)
+            and result.get("reviewer") == "RegEx"
+        ):
+            # Bug #163: a Stage 1 "no declaration" block right after a
+            # rejected sibling consumed this agent's declaration for this
+            # file leads with the re-declare note. Message only.
+            result["feedback"] = declaration_gate.lead_with_rejected_sibling_note(
+                result.get("feedback", "Validation failed"),
+                hook_data,
+                file_path,
+                config,
+            )
         log_info(
             "hook",
             "Intent validation: "

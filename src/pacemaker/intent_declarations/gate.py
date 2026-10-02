@@ -36,6 +36,8 @@ from ..constants import (
     DECLARE_INTENT_TOOL_NAMES,
 )
 from ..logger import log_debug, log_warning
+from ..prompt_loader import PromptLoader
+from ..prompt_provenance import format_tag
 from .fields import (
     intent_declaration_tool_enabled,
     missing_required_fields,
@@ -51,6 +53,10 @@ from .store import (
 )
 
 MAIN_AGENT_KEY = "main"
+
+# Bug #163: static note template in prompts/common/ (a literal ``<file_path>``
+# token, replaced with str.replace -- never PromptLoader ``variables=``).
+_SIBLING_NOTE_TEMPLATE = "declare_intent_rejected_sibling_note.md"
 
 # Errors the store/normalization layer can legitimately raise at runtime.
 _RECOVERABLE_ERRORS = (sqlite3.Error, OSError, ValueError)
@@ -227,7 +233,17 @@ def record_outcome(
     try:
         store = IntentDeclarationStore(db_path)
         if not approved:
-            store.reject(session_id, agent_key)
+            # Bug #163: a rejection of a tool/chain-declared edit consumed
+            # that declaration -- leave the short-lived marker for the file.
+            store.reject(
+                session_id,
+                agent_key,
+                (
+                    normalize_file_path(file_path, _cwd(hook_data))
+                    if declared is not None
+                    else None
+                ),
+            )
         elif declared is not None:
             normalized = normalize_file_path(file_path, _cwd(hook_data))
             store.approve(
@@ -246,6 +262,45 @@ def record_outcome(
             "could not update the declaration chain after validation",
             exc,
         )
+
+
+def lead_with_rejected_sibling_note(
+    feedback: str, hook_data: Dict[str, Any], file_path: str, config: Dict[str, Any]
+) -> str:
+    """Bug #163: lead a "no declaration" block reason with the re-declare note
+    when a rejected edit of this same agent and file consumed the declaration
+    within the marker TTL.
+
+    Message-only: ``feedback`` is returned unchanged when the kill switch is
+    off, there is no session_id, there is no unexpired marker, or the store
+    fails (logged); the block itself is decided elsewhere and never altered.
+    The note is pace-maker-authored (``intent_validation_block`` channel, as
+    the other declare_intent hints) and the existing text stays below it.
+    """
+    if not intent_declaration_tool_enabled(config):
+        return feedback
+    session_id = _session_id(hook_data)
+    if session_id is None:
+        return feedback
+    db_path = resolve_db_path()
+    try:
+        marked = IntentDeclarationStore(db_path).has_rejection_marker(
+            session_id,
+            _agent_key(hook_data),
+            normalize_file_path(file_path, _cwd(hook_data)),
+        )
+    except _RECOVERABLE_ERRORS as exc:
+        log_warning(
+            "intent_declarations",
+            "rejected-declaration marker lookup failed -- generic block text",
+            exc,
+        )
+        return feedback
+    if not marked:
+        return feedback
+    note = PromptLoader().load_prompt(_SIBLING_NOTE_TEMPLATE, subfolder="common")
+    note = note.strip().replace("<file_path>", file_path)
+    return format_tag(note, "intent_validation_block") + "\n\n" + feedback
 
 
 def same_message_fallback(

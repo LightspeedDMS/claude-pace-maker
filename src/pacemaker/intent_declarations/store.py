@@ -33,7 +33,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, Iterator, Optional
 
-from ..constants import INTENT_DECLARATION_TTL_SECONDS, SUBAGENT_GUIDANCE_TTL_SECONDS
+from ..constants import (
+    INTENT_DECLARATION_TTL_SECONDS,
+    REJECTED_DECLARATION_MARKER_TTL_SECONDS,
+    SUBAGENT_GUIDANCE_TTL_SECONDS,
+)
 
 SOURCE_DECLARATION = "declare_intent"
 SOURCE_CHAIN = "declare_intent_chain"
@@ -92,6 +96,18 @@ CREATE TABLE IF NOT EXISTS chains (
 )
 """
 
+# Bug #163: "a rejection just consumed this agent's declaration for this
+# file". Purged after REJECTED_DECLARATION_MARKER_TTL_SECONDS on every access.
+_DDL_REJECTED_DECLARATIONS = """
+CREATE TABLE IF NOT EXISTS rejected_declarations (
+    session_id TEXT NOT NULL,
+    agent_key  TEXT NOT NULL,
+    file_path  TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (session_id, agent_key, file_path)
+)
+"""
+
 
 @dataclass(frozen=True)
 class StoredIntent:
@@ -146,12 +162,14 @@ class IntentDeclarationStore:
         ttl_seconds: float = INTENT_DECLARATION_TTL_SECONDS,
         clock: Callable[[], float] = time.time,
         guidance_ttl_seconds: float = SUBAGENT_GUIDANCE_TTL_SECONDS,
+        marker_ttl_seconds: float = REJECTED_DECLARATION_MARKER_TTL_SECONDS,
     ):
         if not db_path:
             raise ValueError("db_path must be a non-empty string")
         self._db_path = db_path
         self._ttl_seconds = ttl_seconds
         self._guidance_ttl_seconds = guidance_ttl_seconds
+        self._marker_ttl_seconds = marker_ttl_seconds
         self._clock = clock
 
     @contextmanager
@@ -173,6 +191,7 @@ class IntentDeclarationStore:
             conn.execute(_DDL_DECLARATIONS_INDEX)
             conn.execute(_DDL_CHAINS)
             conn.execute(_DDL_SUBAGENT_GUIDANCE)
+            conn.execute(_DDL_REJECTED_DECLARATIONS)
             conn.execute("BEGIN IMMEDIATE")
             try:
                 now = self._clock()
@@ -182,6 +201,10 @@ class IntentDeclarationStore:
                 conn.execute(
                     "DELETE FROM subagent_guidance WHERE updated_at < ?",
                     (now - self._guidance_ttl_seconds,),
+                )
+                conn.execute(
+                    "DELETE FROM rejected_declarations WHERE created_at < ?",
+                    (now - self._marker_ttl_seconds,),
                 )
                 yield conn
                 conn.execute("COMMIT")
@@ -200,8 +223,15 @@ class IntentDeclarationStore:
         goal: str,
         test_coverage: str = "",
     ) -> None:
-        """Insert one unconsumed declaration."""
+        """Insert one unconsumed declaration. A fresh declaration for the
+        file ends any Bug #163 rejection marker for it: the agent has done
+        what the marker's note asks."""
         with self._transaction() as conn:
+            conn.execute(
+                "DELETE FROM rejected_declarations "
+                "WHERE session_id = ? AND agent_key = ? AND file_path = ?",
+                (session_id, agent_key, file_path),
+            )
             conn.execute(
                 "INSERT INTO declarations "
                 "(session_id, agent_key, file_path, change, goal, "
@@ -293,13 +323,46 @@ class IntentDeclarationStore:
                 ),
             )
 
-    def reject(self, session_id: str, agent_key: str) -> None:
-        """Delete the agent's chain (a rejected Write/Edit ends reuse)."""
+    def reject(
+        self,
+        session_id: str,
+        agent_key: str,
+        rejected_file_path: Optional[str] = None,
+    ) -> None:
+        """Delete the agent's chain (a rejected Write/Edit ends reuse).
+
+        Bug #163: when ``rejected_file_path`` is given (the rejected edit was
+        using a declaration/chain for that file, which this rejection ends),
+        also leave a short-lived marker so a sibling edit of the same batch,
+        blocked for having no declaration, can be told why."""
         with self._transaction() as conn:
             conn.execute(
                 "DELETE FROM chains WHERE session_id = ? AND agent_key = ?",
                 (session_id, agent_key),
             )
+            if rejected_file_path is not None:
+                conn.execute(
+                    "INSERT INTO rejected_declarations "
+                    "(session_id, agent_key, file_path, created_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(session_id, agent_key, file_path) DO UPDATE "
+                    "SET created_at = excluded.created_at",
+                    (session_id, agent_key, rejected_file_path, self._clock()),
+                )
+
+    def has_rejection_marker(
+        self, session_id: str, agent_key: str, file_path: str
+    ) -> bool:
+        """Bug #163: True iff a rejection consumed this agent's declaration
+        for ``file_path`` within the marker TTL (expired markers are purged
+        by the transaction itself, so presence means unexpired)."""
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM rejected_declarations "
+                "WHERE session_id = ? AND agent_key = ? AND file_path = ?",
+                (session_id, agent_key, file_path),
+            ).fetchone()
+        return row is not None
 
     def mark_subagent_start_completed(self, session_id: str, agent_key: str) -> None:
         """Bug #157: record that SubagentStart FINISHED (output written) for
