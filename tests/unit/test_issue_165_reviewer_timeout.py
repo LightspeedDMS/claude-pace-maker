@@ -285,3 +285,56 @@ class TestSdkErrorIsVisible:
             self._call()
         assert "SDK error: RuntimeError: fallback model unreachable" in str(exc.value)
         assert calls["n"] == 2
+
+
+class TestSdkErrorRedaction:
+    """_describe_sdk_error: credentials are redacted whole, ordinary text is
+    left alone."""
+
+    @staticmethod
+    def _describe(text):
+        from pacemaker.inference.anthropic_provider import _describe_sdk_error
+
+        return _describe_sdk_error(RuntimeError(text))
+
+    def test_dotted_token_value_is_fully_redacted(self):
+        token = "ya29.a0AfH6SMBx-very-long-opaque-value-0123456789"
+        out = self._describe('{"access_token":"%s"}' % token)
+        assert "ya29" not in out
+        assert "a0AfH6SMBx" not in out
+        assert "very-long" not in out
+        assert "0123456789" not in out
+        assert "[redacted]" in out
+
+    def test_underscore_prefixed_credential_names_are_redacted(self):
+        out = self._describe(
+            "client_secret=s3cr3tvalue1 refresh_token: r3fr3shvalue2 "
+            "db_password=pa55word3"
+        )
+        for leaked in ("s3cr3tvalue1", "r3fr3shvalue2", "pa55word3"):
+            assert leaked not in out
+        assert out.count("[redacted]") == 3
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "input token count exceeds",
+            "exit code 1",
+            "exit code 143",
+            "250123 tokens > 200000",
+            "Invalid API key · Please run /login",
+            "overloaded_error",
+        ],
+    )
+    def test_ordinary_text_is_kept(self, text):
+        assert self._describe(text) == f"RuntimeError: {text}"
+
+    def test_model_and_request_ids_are_kept(self):
+        out = self._describe(
+            "model: claude-sonnet-4-5-20250929 not found; "
+            "request_id=req_011CTabcdefghijklmnopqrstuvwxyz "
+            "Authorization: Bearer abc123def456"
+        )
+        assert "claude-sonnet-4-5-20250929" in out
+        assert "req_011CTabcdefghijklmnopqrstuvwxyz" in out
+        assert "abc123def456" not in out

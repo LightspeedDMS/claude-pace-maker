@@ -55,19 +55,34 @@ def _is_limit_error(response: str) -> bool:
 # path); it only removes what looks like a credential. An SDK error is a
 # CLI/process/API message and does not carry the prompt.
 _SDK_ERROR_DETAIL_MAX_CHARS = 300
+# name[:=]value, e.g. api_key=..., "access_token":"ya29.a0...", client_secret: ...
+# The name may carry a word prefix (access_token, client_secret) and the whole
+# value is swallowed (dots and dashes included). A ':' or '=' is REQUIRED, so
+# prose such as "input token count exceeds" is left alone.
 _CREDENTIAL_PAIR_RE = re.compile(
-    r"\b(?:api[_-]?key|token|secret|password|passwd|authorization|bearer)\b"
-    r"\s*[:=]?\s*(?:bearer\s+)?[^\s,;]+",
+    r"\b\w*(?:api[_-]?key|token|secret|password|passwd|authorization)\b"
+    r"[\"']?\s*[:=]\s*(?:bearer\s+)?[\"']?[^\s,;\"'}]+",
     re.IGNORECASE,
 )
-_KEY_LIKE_TOKEN_RE = re.compile(r"\b(?=[A-Za-z_\-]*\d)[A-Za-z0-9_\-]{24,}\b")
+# "Bearer <token>" needs no colon.
+_BEARER_RE = re.compile(r"\bbearer\s+[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
+# A long opaque string containing a digit (sk-ant-..., ya29.a0...).
+_KEY_LIKE_TOKEN_RE = re.compile(r"\b(?=[A-Za-z_\-.]*\d)[A-Za-z0-9_\-.]{24,}\b")
+# Long ids that are not credentials and are useful in a failure reason.
+_KEPT_ID_PREFIXES = ("claude-", "req_")
+
+
+def _redact_key_like(match: "re.Match[str]") -> str:
+    token = match.group(0)
+    return token if token.startswith(_KEPT_ID_PREFIXES) else "[redacted]"
 
 
 def _describe_sdk_error(exc: Exception) -> str:
     """'TypeName: message' for an SDK exception: credential-looking text
     redacted, whitespace collapsed to one line, message capped."""
     text = _CREDENTIAL_PAIR_RE.sub("[redacted]", str(exc))
-    text = _KEY_LIKE_TOKEN_RE.sub("[redacted]", text)
+    text = _BEARER_RE.sub("[redacted]", text)
+    text = _KEY_LIKE_TOKEN_RE.sub(_redact_key_like, text)
     text = " ".join(text.split())[:_SDK_ERROR_DETAIL_MAX_CHARS]
     return f"{type(exc).__name__}: {text}"
 
