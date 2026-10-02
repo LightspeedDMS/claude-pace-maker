@@ -4,6 +4,7 @@ import subprocess
 from typing import Optional
 
 from .provider import InferenceProvider, ProviderError
+from ..constants import REVIEWER_CLI_TIMEOUT_SECONDS
 from ..logger import log_debug
 
 # Map friendly model hints to actual Gemini model identifiers
@@ -13,7 +14,7 @@ _MODEL_MAP = {
 }
 
 _DEFAULT_MODEL = "gemini-2.5-flash"
-_CLI_TIMEOUT_SEC = 120
+_CLI_TIMEOUT_SEC = REVIEWER_CLI_TIMEOUT_SECONDS
 _STDERR_PREVIEW_CHARS = 300
 _DEFAULT_MAX_THINKING_TOKENS = 4000
 
@@ -36,7 +37,8 @@ class GeminiProvider(InferenceProvider):
         raises it above the provider's own known-safe ceiling, only ever
         shrinks it toward the caller's remaining deadline budget, and
         never lets a negative value reach ``subprocess.run``. ``None``
-        (the default) preserves the pre-#152 hardcoded 120s timeout.
+        (the default) uses the full shared ``REVIEWER_CLI_TIMEOUT_SECONDS``
+        ceiling (240s since issue #165).
         """
         model = _MODEL_MAP.get(model_hint, model_hint) or _DEFAULT_MODEL
         effective_timeout = (

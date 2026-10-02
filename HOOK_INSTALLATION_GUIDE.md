@@ -107,7 +107,7 @@ If a project has its own hooks (like tdd-guard), you need to include BOTH in the
   "hooks": {
     "PreToolUse": [
       {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "tdd-guard"}]},
-      {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "~/.claude/hooks/pre-tool-use.sh", "timeout": 60}]}
+      {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "~/.claude/hooks/pre-tool-use.sh", "timeout": 300}]}
     ],
     "PostToolUse": [
       {"hooks": [{"type": "command", "command": "~/.claude/hooks/post-tool-use.sh", "timeout": 360}]}
@@ -130,7 +130,7 @@ If a project has its own hooks (like tdd-guard), you need to include BOTH in the
       }
     ],
     "Stop": [
-      {"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh", "timeout": 120}]}
+      {"hooks": [{"type": "command", "command": "~/.claude/hooks/stop.sh", "timeout": 300}]}
     ],
     "SubagentStart": [
       {"hooks": [{"type": "command", "command": "~/.claude/hooks/subagent-start.sh", "timeout": 10}]}

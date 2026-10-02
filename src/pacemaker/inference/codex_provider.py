@@ -5,6 +5,7 @@ from typing import Optional
 
 from .provider import InferenceProvider, ProviderError
 from .model_aliases import SHORT_ALIASES
+from ..constants import REVIEWER_CLI_TIMEOUT_SECONDS
 from ..logger import log_debug
 
 # Max chars of stderr to include in a ProviderError message (both failure
@@ -14,7 +15,7 @@ _STDERR_PREVIEW_CHARS = 300
 # Issue #152: the provider's own known-safe subprocess timeout ceiling. A
 # caller-supplied `timeout` (issue #152's deadline-aware clamp) can only
 # SHRINK this, never raise it.
-_DEFAULT_CLI_TIMEOUT_SEC = 120
+_DEFAULT_CLI_TIMEOUT_SEC = REVIEWER_CLI_TIMEOUT_SECONDS
 
 # Issue #132 follow-up: codex-beast prints harmless diagnostic lines on
 # EVERY run before any real error, e.g. a models-cache refresh notice and
@@ -88,8 +89,8 @@ class CodexProvider(InferenceProvider):
         raises it above the provider's own known-safe ceiling (only ever
         shrinks it toward the caller's remaining deadline budget), and
         never lets a negative value reach ``subprocess.run`` (defensive
-        floor). ``None`` (the default) preserves the pre-#152 hardcoded
-        120s timeout exactly.
+        floor). ``None`` (the default) uses the full shared
+        ``REVIEWER_CLI_TIMEOUT_SECONDS`` ceiling (240s since issue #165).
         """
         profile, model = _parse_codex_target(model_hint)
         argv, full_prompt = self._build_argv(profile, model, system_prompt, prompt)

@@ -32,6 +32,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pacemaker.constants import REVIEWER_CLI_TIMEOUT_SECONDS
 from pacemaker.inference.provider import ProviderError
 
 
@@ -54,14 +55,15 @@ class TestCodexProviderTimeoutClamp:
 
     def test_timeout_kwarg_never_exceeds_provider_default(self):
         """A generous remaining budget must never RAISE the subprocess
-        timeout above the provider's own known-safe ceiling (120s)."""
+        timeout above the provider's own known-safe ceiling
+        (REVIEWER_CLI_TIMEOUT_SECONDS)."""
         from pacemaker.inference.codex_provider import CodexProvider
 
         provider = CodexProvider()
         mock_result = MagicMock(returncode=0, stdout="YES", stderr="")
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             provider.query("p", "s", "o3", 4000, timeout=500.0)
-        assert mock_run.call_args.kwargs["timeout"] == 120
+        assert mock_run.call_args.kwargs["timeout"] == REVIEWER_CLI_TIMEOUT_SECONDS
 
     def test_no_timeout_kwarg_preserves_default(self):
         """Backward compatible: every pre-existing caller (e.g. the
@@ -73,7 +75,7 @@ class TestCodexProviderTimeoutClamp:
         mock_result = MagicMock(returncode=0, stdout="YES", stderr="")
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             provider.query("p", "s", "o3", 4000)
-        assert mock_run.call_args.kwargs["timeout"] == 120
+        assert mock_run.call_args.kwargs["timeout"] == REVIEWER_CLI_TIMEOUT_SECONDS
 
     def test_clamped_timeout_error_message_reflects_actual_value(self):
         from pacemaker.inference.codex_provider import CodexProvider
@@ -103,7 +105,7 @@ class TestGeminiProviderTimeoutClamp:
         mock_result = MagicMock(returncode=0, stdout="YES", stderr="")
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             provider.query("p", "s", "gemini-flash", 4000)
-        assert mock_run.call_args.kwargs["timeout"] == 120
+        assert mock_run.call_args.kwargs["timeout"] == REVIEWER_CLI_TIMEOUT_SECONDS
 
 
 class TestAgyProviderTimeoutClamp:
@@ -123,7 +125,7 @@ class TestAgyProviderTimeoutClamp:
         mock_result = MagicMock(returncode=0, stdout="YES", stderr="")
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             provider.query("p", "s", "agy-flash", 4000)
-        assert mock_run.call_args.kwargs["timeout"] == 120
+        assert mock_run.call_args.kwargs["timeout"] == REVIEWER_CLI_TIMEOUT_SECONDS
 
 
 # ===========================================================================

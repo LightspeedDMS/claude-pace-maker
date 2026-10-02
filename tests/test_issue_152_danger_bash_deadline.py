@@ -50,6 +50,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 from pacemaker import database
+from pacemaker.constants import PRE_TOOL_REVIEW_BUDGET_SECONDS
 from pacemaker.hook import run_pre_tool_hook
 from pacemaker.inference.provider import ProviderError
 
@@ -114,10 +115,12 @@ class TestDangerBashPhase2DeadlineAware:
             "danger-bash Phase 2 must pass a real _deadline, not None -- "
             "this is the exact regression issue #152's review flagged"
         )
-        # _gate_deadline = time.monotonic() + 180 - 10 at gate entry, before
-        # this call fired -- generous bounds account for real wall-clock
-        # elapsed between the two time.monotonic() samples above.
-        assert before + 150 <= deadline <= after + 190
+        # _gate_deadline = time.monotonic() + PRE_TOOL_REVIEW_BUDGET_SECONDS
+        # at gate entry, before this call fired -- generous bounds account
+        # for real wall-clock elapsed between the two time.monotonic()
+        # samples above.
+        budget = PRE_TOOL_REVIEW_BUDGET_SECONDS
+        assert before + budget - 20 <= deadline <= after + budget + 20
 
     @patch("pacemaker.hook.load_config")
     @patch("pacemaker.danger_bash_rules.load_rules")
