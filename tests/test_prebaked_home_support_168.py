@@ -143,6 +143,29 @@ class TestCloneHome:
         assert original.read_text() == "# activate\n"
 
 
+class TestRunningAsRoot:
+    """Read-only bits do not stop root, so freeze_venv's protection against an
+    in-place write through a hard link would not hold. Root gets real copies."""
+
+    def test_clone_copies_instead_of_linking(
+        self, fake_prebaked, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+        dest = clone_home(fake_prebaked, tmp_path / "clone")
+        rel = ".claude-pace-maker/venv/lib/site-packages/pkg/mod.py"
+        src, dup = fake_prebaked / rel, dest / rel
+        assert dup.read_text() == "x = 1\n"
+        assert os.stat(src).st_ino != os.stat(dup).st_ino
+        assert os.stat(src).st_nlink == 1
+        assert (dest / ".cache/pip/http/blob").read_bytes() == b"wheel-bytes"
+
+    def test_freeze_leaves_files_writable(self, fake_prebaked, monkeypatch):
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+        freeze_venv(fake_prebaked)
+        mod = fake_prebaked / ".claude-pace-maker/venv/lib/site-packages/pkg/mod.py"
+        assert mod.stat().st_mode & stat.S_IWUSR
+
+
 class TestFreezeVenv:
     def test_regular_files_become_read_only(self, fake_prebaked):
         freeze_venv(fake_prebaked)

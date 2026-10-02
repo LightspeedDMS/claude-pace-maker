@@ -53,7 +53,14 @@ _POST_KILL_DRAIN_SEC = 10
 def _shared_trees(prebaked: Path) -> list:
     """Relative paths of the trees to share: every required one (a missing one
     surfaces as FileNotFoundError at link time) plus the optional ones that
-    exist."""
+    exist.
+
+    Empty when running as root: read-only bits do not stop root, so the
+    ``freeze_venv`` guard against an in-place write through a hard link would
+    not hold. Nothing is shared then -- ``clone_home`` makes real copies and
+    ``freeze_venv`` does nothing (slower, but never corrupting)."""
+    if os.geteuid() == 0:
+        return []
     present_optional = [t for t in OPTIONAL_SHARED_TREES if (prebaked / t).is_dir()]
     return list(REQUIRED_SHARED_TREES) + present_optional
 
