@@ -234,8 +234,10 @@ def _adopt_csa_session_state(
 def _adopt_csa_agent_counter(
     latest: dict, session_id: str, agent_id: str, count: int
 ) -> None:
-    """Set one agent's tool_use_counter on `latest`. A session whose entry is
-    gone (the Stop hook removed it) is not resurrected."""
+    """Set one agent's tool_use_counter on `latest`. Defensive: if `latest` has
+    no CSA entry for the session (for whatever reason), nothing is written, so
+    this never creates a session entry. (The Stop hook does not remove entries
+    from state.json: its removal only touches an in-memory copy.)"""
     entry = _csa_session_state(latest, session_id)
     if entry is None:
         return

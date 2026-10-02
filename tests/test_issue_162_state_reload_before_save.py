@@ -478,7 +478,9 @@ class TestPreToolUseCsaCounterPreservesConcurrentUpdates:
 
         def session_ended_meanwhile(**kwargs):
             data = json.loads(state_file.read_text())
-            data["cross_session_awareness"].pop(PRE_SESSION)  # Stop hook GC
+            data["cross_session_awareness"].pop(
+                PRE_SESSION
+            )  # some other writer removed the entry
             state_file.write_text(json.dumps(data))
             return real_on_pre_tool_use(**kwargs)
 
