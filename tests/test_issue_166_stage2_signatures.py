@@ -699,6 +699,55 @@ class TestHardcodedValuesAreNotCopied:
         assert "sk-own-file-424242" not in section
         assert "Do the helping." in section
 
+    def test_class_keyword_and_base_literals_are_redacted(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/__init__.py": "",
+                "src/pkg/client.py": (
+                    "class Svc(Base('x-BASE-SECRET'), api_key='sk-CLASSKW-SECRET',"
+                    " meta=b'bytes-kw-secret'):\n"
+                    "    def __init__(self, a):\n        pass\n"
+                ),
+                "src/pkg/main.py": "from pkg.client import Svc\n",
+            },
+        )
+        section = build_called_signatures_section(
+            str(root / "src/pkg/main.py"), "Svc(1)\n"
+        )
+        assert "class Svc(Base('...'), api_key='...', meta='...')" in section
+        for leaked in ("x-BASE-SECRET", "sk-CLASSKW-SECRET", "bytes-kw-secret"):
+            assert leaked not in section
+
+    def test_non_string_class_bases_and_keywords_are_untouched(self, tmp_path):
+        root = _project(
+            tmp_path,
+            {
+                "src/pkg/mod.py": (
+                    "class Svc(Base, mixins.Other, metaclass=Meta, flag=True, n=3):\n"
+                    "    pass\n"
+                )
+            },
+        )
+        section = build_called_signatures_section(
+            str(root / "src/pkg/mod.py"), "Svc()\n"
+        )
+        assert (
+            "class Svc(Base, mixins.Other, metaclass=Meta, flag=True, n=3)" in section
+        )
+
+    def test_triple_quoted_default_in_the_fallback_is_one_placeholder(self, tmp_path):
+        broken = (
+            "def helper(a, doc='''sk-triple-secret''', b=1):\n"
+            "    pass\n\nthis is not python (\n"
+        )
+        root = _project(tmp_path, {"src/pkg/mod.py": broken})
+        section = build_called_signatures_section(
+            str(root / "src/pkg/mod.py"), "helper(1)\n"
+        )
+        assert "def helper(a, doc='...', b=1)" in section
+        assert "sk-triple-secret" not in section
+
     def test_non_string_defaults_are_untouched(self, tmp_path):
         root = _project(
             tmp_path,

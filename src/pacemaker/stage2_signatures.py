@@ -26,7 +26,7 @@ import os
 import re
 import textwrap
 import time
-from typing import Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 from .intent_validator import _read_target_file_for_review
 from .logger import log_warning
@@ -190,6 +190,9 @@ _DEF_LINE_RE = re.compile(
 # A quoted literal (an unterminated one runs to the end). Only ever applied to
 # a def line already cut to _MAX_ENTRY_CHARS, so its cost is bounded.
 _QUOTED_RE = re.compile(r"""'(?:\\.|[^'\\])*(?:'|$)|"(?:\\.|[^"\\])*(?:"|$)""")
+# A triple-quoted literal matches as several adjacent quote pairs: collapse the
+# resulting run of placeholders into one.
+_PLACEHOLDER_RUN_RE = re.compile(r"(?:'\.\.\.'){2,}")
 
 
 def _alias_pairs(text: str) -> "list[tuple[str, Optional[str]]]":
@@ -307,16 +310,23 @@ def _first_doc_line(
     return line if len(line) <= _MAX_DOC_CHARS else ""
 
 
-def _redacted_args(args: ast.arguments) -> str:
-    """``args`` as source with every string/bytes default value replaced by
-    ``'...'``: stored-secret masking cannot catch a credential hardcoded in
-    a default argument, and the argument names and order are what matters."""
-    args = copy.deepcopy(args)
-    defaults = list(args.defaults) + [d for d in args.kw_defaults if d is not None]
-    for default in defaults:
-        for node in ast.walk(default):
+def _blank_string_constants(roots: Sequence[ast.AST]) -> None:
+    """Replace, in place, every string/bytes constant under ``roots`` with
+    ``"..."``. Stored-secret masking cannot catch a credential hardcoded in
+    source, so such values are never copied into the prompt."""
+    for root in roots:
+        for node in ast.walk(root):
             if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
                 node.value = "..."
+
+
+def _redacted_args(args: ast.arguments) -> str:
+    """``args`` as source with every string/bytes default value replaced by
+    ``'...'``: the argument names and order are what matters."""
+    args = copy.deepcopy(args)
+    _blank_string_constants(
+        list(args.defaults) + [d for d in args.kw_defaults if d is not None]
+    )
     return ast.unparse(args)
 
 
@@ -329,8 +339,9 @@ def _function_text(node) -> str:
 
 
 def _class_text(node: ast.ClassDef) -> str:
-    bases = [ast.unparse(b) for b in node.bases]
-    bases += [ast.unparse(k) for k in node.keywords]
+    parts = copy.deepcopy(list(node.bases) + list(node.keywords))
+    _blank_string_constants(parts)  # class api_key='sk-...' / Base('x') literals
+    bases = [ast.unparse(p) for p in parts]
     text = f"class {node.name}" + (f"({', '.join(bases)})" if bases else "")
     for item in node.body:
         if isinstance(item, _FUNCTION_NODES) and item.name == "__init__":
@@ -361,7 +372,7 @@ def _parse_module(path: str, source: str) -> _Module:
         for m in _DEF_LINE_RE.finditer(source):
             target = methods if m.group(1) else defs
             line = m.group(0).strip().rstrip(":")[:_MAX_ENTRY_CHARS]
-            text = _QUOTED_RE.sub("'...'", line)
+            text = _PLACEHOLDER_RUN_RE.sub("'...'", _QUOTED_RE.sub("'...'", line))
             target.setdefault(m.group(3), _Def(path, text, "", ""))
     else:
         for node in tree.body:
