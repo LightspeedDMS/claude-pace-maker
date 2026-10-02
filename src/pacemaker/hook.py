@@ -4413,11 +4413,15 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         if (
             _declared_intent is None
             and not result.get("approved", False)
-            and result.get("reviewer") == "RegEx"
+            and result.get("reviewer")
+            and not result.get("reviewer_unavailable_failure")
         ):
-            # Bug #163: a Stage 1 "no declaration" block right after a
+            # Bug #163: a Stage 1 or Stage 2 rejection of a NON-declared
+            # intent (transcript or #151 relaxed path) right after a
             # rejected sibling consumed this agent's declaration for this
-            # file leads with the re-declare note. Message only.
+            # file leads with the re-declare note. Reviewer-unavailable and
+            # other infrastructure failures (no reviewer key) get no note,
+            # like they get no #159 hint. Message only.
             result["feedback"] = declaration_gate.lead_with_rejected_sibling_note(
                 result.get("feedback", "Validation failed"),
                 hook_data,

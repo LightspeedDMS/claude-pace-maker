@@ -269,3 +269,178 @@ class TestStore:
         assert store.has_rejection_marker("s", "main", "/w/a.py") is True
         resolution = store.resolve("s", "main", "/w/a.py")
         assert resolution is not None and resolution.intent.change == "c"
+
+
+OPUS = "claude-opus-5-5"
+REVIEW_HINT_FRAGMENT = "Address the review above"
+CONSUMED_NOTE_FRAGMENT = "was used by this rejected attempt"
+VAGUE = (
+    "BLOCKED: Intent excerpt is too vague to verify the change.\n"
+    "CLASSIFICATION: CLEAN_CODE",
+    "test-reviewer",
+)
+RELAXED_SOURCES = {
+    # Exception model, no visible text: the anchored turn's own reasoning
+    # summary is the intent...
+    "reasoning_summary": {"summary": "I'll add x to a.py.", "recent": []},
+    # ...or, with an empty anchor, the immediately preceding turn's summary.
+    "prior_reasoning_summary": {
+        "summary": "",
+        "recent": [("", "I'll add x to a.py next.")],
+    },
+}
+
+
+class _RelaxedAnchor:
+    """Anchored turn of an exception model with NO visible text and the given
+    reasoning summary / prior turns (the live #163 shape). Callable with the
+    signature the hook gives ``get_current_turn_message_for_validation``."""
+
+    def __init__(self, summary, recent):
+        self._summary = summary
+        self._recent = recent
+
+    def __call__(
+        self,
+        transcript_path,
+        tool_input=None,
+        tool_name=None,
+        _max_wait_seconds=30.0,
+        _initial_sleep=0.25,
+        _backoff_multiplier=2.0,
+        _max_sleep=2.0,
+        _diagnostics=None,
+        _stale_grace_seconds=None,
+    ):
+        if _diagnostics is not None:
+            _diagnostics["outcome"] = "found"
+            _diagnostics["anchor_has_visible_text"] = False
+            _diagnostics["anchor_model"] = OPUS
+            _diagnostics["anchor_prose_text"] = ""
+            _diagnostics["anchor_reasoning_summary"] = self._summary
+            _diagnostics["anchor_recent_context"] = self._recent
+        return ""
+
+
+def _opus_config(**overrides):
+    return _config(reasoning_summary_intent_models=[OPUS], **overrides)
+
+
+def _governance_texts(h):
+    conn = sqlite3.connect(h.db_path)
+    try:
+        return [
+            r[0] for r in conn.execute("SELECT feedback_text FROM governance_events")
+        ]
+    finally:
+        conn.close()
+
+
+class TestRelaxedPathSiblings:
+    @pytest.mark.parametrize("source", sorted(RELAXED_SOURCES))
+    def test_relaxed_sibling_stage2_rejection_leads_with_the_note(self, h, source):
+        _reject_edit_one(h)
+        result = h.run(
+            "Edit",
+            h.core_file,
+            anchor=_RelaxedAnchor(**RELAXED_SOURCES[source]),
+            reviewer_response=VAGUE,
+            config=_opus_config(),
+        )
+        assert result["decision"] == "block"
+        reason = result["reason"]
+        # The sibling really took the relaxed path and was reviewed (Stage 2).
+        assert "Intent excerpt is too vague" in reason
+        assert len(h.reviewer_prompts) == 2
+        last = h.blockages()[-1]
+        assert last["category"] == "intent_validation_cleancode"
+        assert last["details"]["intent_source"] == source
+        # The note leads; the reviewer-relay segment and the #159 review hint
+        # stay below it, unchanged.
+        assert reason.startswith(NOTE_TAG)
+        assert NOTE_FRAGMENT in reason
+        assert reason.index(NOTE_FRAGMENT) < reason.index(
+            "[pace-maker · reviewer-relay"
+        )
+        assert reason.index("Intent excerpt is too vague") < reason.index(
+            REVIEW_HINT_FRAGMENT
+        )
+        assert CONSUMED_NOTE_FRAGMENT not in reason
+
+    def test_only_the_message_changes_governance_text_is_untouched(self, h):
+        _reject_edit_one(h)
+        h.run(
+            "Edit",
+            h.core_file,
+            anchor=_RelaxedAnchor(**RELAXED_SOURCES["reasoning_summary"]),
+            reviewer_response=VAGUE,
+            config=_opus_config(),
+        )
+        texts = _governance_texts(h)
+        assert len(texts) == 2
+        assert all(NOTE_FRAGMENT not in text for text in texts)
+        assert "Intent excerpt is too vague" in texts[-1]
+
+    def test_no_marker_leaves_the_relaxed_rejection_unchanged(self, h):
+        result = h.run(
+            "Edit",
+            h.core_file,
+            anchor=_RelaxedAnchor(**RELAXED_SOURCES["reasoning_summary"]),
+            reviewer_response=VAGUE,
+            config=_opus_config(),
+        )
+        assert result["decision"] == "block"
+        assert NOTE_FRAGMENT not in result["reason"]
+        assert result["reason"].startswith("[pace-maker · reviewer-relay")
+        assert REVIEW_HINT_FRAGMENT in result["reason"]
+
+    def test_kill_switch_off_leaves_the_relaxed_rejection_unchanged(self, h):
+        _reject_edit_one(h)
+        result = h.run(
+            "Edit",
+            h.core_file,
+            anchor=_RelaxedAnchor(**RELAXED_SOURCES["reasoning_summary"]),
+            reviewer_response=VAGUE,
+            config=_opus_config(intent_declaration_tool_enabled=False),
+        )
+        assert result["decision"] == "block"
+        assert NOTE_FRAGMENT not in result["reason"]
+        assert REVIEW_HINT_FRAGMENT not in result["reason"]
+
+    def test_expired_marker_leaves_the_relaxed_rejection_unchanged(self, h):
+        _reject_edit_one(h)
+        _age_markers(REJECTED_DECLARATION_MARKER_TTL_SECONDS + 1)
+        result = h.run(
+            "Edit",
+            h.core_file,
+            anchor=_RelaxedAnchor(**RELAXED_SOURCES["reasoning_summary"]),
+            reviewer_response=VAGUE,
+            config=_opus_config(),
+        )
+        assert NOTE_FRAGMENT not in result["reason"]
+        assert REVIEW_HINT_FRAGMENT in result["reason"]
+
+    def test_tool_declared_stage2_rejection_gets_only_the_consumed_note(self, h):
+        _reject_edit_one(h)  # leaves a marker for this agent and file...
+        # ...which the re-declaration clears; reject the declared edit again.
+        assert h.declare(h.core_file) is True
+        result = h.run("Edit", h.core_file, reviewer_response=BLOCKED)
+        assert result["decision"] == "block"
+        assert CONSUMED_NOTE_FRAGMENT in result["reason"]
+        assert NOTE_FRAGMENT not in result["reason"]
+        assert result["reason"].count("[pace-maker · intent_validation_block]") == 1
+
+    def test_reviewer_unavailable_block_gets_no_note(self, h):
+        _reject_edit_one(h)
+        result = h.run(
+            "Edit",
+            h.core_file,
+            anchor=_RelaxedAnchor(**RELAXED_SOURCES["reasoning_summary"]),
+            reviewer_response=("", "test-reviewer"),
+            config=_opus_config(),
+        )
+        assert result["decision"] == "block"
+        assert NOTE_FRAGMENT not in result["reason"]
+        assert h.blockages()[-1]["category"] == (
+            "intent_validation_reviewer_unavailable"
+        )
