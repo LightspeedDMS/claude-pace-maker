@@ -62,7 +62,7 @@ DECLARE_INTENT_TOOL_NAMES = frozenset(
 
 # Declarations and chains older than this are deleted on EVERY store access
 # (record and gate). 60 minutes also comfortably covers a review that runs up
-# to PRE_TOOL_HOOK_TIMEOUT_SECONDS (~3 minutes).
+# to PRE_TOOL_HOOK_TIMEOUT_SECONDS (5 minutes since #165).
 INTENT_DECLARATION_TTL_SECONDS = 60 * 60
 
 # Bug #163: when a rejection deletes an agent's declaration/chain for a file,
@@ -170,9 +170,31 @@ MAX_DELAY_SECONDS = 350  # 360s timeout - 10s safety margin
 # producing silently unvalidated tool calls when the harness killed the
 # hook). Raised 120 -> 180 so REVIEWER_WAIT_TIMEOUT_SEC/SYNTHESIS_TIMEOUT_SEC
 # (competitive.py) and the new deadline-aware single-model clamp
-# (inference/registry.py) all have real room, without changing Stop's own
-# 120s timeout (a separate registration, unaffected by this constant).
-PRE_TOOL_HOOK_TIMEOUT_SECONDS = 180
+# (inference/registry.py) all have real room.
+#
+# Issue #165: raised 180 -> 300 together with the reviewer CLI ceiling
+# (REVIEWER_CLI_TIMEOUT_SECONDS, 120 -> 240). Requests to the beast queue up
+# and some time out at 120s. With a 180s hook the #152 deadline clamp would
+# have cut codex to ~160s; at 300s codex gets its full 240s and the Anthropic
+# SDK fallback (MIN_SDK_FALLBACK_BUDGET_SECONDS, 15s) still fits behind it.
+#
+# FOUR places must agree on this number: this constant, install.sh,
+# hooks/hooks.json and the live ~/.claude/settings.json (written by
+# install.sh). tests/unit/test_pretool_budget.py and
+# tests/unit/test_issue_165_reviewer_timeout.py check the first three.
+PRE_TOOL_HOOK_TIMEOUT_SECONDS = 300
+
+# Issue #165: ceiling for ONE reviewer CLI subprocess (codex, agy, gemini).
+# Shared by the three providers so they cannot drift apart. Callers' deadlines
+# (#152) can only shrink it, never raise it.
+REVIEWER_CLI_TIMEOUT_SECONDS = 240
+
+# Issue #165: Stop hook timeout, registered by install.sh and
+# hooks/hooks.json (parity-tested). Raised 120 -> 300 so a 240s reviewer is
+# not killed by the harness before it answers. The Stop review is bounded by
+# STOP_REVIEW_BUDGET_SECONDS (below), threaded as a deadline from the very
+# start of run_stop_hook down to the providers.
+STOP_HOOK_TIMEOUT_SECONDS = 300
 
 # Reserved for telemetry writes and emitting the block response.
 PRE_TOOL_SAFETY_MARGIN_SECONDS = 10
@@ -189,6 +211,14 @@ PRE_TOOL_ANCHOR_CAP_SECONDS = 30.0
 PRE_TOOL_REVIEW_BUDGET_SECONDS = (
     PRE_TOOL_HOOK_TIMEOUT_SECONDS - PRE_TOOL_SAFETY_MARGIN_SECONDS
 )
+
+# Issue #165: the Stop review deadline. run_stop_hook takes its clock at entry
+# (so the unbounded Langfuse finalize that runs first counts) and the review
+# must finish STOP_HOOK_SAFETY_MARGIN_SECONDS before the harness kills the
+# hook: a killed Stop hook fails open but throws the verdict away. Mirrors the
+# PreToolUse margin (telemetry writes and emitting the response).
+STOP_HOOK_SAFETY_MARGIN_SECONDS = PRE_TOOL_SAFETY_MARGIN_SECONDS
+STOP_REVIEW_BUDGET_SECONDS = STOP_HOOK_TIMEOUT_SECONDS - STOP_HOOK_SAFETY_MARGIN_SECONDS
 
 # Blockage telemetry categories (Story #21)
 # Used for tracking and categorizing hook blockages

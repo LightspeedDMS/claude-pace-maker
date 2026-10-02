@@ -21,6 +21,18 @@ Read this before running or writing tests in this repo.
   Each DB module raises `RuntimeError` when `PACEMAKER_TEST_MODE=1` and its env var is unset (memory localization: `PACEMAKER_CENTRAL_BASE`). Follow the same pattern for any new DB.
 - Never let code under test import `constants.DEFAULT_DB_PATH` fresh: that value is frozen at import time and is not the attribute conftest patches. Thread `hook.DEFAULT_DB_PATH` through explicitly (see [stage2-review-prompts.md](stage2-review-prompts.md#secret-masking)).
 
+## I/O-heavy tests (#168)
+
+`tests/test_bootstrap_plugin.py` and `tests/test_plugin_lazy_init.py` build a real venv with pip (a "prebaked home") and reuse it. Under concurrent disk I/O (XFS writeback stalls) they used to flake on `copytree` and on `conn.commit()` in the files that ran after them.
+
+- Use `tests/prebaked_home_support.py` (a flat-sibling helper, not a test module) for any test that needs a mutable copy of a prebaked home. Do not `shutil.copytree` it:
+  - `clone_home` hard-links `.claude-pace-maker/venv` and `.cache/pip` and really copies everything else. Per clone that is about 0.2 MB written instead of about 400 MB.
+  - `freeze_venv` makes the prebaked venv/cache files read-only, so an in-place write through a clone raises `PermissionError` instead of corrupting the shared inode. Replace venv files by unlink + write, never by writing in place. Read-only bits do not stop root, so when the tests run as root nothing is shared: `clone_home` makes real copies and `freeze_venv` does nothing (slower, never corrupting).
+  - `remove_tree` deletes clones (autouse fixture per file) and the prebaked home (module fixture teardown).
+  - `run_bounded` runs a subprocess with a deadline just under the test's `@pytest.mark.timeout`, kills the whole process group on timeout, and fails with the label and partial output.
+- `scripts/run_tests.sh` runs `timeout 120 sync` after the files named in `IO_HEAVY_PATTERNS` (these two files and `tests/e2e/*`), so the next file does not inherit their writeback. A sync that does not finish is reported as a warning. Add a file to that list if it writes hundreds of MB.
+- Behavior is locked by `tests/test_prebaked_home_support_168.py`.
+
 ## Same-commit contracts
 
 - `tests/test_real_transcript_replay.py` (`_replay_stage1` plus `fixtures/real_transcript_replay/manifest.json`) mirrors Stage-1 logic. Update it in the same commit as any Stage-1 change.

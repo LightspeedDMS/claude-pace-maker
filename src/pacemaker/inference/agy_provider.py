@@ -7,6 +7,7 @@ import subprocess
 from typing import Optional
 
 from .provider import InferenceProvider, ProviderError
+from ..constants import REVIEWER_CLI_TIMEOUT_SECONDS
 from ..logger import log_debug
 
 # Map pace-maker model aliases to agy --model argument strings.
@@ -26,7 +27,7 @@ _MODEL_MAP = {
 }
 
 _DEFAULT_MODEL_ARG = "Gemini 3.5 Flash (Medium)"
-_CLI_TIMEOUT_SEC = 120
+_CLI_TIMEOUT_SEC = REVIEWER_CLI_TIMEOUT_SECONDS
 _STDERR_PREVIEW_CHARS = 300
 
 
@@ -53,8 +54,9 @@ class AgyProvider(InferenceProvider):
                 timeout to ``max(0.0, min(_CLI_TIMEOUT_SEC, timeout))`` --
                 never raises it above the provider's own known-safe
                 ceiling, only ever shrinks it toward the caller's
-                remaining deadline budget. ``None`` (the default)
-                preserves the pre-#152 hardcoded 120s timeout exactly.
+                remaining deadline budget. ``None`` (the default) uses
+                the full shared ``REVIEWER_CLI_TIMEOUT_SECONDS`` ceiling
+                (240s since issue #165).
 
         Returns:
             Stripped response text from agy CLI stdout.

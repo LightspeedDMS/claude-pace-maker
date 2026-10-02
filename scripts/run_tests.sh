@@ -223,6 +223,38 @@ if [ "$QUICK" = false ]; then
 fi
 echo ""
 
+# Issue #168: files that write hundreds of MB (a real venv + pip install, a
+# real install.sh) leave dirty pages behind. On XFS the NEXT file then stalls
+# in conn.commit()/copytree behind that writeback. A bounded `sync` after such
+# a file flushes it while no test is waiting on the disk. Bounded, because a
+# sync stuck behind a dying disk must never hang the whole run.
+IO_HEAVY_PATTERNS=(
+    "tests/test_bootstrap_plugin.py"
+    "tests/test_plugin_lazy_init.py"
+    "tests/e2e/*"
+)
+SYNC_TIMEOUT=120
+
+# Flush dirty pages after a file matching IO_HEAVY_PATTERNS. A failed or timed
+# out sync is reported (never swallowed) but does not fail the run: it is a
+# mitigation, not a test.
+flush_after_io_heavy_file() {
+    local test_file="$1" pattern
+    for pattern in "${IO_HEAVY_PATTERNS[@]}"; do
+        # Unquoted on purpose: the pattern is a glob.
+        # shellcheck disable=SC2254
+        case "$test_file" in
+            $pattern)
+                if ! timeout "$SYNC_TIMEOUT" sync; then
+                    echo -e "    ${YELLOW}WARNING: sync did not finish within ${SYNC_TIMEOUT}s after ${test_file}${NC}"
+                fi
+                return 0
+                ;;
+        esac
+    done
+    return 0
+}
+
 START_TIME=$(date +%s)
 
 for f in "${TEST_FILES[@]}"; do
@@ -260,6 +292,8 @@ for f in "${TEST_FILES[@]}"; do
     OUTPUT=$(timeout "$FILE_TIMEOUT" "$TEST_PYTHON" -m pytest "$f" -q --timeout="$PYTEST_INNER_TIMEOUT" "$TB_FLAG" 2>&1)
     EXIT_CODE=$?
     set -e
+
+    flush_after_io_heavy_file "$f"
 
     # Re-review (issue #143, round 2): exit-code classification, in order:
     #   124            -> TIMEOUT (GNU `timeout` killed via its own SIGTERM

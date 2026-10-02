@@ -35,11 +35,17 @@ Bump all three together: `src/pacemaker/__init__.py`, `.claude-plugin/plugin.jso
 
 | Stop | PreToolUse | PostToolUse | SessionStart / SubagentStart / SubagentStop | UserPromptSubmit |
 |---|---|---|---|---|
-| 120 s | 180 s | 360 s | 10 s | none set (harness default) |
+| 300 s | 300 s | 360 s | 10 s | none set (harness default) |
 
-- `PRE_TOOL_HOOK_TIMEOUT_SECONDS` (`constants.py`) must match `install.sh`, `hooks/hooks.json` and the live `~/.claude/settings.json`. `tests/unit/test_pretool_budget.py` checks the first three.
+Stop and PreToolUse were doubled/raised together with the reviewer CLI ceiling in #165 (Stop 120 → 300, PreToolUse 180 → 300, ceiling 120 → 240).
+
+- **Four places must agree** on each of the Stop and PreToolUse numbers: the constant in `constants.py` (`STOP_HOOK_TIMEOUT_SECONDS` / `PRE_TOOL_HOOK_TIMEOUT_SECONDS`), `install.sh`, `hooks/hooks.json`, and the live `~/.claude/settings.json` (written by `install.sh`). `tests/unit/test_pretool_budget.py` and `tests/unit/test_issue_165_reviewer_timeout.py` check the first three; the live file is only fixed by running `./install.sh`.
 - **Raise settings.json first.** A PreToolUse hook killed by the harness lets the tool call through unvalidated.
-- Derived budgets: review budget = timeout − 10, reviewer wait = `int(budget * 0.7)` (118 s, because float rounding makes it 118.999…), synthesis gets the rest. The gate's `_gate_deadline` caps both the anchor wait and the review.
+- Reviewer CLI ceiling: one shared constant, `REVIEWER_CLI_TIMEOUT_SECONDS` = 240 s (`constants.py`), used by the codex, agy and gemini providers. A caller's deadline can only shrink it.
+- Derived budgets (PreToolUse): review budget = timeout − 10 = 290 s, reviewer wait = `int(budget * 0.7)` = 203 s, synthesis gets the rest (87 s). The gate's `_gate_deadline` caps both the anchor wait and the review.
+- Single-model arithmetic: codex gets its full 240 s (the clamp is deadline − 5 s = 285 s), which leaves 290 − 240 − 5 = 45 s for the Anthropic fallback, above `MIN_SDK_FALLBACK_BUDGET_SECONDS` (15 s). A transcript-anchor lag eats into that: at the full 30 s anchor cap, the fallback is exactly at its 15 s floor.
+- Competitive reviewers wait 203 s, which is less than the 240 s CLI ceiling, so a competitive reviewer that needs 203–240 s is abandoned as a non-responder (degraded approval, #131).
+- Stop has a deadline too (#165): `run_stop_hook` starts its clock at entry and the review gets `STOP_REVIEW_BUDGET_SECONDS` = 300 − 10 = 290 s, the same #152 clamp as PreToolUse. A single-model Stop clamps codex to deadline − 5 s and skips an SDK fallback with under 15 s left; the competitive phases are clamped to what remains. The Langfuse finalize that runs first counts against the budget. An empty result still fails open; if the 300 s hook is killed anyway, Stop fails open and the verdict is lost.
 
 ## Claude Code compatibility
 

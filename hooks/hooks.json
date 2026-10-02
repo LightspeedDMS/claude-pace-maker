@@ -8,7 +8,7 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh pre_tool_use",
-            "timeout": 180
+            "timeout": 300
           }
         ]
       }
@@ -55,7 +55,7 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh stop",
-            "timeout": 120
+            "timeout": 300
           }
         ]
       }

@@ -219,13 +219,19 @@ def parse_sdk_response(response_text: str) -> Dict[str, Any]:
         return {"continue": True}
 
 
-def call_sdk_validation(conversation_context: str, hook_model: str = "auto") -> str:
+def call_sdk_validation(
+    conversation_context: str,
+    hook_model: str = "auto",
+    _deadline: Optional[float] = None,
+) -> str:
     """
     Synchronous SDK validation call via provider abstraction.
 
     Args:
         conversation_context: Formatted conversation context from format_stop_hook_context()
         hook_model: Model selection - "auto", "sonnet", "opus", "gpt-5.4", "gpt-5.5" (legacy alias: "gpt-5")
+        _deadline: Issue #165. Absolute ``time.monotonic()`` deadline for the
+            whole review (the Stop hook's budget); None means no deadline.
 
     Returns:
         SDK response text
@@ -243,6 +249,7 @@ def call_sdk_validation(conversation_context: str, hook_model: str = "auto") -> 
         system_prompt="You are acting as the user who originally made this request. Judge if Claude delivered what you asked for.",
         call_context="stop_hook",
         max_thinking_tokens=4000,
+        _deadline=_deadline,
     )
 
 
@@ -251,6 +258,7 @@ def validate_intent(
     transcript_path: str,
     conversation_context_size: int = 5,
     hook_model: str = "auto",
+    _deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Validate if Claude completed user's original intent.
@@ -266,6 +274,10 @@ def validate_intent(
         session_id: Session ID (currently unused but kept for compatibility)
         transcript_path: Path to conversation transcript
         conversation_context_size: Deprecated - now uses config settings
+        hook_model: Reviewer selection (see call_sdk_validation)
+        _deadline: Issue #165. Absolute ``time.monotonic()`` deadline for the
+            review (the Stop hook's budget); None means no deadline. A review
+            that runs out of time returns an empty response, which fails open.
 
     Returns:
         Decision dict:
@@ -298,7 +310,9 @@ def validate_intent(
         formatted_context = format_stop_hook_context(context)
 
         # Call SDK for validation
-        sdk_response = call_sdk_validation(formatted_context, hook_model=hook_model)
+        sdk_response = call_sdk_validation(
+            formatted_context, hook_model=hook_model, _deadline=_deadline
+        )
 
         # Log raw SDK response for debugging
         log_debug(

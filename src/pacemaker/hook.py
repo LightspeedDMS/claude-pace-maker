@@ -34,6 +34,7 @@ from .constants import (
     PRE_TOOL_ANCHOR_CAP_SECONDS,
     PRE_TOOL_HOOK_TIMEOUT_SECONDS,
     PRE_TOOL_SAFETY_MARGIN_SECONDS,
+    STOP_REVIEW_BUDGET_SECONDS,
 )
 from .transcript_reader import (
     get_last_n_messages_for_validation,
@@ -2452,6 +2453,11 @@ def run_stop_hook():
         - {"decision": "block", "reason": "feedback"} - Block with feedback
     """
 
+    # Issue #165: the Stop review deadline is measured from hook ENTRY, so
+    # everything that runs before the review (notably the unbounded Langfuse
+    # finalize) counts against the harness's STOP_HOOK_TIMEOUT_SECONDS.
+    hook_started = time.monotonic()
+
     try:
         # === STOP HOOK ENTRY POINT ===
         log_info("hook", "=" * 70)
@@ -2672,6 +2678,7 @@ def run_stop_hook():
             transcript_path=transcript_path,
             conversation_context_size=conversation_context_size,
             hook_model=config.get("hook_model", "auto"),
+            _deadline=hook_started + STOP_REVIEW_BUDGET_SECONDS,
         )
 
         log_debug("hook", f"Intent validation result: {result}")
