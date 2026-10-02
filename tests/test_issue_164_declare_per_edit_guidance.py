@@ -48,12 +48,13 @@ PILOT_C_TEXT = (
 )
 
 PER_EDIT_SENTENCE = (
-    "Declare only what that one Write/Edit does; if a change needs several "
-    "edits, declare each edit separately, or make the whole change in a "
+    "A reused declaration is checked as-is against each later edit, so "
+    "declare only what the next Write/Edit does; when the next edit does "
+    "something different, declare again, or make the whole change in a "
     "single edit."
 )
 
-SHORT_PHRASE = "only what that one edit does"
+SHORT_PHRASE = "only what the next edit does"
 
 BANNED_EXTRACTION_WORDS = ("write out", "reveal", "copy your", "your reasoning")
 
@@ -110,8 +111,20 @@ class TestHints:
 
 class TestWordingConstraints:
     def test_added_text_is_one_short_sentence(self):
-        assert len(PER_EDIT_SENTENCE) < 200
+        assert len(PER_EDIT_SENTENCE) < 240
         assert PER_EDIT_SENTENCE.count(".") == 1
+
+    def test_appended_sentence_reconciles_with_the_reuse_rule(self):
+        """Review M3: 'One declaration covers consecutive Write/Edit calls to
+        the same file' (pilot paragraph) next to 'declare each edit
+        separately' contradicted itself. The appended sentence must say how
+        the two fit: a reused declaration is checked as-is against each
+        later edit."""
+        assert "A reused declaration is checked as-is" in PER_EDIT_SENTENCE
+        assert "declare each edit separately" not in PER_EDIT_SENTENCE
+        guidance = display_intent_validation_guidance()
+        assert "One declaration covers consecutive Write/Edit calls" in guidance
+        assert "declare each edit separately" not in guidance
 
     def test_no_reasoning_extraction_phrasing_in_added_text(self):
         for text in (PER_EDIT_SENTENCE, SHORT_PHRASE):

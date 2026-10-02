@@ -35,8 +35,9 @@ DECLARE_TOOL_PARAGRAPH = (
 
 # Bug #164: one sentence ADDED after the pilot paragraph (never rewording it).
 PER_EDIT_SENTENCE = (
-    "Declare only what that one Write/Edit does; if a change needs several "
-    "edits, declare each edit separately, or make the whole change in a "
+    "A reused declaration is checked as-is against each later edit, so "
+    "declare only what the next Write/Edit does; when the next edit does "
+    "something different, declare again, or make the whole change in a "
     "single edit."
 )
 
