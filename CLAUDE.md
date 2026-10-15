@@ -16,7 +16,7 @@ This file is deliberately slim: the rules that always apply, plus links to the d
 6. **Changing `database.py` `SCHEMA` means bumping `SCHEMA_VERSION`** and updating the pinned hash test. Schema changes are additive only, because the claude-usage monitor reads these DBs.
 7. **Claude Code breaking changes:** add a shim that supports both old and new behavior. Never raise `min_claude_version` (floor: 2.1.39).
 8. **All text pace-maker emits to Claude is tagged** via `prompt_provenance.format_tag()` with a channel from `CHANNELS`.
-9. "claude usage" / "claude-usage" means the separate repo `/home/jsbattig/Dev/claude-usage-reporting` (the monitor).
+9. "claude usage" / "claude-usage" means the separate repo `LightspeedDMS/claude-usage`, cloned at `~/Dev/claude-usage` (the monitor).
 
 ---
 
