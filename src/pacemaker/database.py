@@ -408,6 +408,13 @@ def _delete_old_rows_in_batches(
     reporting "this call did not finish cleanly", not "nothing was
     deleted": rows from earlier, already-committed batches may still be
     gone even though the overall call is reported as failed.
+
+    Batches by SQLite's implicit ``rowid``, not ``id`` (issue #179): the
+    ``usage_snapshots`` table created by older pace-maker versions has no
+    ``id`` column, and ``CREATE TABLE IF NOT EXISTS`` never adds it. On
+    tables declared ``id INTEGER PRIMARY KEY`` the ``rowid`` is an alias of
+    ``id``, so behavior there is unchanged. None of the allowlisted tables
+    is WITHOUT ROWID.
     """
     if _CLEANUP_TABLE_TIMESTAMP_COLUMNS.get(table) != timestamp_column:
         raise ValueError(f"table/column not allowlisted: {table}.{timestamp_column}")
@@ -428,10 +435,10 @@ def _delete_old_rows_in_batches(
             cursor.execute(
                 f"""
                 DELETE FROM {table}
-                WHERE id IN (
-                    SELECT id FROM {table}
+                WHERE rowid IN (
+                    SELECT rowid FROM {table}
                     WHERE {timestamp_column} < ?
-                    ORDER BY id
+                    ORDER BY rowid
                     LIMIT ?
                 )
                 """,

@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.38.2]
+
+### Fixed
+- **Old-snapshot cleanup no longer fails with `no such column: id` on databases from older versions (#179).** `_delete_old_rows_in_batches()` now batches its DELETE by SQLite's implicit `rowid` instead of `id`. `usage_snapshots` tables created by older pace-maker versions have no `id` column (`CREATE TABLE IF NOT EXISTS` never adds it), so every hook logged the error and old snapshots were never deleted. On tables declared `id INTEGER PRIMARY KEY`, `rowid` is an alias of `id`, so behavior there is unchanged. No schema change, no migration, `SCHEMA_VERSION` untouched (the claude-usage monitor reads this DB). (`src/pacemaker/database.py`)
+
 ## [2.38.1]
 
 ### Fixed
