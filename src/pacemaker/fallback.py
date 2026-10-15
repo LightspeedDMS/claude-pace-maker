@@ -115,6 +115,12 @@ def _project_window(
     return parsed, False
 
 
+_RATE_LIMIT_TIER_TO_TIER = {
+    "default_claude_max_20x": "20x",
+    "default_claude_max_5x": "5x",
+}
+
+
 def detect_tier(profile: Optional[Dict[str, Any]]) -> str:
     """
     Detect subscription tier from profile data.
@@ -122,13 +128,21 @@ def detect_tier(profile: Optional[Dict[str, Any]]) -> str:
     Args:
         profile: Profile dict from Claude OAuth API (or None)
 
+    Uses organization.rate_limit_tier when present; account.has_claude_max
+    is consulted only when rate_limit_tier is absent (issue #177).
+
     Returns:
-        "20x" if Claude Max, "5x" otherwise (default)
+        "20x" or "5x" (default)
     """
     if not profile:
         return "5x"
 
     try:
+        organization = profile.get("organization", {}) or {}
+        rate_limit_tier = organization.get("rate_limit_tier")
+        if rate_limit_tier:
+            return _RATE_LIMIT_TIER_TO_TIER.get(rate_limit_tier, "5x")
+
         account = profile.get("account", {}) or {}
         has_max = account.get("has_claude_max", False)
         if has_max:

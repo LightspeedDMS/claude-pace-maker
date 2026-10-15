@@ -11,6 +11,8 @@ Handles:
 """
 
 import json
+import platform
+import subprocess
 import time
 import requests
 from typing import Optional, Dict
@@ -38,13 +40,73 @@ _RETRY_AFTER_EARLY_EXIT_THRESHOLD = 30  # seconds
 _cached_email: Optional[str] = None
 
 
+KEYCHAIN_SERVICE = "Claude Code-credentials"
+# Short bound so a hung Keychain prompt cannot stall a hook (issue #177).
+KEYCHAIN_TIMEOUT_SECONDS = 3
+
+
+def _load_token_from_keychain() -> Optional[str]:
+    """Read claudeAiOauth.accessToken from the macOS Keychain (Darwin only).
+
+    Returns None and logs a warning on any failure; never logs token values.
+    """
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=KEYCHAIN_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            log_warning(
+                "api_client",
+                f"Keychain read failed (exit {result.returncode}); "
+                "falling back to credentials file",
+            )
+            return None
+        payload = json.loads(result.stdout)
+        oauth = payload.get("claudeAiOauth") if isinstance(payload, dict) else None
+        if not isinstance(oauth, dict):
+            log_warning(
+                "api_client",
+                "Keychain item: claudeAiOauth is not an object; "
+                "falling back to credentials file",
+            )
+            return None
+        token = oauth.get("accessToken")
+        if not isinstance(token, str) or not token:
+            log_warning(
+                "api_client",
+                "Keychain item: claudeAiOauth.accessToken is not a non-empty string; "
+                "falling back to credentials file",
+            )
+            return None
+        return token
+    except Exception as e:
+        log_warning(
+            "api_client",
+            "Keychain read failed; falling back to credentials file",
+            e,
+        )
+        return None
+
+
 def load_access_token() -> Optional[str]:
     """
-    Load OAuth access token from Claude Code credentials file.
+    Load OAuth access token.
+
+    On Darwin the Keychain is the source of truth (it follows `claude /login`
+    switches) and ~/.claude/.credentials.json is only a cache used when the
+    Keychain read fails. On other platforms only the file is used.
 
     Returns:
         Access token string, or None if not available
     """
+    if platform.system() == "Darwin":
+        keychain_token = _load_token_from_keychain()
+        if keychain_token:
+            return keychain_token
+
     try:
         creds_path = Path.home() / ".claude" / ".credentials.json"
 

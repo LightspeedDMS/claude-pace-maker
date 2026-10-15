@@ -16,11 +16,11 @@ Fix contract:
    for all other tiers (purge_stale_calibrations).
 4. _get_synthetic_snapshot() uses the tier stored in fallback_state_v2.
 
-Tier detection is driven through the real SQLite profile_cache table so that
-_detect_tier() is exercised without mocking its internals.
+Tier detection is driven through the real JSON profile cache (profile_cache.json,
+redirected to the fake home by tests/conftest.py) so that _detect_tier() is
+exercised without mocking its internals.
 """
 
-import json
 import sqlite3
 import time
 from pathlib import Path
@@ -56,22 +56,15 @@ def model(db_path):
 # ---------------------------------------------------------------------------
 
 
-def _seed_profile_cache(db_path: str, has_claude_max: bool) -> None:
-    """Write a profile_cache row so _detect_tier() returns the desired tier.
+def _seed_profile_cache(has_claude_max: bool) -> None:
+    """Write the JSON profile cache so _detect_tier() returns the desired tier.
 
-    _detect_tier() reads profile_cache WHERE id=1 first; by writing a real
-    profile there we drive tier detection without patching any internals.
+    _detect_tier() reads profile_cache.json (path redirected to the fake home
+    by tests/conftest.py).
     """
-    profile = {"account": {"has_claude_max": has_claude_max}}
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO profile_cache (id, timestamp, profile_json)
-            VALUES (1, ?, ?)
-            """,
-            (time.time(), json.dumps(profile)),
-        )
+    from pacemaker import profile_cache
+
+    profile_cache.cache_profile({"account": {"has_claude_max": has_claude_max}})
 
 
 def _seed_fallback_state(db_path: str, tier: str) -> None:
@@ -153,7 +146,7 @@ def test_calibration_skipped_when_tier_mismatch(db_path, model):
     The '20x' calibrated_coefficients slot must NOT be written.
     """
     # Profile says 5x (correct tier at recovery time)
-    _seed_profile_cache(db_path, has_claude_max=False)
+    _seed_profile_cache(has_claude_max=False)
     # But fallback was entered when stale cache said 20x
     _seed_fallback_state(db_path, tier="20x")
     _seed_accumulated_cost(db_path)
@@ -176,7 +169,7 @@ def test_calibration_mismatch_does_not_update_existing_wrong_slot(db_path, model
     """Pre-existing '20x' calibration row (from earlier pollution) must NOT be
     updated when re-detected tier is '5x'.
     """
-    _seed_profile_cache(db_path, has_claude_max=False)  # 5x at recovery
+    _seed_profile_cache(has_claude_max=False)  # 5x at recovery
     _seed_fallback_state(db_path, tier="20x")  # wrong tier stored
     _seed_calibrated_row(
         db_path, "20x", coeff_5h=0.002, coeff_7d=0.0003, sample_count=3
@@ -200,7 +193,7 @@ def test_calibration_proceeds_when_tier_matches(db_path, model):
 
     calibrate_on_recovery() must write a '5x' calibrated_coefficients row.
     """
-    _seed_profile_cache(db_path, has_claude_max=False)  # 5x
+    _seed_profile_cache(has_claude_max=False)  # 5x
     _seed_fallback_state(db_path, tier="5x")
     _seed_accumulated_cost(db_path)
 
@@ -224,7 +217,7 @@ def test_stale_calibrations_purged_after_successful_recovery(db_path, model):
 
     After successful calibration for '5x', the '20x' row must be deleted.
     """
-    _seed_profile_cache(db_path, has_claude_max=False)  # 5x at recovery
+    _seed_profile_cache(has_claude_max=False)  # 5x at recovery
     _seed_fallback_state(db_path, tier="5x")
     _seed_calibrated_row(
         db_path, "5x", coeff_5h=0.0070, coeff_7d=0.0010, sample_count=1

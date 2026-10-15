@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.38.1]
+
+### Fixed
+- **macOS: pace-maker no longer paces against a stale account after a Claude login switch (#177).** On Darwin `load_access_token()` reads the Keychain item `Claude Code-credentials` first (3 s subprocess timeout) and uses `~/.claude/.credentials.json` only when the Keychain read fails, logging a warning. A Keychain payload without a `claudeAiOauth` object or a non-empty string `accessToken` is rejected with a specific warning and also falls back to the file. Linux is unchanged. Every caller gets this, including `get_user_email` (the Langfuse user-id fallback, via `telemetry/jsonl_parser.py`). (`src/pacemaker/api_client.py`)
+- **The cached profile follows the active account.** `profile_cache.json` now carries a top-level `token_fingerprint` (first `TOKEN_FINGERPRINT_LENGTH` = 16 hex chars of sha256 of the access token), and the profile is refetched when the cache is older than the new `profile_cache_max_age_seconds` config (default 3600) or the fingerprint differs or is missing. The cache file is parsed once per refresh, and an invalid timestamp counts as stale. `UsageModel._detect_tier` ignores a cached profile whose fingerprint differs from the current token's (missing key or no token: accepted), matching claude-usage. (`src/pacemaker/profile_cache.py`, `pacing_engine.py`, `constants.py`, `hook.py`, `usage_model.py`)
+- **Tier detection uses `organization.rate_limit_tier`** (`default_claude_max_20x` -> 20x, `default_claude_max_5x` -> 5x); `account.has_claude_max` is consulted only when the tier is absent. (`src/pacemaker/fallback.py`)
+- **Removed the dead SQLite `profile_cache` read** from `UsageModel._detect_tier`; nothing wrote that table. `database.py` SCHEMA is unchanged. (`src/pacemaker/usage_model.py`)
+
 ## [2.32.1] - 2026-06-18
 
 ### Added

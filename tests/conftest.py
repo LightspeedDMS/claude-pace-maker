@@ -88,6 +88,31 @@ def _guard_production_db(tmp_path, monkeypatch):
     except ImportError:
         pass
 
+    # Guard the profile cache JSON path (issue #177): DEFAULT_PROFILE_CACHE_PATH
+    # is frozen at import time from the REAL home, so redirect it explicitly.
+    import pacemaker.profile_cache as _profile_cache
+
+    monkeypatch.setattr(
+        _profile_cache,
+        "DEFAULT_PROFILE_CACHE_PATH",
+        str(fake_pace_maker_dir / "profile_cache.json"),
+    )
+
+    # Never read the real macOS Keychain from a unit test (issue #177): stub the
+    # Keychain token loader so Darwin load_access_token() uses only the
+    # (fake-HOME) credentials file. Tests that exercise the Keychain path
+    # restore the original explicitly and patch subprocess.run themselves.
+    # Some tests import the package as `src.pacemaker...`, a distinct module
+    # object, so stub both identities.
+    import importlib
+
+    for _api_client_module in ("pacemaker.api_client", "src.pacemaker.api_client"):
+        monkeypatch.setattr(
+            importlib.import_module(_api_client_module),
+            "_load_token_from_keychain",
+            lambda: None,
+        )
+
     # Guard the session registry DB path — prevents tests from writing to
     # ~/.claude-pace-maker/session_registry.db (the production registry).
     # db.py raises RuntimeError when PACEMAKER_TEST_MODE=1 and this is unset,
@@ -155,6 +180,7 @@ def _guard_production_db(tmp_path, monkeypatch):
 
 
 _BLOCKED_CLI_NAMES = {"codex", "gemini", "claude"}
+_KEYCHAIN_CLI_NAME = "security"  # macOS Keychain CLI (issue #177)
 _REAL_SUBPROCESS_RUN = subprocess.run
 
 
@@ -180,6 +206,16 @@ class _ExternalCallGuard:
     def guarded_run(self, cmd, *args, **kwargs):
         argv0 = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else cmd
         name = os.path.basename(str(argv0)) if argv0 else ""
+        if name == _KEYCHAIN_CLI_NAME:
+            # pytest.fail raises a BaseException, so a caller's `except
+            # Exception` (e.g. api_client._load_token_from_keychain) cannot
+            # swallow it. Tests that need the Keychain path patch
+            # subprocess.run themselves, which replaces this guard.
+            pytest.fail(
+                f"Un-patched macOS Keychain read in a unit test (cmd={cmd!r}). "
+                "Patch subprocess.run (and platform.system) in the test.",
+                pytrace=False,
+            )
         if name in _BLOCKED_CLI_NAMES:
             self.leaked_calls.append(f"subprocess.run(cmd={cmd!r})")
             raise RuntimeError(

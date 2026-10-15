@@ -19,6 +19,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "safety_buffer_pct": 95.0,
     "preload_hours": 12.0,
     "api_timeout_seconds": 10,
+    "profile_cache_max_age_seconds": 3600,  # Issue #177: refetch the OAuth profile when profile_cache.json is older than this (also refetched when the token fingerprint differs).
     "cleanup_interval_hours": 24,
     "retention_days": 60,
     "weekly_limit_enabled": True,

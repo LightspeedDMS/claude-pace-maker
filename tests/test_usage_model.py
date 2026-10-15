@@ -1602,19 +1602,15 @@ class TestCoverageGapsBatch3:
 class TestCoverageGapsBatch4:
     """Tests targeting the last reachable uncovered branches."""
 
-    def test_detect_tier_reads_from_profile_cache_table(self, tmp_path):
-        """_detect_tier() uses profile_cache SQLite table when populated (line 767)."""
+    def test_detect_tier_reads_from_json_profile_cache(self, tmp_path):
+        """_detect_tier() uses profile_cache.json (path redirected by conftest)."""
+        from pacemaker import profile_cache
+
         db_path = str(tmp_path / "usage.db")
         model = make_model(db_path)
 
-        # Insert a profile_cache row indicating claude_max = False → tier "5x"
-        profile_json = '{"account": {"has_claude_max": false}}'
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO profile_cache (id, timestamp, profile_json) "
-                "VALUES (1, ?, ?)",
-                (time.time(), profile_json),
-            )
+        # JSON cache indicating claude_max = False → tier "5x"
+        profile_cache.cache_profile({"account": {"has_claude_max": False}})
 
         # enter_fallback calls _detect_tier() internally
         model.enter_fallback(api_cache_snapshot=False)

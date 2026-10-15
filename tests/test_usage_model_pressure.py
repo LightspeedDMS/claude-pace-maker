@@ -28,9 +28,6 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-import json
-
-
 def make_model(db_path: str):
     """Instantiate a fresh UsageModel pointing at the given db_path."""
     from pacemaker.usage_model import UsageModel
@@ -38,27 +35,22 @@ def make_model(db_path: str):
     return UsageModel(db_path=db_path)
 
 
-def _seed_profile_cache_for_tier(db_path: str, tier: str) -> None:
-    """Seed profile_cache so _detect_tier() returns the given tier.
+def _seed_profile_cache_for_tier(tier: str) -> None:
+    """Seed the JSON profile cache so _detect_tier() returns the given tier.
 
     tier='5x'  → has_claude_max=False
     tier='20x' → has_claude_max=True
 
+    The cache path is redirected to the fake home by tests/conftest.py.
+
     Raises ValueError for unsupported tier values.
     """
+    from pacemaker import profile_cache
+
     if tier not in ("5x", "20x"):
         raise ValueError(f"Unsupported tier: {tier!r}. Expected '5x' or '20x'.")
     has_claude_max = tier == "20x"
-    profile = {"account": {"has_claude_max": has_claude_max}}
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO profile_cache (id, timestamp, profile_json)
-            VALUES (1, ?, ?)
-            """,
-            (time.time(), json.dumps(profile)),
-        )
+    profile_cache.cache_profile({"account": {"has_claude_max": has_claude_max}})
 
 
 def _store_simple_api_response(
@@ -763,7 +755,7 @@ class TestCoefficientCalibration:
         model = make_model(db_path)
 
         # Calibrate 5x tier — profile must say 5x so mismatch guard passes
-        _seed_profile_cache_for_tier(db_path, "5x")
+        _seed_profile_cache_for_tier("5x")
         self._enter_fallback_with_baselines(
             model, db_path, five_util=50.0, seven_util=20.0, tier="5x"
         )
@@ -778,7 +770,7 @@ class TestCoefficientCalibration:
         model.exit_fallback(real_5h=60.0, real_7d=25.0)
 
         # Calibrate 20x tier — profile must say 20x so mismatch guard passes
-        _seed_profile_cache_for_tier(db_path, "20x")
+        _seed_profile_cache_for_tier("20x")
         self._enter_fallback_with_baselines(
             model, db_path, five_util=50.0, seven_util=20.0, tier="20x"
         )
@@ -801,7 +793,7 @@ class TestCoefficientCalibration:
 
         # The 5x row was purged by the 20x calibration (bug #68 cleanup).
         # Verify 5x can be independently re-calibrated when the tier is 5x again.
-        _seed_profile_cache_for_tier(db_path, "5x")
+        _seed_profile_cache_for_tier("5x")
         self._enter_fallback_with_baselines(
             model, db_path, five_util=50.0, seven_util=20.0, tier="5x"
         )

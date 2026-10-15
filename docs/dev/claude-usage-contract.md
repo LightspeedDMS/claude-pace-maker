@@ -2,13 +2,22 @@
 
 Read this before changing any table, column or file that the monitor reads, or before writing a new monitor reader.
 
-"claude usage" / "claude-usage" means `/home/jsbattig/Dev/claude-usage-reporting`.
+"claude usage" / "claude-usage" means the repo `LightspeedDMS/claude-usage`, cloned at `~/Dev/claude-usage`.
 
 - Its `claude_usage/code_mode/pacemaker_integration.py` reads `~/.claude-pace-maker/usage.db` and `session_registry.db` directly over SQLite. The `agents` and `agent_actions` tables are live and used by `get_active_agent_tree()`.
 - It reads `config.json`.
 - It imports `UsageModel` in-process through `install_source`.
 
 There is no other IPC between the monitor and pace-maker. The consumer hardcodes `Path.home() / ".claude-pace-maker"`.
+
+## `profile_cache.json` and credentials (#177)
+
+- The monitor reads `~/.claude-pace-maker/profile_cache.json` (JSON). It does **not** read the SQLite `profile_cache` table, which has no writer in `src/pacemaker`; `UsageModel._detect_tier` no longer reads it either. The table stays in `database.py` `SCHEMA` (no schema change).
+- File shape: `{"profile": {...}, "timestamp": <epoch>, "token_fingerprint": "<16 hex>"}`. `token_fingerprint` is **additive** (top-level, next to `profile` and `timestamp`): the first 16 hex chars of `sha256(accessToken UTF-8)`, written by `cache_profile(..., access_token=...)`. Credentials carry no account id, so this is the account-match key. Never store the token itself.
+- Reader rule (identical in both tools; pace-maker: `load_cached_profile(for_current_account=True)`, used by `UsageModel._detect_tier`): when the cache has a `token_fingerprint` that **differs** from the fingerprint of the current access token, ignore the cached profile (pace-maker then falls back to the default tier "5x"). When the key is **missing**, the reader accepts the cache: claude-usage applies only its age check (24 h), and pace-maker's reader accepts it too, but `refresh_profile_if_needed()` treats a missing key as stale and refetches, so pace-maker rewrites the file with a fingerprint on its next poll. When no current token is available, accept the cache. The current token is only loaded when the cache has a fingerprint.
+- Refresh rule (pace-maker): after a successful usage fetch, `refresh_profile_if_needed()` refetches the profile when the cache is missing, older than config `profile_cache_max_age_seconds` (default 3600), or its fingerprint differs from the current token's or is missing.
+- Credentials rule shared with the monitor: on Darwin the Keychain item `Claude Code-credentials` is the source of truth and `~/.claude/.credentials.json` is only a cache, used when the Keychain read fails (pace-maker logs a warning). On Linux only the file is used. Pace-maker only reads credentials; it never writes the file.
+- Tier detection (`fallback.detect_tier`) uses `organization.rate_limit_tier` (`default_claude_max_20x` -> 20x, `default_claude_max_5x` -> 5x) and falls back to `account.has_claude_max` only when the tier is absent.
 
 ## Producer rules (this repo)
 

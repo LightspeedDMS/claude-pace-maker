@@ -12,6 +12,7 @@ Orchestrates:
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
 from . import calculator, database, api_client, adaptive_throttle
+from .constants import DEFAULT_CONFIG
 from .logger import log_warning, log_info
 
 
@@ -315,6 +316,9 @@ def run_pacing_check(
     retention_days: int = 60,
     weekly_limit_enabled: bool = True,
     five_hour_limit_enabled: bool = True,
+    profile_cache_max_age_seconds: float = DEFAULT_CONFIG[
+        "profile_cache_max_age_seconds"
+    ],
 ) -> Dict:
     """
     Run complete pacing check cycle.
@@ -409,15 +413,17 @@ def run_pacing_check(
     )
     is_synthetic = False
 
-    # Populate profile cache (for tier detection during fallback) if missing
+    # Keep the profile cache (tier detection during fallback) in step with the
+    # active account: refetch when missing, too old, or written for another
+    # token (issue #177).
     if usage_data:
         try:
-            from .profile_cache import load_cached_profile, fetch_and_cache_profile
+            from .profile_cache import refresh_profile_if_needed
 
-            if load_cached_profile() is None:
-                fetch_and_cache_profile(access_token)
-        except Exception:
-            pass  # Non-critical — tier defaults to 5x if cache unavailable
+            refresh_profile_if_needed(access_token, profile_cache_max_age_seconds)
+        except Exception as e:
+            # Non-critical — tier defaults to 5x if cache unavailable
+            log_warning("pacing_engine", "Profile cache refresh failed", e)
 
     if not usage_data:
         # API failed — use UsageModel for synthetic pacing (SQLite-based)

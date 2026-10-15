@@ -1125,30 +1125,17 @@ class UsageModel:
         )
 
     def _detect_tier(self) -> str:
-        """Detect subscription tier from SQLite profile_cache or JSON file fallback."""
+        """Detect subscription tier from the JSON profile cache (profile_cache.json).
+
+        The SQLite profile_cache table has no writer, so it is not read (#177).
+        A cached profile written for a different account (token fingerprint
+        mismatch) is ignored, giving the default "5x".
+        """
         try:
-            # Try SQLite profile_cache first
-            def load_profile(conn):
-                row = conn.execute(
-                    "SELECT profile_json FROM profile_cache WHERE id = 1"
-                ).fetchone()
-                if row:
-                    return json.loads(row[0])
-                return None
-
-            profile = execute_with_retry(self.db_path, load_profile, readonly=True)
-
-            if profile is None:
-                # APPROVED FALLBACK: Story #42 transition — JSON profile cache used when
-                # SQLite profile_cache table is not yet populated. Remove when profile
-                # caching migrates fully to SQLite.
-                from .profile_cache import load_cached_profile
-
-                profile = load_cached_profile()
-
+            from .profile_cache import load_cached_profile
             from .fallback import detect_tier
 
-            return detect_tier(profile)
+            return detect_tier(load_cached_profile(for_current_account=True))
 
         except Exception:
             return "5x"

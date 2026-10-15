@@ -1498,6 +1498,10 @@ def run_hook():
             retention_days=config.get("retention_days", 60),
             weekly_limit_enabled=config.get("weekly_limit_enabled", True),
             five_hour_limit_enabled=config.get("five_hour_limit_enabled", True),
+            profile_cache_max_age_seconds=config.get(
+                "profile_cache_max_age_seconds",
+                DEFAULT_CONFIG["profile_cache_max_age_seconds"],
+            ),
         )
 
         # Persist the cleanup time on the latest state (the poll above may have
