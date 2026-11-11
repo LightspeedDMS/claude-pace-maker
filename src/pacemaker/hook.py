@@ -4439,7 +4439,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
         # only. Gated on the anchored turn's own assistant message.model
         # (populated by transcript_reader on both the found and stale
         # branches) being present in config's reasoning_summary_intent_models
-        # list (default ["claude-opus-5-5"]). anchor_visible_text is read
+        # list (default ["claude-opus-5-5", "claude-sonnet-5-5"]). anchor_visible_text is read
         # UNCONDITIONALLY from anchor_prose_text (never gated on an INTENT:
         # marker, unlike current_message_override above) -- the exception
         # path needs the turn's raw text regardless of marker presence.

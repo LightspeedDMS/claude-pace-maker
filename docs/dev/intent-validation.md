@@ -71,7 +71,7 @@ Core paths require a `Test coverage:` (TDD) declaration.
 
 ## Reasoning-summary intent exception (#151, #154)
 
-- Config `reasoning_summary_intent_models` (default `["claude-opus-5-5"]`) is matched against the anchor's `message.model`. Always normalize it with `hook._normalize_reasoning_summary_intent_models()` (a non-list becomes `[]`; non-strings are dropped). **Never test `in` against the raw value**: a string does substring matching and `null` raises `TypeError`, which fails closed for every model.
+- Config `reasoning_summary_intent_models` (default `["claude-opus-5-5", "claude-sonnet-5-5"]`; Sonnet 5.5 added in #181 — its summaries name the file/change as informatively as Opus's, and an empty-thinking + no-visible-text turn still resolves to `none` and stays strict) is matched against the anchor's `message.model`. Always normalize it with `hook._normalize_reasoning_summary_intent_models()` (a non-list becomes `[]`; non-strings are dropped). **Never test `in` against the raw value**: a string does substring matching and `null` raises `TypeError`, which fails closed for every model.
 - Both gates call the shared resolver `intent_validator.resolve_reasoning_summary_intent_source()`:
 
 | Case | Source | Path |

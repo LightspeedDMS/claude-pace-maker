@@ -36,8 +36,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "hook_model": "auto",  # Hook inference model: "auto", "sonnet", "opus", "gpt-5.4", "gpt-5.5" (legacy alias: "gpt-5"), "gemini-flash", "gemini-pro"
     "min_claude_version": "2.1.39",  # Minimum supported Claude Code version (Story #66 / issue #96)
     "reasoning_summary_intent_models": [
-        "claude-opus-5-5"
-    ],  # Issue #151: models whose anchored turn's reasoning summary (plus any visible text) is accepted as intent, bypassing the INTENT:/TDD/version-bump regex. Empty list restores strict behavior for every model.
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+    ],  # Issue #151 (Opus), #181 (Sonnet 5.5): models whose anchored turn's reasoning summary (plus any visible text) is accepted as intent, bypassing the INTENT:/TDD/version-bump regex. Empty list restores strict behavior for every model.
     "intent_declaration_tool_enabled": True,  # Story #155: kill switch for the declare_intent MCP tool path. False = the PostToolUse recorder stores nothing, the Write/Edit gate skips the declaration/chain lookup, and guidance/block messages are byte-identical to pre-#155.
 }
 

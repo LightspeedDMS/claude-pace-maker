@@ -7,7 +7,7 @@ at xhigh reasoning effort, Opus 5.5 routinely emits Write/Edit/Bash turns
 shaped `thinking(empty, signature-only), thinking(~240-char summary),
 tool_use`, with NO visible text block at all. #151 removes the "reasoning
 is never an intent source" rule for a CONFIGURABLE list of models
-(default: ["claude-opus-5-5"]).
+(default: ["claude-opus-5-5", "claude-sonnet-5-5"] since #181).
 
 CODE REVIEW REVISION (this file)
 =================================
@@ -72,6 +72,8 @@ import os
 import sqlite3
 from typing import List, Optional
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 os.environ.setdefault("PACEMAKER_TEST_MODE", "1")
 
@@ -160,8 +162,61 @@ CORE_FILE = "src/example_module.py"
 class TestConfigDefault:
     def test_reasoning_summary_intent_models_default(self):
         assert DEFAULT_CONFIG.get("reasoning_summary_intent_models") == [
-            "claude-opus-5-5"
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
         ]
+
+
+SONNET_5_5_MODEL = "claude-sonnet-5-5"
+HAIKU_5_5_MODEL = "claude-haiku-5-5"
+INTENT_VISIBLE = "INTENT: Edit mod.py to add a helper."
+
+
+class TestIssue181SonnetReasoningSummaryDefault:
+    """Issue #181: claude-sonnet-5-5 is in the default list, so a
+    thinking-only anchor turn takes the relaxed path like Opus 5.5."""
+
+    @staticmethod
+    def _resolve(model, models, visible, summary):
+        # Mirror the hook's gating: normalize the configured list, test
+        # membership of the anchor's model, then call the shared resolver.
+        listed = model in _normalize_reasoning_summary_intent_models(models)
+        return resolve_reasoning_summary_intent_source(listed, visible, summary)
+
+    @pytest.mark.parametrize(
+        "model,visible,summary,expected",
+        [
+            (
+                SONNET_5_5_MODEL,
+                "",
+                REASONING_SUMMARY,
+                ("reasoning_summary", REASONING_SUMMARY),
+            ),
+            (SONNET_5_5_MODEL, "", "", ("none", None)),
+            (
+                SONNET_5_5_MODEL,
+                INTENT_VISIBLE,
+                REASONING_SUMMARY,
+                ("declaration", None),
+            ),
+            (HAIKU_5_5_MODEL, "", REASONING_SUMMARY, (None, None)),
+        ],
+        ids=["sonnet_summary_only", "sonnet_empty", "sonnet_marker", "haiku_strict"],
+    )
+    def test_default_list_resolution(self, model, visible, summary, expected):
+        default = DEFAULT_CONFIG["reasoning_summary_intent_models"]
+        assert self._resolve(model, default, visible, summary) == expected
+
+    def test_explicit_user_list_is_honored(self):
+        user_models = ["claude-opus-5-5"]
+        assert self._resolve(SONNET_5_5_MODEL, user_models, "", REASONING_SUMMARY) == (
+            None,
+            None,
+        )
+        assert self._resolve(OPUS_MODEL, user_models, "", REASONING_SUMMARY) == (
+            "reasoning_summary",
+            REASONING_SUMMARY,
+        )
 
 
 # ===========================================================================
@@ -1852,6 +1907,58 @@ class TestWriteEditGateOpusReasoningSummary:
         )
         assert result.get("decision") == "block"
         assert "TDD Required" in result.get("reason", "")
+
+    def test_sonnet_5_5_thinking_only_passes_through_real_hook_181(self, tmp_path):
+        """Issue #181 AC2 through the real hook: _write_edit_config() does
+        not set reasoning_summary_intent_models, so the hook's
+        DEFAULT_CONFIG fallback decides -- claude-sonnet-5-5 must take the
+        relaxed reasoning-summary path, not the NO-visible-text block."""
+        edit_input = {
+            "file_path": NONCORE_FILE,
+            "old_string": "pass",
+            "new_string": "pass  # guarded",
+        }
+        model = "claude-sonnet-5-5"
+        transcript = _write_transcript(
+            [
+                _asst("req_A", _thinking_block("", 0), model=model),
+                _asst("req_A", _thinking_block(REASONING_SUMMARY, 1), model=model),
+                _asst(
+                    "req_A",
+                    _tool_use_block("Edit", edit_input, "toolu_A", 2),
+                    model=model,
+                ),
+            ],
+            str(tmp_path / "t.jsonl"),
+        )
+        with patch(
+            "pacemaker.inference.resolve_and_call_with_reviewer",
+            return_value=("APPROVED", "test-reviewer"),
+        ) as mock_reviewer:
+            result = _run_write_edit_hook(transcript, "Edit", NONCORE_FILE, edit_input)
+        assert result == {"continue": True}, result
+        mock_reviewer.assert_called_once()
+        assert REASONING_SUMMARY in mock_reviewer.call_args.kwargs["prompt"]
+
+    def test_sonnet_5_5_empty_thinking_no_text_blocked_real_hook_181(self, tmp_path):
+        """Issue #181 AC3 through the real hook: nothing to relax against
+        (empty thinking, no visible text) stays strict for Sonnet 5.5."""
+        write_input = {"file_path": NONCORE_FILE, "content": "x = 1\n"}
+        model = "claude-sonnet-5-5"
+        transcript = _write_transcript(
+            [
+                _asst("req_A", _thinking_block("", 0), model=model),
+                _asst(
+                    "req_A",
+                    _tool_use_block("Write", write_input, "toolu_A", 1),
+                    model=model,
+                ),
+            ],
+            str(tmp_path / "t.jsonl"),
+        )
+        result = _run_write_edit_hook(transcript, "Write", NONCORE_FILE, write_input)
+        assert result.get("decision") == "block"
+        assert "⛔ Your message had NO visible text" in result.get("reason", "")
 
     def test_sonnet_same_shape_blocked_exactly_as_today(self, tmp_path):
         transcript = _write_transcript(
