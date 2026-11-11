@@ -72,6 +72,18 @@ class TestClassifyCentral:
         central.write_text("not a dir")
         assert classify_central(central, ml_local_memory) == "unknown"
 
+    def test_symlink_loop_in_parent_is_missing(
+        self, ml_enc_dir, ml_local_memory, tmp_path
+    ):
+        """A symlink loop in a parent component (ELOOP) is not a crash: missing."""
+        from pacemaker.memory_localization.core import classify_central
+
+        loop_a = tmp_path / "loop_a"
+        loop_b = tmp_path / "loop_b"
+        loop_a.symlink_to(loop_b)
+        loop_b.symlink_to(loop_a)
+        assert classify_central(loop_a / "memory", ml_local_memory) == "missing"
+
     @pytest.mark.skipif(
         not _can_use_chmod_restrictions(),
         reason="Requires POSIX non-root environment for chmod 000 to block access",

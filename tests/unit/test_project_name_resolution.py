@@ -98,6 +98,8 @@ class TestNoRegressionToProcessCwd:
         # resolver like every other site (issue #134). Issue #151 added a
         # 7th: _record_reasoning_summary_telemetry()'s governance-event
         # block (an approval via the reasoning-summary intent exception),
-        # which correctly uses the resolver too.
+        # which correctly uses the resolver too. Issue #183: every site now
+        # passes the hook payload's cwd, so match any argument form (the
+        # no-argument form is forbidden by test_issue_183_project_name_cwd).
         src = pathlib.Path(__file__).resolve().parents[2] / "src/pacemaker/hook.py"
-        assert src.read_text().count("_project_name = _resolve_project_name()") == 7
+        assert src.read_text().count("_project_name = _resolve_project_name(") == 7

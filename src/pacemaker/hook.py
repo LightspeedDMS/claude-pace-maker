@@ -3020,12 +3020,18 @@ def _resolve_project_name(cwd: Optional[str] = None) -> str:
 
 
 def _record_degraded_review_telemetry(
-    degradation: Optional[Dict[str, Any]], reviewer: str, session_id: str
+    degradation: Optional[Dict[str, Any]],
+    reviewer: str,
+    session_id: str,
+    cwd: Optional[str] = None,
 ) -> None:
     """Record DG activity + governance events for a degraded-but-approved
     review (issue #131) — a verifier failed to respond but the review was
     still APPROVED by the responders. Shared by the Write/Edit and
     Danger-Bash gates (Messi Anti-Duplication).
+
+    `cwd` is the hook payload's cwd (issue #183); None falls back to the
+    process cwd.
 
     No-op when degradation is falsy or not actually degraded. Never raises —
     telemetry recording must never break the pre-tool hook.
@@ -3036,7 +3042,7 @@ def _record_degraded_review_telemetry(
         record_activity_event(DEFAULT_DB_PATH, "DG", "yellow", session_id)
         _failed = degradation.get("failed_providers", {})
         _failed_desc = "; ".join(f"{m}: {r}" for m, r in _failed.items())
-        _project_name = _resolve_project_name()
+        _project_name = _resolve_project_name(cwd)
         record_governance_event(
             db_path=DEFAULT_DB_PATH,
             event_type="DG",
@@ -3052,7 +3058,10 @@ def _record_degraded_review_telemetry(
 
 
 def _record_reasoning_summary_telemetry(
-    intent_source: Optional[str], reviewer: str, session_id: str
+    intent_source: Optional[str],
+    reviewer: str,
+    session_id: str,
+    cwd: Optional[str] = None,
 ) -> None:
     """Record RS activity + governance events for an approval reached via
     the issue #151 reasoning-summary intent exception (configured models
@@ -3076,7 +3085,7 @@ def _record_reasoning_summary_telemetry(
         return
     try:
         record_activity_event(DEFAULT_DB_PATH, "RS", "green", session_id)
-        _project_name = _resolve_project_name()
+        _project_name = _resolve_project_name(cwd)
         # Live-test follow-up: the wording used to be a single generic
         # "Approved via reasoning-summary intent" phrase for BOTH sources --
         # misleading for `visible_text`, where no reasoning summary was
@@ -3627,7 +3636,9 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 record_activity_event(
                                     DEFAULT_DB_PATH, "DB", "red", _sid
                                 )
-                                _project_name = _resolve_project_name()
+                                _project_name = _resolve_project_name(
+                                    hook_data.get("cwd")
+                                )
                                 record_governance_event(
                                     db_path=DEFAULT_DB_PATH,
                                     event_type="IV",
@@ -3821,7 +3832,10 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             # failure or single-model fallback still yielded
                             # APPROVED — record it as degraded, not silent.
                             _record_degraded_review_telemetry(
-                                _bash_degradation, reviewer, _sid
+                                _bash_degradation,
+                                reviewer,
+                                _sid,
+                                cwd=hook_data.get("cwd"),
                             )
                             # Issue #151: same observability requirement as
                             # the Write/Edit gate -- an approval via the
@@ -3829,7 +3843,10 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                             # recorded, not silent. No-op for every
                             # non-exception-model approval.
                             _record_reasoning_summary_telemetry(
-                                _bash_intent_source, reviewer, _sid
+                                _bash_intent_source,
+                                reviewer,
+                                _sid,
+                                cwd=hook_data.get("cwd"),
                             )
                             log_debug("hook", "Danger bash Phase 2: APPROVED")
                         elif not response:
@@ -3869,7 +3886,9 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 record_activity_event(
                                     DEFAULT_DB_PATH, "DB", "red", _sid
                                 )
-                                _project_name = _resolve_project_name()
+                                _project_name = _resolve_project_name(
+                                    hook_data.get("cwd")
+                                )
                                 # Issue #142 code-review follow-up (item 3):
                                 # prefix with the reviewer identity, matching
                                 # the sibling genuine-mismatch branch below.
@@ -3927,7 +3946,9 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                                 record_activity_event(
                                     DEFAULT_DB_PATH, "DB", "red", _sid
                                 )
-                                _project_name = _resolve_project_name()
+                                _project_name = _resolve_project_name(
+                                    hook_data.get("cwd")
+                                )
                                 record_governance_event(
                                     db_path=DEFAULT_DB_PATH,
                                     event_type="IV",
@@ -4330,7 +4351,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 )
                 try:
                     record_activity_event(DEFAULT_DB_PATH, "IV", "red", _sid)
-                    _project_name = _resolve_project_name()
+                    _project_name = _resolve_project_name(hook_data.get("cwd"))
                     record_governance_event(
                         db_path=DEFAULT_DB_PATH,
                         event_type="IV",
@@ -4719,6 +4740,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 result.get("degradation"),
                 result.get("reviewer", "unknown"),
                 session_id or "unknown",
+                cwd=hook_data.get("cwd"),
             )
             # Issue #151: an approval via the reasoning-summary intent
             # exception must be observable, not silent (the story's own
@@ -4729,6 +4751,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                 result.get("intent_source"),
                 result.get("reviewer", "unknown"),
                 session_id or "unknown",
+                cwd=hook_data.get("cwd"),
             )
             return _merge_csa_reminder({"continue": True}, _csa_result)
         else:
@@ -4810,7 +4833,7 @@ def run_pre_tool_hook() -> Dict[str, Any]:
                     "intent_validation_bug": "BG",
                 }
                 _event_type = _category_to_event_type.get(category, "IV")
-                _project_name = _resolve_project_name()
+                _project_name = _resolve_project_name(hook_data.get("cwd"))
                 # B2 (issue #101 review): governance-event feedback_text
                 # must stay UNTAGGED/raw — the pace-maker provenance tag
                 # (and reviewer-relay wrapper) belongs only on the

@@ -17,6 +17,7 @@ Environment:
   PACEMAKER_TEST_MODE     when "1", PACEMAKER_CENTRAL_BASE must be set
 """
 
+import errno
 import json
 import os
 import shutil
@@ -238,7 +239,21 @@ def classify_central(central: Path, expected_local: Path) -> str:
       permission_denied — PermissionError reading central
     """
     try:
-        if not central.exists() and not central.is_symlink():
+        # lstat() raises PermissionError; Path.exists()/is_symlink() swallow it
+        # and report False, which would misclassify an unreadable parent as
+        # "missing" (#184).
+        try:
+            central.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            return "missing"
+        except OSError as e:
+            # Path.exists() used to swallow these as "not there"; keep that.
+            # PermissionError (and anything else) must not be swallowed.
+            if isinstance(e, PermissionError) or e.errno not in (
+                errno.ELOOP,
+                errno.ENAMETOOLONG,
+            ):
+                raise
             return "missing"
         if central.is_symlink():
             if central.resolve() == expected_local.resolve():

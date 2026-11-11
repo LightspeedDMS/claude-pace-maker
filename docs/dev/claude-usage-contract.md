@@ -24,6 +24,7 @@ There is no other IPC between the monitor and pace-maker. The consumer hardcodes
 - Only additive `ALTER TABLE` with idempotent migrations (catch `duplicate column name`; example: `migrate_codex_usage_schema()`).
 - Never drop or rename tables or columns: the consumer tolerates missing columns but not missing tables (the whole read returns `None`). Removing a table needs a coordinated migration on both sides in the same release. Record any new table the monitor reads in this file. `session_registry.db`'s `agents` / `agent_actions` are such a live contract.
 - **If you change `database.py`'s `SCHEMA`, bump `SCHEMA_VERSION`** and update the pinned hash in `tests/test_database_lock_contention_145.py`. `initialize_database()` trusts the version number and skips DDL.
+- A freshly created `config.json` (`user_commands._write_config_atomic`, #182) holds only the keys the command set plus `enabled`, because the monitor reads `config.get("enabled", False)` and would otherwise show pace-maker disabled; never write the full `DEFAULT_CONFIG`.
 - `execute_with_retry` (`MAX_RETRIES=3`) only sleeps 100 ms and then 200 ms; there is no 400 ms step.
 - `codex_usage.py` stores `limit_id` verbatim (PAYG rows have null `primary`/`secondary`, which `_parse_last_token_count()` tolerates). The PAYG interpretation (`premium`) lives in the monitor's `display.py`.
 - Blockage categories: add new ones to the monitor's `KNOWN_BLOCKAGE_CATEGORIES` too (`pacemaker_integration.py`). Unknown ones still count but get a humanized label.

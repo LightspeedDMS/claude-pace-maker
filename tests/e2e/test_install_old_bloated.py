@@ -392,20 +392,28 @@ class TestInstallScript:
             "success" in output.lower() or "complete" in output.lower()
         ), "Must indicate success"
 
-    def test_install_fails_with_missing_dependencies(self, temp_home, monkeypatch):
+    def test_install_fails_with_missing_dependencies(
+        self, temp_home, monkeypatch, tmp_path
+    ):
         """Installation should check for required dependencies."""
-        # Simulate missing sqlite3
+        # PATH holds only the coreutils install.sh needs BEFORE its dependency
+        # check (dirname at SCRIPT_DIR resolution, cut in version parsing) so
+        # the checked dependencies (jq, curl, python3, package managers) are
+        # genuinely absent, while install.sh still reaches check_dependencies.
+        bin_dir = tmp_path / "minimal_bin"
+        bin_dir.mkdir()
+        for tool in ("dirname", "cut"):
+            real = shutil.which(tool)
+            assert real, f"{tool} must exist on the host to build the minimal PATH"
+            (bin_dir / tool).symlink_to(real)
         monkeypatch.setenv("HOME", str(temp_home))
-        monkeypatch.setenv("PATH", "/nonexistent")
+        monkeypatch.setenv("PATH", str(bin_dir))
 
         result = self._run_install(temp_home)
 
         # Should fail with clear error message about missing dependencies
         assert result.returncode != 0, "Should fail when dependencies missing"
-        assert (
-            "dependencies" in result.stderr.lower()
-            or "dependencies" in result.stdout.lower()
-        )
+        assert "missing dependencies" in (result.stdout + result.stderr).lower()
 
     def test_install_preserves_existing_hooks(self, install_env, temp_home):
         """Installation must preserve existing hooks from other tools (e.g., tdd-guard)."""

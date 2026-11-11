@@ -6,6 +6,7 @@ Handles 'pace-maker on/off/status' commands from UserPromptSubmit hook.
 Provides command parsing, execution, and status reporting.
 """
 
+import copy
 import os
 import json
 import re
@@ -18,7 +19,6 @@ from .logger import log_warning
 from .prompt_loader import PromptLoader
 from .secrets.metrics import get_24h_secrets_metrics
 from .secrets.database import list_secrets
-
 
 # Pre-compiled regex for log error parsing
 _ERROR_LOG_PATTERN = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[ERROR\]")
@@ -2124,19 +2124,34 @@ def handle_user_prompt(
         return {"intercepted": False, "passthrough": user_input}
 
 
+class _FreshConfig(dict):
+    """Defaults view handed out when config.json does not exist yet (#182).
+
+    Remembers which keys were assigned (`config[key] = value`) so the writer
+    persists exactly the keys a command set, even when a value equals its
+    default (the claude-usage monitor reads an empty config as "disabled").
+    """
+
+    def __init__(self, defaults: Dict[str, Any]):
+        super().__init__(defaults)
+        self.assigned_keys: set = set()
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.assigned_keys.add(key)
+        super().__setitem__(key, value)
+
+
 def _load_config(config_path: str) -> Dict[str, Any]:
     """
     Load configuration from file.
 
-    Creates file with defaults if it doesn't exist.
-    Raises exception if file is corrupted.
+    A missing file yields a `_FreshConfig` (deep copy of DEFAULT_CONFIG) and
+    is NOT created here (#182): writing every default would freeze them as
+    explicit user values. `_write_config_atomic` persists only the keys a
+    command assigned. Raises exception if file is corrupted.
     """
     if not os.path.exists(config_path):
-        # Create with defaults
-        os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        with open(config_path, "w") as f:
-            json.dump(DEFAULT_CONFIG, f, indent=2)
-        return DEFAULT_CONFIG.copy()
+        return _FreshConfig(copy.deepcopy(DEFAULT_CONFIG))
 
     try:
         with open(config_path) as f:
@@ -2151,7 +2166,17 @@ def _write_config_atomic(config: Dict[str, Any], config_path: str):
     Write configuration atomically using temporary file.
 
     This ensures configuration is never left in a partially-written state.
+
+    When the file does not exist yet (#182), `config` is the `_FreshConfig`
+    defaults view from `_load_config`. Persist only the keys the command
+    assigned (even if equal to the default) so every other setting keeps
+    following DEFAULT_CONFIG. "enabled" is always persisted as well: the
+    claude-usage monitor reads `config.get("enabled", False)`, so a fresh file
+    without it would show pace-maker disabled.
     """
+    if isinstance(config, _FreshConfig) and not os.path.exists(config_path):
+        keys = config.assigned_keys | {"enabled"}
+        config = {k: config[k] for k in keys if k in config}
     # Ensure directory exists
     os.makedirs(os.path.dirname(config_path), exist_ok=True)
 
@@ -2180,15 +2205,13 @@ def _get_latest_usage(db_path: str) -> Optional[Dict[str, Any]]:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT five_hour_util, seven_day_util,
                    five_hour_resets_at, seven_day_resets_at
             FROM usage_snapshots
             ORDER BY timestamp DESC
             LIMIT 1
-        """
-        )
+        """)
 
         row = cursor.fetchone()
         conn.close()
