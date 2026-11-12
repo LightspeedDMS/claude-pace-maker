@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+import real_home_guard_support
+
 # Ensure THIS checkout's own src/ resolves FIRST, ahead of any stale
 # editable-install (`pip install -e`) .pth entry pointing at a different
 # checkout. A machine-wide editable install's .pth file always points at
@@ -40,10 +42,46 @@ os.environ["PACEMAKER_TEST_MODE"] = "1"
 # throwaway directory BEFORE any pacemaker import so a developer's real
 # ~/.claude-pace-maker (for example one configured with shared_data_dir) can
 # never redirect the suite. The autouse fixture below still fakes HOME per test.
+#
+# Permanent guard (#188): remember whether the REAL ~/.claude-pace-maker (passwd
+# home, not $HOME) existed before we replace HOME; pytest_sessionfinish below
+# fails the run if the suite created it. Judged only for runs that started
+# without it: a live install's own hooks legitimately write there.
+#
+# A uid with no passwd entry (common in CI containers) has no real home to
+# protect: take_snapshot() then returns None, the guard is skipped rather than
+# stopping the whole suite from starting, and pytest_terminal_summary below
+# shows one visible notice.
+_REAL_HOME_SNAPSHOT = real_home_guard_support.take_snapshot()
 _IMPORT_TIME_HOME = tempfile.mkdtemp(prefix="pacemaker-test-home-")
 os.makedirs(os.path.join(_IMPORT_TIME_HOME, ".claude-pace-maker"), exist_ok=True)
 os.environ["HOME"] = _IMPORT_TIME_HOME
 atexit.register(shutil.rmtree, _IMPORT_TIME_HOME, ignore_errors=True)
+
+
+def _fail_on_real_home_leak(session, before):
+    """Turn the run red (and say which files) if the suite created the real
+    ``~/.claude-pace-maker``. Reads only; never touches the directory."""
+    message = real_home_guard_support.leak_message(before)
+    if message is not None:
+        print(message, file=sys.stderr)
+        session.exitstatus = 1
+
+
+def pytest_sessionfinish(session, exitstatus):
+    _fail_on_real_home_leak(session, _REAL_HOME_SNAPSHOT)
+
+
+def _write_guard_notice(reporter, before, uid):
+    """Say once, visibly, that the guard is off. pytest's fd capture is already
+    active while this conftest loads, so a print at load time is swallowed on a
+    passing run; the terminal summary shows even with -q."""
+    if before is None:
+        reporter.write_line(real_home_guard_support.disabled_notice(uid))
+
+
+def pytest_terminal_summary(terminalreporter):
+    _write_guard_notice(terminalreporter, _REAL_HOME_SNAPSHOT, os.getuid())
 
 
 @pytest.fixture(autouse=True)

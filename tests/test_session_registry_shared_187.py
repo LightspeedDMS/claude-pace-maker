@@ -88,6 +88,11 @@ class TestOsUserOnRegistryRows:
 class TestUpgradeFromPreviousRelease:
     def _old_db(self, path):
         conn = sqlite3.connect(path)
+        # The previous release's get_connection() left the registry in WAL mode.
+        # (The one-time switch to WAL ignores the busy handler, so concurrent
+        # first-ever opens can fail with "locked": that is old behaviour and not
+        # what the migration tests are about.)
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(reg_db._DDL_CREATE_SESSIONS)
         conn.execute(reg_db._DDL_CREATE_AGENTS)
         conn.execute(reg_db._DDL_CREATE_AGENT_ACTIONS)

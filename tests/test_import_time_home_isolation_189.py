@@ -7,13 +7,18 @@ unit test that falls back to ``DEFAULT_DB_PATH`` to the real shared database.
 """
 
 import os
-import pwd
 
+import pytest
+
+import real_home_guard_support as guard
 from pacemaker import constants
 
 
 def test_import_time_paths_do_not_point_into_the_real_home():
-    real_home = pwd.getpwuid(os.getuid()).pw_dir
+    real_dir = guard.real_pace_maker_dir()
+    if real_dir is None:
+        pytest.skip("current uid has no passwd entry: there is no real home")
+    real_home = os.path.dirname(real_dir)
     assert not constants.DEFAULT_DB_PATH.startswith(real_home + os.sep)
     assert not constants.DEFAULT_CONFIG_PATH.startswith(real_home + os.sep)
     assert not constants.DEFAULT_STATE_PATH.startswith(real_home + os.sep)

@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.39.2]
+
+### Fixed
+- **`pace-maker status` no longer leaves `-wal`/`-shm` files in a flagged shared dir (#190).** `_get_latest_usage` opened the shared `usage.db` with a plain `sqlite3.connect` before any directory check, so on a dir flagged by the #189 check (sticky bit + `fs.protected_regular>=2`) it still created caller-owned side files while reporting the problem. It now runs `validate_shared_data_dir()` first for a shared path and skips the DB, like it already did for refused symlinks. Audit of every other read path `status` / `sessions` use: the usage-model reads, blockage stats and secrets metrics go through `execute_with_retry` / `_open_connection`, and the registry load goes through `get_connection`, all of which validate before connecting; the write probe only opens an existing file (nothing to create). Default installs are unchanged.
+- **The test suite no longer touches the real `~/.claude-pace-maker` (#188).** Closed by the v2.39.1 `tests/conftest.py` change (HOME points at a throwaway dir before pacemaker is first imported). Verified with a full run under `bwrap` with a brand-new empty HOME and an empty directory mounted over the real `~/.claude-pace-maker`: both stayed empty. One remaining way to resolve the passwd home was closed (a test subprocess with an env that had no `HOME`), and a permanent guard was added: `tests/conftest.py` records whether the real `~/.claude-pace-maker` exists before the suite starts and fails the run, naming the files, if the suite created it (`tests/real_home_guard_support.py`, `tests/test_real_home_guard_188.py`). It never judges a machine with a live install (its own hooks write there).
+
 ## [2.39.1]
 
 ### Fixed

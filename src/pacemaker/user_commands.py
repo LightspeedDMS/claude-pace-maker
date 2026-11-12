@@ -2249,10 +2249,22 @@ def _get_latest_usage(db_path: str) -> Optional[Dict[str, Any]]:
         import sqlite3
         from datetime import datetime
 
-        from .data_dir import confirm_shared_files, shared_umask
+        from .data_dir import (
+            confirm_shared_files,
+            is_shared_path,
+            shared_umask,
+            validate_shared_data_dir,
+        )
 
-        # Shared mode only (#187): refuse a planted symlink/special file instead
-        # of reading through it. No-op for default installs.
+        # Shared mode only (#187/#190): skip a shared dir that is flagged (for
+        # example sticky + fs.protected_regular=2), because opening its DB
+        # would leave caller-owned -wal/-shm files in a dir we just reported as
+        # misconfigured. Raises SharedDataDirError, handled below like any
+        # other unreadable-DB case. No-op for default installs.
+        if is_shared_path(db_path):
+            validate_shared_data_dir()
+        # Also refuse a planted symlink/special file instead of reading
+        # through it.
         ident = confirm_shared_files(db_path)
         with shared_umask(db_path):
             conn = sqlite3.connect(db_path)

@@ -537,6 +537,7 @@ class TestDeclareInputsFromTools:
     def test_transcript_reader_does_not_load_the_gate_or_the_store(self):
         """L6: transcript_reader depends on the stdlib leaf only -- never on
         the gate/store (sqlite, logger-coupled hook wiring)."""
+        import os
         import subprocess
         import sys
         from pathlib import Path
@@ -551,7 +552,14 @@ class TestDeclareInputsFromTools:
             [sys.executable, "-c", code],
             capture_output=True,
             text=True,
-            env={"PYTHONPATH": src, "PATH": "/usr/bin:/bin"},
+            # HOME is the suite's fake home: without it the child would fall
+            # back to the passwd entry (the real home) while importing
+            # pacemaker.constants (#188).
+            env={
+                "PYTHONPATH": src,
+                "PATH": "/usr/bin:/bin",
+                "HOME": os.environ["HOME"],
+            },
             timeout=60,
         )
         assert proc.stdout.strip() == "False False", proc.stderr

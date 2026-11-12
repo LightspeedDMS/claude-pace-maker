@@ -21,6 +21,9 @@ Read this before running or writing tests in this repo.
   Each DB module raises `RuntimeError` when `PACEMAKER_TEST_MODE=1` and its env var is unset (memory localization: `PACEMAKER_CENTRAL_BASE`). Follow the same pattern for any new DB.
 - Never let code under test import `constants.DEFAULT_DB_PATH` fresh: that value is frozen at import time and is not the attribute conftest patches. Thread `hook.DEFAULT_DB_PATH` through explicitly (see [stage2-review-prompts.md](stage2-review-prompts.md#secret-masking)).
 
+- **Import-time home isolation (#188/#189)**: `tests/conftest.py` points `HOME` at a throwaway directory before anything imports `pacemaker`, because `constants.DEFAULT_*_PATH` are frozen at import (and `DEFAULT_DB_PATH` depends on the real `config.json`'s `shared_data_dir`). A subprocess env built without `HOME` would fall back to the passwd home, so pass `HOME` explicitly.
+- **Real-home guard (#188)**: `conftest.pytest_sessionfinish` fails the run, naming the files, if the real `~/.claude-pace-maker` (looked up through the passwd entry, helper `tests/real_home_guard_support.py`) did not exist when the run started and does now. It is skipped on machines with a live install, whose own hooks write there. To prove isolation on such a machine, run the suite under `bwrap --dev-bind / / --bind <empty dir> $HOME/.claude-pace-maker env HOME=<fresh dir> ./scripts/run_tests.sh --quick` and check both directories stay empty.
+
 ## I/O-heavy tests (#168)
 
 `tests/test_bootstrap_plugin.py` and `tests/test_plugin_lazy_init.py` build a real venv with pip (a "prebaked home") and reuse it. Under concurrent disk I/O (XFS writeback stalls) they used to flake on `copytree` and on `conn.commit()` in the files that ran after them.
