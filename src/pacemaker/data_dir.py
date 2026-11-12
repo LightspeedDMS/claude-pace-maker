@@ -27,13 +27,22 @@ import pwd
 import stat
 import threading
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 PER_USER_DIR_NAME = ".claude-pace-maker"
 CONFIG_FILE_NAME = "config.json"
 SHARED_DATA_DIR_KEY = "shared_data_dir"
 SECRETS_DB_FILE = "secrets.db"
 SHARED_DB_FILES = ("usage.db", "session_registry.db")
+
+# Bug #189 (Ubuntu ships fs.protected_regular=2): a sticky shared dir makes the
+# kernel refuse O_CREAT opens of other users' files, so the recommended mode is
+# setgid WITHOUT the sticky bit. The sysctl path is a constant so tests can
+# point it at a temp file.
+PROTECTED_REGULAR_PATH = "/proc/sys/fs/protected_regular"
+PROTECTED_REGULAR_WORLD_LEVEL = 1  # covers world-writable sticky dirs
+PROTECTED_REGULAR_BLOCKING_LEVEL = 2  # also covers group-writable sticky dirs
+RECOMMENDED_DIR_MODE = 0o2770
 
 # Stand-in "directory" for a malformed shared_data_dir (wrong type, empty,
 # relative, or the per-user dir). Path resolution must never raise (it runs at
@@ -196,18 +205,117 @@ def validate_shared_data_dir() -> None:
             f"pace-maker: {SHARED_DATA_DIR_KEY} '{shared}' is not writable by "
             f"{os_user()} (need group rw, setgid dir)"
         )
+    _reject_sticky_with_protected_regular(shared)
 
 
-def shared_dir_problem() -> Optional[str]:
+def read_protected_regular() -> Optional[int]:
+    """Value of ``fs.protected_regular`` or None when it cannot be read.
+
+    Never guesses: a missing/unreadable/odd/negative value means "unknown" and
+    is logged at debug level so the skipped check leaves a trace. Only called in
+    shared mode and only for a sticky shared dir, never for default installs.
+    """
+    try:
+        with open(PROTECTED_REGULAR_PATH, "r", encoding="ascii") as fh:
+            value = int(fh.read().strip())
+        if value < 0:
+            raise ValueError(f"negative value {value}")
+    except (OSError, ValueError) as exc:
+        from .logger import log_debug  # call-time import: logger imports constants
+
+        log_debug("data_dir", f"cannot use {PROTECTED_REGULAR_PATH}: {exc}")
+        return None
+    return value
+
+
+def _reject_sticky_with_protected_regular(shared: str) -> None:
+    """Bug #189: a sticky shared dir plus fs.protected_regular breaks all writes.
+
+    The kernel refuses ``open(O_CREAT)`` on an existing file owned by another
+    user inside a sticky directory (unless that user owns the directory):
+    level 1 for world-writable directories, level 2 also for group-writable
+    ones. SQLite opens the DB and its -wal/-shm that way, gets EACCES and
+    silently falls back to read-only, for every user.
+    """
+    mode = os.stat(shared).st_mode
+    if not mode & stat.S_ISVTX:
+        return
+    if mode & stat.S_IWOTH:
+        threshold = PROTECTED_REGULAR_WORLD_LEVEL
+    elif mode & stat.S_IWGRP:
+        threshold = PROTECTED_REGULAR_BLOCKING_LEVEL
+    else:
+        return
+    value = read_protected_regular()
+    if value is None or value < threshold:
+        return
+    raise SharedDataDirError(
+        f"pace-maker: {SHARED_DATA_DIR_KEY} '{shared}' has the sticky bit and "
+        f"fs.protected_regular={value}; other users' files cannot be opened for "
+        f"writing. Use mode {RECOMMENDED_DIR_MODE:o} (chmod o-t '{shared}')"
+    )
+
+
+def write_probe_problem(
+    db_path: str, opener: Callable[..., int] = os.open
+) -> Optional[str]:
+    """Name the symptom of #189 whatever its cause: an existing shared DB that
+    we may write but cannot open with ``O_CREAT`` (what SQLite does), so SQLite
+    would silently go read-only.
+
+    Only probes an EXISTING regular file (O_CREAT on an existing file creates
+    nothing) that ``access(W_OK)`` says we may write; otherwise returns None.
+    Any other OS error is logged (not guessed at) and returns None.
+    """
+    try:
+        st = os.lstat(db_path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode) or not os.access(db_path, os.W_OK):
+        return None
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        # O_CREAT is required: the kernel's protected_regular refusal only
+        # applies to O_CREAT opens. If the file vanished since the lstat, that
+        # open re-creates it, so do it under the same 0660 umask scope as every
+        # other shared open (never a narrower mode that would lock others out).
+        with _umask_scope():
+            fd = opener(db_path, flags, SHARED_DB_MODE)
+        os.close(fd)
+    except PermissionError:
+        return (
+            f"pace-maker: shared database '{db_path}' is writable by {os_user()} "
+            "but cannot be opened for writing with O_CREAT, so SQLite goes "
+            "read-only for every write. Typical cause: a sticky shared dir with "
+            f"fs.protected_regular set; use mode {RECOMMENDED_DIR_MODE:o} "
+            "(chmod o-t on the shared directory)"
+        )
+    except OSError as exc:
+        from .logger import log_warning  # call-time import: logger imports constants
+
+        log_warning("data_dir", f"write probe of '{db_path}' failed: {exc}")
+    return None
+
+
+def shared_dir_problem(opener: Callable[..., int] = os.open) -> Optional[str]:
     """Error text for ``pace-maker status``, or None when fine / legacy.
 
-    Covers an unusable directory and a planted symlink/special file where a
-    shared DB (or its -wal/-shm/-journal) is expected.
+    Covers an unusable directory, the sticky-dir/protected_regular conflict
+    (#189), a planted symlink/special file where a shared DB (or its
+    -wal/-shm/-journal) is expected, and a shared DB that cannot be opened for
+    writing. ``opener`` lets tests inject the OS-level refusal. Legacy mode:
+    nothing is checked (and /proc is never read).
     """
+    if not shared_mode_enabled():
+        return None
     try:
         validate_shared_data_dir()
         for filename in SHARED_DB_FILES:
-            confirm_shared_files(monitoring_db_path(filename))
+            path = monitoring_db_path(filename)
+            confirm_shared_files(path)
+            probe = write_probe_problem(path, opener)
+            if probe is not None:
+                return probe
     except SharedDataDirError as exc:
         return str(exc)
     return None

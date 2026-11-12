@@ -629,7 +629,7 @@ By default every user's pace-maker is fully self-contained in `~/.claude-pace-ma
 
    ```bash
    groupadd pmshared && usermod -aG pmshared alice && usermod -aG pmshared bob
-   install -d -o root -g pmshared -m 3770 /var/lib/claude-pace-maker   # setgid + sticky
+   install -d -o root -g pmshared -m 2770 /var/lib/claude-pace-maker   # setgid, NO sticky bit
    setfacl -d -m g:pmshared:rw /var/lib/claude-pace-maker   # optional, see below
    ```
 
@@ -639,7 +639,9 @@ By default every user's pace-maker is fully self-contained in `~/.claude-pace-ma
    { "shared_data_dir": "/var/lib/claude-pace-maker" }
    ```
 
-      Why the **sticky bit** (the leading `3`): without it any group member can delete or rename another member's `usage.db` and put a symlink there. pace-maker refuses symlinks and other non-regular files for the shared databases and their `-wal`/`-shm`/`-journal` side files (it never follows them and never changes a mode through one), but with the sticky bit only a file's owner (or root) can replace it, which prevents the attack on files you own instead of merely detecting it. It narrows the remaining race rather than closing it completely: a file an attacker created first stays theirs. Side effect: the last process to close a database cannot delete side files created by another user, so `usage.db-wal` / `usage.db-shm` may stay around; they are 0660 and reused, which is harmless (tested with three users).
+      **Do not add the sticky bit** (`3770`, `chmod +t`). On Ubuntu (and any system with `fs.protected_regular=2`, which systemd's default sysctl sets) the kernel refuses `open(O_CREAT)` on an existing file owned by another user inside a sticky, group-writable directory. SQLite opens the database and its `-wal`/`-shm` files exactly that way, gets `EACCES` and silently falls back to read-only, so **every shared write fails for every user** ("attempt to write a readonly database"). Fedora's default (`1`) only applies to world-writable sticky directories, which is why this does not show everywhere. pace-maker detects the combination: `pace-maker status` prints `shared_data_dir '<dir>' has the sticky bit and fs.protected_regular=2 ... Use mode 2770 (chmod o-t ...)` and every shared database open fails with that message in the log (it also reports any shared database it may write but cannot open with `O_CREAT`). If you see it, run `chmod o-t <dir>`.
+
+      Security note (without the sticky bit): any group member can delete or rename another member's `usage.db` and put a symlink there. pace-maker refuses symlinks and other non-regular files for the shared databases and their `-wal`/`-shm`/`-journal` side files (it never follows them and never changes a mode through one), and never changes a mode on a file it does not own. SQLite itself cannot be told not to follow symlinks from Python, so a file swapped for a symlink in the instant between pace-maker's last check and SQLite's own `open()` is a narrow residual race that this configuration does not close. The worst case is that, if the swapped-in target is a file the victim could already write, SQLite's open-time schema statements (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE`, journal-mode setup) run against it before pace-maker's post-open check refuses and closes the connection; no pace-maker data rows are written in that window, and pace-maker will not widen its permissions. Only share the directory with accounts you accept that risk for.
 
 The setting must be an absolute path and cannot be `~/.claude-pace-maker` itself. It lives in the per-user config, never in the shared directory.
 

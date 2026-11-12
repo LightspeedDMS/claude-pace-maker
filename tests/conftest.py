@@ -6,9 +6,12 @@ production database at ~/.claude-pace-maker/usage.db. All tests that
 instantiate UsageModel without an explicit db_path will get a temp DB.
 """
 
+import atexit
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -30,6 +33,17 @@ sys.path.insert(0, _REPO_SRC)
 # Enable test mode globally — skips fsync in SQLite for 20x faster DB operations.
 # Must be set before any pacemaker imports to ensure all connections see it.
 os.environ["PACEMAKER_TEST_MODE"] = "1"
+
+# Import-time isolation (#187/#189): pacemaker.constants freezes paths such as
+# DEFAULT_DB_PATH when it is first imported, and since the shared data dir
+# story that value depends on the per-user config.json. Point HOME at a
+# throwaway directory BEFORE any pacemaker import so a developer's real
+# ~/.claude-pace-maker (for example one configured with shared_data_dir) can
+# never redirect the suite. The autouse fixture below still fakes HOME per test.
+_IMPORT_TIME_HOME = tempfile.mkdtemp(prefix="pacemaker-test-home-")
+os.makedirs(os.path.join(_IMPORT_TIME_HOME, ".claude-pace-maker"), exist_ok=True)
+os.environ["HOME"] = _IMPORT_TIME_HOME
+atexit.register(shutil.rmtree, _IMPORT_TIME_HOME, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

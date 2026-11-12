@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.39.1]
+
+### Fixed
+- **Shared data dir: the README's sticky bit (mode 3770) made every shared write fail on Ubuntu (#189).** With `fs.protected_regular=2` (Ubuntu's default) the kernel refuses `open(O_CREAT)` on another user's file in a sticky, group-writable directory; SQLite then silently goes read-only ("attempt to write a readonly database") for both users while hooks still exit 0. The recommended mode is now **2770** (setgid, no sticky bit). pace-maker now detects the combination loudly: `pace-maker status` and every shared DB open report `shared_data_dir '<dir>' has the sticky bit and fs.protected_regular=N ... Use mode 2770 (chmod o-t ...)` (world-writable sticky dirs from level 1, group-writable from level 2; an unreadable sysctl reports nothing). `status` also names any shared DB that is writable but cannot be opened with `O_CREAT`. Nothing is read from `/proc` and nothing changes for installs without `shared_data_dir`. The README security text no longer relies on the sticky bit and states the residual symlink-swap race honestly. (`src/pacemaker/data_dir.py`, `docs/dev/shared-data-dir.md`)
+- **Test suite no longer touches the real `~/.claude-pace-maker` (likely fixes #188).** `tests/conftest.py` now sets HOME to a throwaway directory before pacemaker is first imported. Import-time constants such as `DEFAULT_STATE_PATH` and `DEFAULT_DB_PATH` used to be frozen from the real home, so hook-state tests wrote `state.json` and a 0600 `state.json.lock` there, and with `shared_data_dir` set they could resolve to the real shared database (`tests/test_import_time_home_isolation_189.py`). #188 stays open until a run as a user without `~/.claude-pace-maker` confirms nothing appears.
+
 ## [2.39.0]
 
 ### Added
