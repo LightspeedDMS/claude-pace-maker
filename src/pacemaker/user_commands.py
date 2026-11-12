@@ -18,6 +18,12 @@ from .constants import DEFAULT_CONFIG
 from .logger import log_warning
 from .prompt_loader import PromptLoader
 from .secrets.metrics import get_24h_secrets_metrics
+from .safe_text import (
+    is_plain_int,
+    is_real_number,
+    is_uuid_shaped,
+    sanitize_field,
+)
 from .secrets.database import list_secrets
 
 # Pre-compiled regex for log error parsing
@@ -931,6 +937,46 @@ def _count_recent_errors(hours: int = 24, log_dir: Optional[str] = None) -> int:
         return 0
 
 
+def _shared_mode_status_section() -> str:
+    """`pace-maker status` block for shared data dir mode (story #187).
+
+    Empty string in default mode, so legacy status output is unchanged. In
+    shared mode it names the dir, surfaces a configured-but-unusable dir as an
+    error (never a silent fallback), and lists every OS user's live sessions.
+    """
+    from .data_dir import (
+        SharedDataDirError,
+        os_user,
+        shared_data_dir,
+        shared_dir_problem,
+    )
+
+    try:
+        shared = shared_data_dir()
+    except SharedDataDirError as exc:
+        return f"\n\nShared Data Dir: INVALID\n  {ANSI_RED}{exc}{ANSI_RESET}"
+    if shared is None:
+        return ""
+
+    text = f"\n\nShared Data Dir: {shared} (this user: {os_user()})"
+    problem = shared_dir_problem()
+    if problem is not None:
+        return text + f"\n  {ANSI_RED}{problem}{ANSI_RESET}"
+
+    from .session_registry.db import resolve_db_path
+
+    rows, load_error = _load_session_rows(resolve_db_path())
+    if load_error is not None:
+        return text + f"\n  {ANSI_RED}{load_error['message']}{ANSI_RESET}"
+    cutoff = time.time() - _SESSIONS_STALE_THRESHOLD_SECONDS
+    live = [row for row in rows if row[4] >= cutoff]
+    if not live:
+        return text + f"\n  Sessions (all OS users): {_MSG_NO_ACTIVE_SESSIONS}"
+    table = _render_sessions_table(live)
+    indented = "\n".join("    " + line for line in table.splitlines())
+    return text + "\n  Sessions (all OS users):\n" + indented
+
+
 def _execute_status(
     config_path: str,
     db_path: Optional[str] = None,
@@ -1112,6 +1158,7 @@ def _execute_status(
         from . import __version__ as pacemaker_version
 
         status_text += f"\nPace Maker: v{pacemaker_version}"
+        status_text += _shared_mode_status_section()
 
         # Try to get Usage Console version
         try:
@@ -2202,19 +2249,31 @@ def _get_latest_usage(db_path: str) -> Optional[Dict[str, Any]]:
         import sqlite3
         from datetime import datetime
 
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        from .data_dir import confirm_shared_files, shared_umask
 
-        cursor.execute("""
-            SELECT five_hour_util, seven_day_util,
-                   five_hour_resets_at, seven_day_resets_at
-            FROM usage_snapshots
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """)
+        # Shared mode only (#187): refuse a planted symlink/special file instead
+        # of reading through it. No-op for default installs.
+        ident = confirm_shared_files(db_path)
+        with shared_umask(db_path):
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
 
-        row = cursor.fetchone()
-        conn.close()
+            cursor.execute("""
+                SELECT five_hour_util, seven_day_util,
+                       five_hour_resets_at, seven_day_resets_at
+                FROM usage_snapshots
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """)
+
+            row = cursor.fetchone()
+            conn.close()
+            confirm_shared_files(db_path, ident)
+
+        if row and not (is_real_number(row[0]) and is_real_number(row[1])):
+            # Shared DB: utilisation columns hold TEXT only if forged/corrupt.
+            log_warning("user_commands", "Ignoring non-numeric usage snapshot")
+            return None
 
         if row:
             # Parse datetime strings back to datetime objects
@@ -3408,6 +3467,15 @@ _SQL_LIST_ALL_SESSIONS = (
     "FROM sessions ORDER BY start_time ASC"
 )
 
+# Shared mode (story #187): also show which OS user owns each session.
+_SQL_LIST_ALL_SESSIONS_WITH_USER = (
+    "SELECT session_id, workspace_root, pid, start_time, last_seen, os_user "
+    "FROM sessions ORDER BY start_time ASC"
+)
+_SESSIONS_COL_USER_WIDTH = 16
+_SESSIONS_UNKNOWN_USER = "?"
+_SESSIONS_INVALID_ID = "<invalid-id>"
+
 # ── Sessions messages ─────────────────────────────────────────────────────────
 _MSG_NO_ACTIVE_SESSIONS = "No active sessions"
 
@@ -3441,6 +3509,8 @@ def _load_session_rows(db_path: str):
     """
     import sqlite3 as _sqlite3
 
+    from .data_dir import SharedDataDirError
+
     if not os.path.exists(db_path):
         return [], None
 
@@ -3449,12 +3519,27 @@ def _load_session_rows(db_path: str):
     try:
         conn = get_connection(db_path)
         try:
-            cursor = conn.execute(_SQL_LIST_ALL_SESSIONS)
+            from .data_dir import shared_mode_enabled
+
+            query = (
+                _SQL_LIST_ALL_SESSIONS_WITH_USER
+                if shared_mode_enabled()
+                else _SQL_LIST_ALL_SESSIONS
+            )
+            cursor = conn.execute(query)
             rows = cursor.fetchall()
         finally:
             conn.close()
+        # Type-confused rows (TEXT in pid/start_time/last_seen, which SQLite
+        # allows) can only come from a hostile or corrupt writer: never render
+        # them and never let them crash the staleness comparison.
+        rows = [
+            row
+            for row in rows
+            if is_plain_int(row[2]) and is_real_number(row[3]) and is_real_number(row[4])
+        ]
         return rows, None
-    except _sqlite3.Error as e:
+    except (_sqlite3.Error, SharedDataDirError) as e:
         return None, {"success": False, "message": f"Error listing sessions: {e}"}
 
 
@@ -3467,11 +3552,11 @@ def _format_session_timestamp(ts: float) -> str:
 
     try:
         return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-    except (OSError, OverflowError, ValueError) as e:
+    except (OSError, OverflowError, ValueError, TypeError) as e:
         log_warning(
             "user_commands", f"_format_session_timestamp: cannot format {ts!r}: {e}"
         )
-        return str(ts)
+        return sanitize_field(ts)
 
 
 def _render_sessions_table(rows) -> str:
@@ -3487,17 +3572,27 @@ def _render_sessions_table(rows) -> str:
     w_p = _SESSIONS_COL_PID_WIDTH
     w_t = _SESSIONS_COL_TIME_WIDTH
 
+    with_user = bool(rows) and len(rows[0]) == 6
+    w_u = _SESSIONS_COL_USER_WIDTH
     header = (
-        f"{'SESSION':<{w_s}}  {'WORKSPACE':<{w_w}}  {'PID':<{w_p}}  "
+        (f"{'OS_USER':<{w_u}}  " if with_user else "")
+        + f"{'SESSION':<{w_s}}  {'WORKSPACE':<{w_w}}  {'PID':<{w_p}}  "
         f"{'STARTED':<{w_t}}  {'LAST_SEEN':<{w_t}}"
     )
     lines = [header, "-" * len(header)]
     for row in rows:
-        session_id, workspace_root, pid, start_time, last_seen = row
+        session_id, workspace_root, pid, start_time, last_seen = row[:5]
+        user_cell = ""
+        if with_user:
+            # Shared DB: any field may have been written by another OS user.
+            user = sanitize_field(row[5]) or _SESSIONS_UNKNOWN_USER
+            user_cell = f"{_trunc(user, w_u):<{w_u}}  "
+            if not is_uuid_shaped(session_id):
+                session_id = _SESSIONS_INVALID_ID
         lines.append(
-            f"{_trunc(str(session_id), w_s):<{w_s}}  "
-            f"{_trunc(str(workspace_root), w_w):<{w_w}}  "
-            f"{str(pid):<{w_p}}  "
+            user_cell + f"{_trunc(sanitize_field(session_id), w_s):<{w_s}}  "
+            f"{_trunc(sanitize_field(workspace_root), w_w):<{w_w}}  "
+            f"{sanitize_field(pid):<{w_p}}  "
             f"{_format_session_timestamp(start_time):<{w_t}}  "
             f"{_format_session_timestamp(last_seen):<{w_t}}"
         )

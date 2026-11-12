@@ -29,6 +29,8 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from ..prompt_provenance import format_tag
+from ..data_dir import shared_mode_enabled
+from ..safe_text import DEFAULT_MAX_FIELD_CHARS, is_plain_int, sanitize_field
 
 # ── Section header / footer templates ────────────────────────────────────────
 _BANNER_HEADER = (
@@ -66,6 +68,20 @@ _REMINDER_ROW = "  • session_id={session_id}  workspace={workspace_root}\n"
 _DANGER_ROW = "  • session_id={session_id}\n"
 
 
+def _field(value: Any) -> str:
+    """Render one registry field: control-free always; length-capped only in
+    shared mode, where rows may come from another OS user (default installs
+    keep full-length paths)."""
+    return sanitize_field(
+        value, DEFAULT_MAX_FIELD_CHARS if shared_mode_enabled() else None
+    )
+
+
+def _pid_text(pid: Any) -> str:
+    """pid is rendered only if it is a real int; anything else is untrusted text."""
+    return str(pid) if is_plain_int(pid) else "unknown"
+
+
 def _format_start_time(start_time: float) -> str:
     """Return a human-readable UTC datetime string for a Unix timestamp.
 
@@ -77,7 +93,10 @@ def _format_start_time(start_time: float) -> str:
     try:
         return datetime.utcfromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S UTC")
     except (OSError, OverflowError, ValueError, TypeError):
-        return str(int(start_time))
+        try:
+            return _field(str(int(start_time)))  # capped in shared mode only
+        except (OverflowError, ValueError, TypeError):
+            return "unknown"  # forged/corrupt row: never raise into a hook
 
 
 def _validate_siblings(siblings: List[Dict[str, Any]]) -> None:
@@ -109,9 +128,9 @@ def build_start_banner(siblings: List[Dict[str, Any]]) -> str:
         return ""
     rows = "".join(
         _BANNER_ROW.format(
-            session_id=s["session_id"],
-            pid=s["pid"],
-            workspace_root=s["workspace_root"],
+            session_id=_field(s["session_id"]),
+            pid=_pid_text(s["pid"]),
+            workspace_root=_field(s["workspace_root"]),
             start_time_str=_format_start_time(s["start_time"]),
         )
         for s in siblings
@@ -141,8 +160,8 @@ def build_periodic_reminder(siblings: List[Dict[str, Any]]) -> str:
         return ""
     rows = "".join(
         _REMINDER_ROW.format(
-            session_id=s["session_id"],
-            workspace_root=s["workspace_root"],
+            session_id=_field(s["session_id"]),
+            workspace_root=_field(s["workspace_root"]),
         )
         for s in siblings
     )
@@ -173,5 +192,7 @@ def build_danger_bash_warning(siblings: List[Dict[str, Any]], command: str) -> s
     if not siblings:
         return ""
     header = _DANGER_HEADER_TMPL.format(command=command)
-    rows = "".join(_DANGER_ROW.format(session_id=s["session_id"]) for s in siblings)
+    rows = "".join(
+        _DANGER_ROW.format(session_id=_field(s["session_id"])) for s in siblings
+    )
     return format_tag(header + rows + _DANGER_FOOTER, "csa_danger_bash_warning")

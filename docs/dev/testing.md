@@ -33,6 +33,10 @@ Read this before running or writing tests in this repo.
 - `scripts/run_tests.sh` runs `timeout 120 sync` after the files named in `IO_HEAVY_PATTERNS` (these two files and `tests/e2e/*`), so the next file does not inherit their writeback. A sync that does not finish is reported as a warning. Add a file to that list if it writes hundreds of MB.
 - Behavior is locked by `tests/test_prebaked_home_support_168.py`.
 
+## Multi-user integration (#187)
+
+`tests/test_shared_multiuser_integration_187.py` needs podman and a local image (`PACEMAKER_MULTIUSER_IMAGE`); it skips otherwise. See [shared-data-dir.md](shared-data-dir.md#testing).
+
 ## Same-commit contracts
 
 - `tests/test_real_transcript_replay.py` (`_replay_stage1` plus `fixtures/real_transcript_replay/manifest.json`) mirrors Stage-1 logic. Update it in the same commit as any Stage-1 change.

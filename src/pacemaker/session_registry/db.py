@@ -20,6 +20,13 @@ Internal:
 import os
 import sqlite3
 
+from ..data_dir import (
+    confirm_shared_files,
+    monitoring_db_path,
+    prepare_db_file,
+    shared_umask,
+)
+
 # ── DDL ───────────────────────────────────────────────────────────────────────
 _DDL_CREATE_SESSIONS = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -69,13 +76,38 @@ _ENV_REGISTRY_PATH = "PACEMAKER_SESSION_REGISTRY_PATH"
 _ENV_TEST_MODE = "PACEMAKER_TEST_MODE"
 
 # ── Production DB path components (computed dynamically at call time) ─────────
-_PROD_DB_DIR = ".claude-pace-maker"
 _PROD_DB_FILE = "session_registry.db"
 
 
 def _production_db_path() -> str:
-    """Compute the production DB path from the current home directory at call time."""
-    return os.path.join(os.path.expanduser("~"), _PROD_DB_DIR, _PROD_DB_FILE)
+    """Production DB path, resolved at call time.
+
+    Per-user ``~/.claude-pace-maker/session_registry.db`` unless the per-user
+    config sets ``shared_data_dir`` (story #187), in which case it lives there.
+    """
+    return monitoring_db_path(_PROD_DB_FILE)
+
+
+# Tables that record the writing OS user (story #187, AC4).
+_OS_USER_TABLES = ("sessions", "agents")
+
+
+def _migrate_os_user(conn: sqlite3.Connection) -> None:
+    """Add nullable ``os_user`` to sessions/agents. Idempotent, race tolerant.
+
+    Additive only (the claude-usage monitor reads these tables). A concurrent
+    opener that wins the ALTER makes ours raise "duplicate column name",
+    which is the expected outcome and is ignored.
+    """
+    for table in _OS_USER_TABLES:
+        columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+        if "os_user" in columns:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN os_user TEXT")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
 
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
@@ -95,6 +127,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.execute(_DDL_CREATE_INDEX)
     conn.execute(_DDL_CREATE_AGENTS)
     conn.execute(_DDL_CREATE_AGENT_ACTIONS)
+    _migrate_os_user(conn)
 
 
 def resolve_db_path() -> str:
@@ -136,12 +169,15 @@ def init_schema(db_path: str) -> None:
     if not db_path:
         raise ValueError("db_path must be a non-empty string")
 
-    conn = sqlite3.connect(db_path)
-    try:
-        _apply_schema(conn)
-        conn.commit()
-    finally:
-        conn.close()
+    ident = prepare_db_file(db_path)
+    with shared_umask(db_path):
+        conn = sqlite3.connect(db_path)
+        try:
+            _apply_schema(conn)
+            conn.commit()
+            confirm_shared_files(db_path, ident)  # no symlink swapped in meanwhile
+        finally:
+            conn.close()
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
@@ -166,13 +202,20 @@ def get_connection(db_path: str) -> sqlite3.Connection:
     if not db_path:
         raise ValueError("db_path must be a non-empty string")
 
-    conn = sqlite3.connect(db_path)
-    conn.execute(f"PRAGMA journal_mode={_JOURNAL_MODE}")
-    conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
-    conn.execute(f"PRAGMA synchronous={_SYNCHRONOUS}")
-    conn.commit()
+    ident = prepare_db_file(db_path)
+    with shared_umask(db_path):
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute(f"PRAGMA journal_mode={_JOURNAL_MODE}")
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            conn.execute(f"PRAGMA synchronous={_SYNCHRONOUS}")
+            conn.commit()
 
-    _apply_schema(conn)
-    conn.commit()
+            _apply_schema(conn)
+            conn.commit()
+            confirm_shared_files(db_path, ident)  # no symlink swapped in meanwhile
+        except BaseException:
+            conn.close()
+            raise
 
     return conn

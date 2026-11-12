@@ -617,6 +617,73 @@ When Claude attempts to stop:
 }
 ```
 
+Optional: `"shared_data_dir": "/var/lib/claude-pace-maker"` (see [Shared data directory](#shared-data-directory-multiple-os-users-optional)). Absent by default.
+
+## Shared data directory (multiple OS users, optional)
+
+By default every user's pace-maker is fully self-contained in `~/.claude-pace-maker`. If several OS users on one machine (for example your main account and a sandbox account that runs Claude Code) should report into **one** database so you can watch them all from your own account, opt in to a shared data directory. **Existing installs are not affected**: without the setting nothing changes, and upgrading in place keeps your `usage.db` (including its stored secrets) working as before.
+
+### Setup
+
+1. As root, create a group and a setgid directory both users can write:
+
+   ```bash
+   groupadd pmshared && usermod -aG pmshared alice && usermod -aG pmshared bob
+   install -d -o root -g pmshared -m 3770 /var/lib/claude-pace-maker   # setgid + sticky
+   setfacl -d -m g:pmshared:rw /var/lib/claude-pace-maker   # optional, see below
+   ```
+
+2. In **each** user's own `~/.claude-pace-maker/config.json` add:
+
+   ```json
+   { "shared_data_dir": "/var/lib/claude-pace-maker" }
+   ```
+
+      Why the **sticky bit** (the leading `3`): without it any group member can delete or rename another member's `usage.db` and put a symlink there. pace-maker refuses symlinks and other non-regular files for the shared databases and their `-wal`/`-shm`/`-journal` side files (it never follows them and never changes a mode through one), but with the sticky bit only a file's owner (or root) can replace it, which prevents the attack on files you own instead of merely detecting it. It narrows the remaining race rather than closing it completely: a file an attacker created first stays theirs. Side effect: the last process to close a database cannot delete side files created by another user, so `usage.db-wal` / `usage.db-shm` may stay around; they are 0660 and reused, which is harmless (tested with three users).
+
+The setting must be an absolute path and cannot be `~/.claude-pace-maker` itself. It lives in the per-user config, never in the shared directory.
+
+3. Run `pace-maker status`. It prints a `Shared Data Dir:` block with the directory and the live sessions of all OS users (also `pace-maker sessions`, which gains an `OS_USER` column).
+
+If the setting is malformed (empty, not a string, relative, or the per-user directory itself) or the directory is missing or not writable, hooks log the error and `pace-maker status` shows `pace-maker: shared_data_dir '<dir>' does not exist` (or `is not writable by <user> (need group rw, setgid dir)`; a malformed value shows `Shared Data Dir: INVALID`). Hooks keep running (the error never breaks imports), but every shared database open fails and is logged: there is **no silent fallback** to the per-user directory. pace-maker never creates the shared directory itself. Secrets keep resolving to your per-user store, so masking still works. A `config.json` that cannot be parsed is treated as "setting absent" (`pace-maker status` already reports a corrupted config).
+
+### What is shared and what is not
+
+| Data | Location in shared mode | Why |
+|---|---|---|
+| `usage.db` (usage snapshots, pacing decisions, blockages, activity/governance events, `api_cache`, `global_poll_state`, fallback state, accumulated costs) | **shared** | One account, one view. Because `global_poll_state` is shared, usage API polling stays at the configured `poll_interval` for the whole machine, not per user |
+| `session_registry.db` (sessions, agents, agent actions) | **shared** | See every user's sessions and agents |
+| `secrets` table (declared SECRET_TEXT / SECRET_FILE values) | per user: `~/.claude-pace-maker/secrets.db` (0600) | Secrets must never be readable by the other user. On first use in shared mode the secrets already in your per-user `usage.db` are **copied** to `secrets.db` (the old copy is left in place for rollback) |
+| `config.json`, `install_source`, `state.json`, `*.yaml` rules, `pacemaker/` code copy, hooks, logs, `profile_cache.json`, `langfuse_state/` | per user | Code and configuration must never be writable by another user |
+| `version_status.db`, `intent_declarations.db` | per user | They describe one user's installation and one user's declared intents; sharing them would let another user influence this user's gates |
+
+The shared directory holds only SQLite files (`*.db`, `-wal`, `-shm`, `-journal`). Nothing read from it is used as a path, interpreter, module or command.
+
+### Permissions
+
+Shared DB files are created and kept `0660` regardless of the user's umask, and are never chmod'd to `0600`. SQLite creates the `-wal`/`-shm` side files lazily with the process umask and only then corrects their mode; with the common umask 022 the other user could hit them in that window ("attempt to write a readonly database" was reproduced with two real users). So pace-maker sets umask `007` **only while it opens a shared connection** (the connect and first read that create those files), then restores it. Why not hold it for the whole connection: that would leak into other threads and child processes for as long as the connection lives. Why not rely on an ACL alone: pace-maker cannot assume one exists. The remaining side effect is that, for a few milliseconds per DB open, other threads in the same hook process create files with umask 007; this is harmless when users have private primary groups (the default on most Linux distributions) but would make such files group-writable if both users share one primary group. Use private primary groups plus the shared group only for the data directory.
+
+Strongly recommended: the default ACL from step 1 (`setfacl -d -m g:pmshared:rw ...`). A default ACL overrides the umask for files created in that directory, and it also covers processes pace-maker does not control (for example the `claude-usage` monitor).
+
+### Rows say who wrote them
+
+Each session, agent and usage/activity row carries `os_user` (the login name of the writer). Rows written before the upgrade have `NULL`.
+
+### Trust model (read this before sharing with a sandbox user)
+
+The shared directory is a data channel, not a trust boundary between equals: whoever can write the SQLite files can write any row, including a false `os_user`.
+
+- **Session registry.** Rows are untrusted. Cross-session-awareness nudges (session-start banner, periodic reminder, danger-bash warning) only use rows whose `os_user` is you (or NULL), and in shared mode only rows whose `session_id` is a canonical UUID; rows whose `pid` is not an integer or whose timestamps are not numbers are ignored (SQLite lets another user store text there); every field is stripped of control characters and newlines before it reaches Claude. `pace-maker status` / `sessions` strip them before printing to the terminal and show `<invalid-id>` for foreign non-UUID ids. `os_user` is self-reported, so this sanitising, not the `os_user` filter, is what protects you from a hostile writer.
+- **Pacing (accepted risk, AC5).** `api_cache`, `global_poll_state`, the fallback state and accumulated costs are shared on purpose so the account is polled once. A user who can write `usage.db` can therefore influence the pacing numbers and throttle delays every user sees. Do not share with an account you do not trust to behave; the shared usage figures are data about one Anthropic account, not authenticated input.
+- **Code and secrets** are never read from or written to the shared directory.
+
+### Upgrade and rollback notes
+
+- Upgrading without the setting: nothing to do. `usage.db` gets nullable `os_user` columns added in place (schema version 2); older pace-maker versions and the `claude-usage` monitor keep working.
+- Turning shared mode on later starts a fresh shared `usage.db`; history in your per-user `usage.db` is not merged. Turning it off again returns to the per-user files, which are untouched.
+- Secrets added while in shared mode live in `secrets.db`. If you turn shared mode off again, masking still reads that `secrets.db` (in addition to `usage.db`), so those secrets keep being masked; `pace-maker secrets list/remove` only operate on `usage.db` in that mode.
+- The `claude-usage` monitor still reads `~/.claude-pace-maker`; pointing it at the shared directory needs a matching change in that project.
+
 ## Requirements
 
 - Python 3.9+

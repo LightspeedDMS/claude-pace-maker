@@ -244,9 +244,11 @@ def on_heartbeat(
     workspace_root = cs.get(_KEY_WORKSPACE, "")
     try:
         from . import registry as _hreg
-        import sqlite3 as _sq
+        from .db import get_connection as _hget_connection
 
-        _hconn = _sq.connect(db_path)
+        # Same guarded open as every other registry access (0660 / umask /
+        # symlink checks in shared mode); a raw sqlite3.connect bypassed them.
+        _hconn = _hget_connection(db_path)
         try:
             _exists = _hconn.execute(
                 "SELECT 1 FROM agents WHERE agent_id = ? LIMIT 1", (session_id,)

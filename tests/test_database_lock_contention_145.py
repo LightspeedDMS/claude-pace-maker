@@ -481,6 +481,9 @@ class TestSchemaVersionPinnedToHash:
     # here in the same commit.
     _EXPECTED_SCHEMA_HASHES = {
         1: "6e2addf3a441e5ea3c09f183f297317b94404b60b0f2618d78ee34af466bef0c",
+        # Version 2 (#187): nullable os_user column added last to six tables
+        # (fresh DBs via SCHEMA, version-1 DBs via migrate_os_user_columns()).
+        2: "c2f3e2e55294e04c5bd2081563886eb14aa5d5f2adaa22116f9ce1f7798dc886",
     }
 
     def test_schema_hash_matches_pinned_version(self):

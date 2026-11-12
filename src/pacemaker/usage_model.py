@@ -17,9 +17,9 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Optional, Dict, Any
 
+from .data_dir import monitoring_db_path, os_user
 from .database import execute_with_retry, initialize_database
 from .fallback import (
     FallbackState,
@@ -77,7 +77,7 @@ class UsageModel:
     """
 
     def __init__(self, db_path: Optional[str] = None) -> None:
-        self.db_path = db_path or str(Path.home() / ".claude-pace-maker" / "usage.db")
+        self.db_path = db_path or monitoring_db_path("usage.db")
         # Initialize schema (additive — existing tables preserved)
         initialize_database(self.db_path)
 
@@ -382,8 +382,8 @@ class UsageModel:
                     INSERT INTO accumulated_costs
                     (timestamp, session_id, cost_dollars,
                      input_tokens, output_tokens, cache_read_tokens,
-                     cache_creation_tokens, model_family)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     cache_creation_tokens, model_family, os_user)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         ts,
@@ -394,6 +394,7 @@ class UsageModel:
                         cache_read_tokens,
                         cache_creation_tokens,
                         model_family.lower(),
+                        os_user(),
                     ),
                 )
 

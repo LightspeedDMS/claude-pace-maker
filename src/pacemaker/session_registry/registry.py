@@ -18,27 +18,30 @@ from contextlib import contextmanager
 from typing import Any, Dict, Generator, List, Optional
 
 from .db import get_connection
+from ..data_dir import os_user, shared_mode_enabled
+from ..safe_text import is_plain_int, is_real_number, is_uuid_shaped
 from ..logger import log_warning
 
 # ── SQL: register ─────────────────────────────────────────────────────────────
 _SQL_REGISTER = (
     "INSERT OR REPLACE INTO sessions "
-    "(session_id, workspace_root, pid, start_time, last_seen) "
-    "VALUES (?, ?, ?, ?, ?)"
+    "(session_id, workspace_root, pid, start_time, last_seen, os_user) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
 )
 
 # ── SQL: heartbeat update/insert/purge ───────────────────────────────────────
 _SQL_HEARTBEAT_UPDATE = "UPDATE sessions SET last_seen = ? WHERE session_id = ?"
 _SQL_HEARTBEAT_INSERT = (
     "INSERT INTO sessions "
-    "(session_id, workspace_root, pid, start_time, last_seen) "
-    "VALUES (?, ?, ?, ?, ?)"
+    "(session_id, workspace_root, pid, start_time, last_seen, os_user) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
 )
 _SQL_PURGE = "DELETE FROM sessions WHERE last_seen < ?"
 _SQL_LIST_SIBLINGS = (
     "SELECT session_id, workspace_root, start_time, last_seen, pid "
     "FROM sessions "
     "WHERE workspace_root = ? AND session_id != ? "
+    "AND (os_user = ? OR os_user IS NULL) "
     "ORDER BY start_time ASC"
 )
 _SQL_UNREGISTER = "DELETE FROM sessions WHERE session_id = ?"
@@ -100,7 +103,9 @@ def register_session(
     try:
         now = time.time()
         with _open_conn(db_path) as conn:
-            conn.execute(_SQL_REGISTER, (session_id, workspace_root, pid, now, now))
+            conn.execute(
+                _SQL_REGISTER, (session_id, workspace_root, pid, now, now, os_user())
+            )
             conn.commit()
     except Exception as e:
         log_warning("session_registry", f"register_session failed for {session_id}", e)
@@ -131,7 +136,7 @@ def heartbeat_and_purge(
             if cursor.rowcount == 0:
                 conn.execute(
                     _SQL_HEARTBEAT_INSERT,
-                    (session_id, workspace_root, pid, now, now),
+                    (session_id, workspace_root, pid, now, now, os_user()),
                 )
             conn.execute(_SQL_PURGE, (cutoff,))
             conn.commit()
@@ -171,9 +176,24 @@ def list_siblings(
     try:
         with _open_conn(db_path) as conn:
             cursor = conn.execute(
-                _SQL_LIST_SIBLINGS, (workspace_root, exclude_session_id)
+                _SQL_LIST_SIBLINGS, (workspace_root, exclude_session_id, os_user())
             )
             rows = cursor.fetchall()
+        # SQLite stores any TEXT in an INTEGER/REAL column, so a row written by
+        # another OS user can carry text in pid/start_time/last_seen. Drop such
+        # rows (legit rows are always numeric, so default installs are unchanged).
+        rows = [
+            row
+            for row in rows
+            if is_plain_int(row[4])
+            and is_real_number(row[2])
+            and is_real_number(row[3])
+        ]
+        if shared_mode_enabled():
+            # os_user is self-reported, so it is NOT a security boundary against
+            # a hostile writer; in shared mode also refuse anything that is not
+            # a real Claude session id before it can reach a prompt.
+            rows = [row for row in rows if is_uuid_shaped(row[0])]
         return [
             {
                 "session_id": row[0],
@@ -224,8 +244,9 @@ _MAX_AGENT_ACTIONS = 1
 
 _SQL_REGISTER_AGENT = (
     "INSERT OR REPLACE INTO agents "
-    "(agent_id, session_id, role, subagent_type, workspace_root, start_time, last_seen, ended_at) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)"
+    "(agent_id, session_id, role, subagent_type, workspace_root, start_time, "
+    "last_seen, ended_at, os_user) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)"
 )
 _SQL_INSERT_ACTION = (
     "INSERT INTO agent_actions (agent_id, tool_name, target, ts) VALUES (?, ?, ?, ?)"
@@ -354,7 +375,16 @@ def register_agent(
         with _open_conn(db_path) as conn:
             conn.execute(
                 _SQL_REGISTER_AGENT,
-                (agent_id, session_id, role, subagent_type, workspace_root, now, now),
+                (
+                    agent_id,
+                    session_id,
+                    role,
+                    subagent_type,
+                    workspace_root,
+                    now,
+                    now,
+                    os_user(),
+                ),
             )
             conn.commit()
     except Exception as e:

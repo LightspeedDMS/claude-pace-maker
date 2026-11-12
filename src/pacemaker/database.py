@@ -17,6 +17,15 @@ from pathlib import Path
 
 from .logger import log_error, log_warning
 from .constants import BLOCKAGE_CATEGORIES
+from .data_dir import (
+    SharedDataDirError,
+    is_invalid_sentinel_path,
+    is_shared_path,
+    os_user,
+    prepare_db_file,
+    confirm_shared_files,
+    shared_umask,
+)
 
 # Type variable for generic return type
 T = TypeVar("T")
@@ -32,7 +41,23 @@ RETRY_DELAY = 0.1  # Initial delay between retries (100ms)
 # on a database whose stored version already equals SCHEMA_VERSION, the
 # CREATE statements in SCHEMA are skipped entirely rather than re-parsed/
 # re-executed on every hook invocation.
-SCHEMA_VERSION = 1
+#
+# Version 2 (story #187): additive nullable ``os_user`` column (always LAST) on
+# the tables listed in OS_USER_TABLES. Fresh databases get it from SCHEMA
+# itself (no window in which a new table exists without the column while
+# several OS users initialise at once); databases left at version 1 get the
+# same column appended by ``migrate_os_user_columns()``.
+SCHEMA_VERSION = 2
+
+# Tables that record which OS user wrote each row (story #187, AC4).
+OS_USER_TABLES = (
+    "usage_snapshots",
+    "pacing_decisions",
+    "blockage_events",
+    "activity_events",
+    "governance_events",
+    "accumulated_costs",
+)
 
 # Cleanup batching (issue #145): a single unbounded DELETE can hold the
 # WAL writer lock for as long as the delete takes, starving other
@@ -49,6 +74,65 @@ CLEANUP_MAX_BATCHES = 200
 # executescript() calls which require an exclusive lock and cause contention.
 _initialized_dbs: set = set()
 
+# db_paths whose user_version has been checked by get_db_connection() in this
+# process (see _ensure_current_schema).
+_version_checked_dbs: set = set()
+
+
+def migrate_os_user_columns(conn: sqlite3.Connection) -> None:
+    """Add the nullable ``os_user`` column to every table in OS_USER_TABLES.
+
+    Idempotent and safe when several processes (different OS users) run it at
+    the same moment. The check-then-ALTER runs inside one ``BEGIN IMMEDIATE``
+    transaction: a plain read followed by a write on the same connection can
+    fail instantly with "database is locked" (stale read snapshot) without
+    ever honouring the busy timeout, whereas BEGIN IMMEDIATE waits for the
+    other writer. A residual "duplicate column name" is still tolerated.
+    Tables that do not exist yet are skipped (they are created with SCHEMA
+    first). Additive only: existing rows keep ``os_user = NULL``.
+    """
+    conn.commit()  # BEGIN IMMEDIATE must start from autocommit
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for table in OS_USER_TABLES:
+            columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+            if not columns or "os_user" in columns:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN os_user TEXT")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def _ensure_current_schema(conn: sqlite3.Connection, db_path: str) -> None:
+    """Make an older database writable by this release on first open per process.
+
+    Writers insert ``os_user`` unconditionally, and SessionStart,
+    UserPromptSubmit and SubagentStart write before anything calls
+    initialize_database(), so no write path may depend on a migration having
+    run first. Therefore every database older than SCHEMA_VERSION gets the
+    additive ``os_user`` columns here, including databases from releases that
+    predate ``PRAGMA user_version`` (version 0, <= v2.35.4) that still hold
+    tables. For those the version is deliberately left at 0 so
+    initialize_database() still runs the full SCHEMA later. A brand-new or
+    foreign empty database (no known tables) is left alone.
+    """
+    if db_path in _version_checked_dbs:
+        return
+    # fetchall(): fully consume the statement so no read snapshot stays open.
+    version = conn.execute("PRAGMA user_version").fetchall()[0][0]
+    if version < SCHEMA_VERSION:
+        migrate_os_user_columns(conn)
+        if version > 0:
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            conn.commit()
+    _version_checked_dbs.add(db_path)
+
 
 def reset_initialized_dbs() -> None:
     """Clear the initialization cache.
@@ -57,6 +141,7 @@ def reset_initialized_dbs() -> None:
     before each test that relies on a fresh DB initialization.
     """
     _initialized_dbs.clear()
+    _version_checked_dbs.clear()
 
 
 # Database schema
@@ -69,7 +154,8 @@ CREATE TABLE IF NOT EXISTS usage_snapshots (
     seven_day_util REAL NOT NULL,
     seven_day_resets_at TEXT,
     session_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    os_user TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_snapshots(timestamp DESC);
@@ -81,7 +167,8 @@ CREATE TABLE IF NOT EXISTS pacing_decisions (
     should_throttle INTEGER NOT NULL,
     delay_seconds INTEGER NOT NULL,
     session_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    os_user TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_pacing_timestamp ON pacing_decisions(timestamp DESC);
@@ -95,7 +182,8 @@ CREATE TABLE IF NOT EXISTS blockage_events (
     hook_type TEXT NOT NULL,
     session_id TEXT NOT NULL,
     details TEXT,
-    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    os_user TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_blockage_timestamp ON blockage_events(timestamp DESC);
@@ -147,7 +235,8 @@ CREATE TABLE IF NOT EXISTS accumulated_costs (
     output_tokens INTEGER,
     cache_read_tokens INTEGER,
     cache_creation_tokens INTEGER,
-    model_family TEXT
+    model_family TEXT,
+    os_user TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_accum_costs_ts ON accumulated_costs(timestamp);
@@ -184,7 +273,8 @@ CREATE TABLE IF NOT EXISTS activity_events (
     timestamp REAL NOT NULL,
     event_code TEXT NOT NULL,
     status TEXT NOT NULL,
-    session_id TEXT NOT NULL
+    session_id TEXT NOT NULL,
+    os_user TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_events(timestamp DESC);
@@ -197,7 +287,8 @@ CREATE TABLE IF NOT EXISTS governance_events (
     project_name TEXT NOT NULL,
     session_id TEXT NOT NULL,
     feedback_text TEXT NOT NULL,
-    created_at INTEGER DEFAULT (strftime('%s', 'now'))
+    created_at INTEGER DEFAULT (strftime('%s', 'now')),
+    os_user TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_governance_timestamp ON governance_events(timestamp DESC);
@@ -250,10 +341,11 @@ def record_activity_event(
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO activity_events (timestamp, event_code, status, session_id)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO activity_events
+                    (timestamp, event_code, status, session_id, os_user)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (timestamp, event_code, status, session_id),
+                (timestamp, event_code, status, session_id, os_user()),
             )
             return True
 
@@ -294,10 +386,18 @@ def record_governance_event(
             cursor.execute(
                 """
                 INSERT INTO governance_events
-                    (timestamp, event_type, project_name, session_id, feedback_text)
-                VALUES (?, ?, ?, ?, ?)
+                    (timestamp, event_type, project_name, session_id, feedback_text,
+                     os_user)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (timestamp, event_type, project_name, session_id, feedback_text),
+                (
+                    timestamp,
+                    event_type,
+                    project_name,
+                    session_id,
+                    feedback_text,
+                    os_user(),
+                ),
             )
             return True
 
@@ -511,6 +611,30 @@ def cleanup_old_governance_events(
         return -1
 
 
+def _open_connection(db_path: str) -> sqlite3.Connection:
+    """Open ``db_path`` in WAL mode, upgrading an older schema on first use.
+
+    Shared mode (story #187): create/repair the file as 0660 first, and hold
+    umask 007 ONLY for the connect plus the first read that creates the
+    ``-wal``/``-shm`` side files (with umask 022 a second OS user can otherwise
+    hit them while SQLite still has them restrictive). All of this is a no-op
+    for paths outside the shared data dir, so default installs are unchanged.
+    """
+    ident = prepare_db_file(db_path)
+    with shared_umask(db_path):
+        conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            _ensure_current_schema(conn, db_path)
+            # SQLite cannot be told not to follow symlinks from Python, so
+            # re-check that nothing was planted/swapped while it opened.
+            confirm_shared_files(db_path, ident)
+        except BaseException:
+            conn.close()
+            raise
+    return conn
+
+
 @contextmanager
 def get_db_connection(
     db_path: str, readonly: bool = False
@@ -530,8 +654,7 @@ def get_db_connection(
     """
     conn: Optional[sqlite3.Connection] = None
     try:
-        conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT)
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn = _open_connection(db_path)
         # In test mode, skip fsync for 20x faster schema creation
         if os.environ.get("PACEMAKER_TEST_MODE"):
             conn.execute("PRAGMA synchronous=OFF")
@@ -618,14 +741,28 @@ def initialize_database(db_path: str) -> bool:
         return True
 
     try:
-        # Ensure parent directory exists
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        if is_shared_path(db_path):
+            # Story #187: never create the shared dir ourselves (it must be
+            # provisioned with the right group/setgid); fail loudly instead.
+            prepare_db_file(db_path)
+        else:
+            if is_invalid_sentinel_path(db_path):
+                # The setting was malformed when this path was frozen at import
+                # but has been "fixed" since: never mkdir the stand-in dir.
+                raise SharedDataDirError(
+                    "pace-maker: shared_data_dir was invalid when this process "
+                    "started; restart the process after fixing config.json"
+                )
+            # Ensure parent directory exists
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
         def operation(conn: sqlite3.Connection) -> bool:
             cursor = conn.cursor()
-            current_version = cursor.execute("PRAGMA user_version").fetchone()[0]
+            # fetchall(): leave no open read snapshot before the DDL below.
+            current_version = cursor.execute("PRAGMA user_version").fetchall()[0][0]
             if current_version < SCHEMA_VERSION:
                 cursor.executescript(SCHEMA)
+                migrate_os_user_columns(conn)
                 cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             return True
 
@@ -677,8 +814,9 @@ def insert_usage_snapshot(
                     five_hour_resets_at,
                     seven_day_util,
                     seven_day_resets_at,
-                    session_id
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    session_id,
+                    os_user
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     int(timestamp.timestamp()),
@@ -687,6 +825,7 @@ def insert_usage_snapshot(
                     seven_day_util,
                     seven_day_resets_at.isoformat() if seven_day_resets_at else None,
                     session_id,
+                    os_user(),
                 ),
             )
             return True
@@ -801,14 +940,16 @@ def insert_pacing_decision(
                     timestamp,
                     should_throttle,
                     delay_seconds,
-                    session_id
-                ) VALUES (?, ?, ?, ?)
+                    session_id,
+                    os_user
+                ) VALUES (?, ?, ?, ?, ?)
             """,
                 (
                     int(timestamp.timestamp()),
                     1 if should_throttle else 0,
                     delay_seconds,
                     session_id,
+                    os_user(),
                 ),
             )
             return True
@@ -891,8 +1032,7 @@ def should_poll_globally(
     now = time.time()
     conn = None
     try:
-        conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT)
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn = _open_connection(db_path)
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT last_poll_time FROM global_poll_state WHERE id = 1"
@@ -922,7 +1062,10 @@ def should_poll_globally(
             # No writes needed: release lock without committing
             conn.rollback()
             return False
-    except Exception:
+    except Exception as e:
+        if isinstance(e, SharedDataDirError):
+            # Misconfigured shared dir: say so (it is also shown in status).
+            log_error("database", "Shared data dir unusable for poll claim", e)
         if conn:
             try:
                 conn.rollback()
@@ -984,10 +1127,19 @@ def record_blockage(
                     reason,
                     hook_type,
                     session_id,
-                    details
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    details,
+                    os_user
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (timestamp, category, reason, hook_type, session_id, details_json),
+                (
+                    timestamp,
+                    category,
+                    reason,
+                    hook_type,
+                    session_id,
+                    details_json,
+                    os_user(),
+                ),
             )
             return True
 

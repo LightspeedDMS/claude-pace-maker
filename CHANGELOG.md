@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.39.0]
+
+### Added
+- **Optional shared data directory so several OS users report into one `usage.db` / `session_registry.db` (#187).** Opt-in via `"shared_data_dir": "/var/lib/claude-pace-maker"` in the per-user `~/.claude-pace-maker/config.json`. **With the setting absent (or null) nothing changes**: same paths, same file modes, secrets stay in `usage.db`. In shared mode only the two monitoring SQLite DBs move; code, config, rules, state, logs, `version_status.db`, `intent_declarations.db` and the `secrets` table stay per user (`secrets.db`, 0600; existing per-user secrets are copied over once). Shared DBs are created 0660 (O_EXCL, race-safe) and umask 007 is held only while a connection is opened, which fixes the "attempt to write a readonly database" race between two users with umask 022. A configured-but-missing/unwritable dir fails loudly and shows in `pace-maker status`; there is no fallback. (`src/pacemaker/data_dir.py` is the single resolver; see README "Shared data directory" and `docs/dev/shared-data-dir.md`.)
+- **Rows record the writing OS user.** Nullable `os_user` column on `usage_snapshots`, `pacing_decisions`, `blockage_events`, `activity_events`, `governance_events`, `accumulated_costs` (`usage.db`: `SCHEMA_VERSION` 2, column declared last in `SCHEMA` and appended to version-1 DBs by an idempotent migration) and `sessions`, `agents` (`session_registry.db`). Additive, idempotent, safe under concurrent open; old rows keep NULL and old readers (claude-usage) are unaffected. Rows from the shared registry are treated as untrusted (own-user and UUID filter, type-checked pid/timestamps, control characters stripped before reaching Claude or the terminal). Symlinks or special files planted in the shared dir for a DB or its side files are refused, never followed (README recommends the sticky bit, mode 3770). A malformed `shared_data_dir` never breaks imports: DB opens fail and are logged, status shows `INVALID`. In shared mode `pace-maker status` lists every user's live sessions and `pace-maker sessions` gains an `OS_USER` column.
+
 ## [2.38.2]
 
 ### Fixed

@@ -62,6 +62,7 @@ class TestGovernanceEventsTable:
                 "session_id",
                 "feedback_text",
                 "created_at",
+                "os_user",  # #187: additive nullable column
             }
             assert expected == columns
         finally:

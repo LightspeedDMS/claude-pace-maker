@@ -10,6 +10,11 @@ Read this before changing any table, column or file that the monitor reads, or b
 
 There is no other IPC between the monitor and pace-maker. The consumer hardcodes `Path.home() / ".claude-pace-maker"`.
 
+## `os_user` columns and the shared data dir (#187)
+
+- `usage.db` (`usage_snapshots`, `pacing_decisions`, `blockage_events`, `activity_events`, `governance_events`, `accumulated_costs`) and `session_registry.db` (`sessions`, `agents`) gained a nullable `os_user TEXT` column, appended last. Readers that select explicit columns are unaffected; read it via `"os_user" in row.keys()`.
+- The monitor still hardcodes `Path.home() / ".claude-pace-maker"`. When a user sets `shared_data_dir`, the monitor must resolve the same setting (`config.json` key `shared_data_dir`) to see the shared DBs; tracked as a separate claude-usage change. Details: [shared-data-dir.md](shared-data-dir.md).
+
 ## `profile_cache.json` and credentials (#177)
 
 - The monitor reads `~/.claude-pace-maker/profile_cache.json` (JSON). It does **not** read the SQLite `profile_cache` table, which has no writer in `src/pacemaker`; `UsageModel._detect_tier` no longer reads it either. The table stays in `database.py` `SCHEMA` (no schema change).

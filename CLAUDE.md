@@ -33,4 +33,5 @@ This file is deliberately slim: the rules that always apply, plus links to the d
 | Langfuse traces, `state.json`, secret masking, subagent hook time budget, late guidance | [docs/dev/langfuse.md](docs/dev/langfuse.md) |
 | Any DB table, column or file the claude-usage monitor reads | [docs/dev/claude-usage-contract.md](docs/dev/claude-usage-contract.md) |
 | Cross-session awareness, provenance tagging, memory localization | [docs/dev/session-features.md](docs/dev/session-features.md) |
+| Shared data dir (`shared_data_dir`), DB path resolver, `os_user` columns, shared file modes/umask, per-user secrets | [docs/dev/shared-data-dir.md](docs/dev/shared-data-dir.md) |
 | Overall architecture, pacing algorithms | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/WEEKEND_AWARE_ALGORITHM.md](docs/WEEKEND_AWARE_ALGORITHM.md), [docs/adaptive_throttle_implementation.md](docs/adaptive_throttle_implementation.md), [docs/PRELOAD_SYSTEM.md](docs/PRELOAD_SYSTEM.md) |

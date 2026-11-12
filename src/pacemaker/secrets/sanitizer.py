@@ -6,6 +6,8 @@ Sanitizes Langfuse traces by masking all stored secrets before upload.
 
 from typing import Any
 
+from ..logger import log_warning
+
 from .database import get_all_secrets
 from .masking import build_prefiltered_pattern, collect_strings, mask_structure
 from .metrics import increment_secrets_masked
@@ -49,7 +51,12 @@ def sanitize_trace(trace: Any, db_path: str) -> tuple:
 
     # Record metrics if any secrets were masked
     if mask_count > 0:
-        increment_secrets_masked(db_path, count=mask_count)
+        try:
+            increment_secrets_masked(db_path, count=mask_count)
+        except Exception as e:
+            # Metrics must never cost us the masking itself (e.g. the shared
+            # usage.db is unusable while the per-user secrets store is fine).
+            log_warning("secrets", "Failed to record secrets-masked metric", e)
 
     return sanitized, mask_count
 

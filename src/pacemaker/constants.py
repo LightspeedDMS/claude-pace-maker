@@ -9,6 +9,8 @@ and ensure consistency across modules.
 from pathlib import Path
 from typing import Dict, Any
 
+from .data_dir import monitoring_db_path
+
 # Default configuration values
 DEFAULT_CONFIG: Dict[str, Any] = {
     "enabled": True,
@@ -118,7 +120,10 @@ RECENT_CONTEXT_TERSE_MAX_CHARS = 150
 # removed (Messi Anti-Orphan-Code) rather than kept as dead weight.
 
 # Default file paths
-DEFAULT_DB_PATH = str(Path.home() / ".claude-pace-maker" / "usage.db")
+# Story #187: usage.db goes through the monitoring-data-dir resolver. With no
+# `shared_data_dir` in the per-user config.json this is exactly the historical
+# ~/.claude-pace-maker/usage.db.
+DEFAULT_DB_PATH = monitoring_db_path("usage.db")
 DEFAULT_CONFIG_PATH = str(Path.home() / ".claude-pace-maker" / "config.json")
 DEFAULT_STATE_PATH = str(Path.home() / ".claude-pace-maker" / "state.json")
 DEFAULT_EXTENSION_REGISTRY_PATH = str(
